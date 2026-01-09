@@ -1,11 +1,15 @@
-FROM node:22-slim
+FROM node:22-alpine
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    curl \
-    ca-certificates \
+RUN apk add --no-cache git curl ca-certificates bash \
     && npm install -g @anthropic-ai/claude-code \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && adduser -D -s /bin/bash -u 1000 claude \
+    && mkdir -p /workspace /claude \
+    && chown -R claude:claude /workspace /claude
+
+USER claude
+
+# Install mise
+RUN curl https://mise.run | sh
+ENV PATH="/home/claude/.local/bin:$PATH"
 
 WORKDIR /workspace
