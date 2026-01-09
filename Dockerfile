@@ -1,6 +1,6 @@
 FROM node:22-alpine
 
-RUN apk add --no-cache git curl ca-certificates bash \
+RUN apk add --no-cache git curl ca-certificates bash zsh \
     && npm install -g @anthropic-ai/claude-code \
     && adduser -D -s /bin/bash -u 1000 claude \
     && mkdir -p /workspace /claude \

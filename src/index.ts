@@ -3,7 +3,7 @@
 import {spawnSync} from "child_process";
 import {createInterface} from "readline";
 import {existsSync, mkdirSync, writeFileSync} from "fs";
-import {homedir} from "os";
+import {homedir, platform} from "os";
 import {basename, join} from "path";
 import {formatScannedFiles, scanVersionFiles} from "./scanner.js";
 
@@ -17,6 +17,36 @@ const miseConfigPath = join(cwd, ".mise.toml");
 const dataDir = join(homedir(), ".ccc");
 const miseCacheDir = join(dataDir, "mise");
 const defaultImage = "1uxus/claude-code-container:latest";
+
+// Shell config files to auto-detect and mount
+const SHELL_CONFIGS = [
+    ".bashrc", ".bash_profile", ".profile",
+    ".zshrc", ".zprofile", ".zshenv",
+    ".gitconfig", ".inputrc"
+];
+
+// Normalize path for Docker volume mounts (Windows compatibility)
+function dockerPath(p: string): string {
+    if (platform() === "win32") {
+        // C:\Users\... → /c/Users/...
+        return p.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`);
+    }
+    return p;
+}
+
+// Detect existing shell config files and generate mount strings
+function getShellConfigMounts(): string[] {
+    const home = homedir();
+    const mounts: string[] = [];
+
+    for (const file of SHELL_CONFIGS) {
+        const hostPath = join(home, file);
+        if (existsSync(hostPath)) {
+            mounts.push(`      - ${dockerPath(hostPath)}:/home/claude/${file}:ro`);
+        }
+    }
+    return mounts;
+}
 
 // Interactive prompt helper
 async function prompt(question: string, options: string[]): Promise<number> {
@@ -222,16 +252,20 @@ function generateCompose(mode: "mise" | "dockerfile" | "default"): void {
     let imageOrBuild: string;
     let volumes: string;
 
+    // Get shell config mounts (read-only)
+    const shellMounts = getShellConfigMounts();
+    const shellMountsStr = shellMounts.length > 0 ? "\n" + shellMounts.join("\n") : "";
+
     if (mode === "dockerfile") {
         imageOrBuild = `build: .`;
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude`;
+        volumes = `      - ${dockerPath(cwd)}:/workspace
+      - ${dockerPath(dataDir)}:/claude${shellMountsStr}`;
     } else {
         imageOrBuild = `image: ${defaultImage}`;
         mkdirSync(miseCacheDir, {recursive: true});
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude
-      - ${miseCacheDir}:/home/claude/.local/share/mise`;
+        volumes = `      - ${dockerPath(cwd)}:/workspace
+      - ${dockerPath(dataDir)}:/claude
+      - ${dockerPath(miseCacheDir)}:/home/claude/.local/share/mise${shellMountsStr}`;
     }
 
     const compose = `
