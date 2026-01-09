@@ -1,70 +1,50 @@
 # CLAUDE.md
 
-Instructions for Claude Code when working with this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project Overview
-
-**claude-code-container** (ccc) is a CLI tool that runs Claude Code in isolated Docker containers. It provides:
-
-- Automatic container lifecycle management
-- Persistent login across sessions
-- Security hardening (read-only fs, capability drops, resource limits)
-- Simple project-specific Dockerfile customization
-
-## Technology Stack
-
-- **Runtime**: Node.js 22+
-- **Language**: TypeScript (ES2015 target)
-- **Container**: Docker with docker-compose
-
-## Project Structure
-
-```
-claude-code-container/
-├── src/
-│   └── index.ts          # Main CLI entry point
-├── dist/                 # Compiled output
-├── .github/workflows/
-│   ├── docker.yml        # Docker Hub publish
-│   └── npm.yml           # npm publish
-├── package.json
-├── tsconfig.json
-└── README.md
-```
-
-## Build Commands
+## Build and Development Commands
 
 ```bash
-npm install      # Install dependencies
-npm run build    # Compile TypeScript
-npm link         # Install globally for development
+npm install          # Install dependencies
+npm run build        # Compile TypeScript to dist/
+npm link             # Link globally for local development
 ```
 
-## Key Concepts
+Build the Docker image locally:
+```bash
+docker build -t claude-code-container .
+```
 
-### Container Configuration
+Release (triggers npm + Docker Hub CI/CD):
+```bash
+git tag vX.X.X && git push origin vX.X.X
+```
 
-The tool generates a docker-compose.yml with:
-- Volume mounts: workspace + credentials
-- Security options: read_only, cap_drop, no-new-privileges
-- Resource limits: CPU, memory, PIDs
-- Environment: CLAUDE_CONFIG_DIR=/claude
+**Note:** No test suite or linting is configured. Testing is manual via `ccc init`, `ccc`, `ccc shell` commands.
 
-### Credential Storage
+## Architecture
 
-- Location: `~/.ccc/`
-- Mounted to `/claude` in container
-- Persists login across all projects
+### Source Files
+- `src/index.ts` - CLI entry point implementing three commands: `ccc init` (setup wizard), `ccc` (run Claude in container), `ccc shell` (shell-only mode)
+- `src/scanner.ts` - Scans projects for version files across 25+ language ecosystems to auto-detect tooling
 
-### Project Dockerfile
+### Two Configuration Modes
+1. **mise mode** (recommended): Creates `.mise.toml` in project root. Tools are cached in `~/.ccc/mise/`
+2. **Dockerfile mode**: Creates custom Dockerfile in `.claude/ccc/Dockerfile`
 
-- Location: `.claude/ccc/Dockerfile`
-- Created via `ccc init`
-- Users customize for project-specific tools
+Both modes use AI-assisted configuration - the CLI invokes Claude with `--allowedTools Read,Write` to analyze scanned version files and generate appropriate configs.
 
-## Code Guidelines
+### Key Paths
+| Path | Purpose |
+|------|---------|
+| `.claude/ccc/` | Project sandbox (docker-compose.yml, optional Dockerfile) |
+| `~/.ccc/` | Global credential storage |
+| `~/.ccc/mise/` | Cached mise tool installations |
 
-- Keep the CLI simple and minimal
-- Auto-cleanup containers and images on exit
-- Support both `docker compose` and `docker-compose`
-- Use alpine-based images for smaller size
+### Container Security Model
+Generated docker-compose.yml implements:
+- Read-only filesystem
+- Drops all capabilities (adds only CHOWN, SETUID, SETGID, DAC_OVERRIDE)
+- Resource limits: 2 CPUs, 4GB memory, 256 PIDs
+- Non-root `claude` user (UID 1000)
+- tmpfs for /tmp and /home/claude
