@@ -7,7 +7,7 @@ import {createInterface} from "readline";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
-import {formatScannedFiles, scanVersionFiles} from "./scanner.js";
+import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -247,34 +247,35 @@ function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
 
     console.log("Scanning project files...");
     const scannedFiles = scanVersionFiles(projectPath);
+    const hints = extractVersionHints(scannedFiles);
+    const hintsText = formatVersionHints(hints);
     const filesContext = formatScannedFiles(scannedFiles);
 
-    console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
+    console.log(`Found ${scannedFiles.size} version file(s), ${hints.length} version hint(s). Analyzing with Claude...`);
 
     const defaultContent = `[tools]
 # No tools detected - add your tools here
 # node = "22"
 `;
 
-    const promptText = `Context:
-${filesContext}
+    const promptText = `${hintsText}${filesContext}
 
-Task:
-Write "${miseConfigPath}" using Write tool.
+Task: Write "${miseConfigPath}" using Write tool.
 
-Constraints:
+Rules:
+- Use pre-extracted versions above when available
 - DO NOT output text, explanation, or markdown
 - DO NOT add comments to the file
-- DO NOT invent tools not found in the files above
-- Allowed tool names: node, java, python, go, rust, ruby, php, deno, bun
-- Java format: java = "temurin-17" or "temurin-21"
-- Default versions when unclear: node="22", python="3.12", java="temurin-21", go="1.23", rust="1.83", ruby="3.3"
+- DO NOT invent tools not found above
+- Allowed tools: node, java, python, go, rust, ruby, php, deno, bun, terraform, kotlin, elixir, zig, dotnet
+- Java format: "temurin-17" or "temurin-21"
+- Defaults (only if unclear): node="22", python="3.12", java="temurin-21", go="1.23", rust="1.83"
 
-Format (exactly):
+Format:
 [tools]
 <tool> = "<version>"
 
-If no tools detected:
+If no tools:
 ${defaultContent}`;
 
     spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {

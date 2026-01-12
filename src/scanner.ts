@@ -4,22 +4,22 @@ import {join, relative} from "path";
 // Version detection file patterns by language
 const VERSION_FILES: Record<string, string[]> = {
     // JavaScript/TypeScript ecosystem
-    node: ["package.json", ".nvmrc", ".node-version", "volta.json", ".volta.json"],
+    node: ["package.json", ".nvmrc", ".node-version", "volta.json", ".volta.json", "package-lock.json", "yarn.lock", ".yarnrc.yml", ".npmrc", "pnpm-lock.yaml"],
     deno: ["deno.json", "deno.jsonc", "import_map.json"],
     bun: ["bunfig.toml"],
 
     // JVM languages
-    java: ["pom.xml", "build.gradle", "build.gradle.kts", "gradle.properties", "gradle-wrapper.properties", ".java-version", ".sdkmanrc", "system.properties"],
+    java: ["pom.xml", "build.gradle", "build.gradle.kts", "gradle.properties", "gradle-wrapper.properties", ".java-version", ".sdkmanrc", "system.properties", "settings.gradle.kts", "settings.gradle"],
     kotlin: ["build.gradle.kts", "gradle.properties"],
     scala: ["build.sbt", ".scala-version", "build.properties"],
     groovy: ["build.gradle"],
     clojure: ["project.clj", "deps.edn", "shadow-cljs.edn"],
 
     // Python ecosystem
-    python: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", ".python-version", "runtime.txt", "environment.yml", "conda.yaml", "poetry.lock", "uv.lock"],
+    python: ["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", ".python-version", "runtime.txt", "environment.yml", "conda.yaml", "poetry.lock", "uv.lock", "Pipfile.lock"],
 
     // Systems languages
-    go: ["go.mod", "go.work"],
+    go: ["go.mod", "go.work", "go.sum"],
     rust: ["Cargo.toml", "rust-toolchain", "rust-toolchain.toml"],
     zig: ["build.zig", "build.zig.zon"],
     c_cpp: ["CMakeLists.txt", "Makefile", "configure.ac", "meson.build", "conanfile.txt", "conanfile.py", "vcpkg.json", ".clang-version"],
@@ -58,7 +58,7 @@ const VERSION_FILES: Record<string, string[]> = {
     julia: ["Project.toml", "Manifest.toml"],
 
     // Infrastructure/DevOps
-    terraform: [".terraform-version", "versions.tf", "main.tf", "providers.tf", ".terraformrc"],
+    terraform: [".terraform-version", "versions.tf", "main.tf", "providers.tf", ".terraformrc", ".terraform.lock.hcl"],
     ansible: ["ansible.cfg", "requirements.yml", "galaxy.yml"],
     pulumi: ["Pulumi.yaml", "Pulumi.yml"],
     kubernetes: ["skaffold.yaml", "kustomization.yaml", "helmfile.yaml", "Chart.yaml"],
@@ -141,4 +141,125 @@ export function formatScannedFiles(files: Map<string, string>): string {
         output += `=== ${path} ===\n${truncated}\n\n`;
     });
     return output;
+}
+
+// Version hint for pre-parsed tool versions
+export interface VersionHint {
+    tool: string;
+    version: string;
+    source: string;
+}
+
+// Extract version hints from scanned files
+export function extractVersionHints(files: Map<string, string>): VersionHint[] {
+    const hints: VersionHint[] = [];
+
+    files.forEach((content, path) => {
+        const filename = path.split("/").pop() || path;
+
+        // Plain version files (direct content)
+        if (filename === ".nvmrc" || filename === ".node-version") {
+            const v = content.trim().replace(/^v/, "");
+            if (v) hints.push({tool: "node", version: v, source: path});
+        }
+        if (filename === ".python-version") {
+            const v = content.trim();
+            if (v) hints.push({tool: "python", version: v, source: path});
+        }
+        if (filename === ".ruby-version") {
+            const v = content.trim();
+            if (v) hints.push({tool: "ruby", version: v, source: path});
+        }
+        if (filename === ".java-version") {
+            const v = content.trim();
+            if (v) hints.push({tool: "java", version: `temurin-${v}`, source: path});
+        }
+        if (filename === "rust-toolchain" && !path.endsWith(".toml")) {
+            const v = content.trim();
+            if (v) hints.push({tool: "rust", version: v, source: path});
+        }
+        if (filename === ".terraform-version") {
+            const v = content.trim();
+            if (v) hints.push({tool: "terraform", version: v, source: path});
+        }
+
+        // .tool-versions (asdf/mise format)
+        if (filename === ".tool-versions") {
+            content.split("\n").forEach(line => {
+                const match = line.match(/^(\w+)\s+(.+)$/);
+                if (match) hints.push({tool: match[1], version: match[2].trim(), source: path});
+            });
+        }
+
+        // package.json engines.node
+        if (filename === "package.json") {
+            try {
+                const pkg = JSON.parse(content);
+                if (pkg.engines?.node) {
+                    const v = pkg.engines.node.replace(/[^\d.]/g, "").split(".")[0];
+                    if (v) hints.push({tool: "node", version: v, source: path});
+                }
+            } catch { /* ignore */ }
+        }
+
+        // volta.json
+        if (filename === "volta.json" || filename === ".volta.json") {
+            try {
+                const v = JSON.parse(content);
+                if (v.node) hints.push({tool: "node", version: v.node.replace(/^v/, ""), source: path});
+            } catch { /* ignore */ }
+        }
+
+        // global.json (.NET SDK)
+        if (filename === "global.json") {
+            try {
+                const v = JSON.parse(content).sdk?.version;
+                if (v) hints.push({tool: "dotnet", version: v, source: path});
+            } catch { /* ignore */ }
+        }
+
+        // .sdkmanrc (SDKMAN JVM)
+        if (filename === ".sdkmanrc") {
+            const m = content.match(/^java=(.+)$/m);
+            if (m) hints.push({tool: "java", version: m[1].trim(), source: path});
+        }
+
+        // pyproject.toml
+        if (filename === "pyproject.toml") {
+            const match = content.match(/requires-python\s*=\s*["']>=?(\d+\.\d+)/);
+            if (match) hints.push({tool: "python", version: match[1], source: path});
+        }
+
+        // go.mod
+        if (filename === "go.mod") {
+            const match = content.match(/^go\s+(\d+\.\d+)/m);
+            if (match) hints.push({tool: "go", version: match[1], source: path});
+        }
+
+        // Cargo.toml rust-version
+        if (filename === "Cargo.toml") {
+            const match = content.match(/rust-version\s*=\s*["'](\d+\.\d+)/);
+            if (match) hints.push({tool: "rust", version: match[1], source: path});
+        }
+
+        // rust-toolchain.toml
+        if (filename === "rust-toolchain.toml") {
+            const match = content.match(/channel\s*=\s*["']([^"']+)/);
+            if (match) hints.push({tool: "rust", version: match[1], source: path});
+        }
+    });
+
+    // Deduplicate: keep first occurrence per tool
+    const seen = new Set<string>();
+    return hints.filter(h => {
+        if (seen.has(h.tool)) return false;
+        seen.add(h.tool);
+        return true;
+    });
+}
+
+// Format hints for prompt
+export function formatVersionHints(hints: VersionHint[]): string {
+    if (hints.length === 0) return "";
+    return "Pre-extracted versions:\n" + hints.map(h => `  ${h.tool} = "${h.version}" (from ${h.source})`).join("\n") + "\n\n";
 }
