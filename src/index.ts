@@ -16,7 +16,16 @@ const composePath = join(sandboxDir, "docker-compose.yml");
 const miseConfigPath = join(cwd, ".mise.toml");
 const dataDir = join(homedir(), ".ccc");
 const miseCacheDir = join(dataDir, "mise");
-const defaultImage = "1uxus/claude-code-container:latest";
+const baseDockerfile = `FROM node:22-alpine
+RUN apk add --no-cache git curl ca-certificates bash \\
+    && npm install -g @anthropic-ai/claude-code \\
+    && adduser -D -s /bin/bash -u 1000 claude \\
+    && mkdir -p /workspace /claude \\
+    && chown -R claude:claude /workspace /claude
+USER claude
+RUN curl https://mise.run | sh
+ENV PATH="/home/claude/.local/bin:$PATH"
+WORKDIR /workspace`;
 
 // Interactive prompt helper
 async function prompt(question: string, options: string[]): Promise<number> {
@@ -98,7 +107,7 @@ function generateMiseConfig(): string {
 
 // Generate Dockerfile content (only used for non-auto mode)
 function generateDockerfileContent(): string {
-    return `FROM ${defaultImage}
+    return baseDockerfile + `
 
 # Add your customizations here
 # Example: RUN apk add --no-cache openjdk17
@@ -115,31 +124,25 @@ function detectProjectToolsAndWriteDockerfile(): void {
 
     console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
 
-    const defaultContent = `FROM ${defaultImage}
-
-# No additional tools detected
-`;
-
     const promptText = `Context:
 ${filesContext}
 
 Task:
 Write "${dockerfilePath}" using Write tool.
 
+Base Dockerfile (always include this exactly):
+${baseDockerfile}
+
 Constraints:
 - DO NOT output text, explanation, or markdown
 - DO NOT add packages not needed by detected tools
-- DO NOT use multiple RUN commands (combine with &&)
-- Base image: ${defaultImage}
 - Package map: java->openjdk17,maven | python->python3,py3-pip | go->go | ruby->ruby | rust->rust,cargo
 
-Format (exactly):
-FROM ${defaultImage}
+Format:
+<base dockerfile above>
+RUN apk add --no-cache <packages>  # only if tools detected
 
-RUN apk add --no-cache <packages>
-
-If no tools detected:
-${defaultContent}`;
+If no tools detected, just write the base Dockerfile as-is.`;
 
     spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
         encoding: "utf-8",
@@ -150,7 +153,7 @@ ${defaultContent}`;
 
     // Ensure file exists with default content if Claude didn't create it
     if (!existsSync(dockerfilePath)) {
-        writeFileSync(dockerfilePath, defaultContent);
+        writeFileSync(dockerfilePath, baseDockerfile);
     }
 }
 
@@ -208,39 +211,20 @@ async function init(): Promise<void> {
     }
 }
 
-// Check which mode is active
-function getMode(): "mise" | "dockerfile" | "default" {
-    if (existsSync(miseConfigPath)) return "mise";
-    if (existsSync(dockerfilePath)) return "dockerfile";
-    return "default";
-}
-
-function generateCompose(mode: "mise" | "dockerfile" | "default"): void {
+function generateCompose(): void {
     mkdirSync(sandboxDir, {recursive: true});
     mkdirSync(dataDir, {recursive: true});
-
-    let imageOrBuild: string;
-    let volumes: string;
-
-    if (mode === "dockerfile") {
-        imageOrBuild = `build: .`;
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude`;
-    } else {
-        imageOrBuild = `image: ${defaultImage}`;
-        mkdirSync(miseCacheDir, {recursive: true});
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude
-      - ${miseCacheDir}:/home/claude/.local/share/mise`;
-    }
+    mkdirSync(miseCacheDir, {recursive: true});
 
     const compose = `
 services:
   sandbox:
-    ${imageOrBuild}
+    build: .
     container_name: ${containerName}
     volumes:
-${volumes}
+      - ${cwd}:/workspace
+      - ${dataDir}:/claude
+      - ${miseCacheDir}:/home/claude/.local/share/mise
     environment:
       - CLAUDE_CONFIG_DIR=/claude
     working_dir: /workspace
@@ -282,34 +266,27 @@ function dockerCompose(args: string[]): ReturnType<typeof spawnSync> {
     return result;
 }
 
-function run(cmd: string[], mode: "mise" | "dockerfile" | "default"): void {
-    if (mode === "dockerfile") {
-        console.log("Building container...");
-        const buildResult = dockerCompose(["-f", composePath, "build"]);
-
-        if (buildResult.status !== 0) {
-            console.error("Build failed");
-            process.exit(1);
-        }
-
-        spawnSync("docker", ["image", "prune", "-f"], {stdio: "ignore"});
-    } else {
-        console.log("Pulling image...");
-        spawnSync("docker", ["pull", defaultImage], {stdio: "inherit"});
+function run(cmd: string[], useMise: boolean): void {
+    // Generate base Dockerfile if not exists
+    if (!existsSync(dockerfilePath)) {
+        mkdirSync(sandboxDir, {recursive: true});
+        writeFileSync(dockerfilePath, baseDockerfile);
     }
+
+    console.log("Building container...");
+    const buildResult = dockerCompose(["-f", composePath, "build"]);
+    if (buildResult.status !== 0) {
+        console.error("Build failed");
+        process.exit(1);
+    }
+    spawnSync("docker", ["image", "prune", "-f"], {stdio: "ignore"});
 
     console.log("Starting container...");
-
-    // For mise mode, run mise install first
-    let finalCmd: string[];
-    if (mode === "mise" && cmd[0] === "claude") {
-        finalCmd = ["sh", "-c", "mise install --yes 2>/dev/null; exec " + cmd.join(" ")];
-    } else {
-        finalCmd = cmd;
-    }
+    const finalCmd = useMise && cmd[0] === "claude"
+        ? ["sh", "-c", "mise install --yes 2>/dev/null; exec " + cmd.join(" ")]
+        : cmd;
 
     const runResult = dockerCompose(["-f", composePath, "run", "--rm", "sandbox", ...finalCmd]);
-
     dockerCompose(["-f", composePath, "down"]);
 
     if (runResult.error) {
@@ -326,13 +303,13 @@ async function main(): Promise<void> {
         return;
     }
 
-    const mode = getMode();
-    generateCompose(mode);
+    const useMise = existsSync(miseConfigPath);
+    generateCompose();
 
     if (command === "shell") {
-        run(["bash"], mode);
+        run(["bash"], useMise);
     } else {
-        run(["claude", "--dangerously-skip-permissions"], mode);
+        run(["claude", "--dangerously-skip-permissions"], useMise);
     }
 }
 
