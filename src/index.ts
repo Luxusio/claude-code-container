@@ -48,6 +48,12 @@ function getShellConfigMounts(): string[] {
     return mounts;
 }
 
+// Check if Claude CLI is available
+function isClaudeCliAvailable(): boolean {
+    const result = spawnSync("claude", ["--version"], {encoding: "utf-8", timeout: 5000});
+    return result.status === 0;
+}
+
 // Interactive prompt helper
 async function prompt(question: string, options: string[]): Promise<number> {
     const rl = createInterface({input: process.stdin, output: process.stdout});
@@ -72,17 +78,12 @@ async function prompt(question: string, options: string[]): Promise<number> {
 }
 
 // Detect project tools using Claude CLI and write mise.toml directly
-function detectProjectToolsAndWriteMiseConfig(): void {
+function detectProjectToolsAndWriteMiseConfig(): boolean {
     console.log("Scanning project files...");
     const scannedFiles = scanVersionFiles(cwd);
     const filesContext = formatScannedFiles(scannedFiles);
 
     console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
-
-    const defaultContent = `[tools]
-# No tools detected - add your tools here
-# node = "22"
-`;
 
     const promptText = `Context:
 ${filesContext}
@@ -100,22 +101,16 @@ Constraints:
 
 Format (exactly):
 [tools]
-<tool> = "<version>"
+<tool> = "<version>"`;
 
-If no tools detected:
-${defaultContent}`;
-
-    spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
+    const result = spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
         encoding: "utf-8",
         cwd: cwd,
         timeout: 60000,
         stdio: "inherit"
     });
 
-    // Ensure file exists with default content if Claude didn't create it
-    if (!existsSync(miseConfigPath)) {
-        writeFileSync(miseConfigPath, defaultContent);
-    }
+    return result.status === 0 && existsSync(miseConfigPath);
 }
 
 // Generate mise.toml content (only used for non-auto mode)
@@ -136,7 +131,7 @@ function generateDockerfileContent(): string {
 }
 
 // Detect project tools using Claude CLI and write Dockerfile directly
-function detectProjectToolsAndWriteDockerfile(): void {
+function detectProjectToolsAndWriteDockerfile(): boolean {
     console.log("Scanning project files...");
     mkdirSync(sandboxDir, {recursive: true});
 
@@ -144,11 +139,6 @@ function detectProjectToolsAndWriteDockerfile(): void {
     const filesContext = formatScannedFiles(scannedFiles);
 
     console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
-
-    const defaultContent = `FROM ${defaultImage}
-
-# No additional tools detected
-`;
 
     const promptText = `Context:
 ${filesContext}
@@ -166,45 +156,39 @@ Constraints:
 Format (exactly):
 FROM ${defaultImage}
 
-RUN apk add --no-cache <packages>
+RUN apk add --no-cache <packages>`;
 
-If no tools detected:
-${defaultContent}`;
-
-    spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
+    const result = spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
         encoding: "utf-8",
         cwd: cwd,
         timeout: 60000,
         stdio: "inherit"
     });
 
-    // Ensure file exists with default content if Claude didn't create it
-    if (!existsSync(dockerfilePath)) {
-        writeFileSync(dockerfilePath, defaultContent);
-    }
+    return result.status === 0 && existsSync(dockerfilePath);
 }
 
 // Create mise config
-function createMiseConfig(auto: boolean): void {
+function createMiseConfig(auto: boolean): boolean {
     if (auto) {
-        detectProjectToolsAndWriteMiseConfig();
+        if (!detectProjectToolsAndWriteMiseConfig()) return false;
     } else {
-        const content = generateMiseConfig();
-        writeFileSync(miseConfigPath, content);
+        writeFileSync(miseConfigPath, generateMiseConfig());
     }
     console.log(`Created: .mise.toml`);
+    return true;
 }
 
 // Create Dockerfile
-function createDockerfile(auto: boolean): void {
+function createDockerfile(auto: boolean): boolean {
     if (auto) {
-        detectProjectToolsAndWriteDockerfile();
+        if (!detectProjectToolsAndWriteDockerfile()) return false;
     } else {
         mkdirSync(sandboxDir, {recursive: true});
-        const content = generateDockerfileContent();
-        writeFileSync(dockerfilePath, content);
+        writeFileSync(dockerfilePath, generateDockerfileContent());
     }
     console.log(`Created: .claude/ccc/Dockerfile`);
+    return true;
 }
 
 // Interactive init
@@ -231,11 +215,27 @@ async function init(): Promise<void> {
         "No - Create minimal template"
     ]);
 
-    if (mode === 0) {
-        createMiseConfig(auto === 0);
-    } else {
-        createDockerfile(auto === 0);
+    const useAuto = auto === 0;
+
+    // Check Claude CLI availability for auto mode
+    if (useAuto && !isClaudeCliAvailable()) {
+        console.error("Error: Claude CLI not found. Install it or use manual mode.");
+        process.exit(1);
     }
+
+    // Create config file
+    const success = mode === 0 ? createMiseConfig(useAuto) : createDockerfile(useAuto);
+    if (!success) {
+        console.error("Error: Failed to create configuration file.");
+        process.exit(1);
+    }
+
+    // Generate docker-compose.yml
+    const configMode = mode === 0 ? "mise" : "dockerfile";
+    generateCompose(configMode);
+    console.log(`Created: .claude/ccc/docker-compose.yml`);
+
+    console.log("\nInitialization complete! Run 'ccc' to start.");
 }
 
 // Check which mode is active
