@@ -51,7 +51,8 @@ Container name is fixed per project path hash, ensuring `claude --continue` and 
 claude-code-container/
 ├── src/
 │   ├── index.ts        # Main CLI entry point
-│   └── scanner.ts      # Project tool detection for mise
+│   ├── scanner.ts      # Project tool detection for mise
+│   └── remote.ts       # Remote development helpers (Tailscale + Mutagen)
 ├── dist/               # Compiled output
 ├── Dockerfile          # Container image definition
 ├── package.json
@@ -79,6 +80,13 @@ npm link         # Install globally for development
 - `ccc shell` - Open bash shell in current project
 - `ccc <command>` - Run arbitrary command in current project
 - `ccc --env KEY=VALUE` - Set additional environment variable for session
+
+### Remote Development
+- `ccc remote <host>` - Connect to remote host (first time saves config)
+- `ccc remote` - Connect using saved config
+- `ccc remote setup` - Setup guide
+- `ccc remote check` - Check connectivity and sync status
+- `ccc remote terminate` - Stop sync session
 
 ## Key Concepts
 
@@ -122,6 +130,14 @@ Built from Dockerfile on first run. Includes:
 - SIGINT (Ctrl+C), SIGTERM, SIGHUP: cleanup session and exit
 - Normal exit: cleanup session
 - Container stopped only when no other sessions remain
+
+### Remote Development
+
+Run ccc on a remote desktop from your MacBook:
+- **Mutagen**: Real-time file sync (MacBook → Desktop)
+- **SSH**: Execute ccc on remote, stream terminal I/O
+- Config saved per-project in `~/.ccc/remote/`
+- Use `ccc remote <host>` for first-time setup
 
 ## Code Guidelines
 

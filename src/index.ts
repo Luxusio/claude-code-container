@@ -8,6 +8,7 @@ import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
+import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -421,6 +422,13 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
 
+REMOTE (run on remote host via Tailscale + Mutagen):
+    ccc remote <host>       Connect to host (first time: prompts for config)
+    ccc remote              Connect using saved config
+    ccc remote setup        Setup guide for remote development
+    ccc remote check        Check connectivity and sync status
+    ccc remote terminate    Stop sync session for this project
+
 OPTIONS:
     --env KEY=VALUE         Set environment variable
     -h, --help              Show this help
@@ -480,6 +488,24 @@ async function main(): Promise<void> {
         case "status":
             showStatus();
             break;
+
+        case "remote": {
+            const subcommand = filteredArgs[1];
+            if (subcommand === "setup") {
+                await remoteSetup();
+            } else if (subcommand === "check") {
+                await remoteCheck(cwd);
+            } else if (subcommand === "terminate") {
+                await remoteTerminate(cwd);
+            } else {
+                // subcommand is either a host or undefined (use saved config)
+                // remaining args after host are passed to ccc on remote
+                const host = subcommand;
+                const remoteArgs = host ? filteredArgs.slice(2) : [];
+                await remoteExec(cwd, host, remoteArgs);
+            }
+            break;
+        }
 
         case "shell":
             await exec(cwd, ["bash"], {env: customEnv});

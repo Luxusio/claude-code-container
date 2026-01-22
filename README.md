@@ -92,6 +92,65 @@ ccc  # 컨테이너 안에서 JIRA_API_KEY 사용 가능
 ccc --env API_KEY=xxx --env DEBUG=true
 ```
 
+## 원격 개발 (Remote Development)
+
+저사양 PC에서 고사양 원격 PC의 리소스를 활용하여 개발할 수 있습니다.
+
+### 필요 도구
+
+- [Tailscale](https://tailscale.com/) - 네트워크 연결 (선택, 원격 접속 시 권장)
+- [Mutagen](https://mutagen.io/) - 실시간 파일 동기화
+- SSH 접속 가능한 원격 호스트
+
+### 사용법
+
+```bash
+# MacBook에서 실행 - 첫 번째 (설정 저장됨)
+ccc remote my-desktop
+# Remote user [user]: john
+# Remote path [/Users/me/myproject]: /home/john/myproject
+# Config saved.
+# Creating sync session...
+# Waiting for initial sync... done
+# Connecting to my-desktop...
+# [이제 데스크탑에서 claude 실행 중]
+
+# 이후에는 간단히
+ccc remote
+
+# claude 옵션 전달
+ccc remote --continue
+ccc remote --resume
+```
+
+### 아키텍처
+
+```
+MacBook (노트북)                         Desktop (데스크탑)
+┌─────────────────────┐                  ┌─────────────────────┐
+│  소스 코드 (원본)    │────Mutagen────►│  동기화된 코드        │
+│                     │                  │                     │
+│  ccc remote 실행    │────SSH────────►│  ccc (docker) 실행   │
+│  터미널 I/O         │◄───────────────│  claude 실행         │
+└─────────────────────┘                  └─────────────────────┘
+```
+
+### 명령어
+
+```bash
+ccc remote <host>       # 원격 연결 (첫 실행 시 설정)
+ccc remote              # 저장된 설정으로 연결
+ccc remote setup        # 설정 가이드
+ccc remote check        # 연결/동기화 상태 확인
+ccc remote terminate    # 동기화 세션 종료
+```
+
+### 요구사항
+
+1. **원격 호스트에 ccc 설치**: Desktop에도 ccc가 설치되어 있어야 함
+2. **SSH 키 인증**: 비밀번호 없이 SSH 접속 가능 권장
+3. **Docker 실행 중**: Desktop에서 Docker가 실행 중이어야 함
+
 ## 도구 관리 (mise)
 
 `.mise.toml`이 없는 프로젝트에서 첫 `ccc` 실행 시 도구 자동 감지 여부를 묻습니다.
