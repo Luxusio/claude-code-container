@@ -116,6 +116,7 @@ Built from Dockerfile on first run. Includes:
 - Base: `ubuntu:24.04`
 - Dependencies: curl, git, ca-certificates, unzip
 - Chromium browser (`CHROME_BIN` env set)
+- Docker CLI (communicates with host Docker daemon via socket mount)
 - mise with global tools: maven, gradle, yarn, pnpm
 - claude-code native binary
 - `.bashrc` configured for mise activation
