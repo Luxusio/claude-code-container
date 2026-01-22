@@ -1,50 +1,189 @@
 #!/usr/bin/env node
 
 import {spawnSync} from "child_process";
+import {createHash} from "crypto";
+import {existsSync, mkdirSync, writeFileSync, readdirSync} from "fs";
 import {createInterface} from "readline";
-import {existsSync, mkdirSync, writeFileSync} from "fs";
 import {homedir} from "os";
-import {basename, join} from "path";
+import {basename, dirname, join, resolve} from "path";
+import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles} from "./scanner.js";
 
-const cwd = process.cwd();
-const projectName = basename(cwd).toLowerCase().replace(/\s+/g, "-");
-const containerName = `ccc-${projectName}`;
-const sandboxDir = join(cwd, ".claude/ccc");
-const dockerfilePath = join(sandboxDir, "Dockerfile");
-const composePath = join(sandboxDir, "docker-compose.yml");
-const miseConfigPath = join(cwd, ".mise.toml");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// === Configuration ===
 const dataDir = join(homedir(), ".ccc");
+const claudeDir = join(dataDir, "claude");
 const miseCacheDir = join(dataDir, "mise");
-const defaultImage = "1uxus/claude-code-container:latest";
+const globalEnvFile = join(dataDir, "env");
+const imageName = "ccc";
+
+// === Helpers ===
+function ensureDirs(): void {
+    mkdirSync(dataDir, {recursive: true});
+    mkdirSync(claudeDir, {recursive: true});
+    mkdirSync(miseCacheDir, {recursive: true});
+}
+
+function hashPath(path: string): string {
+    return createHash("sha256").update(path).digest("hex").slice(0, 12);
+}
+
+function getProjectId(projectPath: string): string {
+    const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const hash = hashPath(resolve(projectPath));
+    return `${name}-${hash}`;
+}
+
+function getContainerName(projectPath: string): string {
+    return `ccc-${getProjectId(projectPath)}`;
+}
+
+function isContainerRunning(containerName: string): boolean {
+    const result = spawnSync("docker", ["ps", "-q", "-f", `name=^${containerName}$`], {encoding: "utf-8"});
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+function isContainerExists(containerName: string): boolean {
+    const result = spawnSync("docker", ["ps", "-aq", "-f", `name=^${containerName}$`], {encoding: "utf-8"});
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+function isImageExists(): boolean {
+    const result = spawnSync("docker", ["images", "-q", imageName], {encoding: "utf-8"});
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+function buildImage(): void {
+    console.log("Building ccc image...");
+
+    const packageDir = join(__dirname, "..");
+    const dockerfilePath = join(packageDir, "Dockerfile");
+
+    if (!existsSync(dockerfilePath)) {
+        console.error(`Dockerfile not found at ${dockerfilePath}`);
+        process.exit(1);
+    }
+
+    const result = spawnSync("docker", [
+        "build",
+        "-t", imageName,
+        "-f", dockerfilePath,
+        packageDir
+    ], {stdio: "inherit"});
+
+    if (result.status !== 0 && result.status !== null) {
+        console.error("Failed to build image");
+        process.exit(1);
+    }
+    if (result.error) {
+        console.error("Failed to build image:", result.error.message);
+        process.exit(1);
+    }
+
+    console.log("Image built successfully");
+}
+
+function ensureImage(): void {
+    if (!isImageExists()) {
+        buildImage();
+    }
+}
+
+function startProjectContainer(projectPath: string): string {
+    ensureDirs();
+    ensureImage();
+
+    const fullPath = resolve(projectPath);
+    const containerName = getContainerName(fullPath);
+
+    if (isContainerRunning(containerName)) {
+        return containerName;
+    }
+
+    if (isContainerExists(containerName)) {
+        spawnSync("docker", ["start", containerName], {stdio: "inherit"});
+        return containerName;
+    }
+
+    // Ensure global env file exists
+    if (!existsSync(globalEnvFile)) {
+        writeFileSync(globalEnvFile, "");
+    }
+
+    console.log("Creating container...");
+
+    const projectId = getProjectId(fullPath);
+    const projectMountPath = `/project/${projectId}`;
+
+    const args = [
+        "run", "-d",
+        "--name", containerName,
+        "--network", "host",
+        "-v", `${fullPath}:${projectMountPath}`,
+        "-v", `${claudeDir}:/claude`,
+        "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
+        "-v", `${globalEnvFile}:/env:ro`,
+        "-e", "CLAUDE_CONFIG_DIR=/claude",
+        "-w", projectMountPath,
+        "--pids-limit", "512",
+        imageName
+    ];
+
+    const result = spawnSync("docker", args, {stdio: "inherit"});
+    if (result.status !== 0) {
+        console.error("Failed to create container");
+        process.exit(1);
+    }
+
+    return containerName;
+}
+
+function stopProjectContainer(projectPath: string): void {
+    const containerName = getContainerName(resolve(projectPath));
+
+    if (!isContainerExists(containerName)) {
+        console.log("Container not found");
+        return;
+    }
+
+    console.log("Stopping container...");
+    spawnSync("docker", ["stop", containerName], {stdio: "inherit"});
+    console.log("Container stopped");
+}
+
+function removeProjectContainer(projectPath: string): void {
+    const containerName = getContainerName(resolve(projectPath));
+
+    if (!isContainerExists(containerName)) {
+        console.log("Container not found");
+        return;
+    }
+
+    stopProjectContainer(projectPath);
+    console.log("Removing container...");
+    spawnSync("docker", ["rm", containerName], {stdio: "inherit"});
+    console.log("Container removed");
+}
 
 // Interactive prompt helper
-async function prompt(question: string, options: string[]): Promise<number> {
+async function prompt(question: string): Promise<string> {
     const rl = createInterface({input: process.stdin, output: process.stdout});
-
     return new Promise((resolve) => {
-        console.log(`\n${question}`);
-        options.forEach((opt, i) => console.log(`  ${i + 1}. ${opt}`));
-
-        const ask = () => {
-            rl.question("\nSelect [1-" + options.length + "]: ", (answer) => {
-                const num = parseInt(answer, 10);
-                if (num >= 1 && num <= options.length) {
-                    rl.close();
-                    resolve(num - 1);
-                } else {
-                    ask();
-                }
-            });
-        };
-        ask();
+        rl.question(question, (answer) => {
+            rl.close();
+            resolve(answer.trim().toLowerCase());
+        });
     });
 }
 
-// Detect project tools using Claude CLI and write mise.toml directly
-function detectProjectToolsAndWriteMiseConfig(): void {
+// Detect project tools using Claude CLI and write mise.toml
+function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
+    const miseConfigPath = join(projectPath, "mise.toml");
+
     console.log("Scanning project files...");
-    const scannedFiles = scanVersionFiles(cwd);
+    const scannedFiles = scanVersionFiles(projectPath);
     const filesContext = formatScannedFiles(scannedFiles);
 
     console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
@@ -77,7 +216,7 @@ ${defaultContent}`;
 
     spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
         encoding: "utf-8",
-        cwd: cwd,
+        cwd: projectPath,
         timeout: 60000,
         stdio: "inherit"
     });
@@ -86,254 +225,189 @@ ${defaultContent}`;
     if (!existsSync(miseConfigPath)) {
         writeFileSync(miseConfigPath, defaultContent);
     }
+
+    console.log(`Created: ${miseConfigPath}`);
 }
 
-// Generate mise.toml content (only used for non-auto mode)
-function generateMiseConfig(): string {
-    return `[tools]
-# Add your tools here
-# node = "22"
-`;
-}
+// Check if mise.toml exists and offer to create if not
+async function ensureMiseConfig(projectPath: string): Promise<void> {
+    const miseConfigPath = join(projectPath, "mise.toml");
 
-// Generate Dockerfile content (only used for non-auto mode)
-function generateDockerfileContent(): string {
-    return `FROM ${defaultImage}
-
-# Add your customizations here
-# Example: RUN apk add --no-cache openjdk17
-`;
-}
-
-// Detect project tools using Claude CLI and write Dockerfile directly
-function detectProjectToolsAndWriteDockerfile(): void {
-    console.log("Scanning project files...");
-    mkdirSync(sandboxDir, {recursive: true});
-
-    const scannedFiles = scanVersionFiles(cwd);
-    const filesContext = formatScannedFiles(scannedFiles);
-
-    console.log(`Found ${scannedFiles.size} version file(s). Analyzing with Claude...`);
-
-    const defaultContent = `FROM ${defaultImage}
-
-# No additional tools detected
-`;
-
-    const promptText = `Context:
-${filesContext}
-
-Task:
-Write "${dockerfilePath}" using Write tool.
-
-Constraints:
-- DO NOT output text, explanation, or markdown
-- DO NOT add packages not needed by detected tools
-- DO NOT use multiple RUN commands (combine with &&)
-- Base image: ${defaultImage}
-- Package map: java->openjdk17,maven | python->python3,py3-pip | go->go | ruby->ruby | rust->rust,cargo
-
-Format (exactly):
-FROM ${defaultImage}
-
-RUN apk add --no-cache <packages>
-
-If no tools detected:
-${defaultContent}`;
-
-    spawnSync("claude", ["-p", promptText, "--allowedTools", "Read,Write"], {
-        encoding: "utf-8",
-        cwd: cwd,
-        timeout: 60000,
-        stdio: "inherit"
-    });
-
-    // Ensure file exists with default content if Claude didn't create it
-    if (!existsSync(dockerfilePath)) {
-        writeFileSync(dockerfilePath, defaultContent);
-    }
-}
-
-// Create mise config
-function createMiseConfig(auto: boolean): void {
-    if (auto) {
-        detectProjectToolsAndWriteMiseConfig();
-    } else {
-        const content = generateMiseConfig();
-        writeFileSync(miseConfigPath, content);
-    }
-    console.log(`Created: .mise.toml`);
-}
-
-// Create Dockerfile
-function createDockerfile(auto: boolean): void {
-    if (auto) {
-        detectProjectToolsAndWriteDockerfile();
-    } else {
-        mkdirSync(sandboxDir, {recursive: true});
-        const content = generateDockerfileContent();
-        writeFileSync(dockerfilePath, content);
-    }
-    console.log(`Created: .claude/ccc/Dockerfile`);
-}
-
-// Interactive init
-async function init(): Promise<void> {
-    // Check if already initialized
     if (existsSync(miseConfigPath)) {
-        console.log("Already initialized: .mise.toml");
-        return;
-    }
-    if (existsSync(dockerfilePath)) {
-        console.log("Already initialized: .claude/ccc/Dockerfile");
         return;
     }
 
-    // Mode selection
-    const mode = await prompt("How do you want to configure the container?", [
-        "mise (recommended) - Use mise.toml for tool versions",
-        "Custom Dockerfile - Full control over container"
-    ]);
+    console.log(`\nNo mise.toml found in project.`);
+    const answer = await prompt("Create mise.toml? (auto-detect tools) [Y/n]: ");
 
-    // Auto-configure selection
-    const auto = await prompt("Auto-configure based on your project?", [
-        "Yes - Analyze project files",
-        "No - Create minimal template"
-    ]);
-
-    if (mode === 0) {
-        createMiseConfig(auto === 0);
+    if (answer === "" || answer === "y" || answer === "yes") {
+        detectProjectToolsAndWriteMiseConfig(projectPath);
     } else {
-        createDockerfile(auto === 0);
+        console.log("Skipping mise.toml creation.");
     }
 }
 
-// Check which mode is active
-function getMode(): "mise" | "dockerfile" | "default" {
-    if (existsSync(miseConfigPath)) return "mise";
-    if (existsSync(dockerfilePath)) return "dockerfile";
-    return "default";
-}
+async function exec(projectPath: string, cmd: string[], options: {interactive?: boolean, env?: Record<string, string>} = {}): Promise<void> {
+    const fullPath = resolve(projectPath);
 
-function generateCompose(mode: "mise" | "dockerfile" | "default"): void {
-    mkdirSync(sandboxDir, {recursive: true});
-    mkdirSync(dataDir, {recursive: true});
+    // Check for mise.toml and offer to create if not exists
+    await ensureMiseConfig(fullPath);
 
-    let imageOrBuild: string;
-    let volumes: string;
+    // Start or get container
+    const containerName = startProjectContainer(fullPath);
 
-    if (mode === "dockerfile") {
-        imageOrBuild = `build: .`;
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude`;
-    } else {
-        imageOrBuild = `image: ${defaultImage}`;
-        mkdirSync(miseCacheDir, {recursive: true});
-        volumes = `      - ${cwd}:/workspace
-      - ${dataDir}:/claude
-      - ${miseCacheDir}:/home/claude/.local/share/mise`;
-    }
+    // Build docker exec command
+    const projectId = getProjectId(fullPath);
+    const projectMountPath = `/project/${projectId}`;
 
-    const compose = `
-services:
-  sandbox:
-    ${imageOrBuild}
-    container_name: ${containerName}
-    volumes:
-${volumes}
-    environment:
-      - CLAUDE_CONFIG_DIR=/claude
-    working_dir: /workspace
-    stdin_open: true
-    tty: true
-    read_only: true
-    tmpfs:
-      - /tmp:size=512m,mode=1777
-      - /home/claude:size=256m,mode=755
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETUID
-      - SETGID
-      - DAC_OVERRIDE
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 256
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 4G
-        reservations:
-          memory: 512M
-`.trim();
+    const execArgs = [
+        "exec",
+        "-w", projectMountPath,
+        "--env-file", globalEnvFile
+    ];
 
-    writeFileSync(composePath, compose);
-}
-
-function dockerCompose(args: string[]): ReturnType<typeof spawnSync> {
-    let result = spawnSync("docker", ["compose", ...args], {stdio: "inherit"});
-
-    if (result.error) {
-        result = spawnSync("docker-compose", args, {stdio: "inherit"});
-    }
-
-    return result;
-}
-
-function run(cmd: string[], mode: "mise" | "dockerfile" | "default"): void {
-    if (mode === "dockerfile") {
-        console.log("Building container...");
-        const buildResult = dockerCompose(["-f", composePath, "build"]);
-
-        if (buildResult.status !== 0) {
-            console.error("Build failed");
-            process.exit(1);
+    // Add --env options
+    if (options.env) {
+        for (const [key, value] of Object.entries(options.env)) {
+            execArgs.push("-e", `${key}=${value}`);
         }
+    }
 
-        spawnSync("docker", ["image", "prune", "-f"], {stdio: "ignore"});
+    if (options.interactive !== false) {
+        execArgs.push("-it");
+    }
+
+    execArgs.push(containerName);
+
+    // For claude, run mise trust, install, and reshim first
+    if (cmd[0] === "claude") {
+        // Trust all mise.toml files recursively, install tools, and create shims
+        execArgs.push("sh", "-c", `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(" ")}`);
     } else {
-        console.log("Pulling image...");
-        spawnSync("docker", ["pull", defaultImage], {stdio: "inherit"});
+        execArgs.push(...cmd);
     }
 
-    console.log("Starting container...");
-
-    // For mise mode, run mise install first
-    let finalCmd: string[];
-    if (mode === "mise" && cmd[0] === "claude") {
-        finalCmd = ["sh", "-c", "mise install --yes 2>/dev/null; exec " + cmd.join(" ")];
-    } else {
-        finalCmd = cmd;
-    }
-
-    const runResult = dockerCompose(["-f", composePath, "run", "--rm", "sandbox", ...finalCmd]);
-
-    dockerCompose(["-f", composePath, "down"]);
-
-    if (runResult.error) {
-        console.error("Run failed:", runResult.error.message);
-        process.exit(1);
-    }
+    spawnSync("docker", execArgs, {stdio: "inherit"});
 }
 
+function showStatus(): void {
+    console.log("\n=== CCC Status ===\n");
+
+    // Image status
+    if (isImageExists()) {
+        console.log("Image: Built ✓");
+    } else {
+        console.log("Image: Not built");
+    }
+
+    // List all ccc containers
+    const result = spawnSync("docker", ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.Names}}\t{{.Status}}"], {encoding: "utf-8"});
+    const containers = (result.stdout ?? "").trim().split("\n").filter(Boolean);
+
+    console.log("\nContainers:");
+    if (containers.length === 0) {
+        console.log("  (none)");
+    } else {
+        containers.forEach(c => {
+            const [name, ...status] = c.split("\t");
+            console.log(`  - ${name}: ${status.join("\t")}`);
+        });
+    }
+
+    console.log("");
+}
+
+function showHelp(): void {
+    console.log(`
+ccc - Claude Code Container
+
+USAGE:
+    ccc                     Run claude in current project
+    ccc shell               Open bash shell in current project
+    ccc <command>           Run command in current project
+
+CONTAINER MANAGEMENT:
+    ccc stop                Stop current project's container
+    ccc rm                  Remove current project's container
+    ccc status              Show all containers status
+
+OPTIONS:
+    --env KEY=VALUE         Set environment variable
+    -h, --help              Show this help
+
+EXAMPLES:
+    ccc                     # Run Claude in current project
+    ccc --continue          # Continue previous Claude session
+    ccc shell               # Open shell in current project
+    ccc npm install         # Run npm install in container
+    ccc --env API_KEY=xxx   # Run with custom env var
+`);
+}
+
+// === Main ===
 async function main(): Promise<void> {
-    const command = process.argv[2];
+    const args = process.argv.slice(2);
 
-    if (command === "init") {
-        await init();
-        return;
+    // Parse --env flags
+    const customEnv: Record<string, string> = {};
+    const filteredArgs: string[] = [];
+
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--env" && args[i + 1]) {
+            const match = args[i + 1].match(/^([^=]+)=(.*)$/);
+            if (match) {
+                customEnv[match[1]] = match[2];
+            }
+            i++;
+        } else if (args[i].startsWith("--env=")) {
+            const match = args[i].slice(6).match(/^([^=]+)=(.*)$/);
+            if (match) {
+                customEnv[match[1]] = match[2];
+            }
+        } else {
+            filteredArgs.push(args[i]);
+        }
     }
 
-    const mode = getMode();
-    generateCompose(mode);
+    const command = filteredArgs[0];
+    const cwd = process.cwd();
 
-    if (command === "shell") {
-        run(["bash"], mode);
-    } else {
-        run(["claude", "--dangerously-skip-permissions"], mode);
+    switch (command) {
+        case "-h":
+        case "--help":
+        case "help":
+            showHelp();
+            break;
+
+        case "stop":
+            stopProjectContainer(cwd);
+            break;
+
+        case "rm":
+            removeProjectContainer(cwd);
+            break;
+
+        case "status":
+            showStatus();
+            break;
+
+        case "shell":
+            await exec(cwd, ["bash"], {env: customEnv});
+            break;
+
+        case undefined:
+            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {env: customEnv});
+            break;
+
+        default:
+            // Check if it's a claude flag (--continue, --resume, etc.)
+            if (command.startsWith("-")) {
+                await exec(cwd, ["claude", "--dangerously-skip-permissions", ...filteredArgs], {env: customEnv});
+            } else {
+                await exec(cwd, filteredArgs, {env: customEnv});
+            }
+            break;
     }
 }
 
-main();
+main().catch(console.error);
