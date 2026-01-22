@@ -59,15 +59,15 @@ export function getMutagenSyncStatus(sessionName: string): string | null {
 
 // === Helpers ===
 
-function hashPath(path: string): string {
+export function hashPath(path: string): string {
     return createHash("sha256").update(path).digest("hex").slice(0, 12);
 }
 
-function getProjectHash(projectPath: string): string {
+export function getProjectHash(projectPath: string): string {
     return hashPath(resolve(projectPath));
 }
 
-function getMutagenSessionName(projectPath: string): string {
+export function getMutagenSessionName(projectPath: string): string {
     const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
     const hash = getProjectHash(projectPath);
     return `ccc-${name}-${hash}`;

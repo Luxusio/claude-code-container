@@ -19,6 +19,7 @@ cd claude-code-container
 
 npm install
 npm run build
+npm test         # 테스트 실행
 npm link
 ```
 

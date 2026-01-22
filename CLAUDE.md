@@ -65,6 +65,8 @@ claude-code-container/
 ```bash
 npm install      # Install dependencies
 npm run build    # Compile TypeScript
+npm test         # Run tests (vitest)
+npm run test:watch  # Run tests in watch mode
 npm link         # Install globally for development
 ```
 

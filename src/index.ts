@@ -96,17 +96,17 @@ function setupSignalHandlers(): void {
     process.on("SIGHUP", cleanup);
 }
 
-function hashPath(path: string): string {
+export function hashPath(path: string): string {
     return createHash("sha256").update(path).digest("hex").slice(0, 12);
 }
 
-function getProjectId(projectPath: string): string {
+export function getProjectId(projectPath: string): string {
     const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
     const hash = hashPath(resolve(projectPath));
     return `${name}-${hash}`;
 }
 
-function getContainerName(projectPath: string): string {
+export function getContainerName(projectPath: string): string {
     return `ccc-${getProjectId(projectPath)}`;
 }
 
@@ -189,6 +189,7 @@ function startProjectContainer(projectPath: string): string {
         "-v", `${fullPath}:${projectMountPath}`,
         "-v", `${claudeDir}:/claude`,
         "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-e", "CLAUDE_CONFIG_DIR=/claude",
         "-w", projectMountPath,
         "--pids-limit", "512",
@@ -526,4 +527,8 @@ async function main(): Promise<void> {
     }
 }
 
-main().catch(console.error);
+// Only run main when executed directly (not when imported)
+const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMainModule) {
+    main().catch(console.error);
+}
