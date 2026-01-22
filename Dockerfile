@@ -1,12 +1,23 @@
 FROM ubuntu:24.04
 
-# Install dependencies
+# Install dependencies + Chromium for headless testing
 RUN apt-get update && apt-get install -y \
     curl \
     git \
     ca-certificates \
     sudo \
     unzip \
+    chromium-browser \
+    fonts-liberation \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
@@ -24,9 +35,8 @@ RUN mkdir -p ~/.config/mise && \
     echo '[settings]' > ~/.config/mise/config.toml && \
     echo 'experimental = true' >> ~/.config/mise/config.toml
 
-# Configure bashrc for mise and env (for interactive shells)
-RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc && \
-    echo '[ -f /env ] && set -a && source /env && set +a' >> ~/.bashrc
+# Configure bashrc for mise (for interactive shells)
+RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
 # Install global tools via mise (maven, gradle, yarn, pnpm)
 RUN ~/.local/bin/mise use -g maven@latest && \
@@ -40,6 +50,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Add mise shims to PATH so non-interactive shells can use tools
 ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
+ENV CHROME_BIN="/usr/bin/chromium-browser"
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --headless"
 
 WORKDIR /project
 

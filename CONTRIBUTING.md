@@ -36,51 +36,53 @@ npm link
 ```
 ~/.ccc/
 ├── claude/             # Claude credentials (컨테이너에 마운트)
-├── projects/           # 프로젝트 심볼릭 링크 (경로 해시 기반, 고정)
-│   └── my-project-a1b2c3d4e5f6 -> /path/to/my-project
 ├── locks/              # 세션 락 파일 (세션별 UUID)
 │   ├── my-project-a1b2c3d4e5f6-uuid1.lock
 │   └── my-project-a1b2c3d4e5f6-uuid2.lock
-├── mise/               # 공유 mise 캐시
-└── env                 # 전역 환경변수 파일
+└── mise/               # 공유 mise 캐시
 ```
 
 ### 컨테이너 구조
 
 ```
-Container (ccc-daemon):
-├── /projects           # ~/.ccc/projects 마운트
-├── /claude             # ~/.ccc/claude 마운트
-├── /env                # ~/.ccc/env 마운트 (읽기전용)
-└── /root/.local/share/mise  # mise 캐시 마운트
+Container (ccc-<project>-<hash>):
+├── /project/<project>-<hash>   # 실제 프로젝트 경로 마운트
+├── /claude                      # ~/.ccc/claude 마운트
+└── /home/ccc/.local/share/mise  # mise 캐시 마운트
 ```
 
 ### 이미지 빌드
 
-첫 `ccc start` 실행 시:
-1. `ccc-daemon` 이미지가 없으면 Dockerfile로 빌드
-2. 이미지로 컨테이너 생성
+첫 `ccc` 실행 시:
+1. `ccc` 이미지가 없으면 Dockerfile로 빌드
+2. 이미지로 프로젝트별 컨테이너 생성
 
 Dockerfile 포함 내용:
 - ubuntu:24.04 기반
 - curl, git, ca-certificates, unzip 설치
+- Chromium (headless 테스트용, `CHROME_BIN` 환경변수 설정)
 - mise 설치 및 설정
 - 글로벌 도구 설치: maven, gradle, yarn, pnpm
 - claude-code native 바이너리 (프로젝트 node 버전과 독립)
 
 ### 세션 라이프사이클
 
-1. **시작**: `ccc` 실행 → 프로젝트 심볼릭 링크 (고정) + 세션 락 파일 생성
-2. **실행 중**: 동일 프로젝트에 여러 세션 가능 (같은 심볼릭 링크, 다른 락 파일)
-3. **종료**: 락 파일 삭제 → `cleanupStaleSymlinks()`로 활성 세션 없는 심볼릭 링크 정리
-4. **크래시 복구**: 다음 `ccc` 실행 시 락 파일 없는 심볼릭 링크 자동 정리
+1. **시작**: `ccc` 실행 → 컨테이너 생성/시작 + 세션 락 파일 생성
+2. **실행 중**: 동일 프로젝트에 여러 세션 가능 (다른 락 파일)
+3. **종료**: 락 파일 삭제 → 활성 세션 없으면 컨테이너 자동 중지
+4. **크래시 복구**: 다음 `ccc` 실행 시 스테일 락 파일 정리
 
-컨테이너 경로가 고정되어 `claude --continue`, `--resume` 정상 작동.
+컨테이너 이름이 경로 해시 기반으로 고정되어 `claude --continue`, `--resume` 정상 작동.
+
+### 환경변수 전달
+
+1. **호스트 환경변수 자동 전달**: 시스템 변수(PATH, HOME, LC_* 등) 제외하고 전부 전달
+2. **세션별**: `ccc --env KEY=VALUE`
 
 ### 시그널 핸들링
 
 - SIGINT (Ctrl+C), SIGTERM, SIGHUP: 정리 후 종료
-- SIGKILL: 다음 `ccc` 실행 시 `cleanupStaleSessions()`로 정리
+- 정상 종료: 락 파일 삭제, 다른 세션 없으면 컨테이너 중지
 
 ## 프로젝트 구조
 
@@ -90,6 +92,7 @@ claude-code-container/
 │   ├── index.ts          # CLI 메인 진입점
 │   └── scanner.ts        # mise용 프로젝트 도구 감지
 ├── dist/                 # 컴파일된 JavaScript (gitignore)
+├── Dockerfile            # 컨테이너 이미지 정의
 ├── package.json
 ├── tsconfig.json
 ├── CLAUDE.md             # Claude Code 지침
@@ -124,25 +127,27 @@ npm unlink -g claude-code-container
 
 ## 코드 스타일
 
-- TypeScript ES2015 타겟
+- TypeScript ES2022 타겟
 - 간결하고 최소한의 코드 유지
-- 세션 기반 심볼릭 링크 + UUID로 격리
-- 락 파일로 크래시 복구
+- 프로젝트별 컨테이너 + 경로 해시 기반 이름
+- 락 파일로 세션 추적 및 크래시 복구
 
 ## 주요 컴포넌트
 
 ### 컨테이너 관리
 
-- `startContainer()`: 데몬 컨테이너 생성/시작, mise + claude-code 설치
-- `stopContainer()`: 컨테이너 중지
-- `removeContainer()`: 컨테이너 삭제
-- `initializeContainer()`: mise, claude-code 설치 및 .bashrc 설정
+- `startProjectContainer()`: 프로젝트 컨테이너 생성/시작
+- `stopProjectContainer()`: 컨테이너 중지
+- `removeProjectContainer()`: 컨테이너 삭제
+- `buildImage()`: Dockerfile로 이미지 빌드
 
 ### 세션 관리
 
-- `exec()`: 세션 생성, 명령 실행, 정리
-- `cleanupStaleSessions()`: 락 파일 없는 세션 정리
-- `generateSessionId()`: UUID 생성
+- `createSessionLock()`: 세션 락 파일 생성
+- `removeSessionLock()`: 락 파일 삭제
+- `hasOtherActiveSessions()`: 다른 활성 세션 확인
+- `cleanupSession()`: 세션 정리 (락 삭제 + 컨테이너 중지 판단)
+- `setupSignalHandlers()`: 시그널 핸들러 등록
 
 ### mise 통합
 
@@ -152,15 +157,12 @@ npm unlink -g claude-code-container
 ## 테스트
 
 ```bash
-# 컨테이너 시작
-ccc start
+# 프로젝트에서 Claude 실행 (컨테이너 자동 생성)
+cd /path/to/project
+ccc
 
 # 상태 확인
 ccc status
-
-# 프로젝트에서 Claude 실행
-cd /path/to/project
-ccc
 
 # 쉘 접속
 ccc shell
@@ -205,14 +207,23 @@ npm run build
 
 ```bash
 # 컨테이너 상태 확인
-docker ps -a | grep ccc-daemon
+ccc status
+docker ps -a | grep ccc-
 
 # 컨테이너 로그 확인
-docker logs ccc-daemon
+docker logs ccc-<project>-<hash>
 
-# 컨테이너 완전 삭제 후 재시작
+# 컨테이너 삭제 후 재시작
 ccc rm
-ccc start
+ccc
+```
+
+### 이미지 재빌드
+
+```bash
+ccc rm
+docker rmi ccc
+ccc  # 자동으로 새 이미지 빌드
 ```
 
 ### 스테일 세션 수동 정리
@@ -221,10 +232,6 @@ ccc start
 # 락 파일 확인
 ls -la ~/.ccc/locks/
 
-# 심볼릭 링크 확인
-ls -la ~/.ccc/projects/
-
 # 수동 정리 (필요시)
 rm ~/.ccc/locks/*.lock
-rm ~/.ccc/projects/*
 ```

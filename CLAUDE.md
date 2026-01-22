@@ -6,10 +6,11 @@ Instructions for Claude Code when working with this repository.
 
 **claude-code-container** (ccc) is a CLI tool that runs Claude Code in an isolated Docker container. It provides:
 
-- Single daemon container shared across all projects
-- Session-based project mounting (auto-cleanup on exit)
-- Global environment variable file support
+- Per-project isolated containers (path-hash based naming)
+- Host environment variables auto-forwarding
+- Session-based auto-cleanup (stops container when last session exits)
 - mise-based tool version management per project
+- Chromium included for headless testing
 - `--network host` for direct port access
 
 ## Architecture
@@ -17,35 +18,31 @@ Instructions for Claude Code when working with this repository.
 ```
 ~/.ccc/
 ├── claude/             # Claude credentials (mounted to /claude)
-├── projects/           # Project symlinks (path-hash based, fixed per project)
-│   └── my-project-a1b2c3d4e5f6 -> /path/to/my-project
 ├── locks/              # Session lock files (per session)
 │   ├── my-project-a1b2c3d4e5f6-uuid1.lock
 │   └── my-project-a1b2c3d4e5f6-uuid2.lock
-├── mise/               # Shared mise cache
-└── env                 # Global environment variables file
+└── mise/               # Shared mise cache
 
-Container (ccc-daemon):
-├── /projects           # Mounted from ~/.ccc/projects
-├── /claude             # Mounted from ~/.ccc/claude
-├── /env                # Mounted from ~/.ccc/env (read-only)
-└── /root/.local/share/mise  # Mounted mise cache
+Container (ccc-<project>-<hash>):
+├── /project/<project>-<hash>  # Mounted from actual project path
+├── /claude                     # Mounted from ~/.ccc/claude
+└── /home/ccc/.local/share/mise # Mounted mise cache
 ```
 
 ## Session Lifecycle
 
-1. **Start**: `ccc` creates project symlink (fixed, path-hash based) + session lock file
-2. **Running**: Multiple sessions can run for same project (same symlink, different lock files)
-3. **Exit**: Lock file deleted, `cleanupStaleSymlinks()` removes symlink if no locks remain
-4. **Crash recovery**: Next `ccc` run cleans up symlinks without any associated lock files
+1. **Start**: `ccc` creates/starts container + creates session lock file
+2. **Running**: Multiple sessions can run for same project (different lock files)
+3. **Exit**: Lock file deleted, container stopped if no other sessions remain
+4. **Crash recovery**: Next `ccc` run cleans up stale lock files
 
-This design ensures `claude --continue` and `claude --resume` work correctly since the container path stays fixed per project.
+Container name is fixed per project path hash, ensuring `claude --continue` and `--resume` work correctly.
 
 ## Technology Stack
 
 - **Runtime**: Node.js 22+
-- **Language**: TypeScript (ES2015 target)
-- **Container**: Docker (single long-running container)
+- **Language**: TypeScript (ES2022 target)
+- **Container**: Docker (per-project containers)
 - **Base Image**: ubuntu:24.04
 
 ## Project Structure
@@ -56,6 +53,7 @@ claude-code-container/
 │   ├── index.ts        # Main CLI entry point
 │   └── scanner.ts      # Project tool detection for mise
 ├── dist/               # Compiled output
+├── Dockerfile          # Container image definition
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -72,36 +70,30 @@ npm link         # Install globally for development
 ## CLI Commands
 
 ### Container Management
-- `ccc start` - Start the daemon container (auto-installs mise + claude)
-- `ccc stop` - Stop the daemon container
-- `ccc restart` - Restart the daemon container
-- `ccc rm` - Remove the daemon container
-- `ccc status` - Show container and active sessions
+- `ccc stop` - Stop current project's container
+- `ccc rm` - Remove current project's container
+- `ccc status` - Show all containers status
 
 ### Execution
 - `ccc` - Run Claude in current project
 - `ccc shell` - Open bash shell in current project
 - `ccc <command>` - Run arbitrary command in current project
-- `ccc --env KEY=VALUE` - Set environment variable for session
+- `ccc --env KEY=VALUE` - Set additional environment variable for session
 
 ## Key Concepts
 
-### Project Mounting
+### Project Containers
 
-Each project has a fixed symlink based on path hash (12 chars):
-1. Symlink: `~/.ccc/projects/<project>-<path-hash>` -> actual project path
-2. Lock file: `~/.ccc/locks/<project>-<path-hash>-<session-uuid>.lock` (per session)
-3. On exit: lock removed, symlink cleaned only if no other sessions active
+Each project gets its own container named `ccc-<project>-<path-hash>`:
+1. Container created on first `ccc` run
+2. Lock file created per session for tracking
+3. On exit: lock removed, container stopped if no other sessions active
 
-This ensures container paths are stable for `claude --continue` and `--resume`.
+### Environment Variables
 
-### Global Environment Variables
+**Auto-forwarded from host**: All host env vars except system ones (PATH, HOME, USER, SHELL, LC_*, etc.)
 
-- File: `~/.ccc/env`
-- Mounted to `/env` in container (read-only)
-- Applied via `docker exec --env-file /env`
-- Also sourced in `.bashrc` for `source ~/.bashrc` compatibility
-- Edit `~/.ccc/env` to add persistent environment variables
+**Per-session**: `ccc --env KEY=VALUE`
 
 ### mise Integration
 
@@ -110,19 +102,15 @@ This ensures container paths are stable for `claude --continue` and `--resume`.
 - `mise install` runs automatically before `claude` command
 - mise cache shared across all sessions (`~/.ccc/mise`)
 
-### Container Initialization
+### Container Image
 
-On first `ccc start`:
-1. Builds `ccc-daemon` image from Dockerfile (if not exists)
-2. Creates and starts container from the image
-
-The Dockerfile includes:
+Built from Dockerfile on first run. Includes:
 - Base: `ubuntu:24.04`
 - Dependencies: curl, git, ca-certificates, unzip
-- mise installation and configuration
-- Global tools via mise: maven, gradle, yarn, pnpm
-- claude-code native binary (independent of project node version)
-- `.bashrc` configured for mise activation and env sourcing
+- Chromium browser (`CHROME_BIN` env set)
+- mise with global tools: maven, gradle, yarn, pnpm
+- claude-code native binary
+- `.bashrc` configured for mise activation
 
 ### Resource Limits
 
@@ -131,13 +119,14 @@ The Dockerfile includes:
 
 ### Signal Handling
 
-- SIGINT (Ctrl+C), SIGTERM, SIGHUP: cleanup and exit
-- SIGKILL: cleaned up on next `ccc` run via `cleanupStaleSessions()`
+- SIGINT (Ctrl+C), SIGTERM, SIGHUP: cleanup session and exit
+- Normal exit: cleanup session
+- Container stopped only when no other sessions remain
 
 ## Code Guidelines
 
 - Keep the CLI simple and minimal
-- Single container approach - no per-project containers
-- Session-based symlinks with UUID for isolation
-- Lock files for crash recovery
-- Environment variables via global file, not per-session
+- Per-project container approach with path-hash naming
+- Lock files for session tracking and crash recovery
+- Auto-forward host environment variables
+- Auto-stop container when last session exits

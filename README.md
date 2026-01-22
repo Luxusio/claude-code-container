@@ -4,32 +4,33 @@ Docker 컨테이너에서 Claude Code를 격리 실행합니다.
 
 ## 특징
 
-- 단일 데몬 컨테이너로 모든 프로젝트 공유
-- 세션 기반 프로젝트 마운팅 (자동 정리)
-- 전역 환경변수 파일 지원
+- 프로젝트별 격리 컨테이너 (경로 해시 기반)
+- 호스트 환경변수 자동 전달
+- 세션 종료 시 컨테이너 자동 정리 (다른 세션 없을 때)
 - mise 기반 도구 버전 관리
+- Chromium 내장 (headless 테스트 지원)
 - `--network host`로 포트 직접 접근
 
 ## 설치
 
 ```bash
-# 저장소 클론
 git clone https://github.com/your-username/claude-code-container.git
 cd claude-code-container
 
-# 의존성 설치 및 빌드
 npm install
 npm run build
-
-# 전역 설치
 npm link
 ```
 
 ## 빠른 시작
 
 ```bash
-# 현재 프로젝트에서 Claude 실행 (컨테이너 자동 시작)
+# 현재 프로젝트에서 Claude 실행 (컨테이너 자동 생성)
 ccc
+
+# 이전 세션 이어가기
+ccc --continue
+ccc --resume
 
 # 컨테이너 쉘 접속
 ccc shell
@@ -43,67 +44,84 @@ ccc npm test
 
 ```
 ~/.ccc/
-├── claude/       # Claude credentials
-├── projects/     # 프로젝트 심볼릭 링크 (경로 해시 기반, 고정)
+├── claude/       # Claude credentials (/claude로 마운트)
 ├── locks/        # 세션 락 파일 (세션별)
-├── mise/         # 공유 mise 캐시
-└── env           # 전역 환경변수
+└── mise/         # 공유 mise 캐시
 ```
 
-1. **첫 실행**: Dockerfile로 이미지 빌드 후 컨테이너 생성
-2. **프로젝트별**: 경로 해시 기반 고정 심볼릭 링크 생성
-3. **세션별**: UUID 락 파일로 동시 접속 관리
-4. **종료 시**: 락 삭제, 활성 세션 없으면 심볼릭 링크 정리
-5. **크래시 복구**: 다음 실행 시 스테일 심볼릭 링크 정리
+### 세션 라이프사이클
 
-컨테이너 경로가 고정되어 `claude --continue`, `--resume` 정상 작동.
+1. **시작**: 컨테이너 생성/시작 + 세션 락 파일 생성
+2. **실행 중**: 같은 프로젝트에서 여러 세션 동시 실행 가능
+3. **종료**: 락 파일 삭제, 해당 프로젝트의 다른 세션이 없으면 컨테이너 자동 중지
+4. **크래시 복구**: 다음 실행 시 스테일 락 파일 정리
+
+프로젝트 경로 해시 기반으로 컨테이너 이름이 고정되어 `claude --continue`, `--resume` 정상 작동.
 
 ## 명령어
 
-### 컨테이너 관리
-
 ```bash
-ccc start      # 데몬 컨테이너 시작
-ccc stop       # 데몬 컨테이너 중지
-ccc restart    # 데몬 컨테이너 재시작
-ccc rm         # 데몬 컨테이너 삭제
-ccc status     # 상태 확인
-```
-
-### 실행
-
-```bash
-ccc                        # 현재 프로젝트에서 Claude 실행
+ccc                        # Claude 실행
 ccc shell                  # bash 쉘 접속
 ccc <command>              # 임의 명령어 실행
-ccc --env KEY=VALUE        # 환경변수 설정
+ccc --env KEY=VALUE        # 추가 환경변수 설정
+ccc stop                   # 현재 프로젝트 컨테이너 중지
+ccc rm                     # 현재 프로젝트 컨테이너 삭제
+ccc status                 # 전체 컨테이너 상태 확인
 ```
 
 ## 환경변수
 
-`~/.ccc/env` 파일을 편집하여 환경변수 추가:
+### 호스트 환경변수 자동 전달
+
+호스트의 환경변수가 컨테이너로 자동 전달됩니다.
 
 ```bash
-# ~/.ccc/env
-ANTHROPIC_API_KEY=sk-xxx
-MY_CUSTOM_VAR=value
+export JIRA_API_KEY=xxx
+ccc  # 컨테이너 안에서 JIRA_API_KEY 사용 가능
 ```
 
-모든 세션에 적용됩니다.
+**제외 목록** (시스템 변수 충돌 방지):
+- `PATH`, `HOME`, `USER`, `SHELL`, `PWD`
+- `LC_ALL`, `LC_CTYPE`, `LANG`
+- macOS 전용 변수 (`TERM_PROGRAM`, `ITERM_*` 등)
+
+### 세션별 환경변수
+
+```bash
+ccc --env API_KEY=xxx --env DEBUG=true
+```
 
 ## 도구 관리 (mise)
 
 `.mise.toml`이 없는 프로젝트에서 첫 `ccc` 실행 시 도구 자동 감지 여부를 묻습니다.
 
-**프로젝트별 도구**: node, java, python, go, rust, ruby, php, deno, bun
-
-**전역 설치 도구** (이미지에 포함): maven, gradle, yarn, pnpm
-
-`.mise.toml` 예시:
 ```toml
+# .mise.toml 예시
 [tools]
 node = "22"
-python = "3.12"
+java = "temurin-21"
+yarn = "1.22.22"
+```
+
+**지원 도구**: node, java, python, go, rust, ruby, php, deno, bun
+
+**전역 도구** (이미지에 포함): maven, gradle, yarn, pnpm
+
+## 컨테이너 이미지
+
+Ubuntu 24.04 기반, 포함 항목:
+- mise (도구 버전 관리)
+- claude-code CLI
+- Chromium (headless 테스트용, `CHROME_BIN` 설정됨)
+- maven, gradle, yarn, pnpm
+
+이미지 재빌드:
+
+```bash
+ccc rm
+docker rmi ccc
+ccc  # 자동으로 새 이미지 빌드
 ```
 
 ## 리소스 제한

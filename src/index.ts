@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import {spawnSync} from "child_process";
-import {createHash} from "crypto";
-import {existsSync, mkdirSync, writeFileSync, readdirSync} from "fs";
+import {createHash, randomUUID} from "crypto";
+import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync} from "fs";
 import {createInterface} from "readline";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
@@ -16,14 +16,83 @@ const __dirname = dirname(__filename);
 const dataDir = join(homedir(), ".ccc");
 const claudeDir = join(dataDir, "claude");
 const miseCacheDir = join(dataDir, "mise");
-const globalEnvFile = join(dataDir, "env");
+const locksDir = join(dataDir, "locks");
 const imageName = "ccc";
+
+// === Session State ===
+let currentSessionLockFile: string | null = null;
+let currentProjectPath: string | null = null;
 
 // === Helpers ===
 function ensureDirs(): void {
     mkdirSync(dataDir, {recursive: true});
     mkdirSync(claudeDir, {recursive: true});
     mkdirSync(miseCacheDir, {recursive: true});
+    mkdirSync(locksDir, {recursive: true});
+}
+
+// === Lock File Management ===
+function createSessionLock(projectId: string): string {
+    const sessionId = randomUUID();
+    const lockFile = join(locksDir, `${projectId}-${sessionId}.lock`);
+    writeFileSync(lockFile, String(process.pid));
+    return lockFile;
+}
+
+function removeSessionLock(lockFile: string): void {
+    try {
+        if (existsSync(lockFile)) {
+            unlinkSync(lockFile);
+        }
+    } catch {
+        // Ignore errors during cleanup
+    }
+}
+
+function getActiveSessionsForProject(projectId: string): string[] {
+    if (!existsSync(locksDir)) return [];
+
+    return readdirSync(locksDir)
+        .filter(f => f.startsWith(`${projectId}-`) && f.endsWith(".lock"));
+}
+
+function hasOtherActiveSessions(projectId: string, currentLockFile: string): boolean {
+    const sessions = getActiveSessionsForProject(projectId);
+    const currentLockName = basename(currentLockFile);
+    return sessions.some(s => s !== currentLockName);
+}
+
+function cleanupSession(): void {
+    if (!currentSessionLockFile || !currentProjectPath) return;
+
+    const projectId = getProjectId(currentProjectPath);
+    const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
+
+    // Remove our lock file first
+    removeSessionLock(currentSessionLockFile);
+
+    // Stop container if no other sessions are using this project
+    if (!hasOthers) {
+        const containerName = getContainerName(currentProjectPath);
+        if (isContainerRunning(containerName)) {
+            spawnSync("docker", ["stop", containerName], {stdio: "ignore"});
+        }
+    }
+
+    currentSessionLockFile = null;
+    currentProjectPath = null;
+}
+
+// Setup signal handlers for cleanup
+function setupSignalHandlers(): void {
+    const cleanup = () => {
+        cleanupSession();
+        process.exit(0);
+    };
+
+    process.on("SIGINT", cleanup);
+    process.on("SIGTERM", cleanup);
+    process.on("SIGHUP", cleanup);
 }
 
 function hashPath(path: string): string {
@@ -107,11 +176,6 @@ function startProjectContainer(projectPath: string): string {
         return containerName;
     }
 
-    // Ensure global env file exists
-    if (!existsSync(globalEnvFile)) {
-        writeFileSync(globalEnvFile, "");
-    }
-
     console.log("Creating container...");
 
     const projectId = getProjectId(fullPath);
@@ -124,7 +188,6 @@ function startProjectContainer(projectPath: string): string {
         "-v", `${fullPath}:${projectMountPath}`,
         "-v", `${claudeDir}:/claude`,
         "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
-        "-v", `${globalEnvFile}:/env:ro`,
         "-e", "CLAUDE_CONFIG_DIR=/claude",
         "-w", projectMountPath,
         "--pids-limit", "512",
@@ -256,17 +319,40 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     // Start or get container
     const containerName = startProjectContainer(fullPath);
 
-    // Build docker exec command
+    // Create session lock and setup cleanup
     const projectId = getProjectId(fullPath);
+    currentProjectPath = fullPath;
+    currentSessionLockFile = createSessionLock(projectId);
+    setupSignalHandlers();
+
+    // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
 
     const execArgs = [
         "exec",
-        "-w", projectMountPath,
-        "--env-file", globalEnvFile
+        "-w", projectMountPath
     ];
 
-    // Add --env options
+    // Pass through host environment variables (except system ones)
+    const excludeEnvKeys = new Set([
+        "PATH", "HOME", "USER", "SHELL", "LOGNAME", "PWD", "OLDPWD",
+        "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
+        "TMPDIR", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
+        "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+        "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
+        "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",
+        "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
+        "LC_ALL", "LC_CTYPE", "LANG",  // Locale (container has its own)
+        "CLAUDE_CONFIG_DIR"  // Already set by container
+    ]);
+
+    for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && !excludeEnvKeys.has(key)) {
+            execArgs.push("-e", `${key}=${value}`);
+        }
+    }
+
+    // Add --env options (override host env)
     if (options.env) {
         for (const [key, value] of Object.entries(options.env)) {
             execArgs.push("-e", `${key}=${value}`);
@@ -288,6 +374,9 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     }
 
     spawnSync("docker", execArgs, {stdio: "inherit"});
+
+    // Cleanup on normal exit
+    cleanupSession();
 }
 
 function showStatus(): void {
