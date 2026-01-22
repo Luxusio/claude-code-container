@@ -17,6 +17,7 @@
   },
   "keywords": [
     "claude",
+    "container",
     "sandbox",
     "docker",
     "cli"
@@ -24,7 +25,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/claude-sandbox"
+    "url": "https://github.com/YOUR_USERNAME/claude-code-container"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

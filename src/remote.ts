@@ -1,11 +1,13 @@
 // src/remote.ts - ccc remote functionality for Tailscale + Mutagen sync
 
 import {spawn, spawnSync} from "child_process";
-import {createInterface} from "readline";
-import {createHash} from "crypto";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
-import {basename, join, resolve} from "path";
+import {join, resolve} from "path";
 import {homedir} from "os";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt} from "./utils.js";
+
+// Re-export for tests
+export {hashPath} from "./utils.js";
 
 // === Types ===
 
@@ -59,28 +61,74 @@ export function getMutagenSyncStatus(sessionName: string): string | null {
 
 // === Helpers ===
 
-export function hashPath(path: string): string {
-    return createHash("sha256").update(path).digest("hex").slice(0, 12);
-}
-
 export function getProjectHash(projectPath: string): string {
     return hashPath(resolve(projectPath));
 }
 
 export function getMutagenSessionName(projectPath: string): string {
-    const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const hash = getProjectHash(projectPath);
-    return `ccc-${name}-${hash}`;
+    return `ccc-${getProjectId(projectPath)}`;
 }
 
-async function prompt(question: string): Promise<string> {
-    const rl = createInterface({input: process.stdin, output: process.stdout});
-    return new Promise((resolve) => {
-        rl.question(question, (answer) => {
-            rl.close();
-            resolve(answer.trim());
-        });
-    });
+// === Remote Container Functions ===
+
+/**
+ * Ensure remote ccc image exists, build if needed
+ */
+async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
+    // Check if image exists on remote
+    const checkCmd = `docker images -q ccc`;
+    const result = spawnSync("ssh", [
+        `${config.user}@${config.host}`,
+        checkCmd
+    ], {encoding: "utf-8", timeout: 10000});
+
+    if (!result.stdout?.trim()) {
+        console.log("Building ccc image on remote host...");
+        // Need to sync Dockerfile and build on remote, or pull from registry
+        // For now, assume ccc is installed on remote and image exists
+        throw new Error("ccc image not found on remote. Run 'ccc' on the remote host first to build the image.");
+    }
+}
+
+/**
+ * Start container on remote host without project volume mount.
+ * Returns container name.
+ */
+async function startRemoteContainer(config: RemoteConfig, projectId: string): Promise<string> {
+    const containerName = `ccc-${projectId}`;
+
+    // Build docker run command (no project volume, just credentials and mise cache)
+    const dockerCmd = `docker run -d --name ${containerName} \
+        --network host \
+        -v ~/.ccc/claude:/claude \
+        -v ~/.ccc/mise:/home/ccc/.local/share/mise \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -e CLAUDE_CONFIG_DIR=/claude \
+        -w /project/${projectId} \
+        --pids-limit 512 \
+        ccc sleep infinity 2>/dev/null || docker start ${containerName}`;
+
+    const result = spawnSync("ssh", [
+        `${config.user}@${config.host}`,
+        dockerCmd
+    ], {encoding: "utf-8", timeout: 60000});
+
+    if (result.status !== 0) {
+        throw new Error(`Failed to start remote container: ${result.stderr}`);
+    }
+
+    return containerName;
+}
+
+/**
+ * Create directory in container for project
+ */
+async function createContainerProjectDir(config: RemoteConfig, containerName: string, projectId: string): Promise<void> {
+    const cmd = `docker exec ${containerName} mkdir -p /project/${projectId}`;
+    spawnSync("ssh", [
+        `${config.user}@${config.host}`,
+        cmd
+    ], {encoding: "utf-8"});
 }
 
 function printSection(title: string): void {
@@ -124,11 +172,13 @@ function saveRemoteConfig(projectPath: string, config: RemoteConfig): void {
 /**
  * Ensure mutagen sync is running for the project.
  * Creates sync if not exists, resumes if paused.
+ * Syncs directly to the remote container via SSH.
  * Returns the session name.
  */
-async function ensureSync(projectPath: string, config: RemoteConfig): Promise<string> {
+async function ensureSync(projectPath: string, config: RemoteConfig, containerName: string): Promise<string> {
     const fullPath = resolve(projectPath);
     const sessionName = getMutagenSessionName(fullPath);
+    const projectId = getProjectId(fullPath);
 
     // Ensure mutagen daemon is running
     spawnSync("mutagen", ["daemon", "start"], {stdio: "ignore"});
@@ -147,15 +197,17 @@ async function ensureSync(projectPath: string, config: RemoteConfig): Promise<st
         return sessionName;
     }
 
-    // Create new sync session
+    // Create new sync session - sync to container via SSH
     console.log("Creating sync session...");
     console.log(`  Local:  ${fullPath}`);
-    console.log(`  Remote: ${config.user}@${config.host}:${config.remotePath}`);
+    console.log(`  Remote: docker://${containerName}/project/${projectId} (via ${config.host})`);
 
+    // Mutagen sync to remote docker container
+    // Format: user@host:docker://container/path
     const createResult = spawnSync("mutagen", [
         "sync", "create",
         fullPath,
-        `${config.user}@${config.host}:${config.remotePath}`,
+        `${config.user}@${config.host}:docker://${containerName}/project/${projectId}`,
         "--name", sessionName,
         "--ignore-vcs",
         "--ignore=node_modules",
@@ -214,13 +266,17 @@ async function waitForSync(sessionName: string, timeoutMs: number = 120000): Pro
 
 /**
  * Main function to run ccc on a remote host.
- * 1. Ensure mutagen sync is running
- * 2. Wait for initial sync
- * 3. SSH and run ccc on remote
- * 4. Cleanup prompt on exit
+ * New architecture: syncs directly to container via Mutagen.
+ * 1. Ensure ccc image exists on remote
+ * 2. Start container on remote (without project volume mount)
+ * 3. Ensure mutagen sync to container is running
+ * 4. Wait for initial sync
+ * 5. Run claude via docker exec
+ * 6. Cleanup prompt on exit
  */
 export async function remoteExec(projectPath: string, host?: string, args: string[] = []): Promise<void> {
     const fullPath = resolve(projectPath);
+    const projectId = getProjectId(fullPath);
 
     // Check required tools
     const mutagen = checkMutagen();
@@ -234,7 +290,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
     if (config && !host) {
         // Use saved config
-        console.log(`Using saved config: ${config.user}@${config.host}:${config.remotePath}`);
+        console.log(`Using saved config: ${config.user}@${config.host}`);
     } else if (host) {
         // Create/update config with provided host
         if (!isHostReachable(host)) {
@@ -246,11 +302,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         const userInput = await prompt(`Remote user [${defaultUser}]: `);
         const user = userInput || defaultUser;
 
-        const defaultRemotePath = fullPath;
-        const remotePathInput = await prompt(`Remote path [${defaultRemotePath}]: `);
-        const remotePath = remotePathInput || defaultRemotePath;
-
-        config = {host, user, remotePath};
+        config = {host, user, remotePath: ""};  // remotePath not used anymore
         saveRemoteConfig(fullPath, config);
         console.log("Config saved.");
     } else {
@@ -262,19 +314,41 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     }
 
     try {
-        // 1. Ensure mutagen sync is running
-        const sessionName = await ensureSync(fullPath, config);
+        // 1. Ensure ccc image exists on remote
+        await ensureRemoteImage(config);
 
-        // 2. Wait for initial sync
+        // 2. Start container on remote (without project volume mount)
+        console.log("Starting remote container...");
+        const containerName = await startRemoteContainer(config, projectId);
+
+        // 3. Create project directory in container
+        await createContainerProjectDir(config, containerName, projectId);
+
+        // 4. Ensure mutagen sync to container is running
+        const sessionName = await ensureSync(fullPath, config, containerName);
+
+        // 5. Wait for initial sync
         await waitForSync(sessionName);
 
-        // 3. SSH and run ccc on remote
+        // 6. Run claude via docker exec
         console.log(`Connecting to ${config.host}...`);
 
-        const cccCommand = args.length > 0 ? `ccc ${args.join(" ")}` : "ccc";
-        const sshCommand = `cd "${config.remotePath}" && ${cccCommand}`;
+        const claudeArgs = args.length > 0 ? args.join(" ") : "--dangerously-skip-permissions";
 
-        const sshProcess = spawn("ssh", ["-t", `${config.user}@${config.host}`, sshCommand], {
+        // Collect environment variables to forward (exclude system vars)
+        const envFlags: string[] = [];
+        for (const [key, value] of Object.entries(process.env)) {
+            if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key)) {
+                // Escape single quotes in value for shell safety
+                const escapedValue = value.replace(/'/g, "'\\''");
+                envFlags.push(`-e '${key}=${escapedValue}'`);
+            }
+        }
+        const envString = envFlags.join(" ");
+
+        const execCmd = `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y 2>/dev/null || true; claude ${claudeArgs}"`;
+
+        const sshProcess = spawn("ssh", ["-t", `${config.user}@${config.host}`, execCmd], {
             stdio: "inherit"
         });
 
@@ -289,13 +363,14 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
             });
         });
 
-        // 4. Cleanup prompt on exit
+        // 7. Cleanup prompt on exit
         if (exitCode === 0) {
-            const answer = await prompt("\nPause sync? [y/N]: ");
-            if (answer.toLowerCase() === "y" || answer.toLowerCase() === "yes") {
+            const answer = await prompt("\nStop container and pause sync? [y/N]: ", true);
+            if (answer === "y" || answer === "yes") {
                 console.log("Pausing sync...");
                 spawnSync("mutagen", ["sync", "pause", sessionName], {stdio: "inherit"});
-                console.log("Sync paused. Run 'ccc remote' to resume.");
+                console.log("Stopping container...");
+                spawnSync("ssh", [`${config.user}@${config.host}`, `docker stop ${containerName}`], {stdio: "inherit"});
             }
         }
 
@@ -349,8 +424,8 @@ export async function remoteSetup(): Promise<void> {
     console.log(`First time setup:
   $ ccc remote my-desktop
   Remote user [user]: john
-  Remote path [/current/path]: /home/john/projects/myapp
   Config saved.
+  Starting remote container...
   Creating sync session...
   Waiting for initial sync... done
   Connecting to my-desktop...
@@ -358,7 +433,8 @@ export async function remoteSetup(): Promise<void> {
 
 Subsequent runs:
   $ ccc remote
-  Using saved config: john@my-desktop:/home/john/projects/myapp
+  Using saved config: john@my-desktop
+  Starting remote container...
   Sync already running
   Connecting to my-desktop...
 
@@ -366,10 +442,19 @@ Pass arguments to claude:
   $ ccc remote my-desktop --continue
   $ ccc remote my-desktop --resume`);
 
+    printSection("Architecture");
+
+    console.log(`Files sync directly from your Mac to a Docker container on the remote:
+  1. Container started on remote (without project volume mount)
+  2. Mutagen syncs: MacBook -> Docker container on remote
+  3. Claude runs inside the container via docker exec
+
+This avoids intermediate filesystem copies on the remote host.`);
+
     printSection("Requirements");
 
     console.log(`1. SSH access to remote host (key-based auth recommended)
-2. ccc installed on remote host
+2. ccc installed on remote host (run 'ccc' once to build the image)
 3. Docker running on remote host
 4. Network connectivity (Tailscale recommended for remote access)
 
@@ -395,7 +480,7 @@ export async function remoteCheck(projectPath: string): Promise<void> {
     if (config) {
         console.log(`  Host: ${config.host}`);
         console.log(`  User: ${config.user}`);
-        console.log(`  Remote path: ${config.remotePath}`);
+        console.log(`  Container: ccc-${getProjectId(projectPath)}`);
 
         // Check host reachability
         const reachable = isHostReachable(config.host);

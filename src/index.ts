@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 
 import {spawnSync} from "child_process";
-import {createHash, randomUUID} from "crypto";
-import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync} from "fs";
-import {createInterface} from "readline";
+import {randomUUID} from "crypto";
+import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, realpathSync} from "fs";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
 import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt} from "./utils.js";
+
+// Re-export for tests
+export {hashPath, getProjectId} from "./utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -94,16 +97,6 @@ function setupSignalHandlers(): void {
     process.on("SIGINT", cleanup);
     process.on("SIGTERM", cleanup);
     process.on("SIGHUP", cleanup);
-}
-
-export function hashPath(path: string): string {
-    return createHash("sha256").update(path).digest("hex").slice(0, 12);
-}
-
-export function getProjectId(projectPath: string): string {
-    const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const hash = hashPath(resolve(projectPath));
-    return `${name}-${hash}`;
 }
 
 export function getContainerName(projectPath: string): string {
@@ -232,17 +225,6 @@ function removeProjectContainer(projectPath: string): void {
     console.log("Container removed");
 }
 
-// Interactive prompt helper
-async function prompt(question: string): Promise<string> {
-    const rl = createInterface({input: process.stdin, output: process.stdout});
-    return new Promise((resolve) => {
-        rl.question(question, (answer) => {
-            rl.close();
-            resolve(answer.trim().toLowerCase());
-        });
-    });
-}
-
 // Detect project tools using Claude CLI and write mise.toml
 function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
     const miseConfigPath = join(projectPath, "mise.toml");
@@ -304,7 +286,7 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
     }
 
     console.log(`\nNo mise.toml found in project.`);
-    const answer = await prompt("Create mise.toml? (auto-detect tools) [Y/n]: ");
+    const answer = await prompt("Create mise.toml? (auto-detect tools) [Y/n]: ", true);
 
     if (answer === "" || answer === "y" || answer === "yes") {
         detectProjectToolsAndWriteMiseConfig(projectPath);
@@ -337,20 +319,8 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     ];
 
     // Pass through host environment variables (except system ones)
-    const excludeEnvKeys = new Set([
-        "PATH", "HOME", "USER", "SHELL", "LOGNAME", "PWD", "OLDPWD",
-        "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
-        "TMPDIR", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
-        "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
-        "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
-        "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",
-        "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
-        "LC_ALL", "LC_CTYPE", "LANG",  // Locale (container has its own)
-        "CLAUDE_CONFIG_DIR"  // Already set by container
-    ]);
-
     for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && !excludeEnvKeys.has(key)) {
+        if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key)) {
             execArgs.push("-e", `${key}=${value}`);
         }
     }
@@ -528,7 +498,18 @@ async function main(): Promise<void> {
 }
 
 // Only run main when executed directly (not when imported)
-const isMainModule = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMainModule) {
+// Use realpathSync to handle symlinks from npm link
+function isMainModule(): boolean {
+    try {
+        const scriptPath = realpathSync(process.argv[1]);
+        const modulePath = realpathSync(fileURLToPath(import.meta.url));
+        return scriptPath === modulePath;
+    } catch {
+        // Fallback to direct comparison if realpathSync fails
+        return process.argv[1] === fileURLToPath(import.meta.url);
+    }
+}
+
+if (isMainModule()) {
     main().catch(console.error);
 }

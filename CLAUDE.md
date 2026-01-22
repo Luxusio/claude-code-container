@@ -137,10 +137,11 @@ Built from Dockerfile on first run. Includes:
 ### Remote Development
 
 Run ccc on a remote desktop from your MacBook:
-- **Mutagen**: Real-time file sync (MacBook → Desktop)
-- **SSH**: Execute ccc on remote, stream terminal I/O
+- **Mutagen**: Direct sync to Docker container (no filesystem middleman)
+- **SSH**: Start container, run docker exec claude
 - Config saved per-project in `~/.ccc/remote/`
 - Use `ccc remote <host>` for first-time setup
+- Better performance on Windows/macOS (bypasses slow volume mounts)
 
 ## Code Guidelines
 

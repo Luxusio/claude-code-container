@@ -19,7 +19,6 @@ cd claude-code-container
 
 npm install
 npm run build
-npm test         # 테스트 실행
 npm link
 ```
 
@@ -126,14 +125,17 @@ ccc remote --resume
 
 ### 아키텍처
 
+Mutagen이 Docker 컨테이너에 직접 동기화합니다 (파일시스템 경유 없음). Windows/macOS에서 느린 볼륨 마운트를 우회하여 더 나은 성능을 제공합니다.
+
 ```
 MacBook (노트북)                         Desktop (데스크탑)
-┌─────────────────────┐                  ┌─────────────────────┐
-│  소스 코드 (원본)    │────Mutagen────►│  동기화된 코드        │
-│                     │                  │                     │
-│  ccc remote 실행    │────SSH────────►│  ccc (docker) 실행   │
-│  터미널 I/O         │◄───────────────│  claude 실행         │
-└─────────────────────┘                  └─────────────────────┘
+┌─────────────────────┐                  ┌─────────────────────────┐
+│  소스 코드 (원본)      │                  │  Docker Container       │
+│                     │────Mutagen──────►│  /project/<id> (직접)    │
+│                     │                  │                         │
+│  ccc remote 실행     │──────SSH────────►│  docker exec claude     │
+│  터미널 I/O           │◄─────────────────│                         │
+└─────────────────────┘                  └─────────────────────────┘
 ```
 
 ### 명령어
@@ -188,6 +190,29 @@ ccc  # 자동으로 새 이미지 빌드
 
 - **메모리/CPU**: 제한 없음 (호스트 리소스 공유)
 - **프로세스**: 512개 제한
+
+## 개발
+
+### 빌드 및 테스트
+
+```bash
+npm install      # 의존성 설치
+npm run build    # TypeScript 컴파일
+npm test         # 테스트 실행 (vitest)
+npm run test:watch  # 테스트 워치 모드
+```
+
+### 프로젝트 구조
+
+```
+src/
+├── index.ts     # CLI 메인 진입점
+├── remote.ts    # 원격 개발 기능
+├── scanner.ts   # 프로젝트 도구 감지
+└── utils.ts     # 공통 유틸리티
+```
+
+자세한 개발 가이드는 [CONTRIBUTING.md](CONTRIBUTING.md) 참고.
 
 ## 라이센스
 
