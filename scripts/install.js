@@ -64,6 +64,12 @@ function install() {
             }
             cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
 
+            // Copy Dockerfile (needed for building the container image)
+            cpSync(join(projectRoot, "Dockerfile"), join(targetDir, "Dockerfile"));
+
+            // Copy scripts directory (needed for Docker build context)
+            cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });
+
             // Copy package.json for ES module support
             const pkgContent = JSON.stringify({ type: "module" }, null, 2);
             writeFileSync(join(targetDir, "package.json"), pkgContent);

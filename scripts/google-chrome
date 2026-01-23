@@ -1,0 +1,15 @@
+#!/bin/bash
+# Chrome/Chromium wrapper - auto-starts Xvfb when browser is launched
+
+pgrep -x Xvfb >/dev/null || Xvfb :99 -screen 0 1920x1080x24 &
+sleep 0.3
+
+# Use chromium (available on arm64 and amd64)
+CHROMIUM_BIN=""
+if [ -x /usr/bin/chromium-browser ]; then
+    CHROMIUM_BIN=/usr/bin/chromium-browser
+elif [ -x /usr/bin/chromium ]; then
+    CHROMIUM_BIN=/usr/bin/chromium
+fi
+
+exec "$CHROMIUM_BIN" --no-sandbox --disable-gpu --no-first-run --disable-default-apps "$@"

@@ -1,0 +1,22 @@
+#!/bin/bash
+# Start VNC server + Chrome on available port
+
+# Start Xvfb if not running
+pgrep -x Xvfb >/dev/null || Xvfb :99 -screen 0 1920x1080x24 &
+sleep 0.3
+
+# Find available port in 5900-5999
+for p in $(shuf -i 5900-5999 -n 100); do
+    if ! ss -tln | grep -q ":$p "; then
+        PORT=$p
+        break
+    fi
+done
+
+# Start VNC server
+x11vnc -display :99 -forever -shared -nopw -rfbport $PORT 2>/dev/null &
+
+# Start Chrome if not running
+pgrep -f "chrome" >/dev/null || /usr/bin/google-chrome-stable --no-sandbox --disable-gpu --no-first-run --disable-default-apps 2>/dev/null &
+
+echo "VNC: localhost:$PORT"

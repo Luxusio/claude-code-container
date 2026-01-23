@@ -21,6 +21,7 @@ const dataDir = join(homedir(), ".ccc");
 const claudeDir = join(dataDir, "claude");
 const miseCacheDir = join(dataDir, "mise");
 const locksDir = join(dataDir, "locks");
+const hostClaudeIdeDir = join(homedir(), ".claude", "ide");  // Host IDE lock files
 const imageName = "ccc";
 
 // === Session State ===
@@ -121,8 +122,15 @@ function isImageExists(): boolean {
 function buildImage(): void {
     console.log("Building ccc image...");
 
-    const packageDir = join(__dirname, "..");
-    const dockerfilePath = join(packageDir, "Dockerfile");
+    // When installed globally, Dockerfile is in __dirname (ccc-dist/)
+    // When running from source, Dockerfile is in parent dir (project root)
+    let packageDir = __dirname;
+    let dockerfilePath = join(packageDir, "Dockerfile");
+
+    if (!existsSync(dockerfilePath)) {
+        packageDir = join(__dirname, "..");
+        dockerfilePath = join(packageDir, "Dockerfile");
+    }
 
     if (!existsSync(dockerfilePath)) {
         console.error(`Dockerfile not found at ${dockerfilePath}`);
@@ -175,12 +183,16 @@ function startProjectContainer(projectPath: string): string {
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
 
+    // Ensure host IDE directory exists for mount
+    mkdirSync(hostClaudeIdeDir, {recursive: true});
+
     const args = [
         "run", "-d",
         "--name", containerName,
         "--network", "host",
         "-v", `${fullPath}:${projectMountPath}`,
         "-v", `${claudeDir}:/claude`,
+        "-v", `${hostClaudeIdeDir}:/claude/ide`,  // Mount host IDE lock files for /ide command
         "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-e", "CLAUDE_CONFIG_DIR=/claude",
@@ -480,6 +492,10 @@ async function main(): Promise<void> {
 
         case "shell":
             await exec(cwd, ["bash"], {env: customEnv});
+            break;
+
+        case "vnc":
+            await exec(cwd, ["start-vnc"], {interactive: false, env: customEnv});
             break;
 
         case undefined:

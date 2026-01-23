@@ -1,13 +1,14 @@
 FROM ubuntu:24.04
 
-# Install dependencies + Chromium for headless testing
+# Install dependencies + Xvfb + VNC for virtual display
 RUN apt-get update && apt-get install -y \
     curl \
     git \
     ca-certificates \
     sudo \
     unzip \
-    chromium-browser \
+    wget \
+    gnupg \
     fonts-liberation \
     libnss3 \
     libatk-bridge2.0-0 \
@@ -18,7 +19,17 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     libasound2t64 \
+    xvfb \
+    x11vnc \
+    dbus-x11 \
+    x11-utils \
+    openbox \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Chromium (works on both amd64 and arm64)
+RUN apt-get update && \
+    apt-get install -y chromium-browser || apt-get install -y chromium && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for running docker commands inside container)
 RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
@@ -48,6 +59,12 @@ RUN mkdir -p ~/.config/mise && \
 # Configure bashrc for mise (for interactive shells)
 RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
+# Copy helper scripts (Chrome wrapper, VNC starter)
+COPY --chown=ccc:ccc scripts/google-chrome scripts/start-vnc /home/ccc/bin/
+RUN chmod +x ~/bin/*
+
+ENV PATH="/home/ccc/bin:${PATH}"
+
 # Install global tools via mise (maven, gradle, yarn, pnpm)
 RUN ~/.local/bin/mise use -g maven@latest && \
     ~/.local/bin/mise use -g gradle@latest && \
@@ -60,9 +77,11 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Add mise shims to PATH so non-interactive shells can use tools
 ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
-ENV CHROME_BIN="/usr/bin/chromium-browser"
-ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --headless"
+ENV CHROME_BIN="/home/ccc/bin/google-chrome"
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu"
+ENV DISPLAY=":99"
 
 WORKDIR /project
 
+# Nothing starts by default - use start-chrome, start-vnc when needed
 CMD ["tail", "-f", "/dev/null"]
