@@ -82,7 +82,7 @@ const SKIP_DIRS = new Set([
 const ALL_PATTERNS = Object.values(VERSION_FILES).flat();
 
 // Check if filename matches any pattern
-function matchesPattern(filename: string): boolean {
+export function matchesPattern(filename: string): boolean {
     return ALL_PATTERNS.some(pattern => {
         if (pattern.startsWith("*")) {
             return filename.endsWith(pattern.slice(1));

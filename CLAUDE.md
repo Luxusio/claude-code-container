@@ -51,7 +51,11 @@ Container name is fixed per project path hash, ensuring `claude --continue` and 
 claude-code-container/
 ├── src/
 │   ├── index.ts        # Main CLI entry point
-│   └── scanner.ts      # Project tool detection for mise
+│   ├── scanner.ts      # Project tool detection for mise
+│   ├── remote.ts       # Remote development helpers (Tailscale + Mutagen)
+│   └── utils.ts        # Shared utilities
+├── scripts/
+│   └── install.js      # Cross-platform global installer
 ├── dist/               # Compiled output
 ├── Dockerfile          # Container image definition
 ├── package.json
@@ -62,9 +66,12 @@ claude-code-container/
 ## Build Commands
 
 ```bash
-npm install      # Install dependencies
-npm run build    # Compile TypeScript
-npm link         # Install globally for development
+npm install              # Install dependencies
+npm run build            # Compile TypeScript
+npm test                 # Run tests (vitest)
+npm run test:watch       # Run tests in watch mode
+npm run install:global   # Install globally (sudo on macOS/Linux)
+npm run uninstall:global # Uninstall globally (sudo on macOS/Linux)
 ```
 
 ## CLI Commands
@@ -79,6 +86,13 @@ npm link         # Install globally for development
 - `ccc shell` - Open bash shell in current project
 - `ccc <command>` - Run arbitrary command in current project
 - `ccc --env KEY=VALUE` - Set additional environment variable for session
+
+### Remote Development
+- `ccc remote <host>` - Connect to remote host (first time saves config)
+- `ccc remote` - Connect using saved config
+- `ccc remote setup` - Setup guide
+- `ccc remote check` - Check connectivity and sync status
+- `ccc remote terminate` - Stop sync session
 
 ## Key Concepts
 
@@ -108,6 +122,7 @@ Built from Dockerfile on first run. Includes:
 - Base: `ubuntu:24.04`
 - Dependencies: curl, git, ca-certificates, unzip
 - Chromium browser (`CHROME_BIN` env set)
+- Docker CLI (communicates with host Docker daemon via socket mount)
 - mise with global tools: maven, gradle, yarn, pnpm
 - claude-code native binary
 - `.bashrc` configured for mise activation
@@ -122,6 +137,15 @@ Built from Dockerfile on first run. Includes:
 - SIGINT (Ctrl+C), SIGTERM, SIGHUP: cleanup session and exit
 - Normal exit: cleanup session
 - Container stopped only when no other sessions remain
+
+### Remote Development
+
+Run ccc on a remote desktop from your MacBook:
+- **Mutagen**: Direct sync to Docker container (no filesystem middleman)
+- **SSH**: Start container, run docker exec claude
+- Config saved per-project in `~/.ccc/remote/`
+- Use `ccc remote <host>` for first-time setup
+- Better performance on Windows/macOS (bypasses slow volume mounts)
 
 ## Code Guidelines
 

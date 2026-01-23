@@ -8,13 +8,18 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build",
+    "install:global": "node scripts/install.js",
+    "uninstall:global": "node scripts/install.js --uninstall"
   },
   "engines": {
     "node": ">=22.0.0"
   },
   "keywords": [
     "claude",
+    "container",
     "sandbox",
     "docker",
     "cli"
@@ -22,10 +27,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/claude-sandbox"
+    "url": "https://github.com/YOUR_USERNAME/claude-code-container"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.7.0"
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.17"
   }
 }

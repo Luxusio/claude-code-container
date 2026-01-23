@@ -20,9 +20,19 @@ RUN apt-get update && apt-get install -y \
     libasound2t64 \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Docker CLI (for running docker commands inside container)
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && \
+    apt-get install -y docker-ce-cli && \
+    rm -rf /var/lib/apt/lists/*
+
 # Create non-root user
 RUN useradd -m -s /bin/bash ccc && \
     echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Add ccc user to docker group
+RUN groupadd -g 999 docker || true && usermod -aG docker ccc
 
 USER ccc
 WORKDIR /home/ccc
