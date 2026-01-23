@@ -52,7 +52,10 @@ claude-code-container/
 ├── src/
 │   ├── index.ts        # Main CLI entry point
 │   ├── scanner.ts      # Project tool detection for mise
-│   └── remote.ts       # Remote development helpers (Tailscale + Mutagen)
+│   ├── remote.ts       # Remote development helpers (Tailscale + Mutagen)
+│   └── utils.ts        # Shared utilities
+├── scripts/
+│   └── install.js      # Cross-platform global installer
 ├── dist/               # Compiled output
 ├── Dockerfile          # Container image definition
 ├── package.json
@@ -63,11 +66,12 @@ claude-code-container/
 ## Build Commands
 
 ```bash
-npm install      # Install dependencies
-npm run build    # Compile TypeScript
-npm test         # Run tests (vitest)
-npm run test:watch  # Run tests in watch mode
-npm link         # Install globally for development
+npm install              # Install dependencies
+npm run build            # Compile TypeScript
+npm test                 # Run tests (vitest)
+npm run test:watch       # Run tests in watch mode
+npm run install:global   # Install globally (sudo on macOS/Linux)
+npm run uninstall:global # Uninstall globally (sudo on macOS/Linux)
 ```
 
 ## CLI Commands

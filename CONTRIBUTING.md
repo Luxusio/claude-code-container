@@ -13,21 +13,12 @@ claude-code-container(ccc) 개발 가이드입니다.
 ### 설치
 
 ```bash
-# 저장소 클론
 git clone https://github.com/your-username/claude-code-container.git
 cd claude-code-container
-
-# 의존성 설치
-npm install
-
-# TypeScript 컴파일
-npm run build
-
-# 전역으로 개발 버전 설치 (심볼릭 링크)
-npm link
+sudo node scripts/install.js   # Windows는 sudo 제외
 ```
 
-`npm link` 후 터미널 어디서나 `ccc` 명령어를 사용할 수 있습니다.
+npm install, build, 전역 설치까지 자동 처리됨.
 
 ## 아키텍처
 
@@ -111,10 +102,14 @@ ccc --help
 ccc status
 ```
 
-### 개발 버전 제거
+### 전역 설치 제거
 
 ```bash
-npm unlink -g claude-code-container
+# macOS/Linux
+sudo npm run uninstall:global
+
+# Windows
+npm run uninstall:global
 ```
 
 ## 빌드 명령어
@@ -123,7 +118,8 @@ npm unlink -g claude-code-container
 |--------|------|
 | `npm install` | 의존성 설치 |
 | `npm run build` | TypeScript 컴파일 |
-| `npm link` | 전역 개발 설치 |
+| `npm run install:global` | 전역 설치 (macOS/Linux는 sudo 필요) |
+| `npm run uninstall:global` | 전역 제거 (macOS/Linux는 sudo 필요) |
 
 ## 코드 스타일
 
@@ -187,11 +183,13 @@ git push origin v1.0.0
 ### `ccc` 명령어를 찾을 수 없음
 
 ```bash
-# npm link 재실행
-npm link
+# 전역 설치 재실행
+sudo npm run install:global   # macOS/Linux
+npm run install:global        # Windows
 
-# 또는 PATH 확인
-npm config get prefix
+# 설치 확인
+which ccc    # macOS/Linux
+where ccc    # Windows
 ```
 
 ### 빌드 에러

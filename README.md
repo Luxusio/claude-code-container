@@ -16,11 +16,10 @@ Docker 컨테이너에서 Claude Code를 격리 실행합니다.
 ```bash
 git clone https://github.com/your-username/claude-code-container.git
 cd claude-code-container
-
-npm install
-npm run build
-npm link
+sudo node scripts/install.js   # Windows는 sudo 제외
 ```
+
+**제거:** `sudo node scripts/install.js --uninstall`
 
 ## 빠른 시작
 
