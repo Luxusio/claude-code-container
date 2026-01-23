@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/claude-sandbox.iml" filepath="$PROJECT_DIR$/.idea/claude-sandbox.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/claude-code-container.iml" filepath="$PROJECT_DIR$/.idea/claude-code-container.iml" />
     </modules>
   </component>
 </project>

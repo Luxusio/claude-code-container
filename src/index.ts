@@ -497,19 +497,5 @@ async function main(): Promise<void> {
     }
 }
 
-// Only run main when executed directly (not when imported)
-// Use realpathSync to handle symlinks from npm link
-function isMainModule(): boolean {
-    try {
-        const scriptPath = realpathSync(process.argv[1]);
-        const modulePath = realpathSync(fileURLToPath(import.meta.url));
-        return scriptPath === modulePath;
-    } catch {
-        // Fallback to direct comparison if realpathSync fails
-        return process.argv[1] === fileURLToPath(import.meta.url);
-    }
-}
-
-if (isMainModule()) {
-    main().catch(console.error);
-}
+// Always run main - this module is the entry point
+main().catch(console.error);

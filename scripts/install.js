@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync, chmodSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
@@ -45,14 +45,36 @@ function install() {
             console.log(`  [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${installDir}", "User")`);
         }
     } else {
-        const targetPath = join(installDir, "ccc");
+        const targetDir = join(installDir, "ccc-dist");
+        const targetBin = join(installDir, "ccc");
         try {
-            if (existsSync(targetPath)) {
-                unlinkSync(targetPath);
+            // Remove old symlink if exists
+            try {
+                const stat = lstatSync(targetBin);
+                if (stat.isSymbolicLink()) {
+                    unlinkSync(targetBin);
+                }
+            } catch (e) {
+                if (e.code !== "ENOENT") throw e;
             }
-            symlinkSync(distFile, targetPath);
-            chmodSync(distFile, 0o755);
-            console.log(`Installed: ${targetPath}`);
+
+            // Remove old dist directory and copy fresh
+            if (existsSync(targetDir)) {
+                rmSync(targetDir, { recursive: true });
+            }
+            cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
+
+            // Copy package.json for ES module support
+            const pkgContent = JSON.stringify({ type: "module" }, null, 2);
+            writeFileSync(join(targetDir, "package.json"), pkgContent);
+
+            // Create executable wrapper script
+            const wrapperContent = `#!/usr/bin/env node
+import("${targetDir}/index.js");
+`;
+            writeFileSync(targetBin, wrapperContent);
+            chmodSync(targetBin, 0o755);
+            console.log(`Installed: ${targetBin}`);
         } catch (e) {
             if (e.code === "EACCES") {
                 console.error("Permission denied. Run with sudo:");
@@ -78,12 +100,21 @@ function uninstall() {
             console.log("Not installed.");
         }
     } else {
-        const targetPath = join(installDir, "ccc");
+        const targetDir = join(installDir, "ccc-dist");
+        const targetBin = join(installDir, "ccc");
         try {
-            if (existsSync(targetPath)) {
-                unlinkSync(targetPath);
-                console.log(`Removed: ${targetPath}`);
-            } else {
+            let removed = false;
+            if (existsSync(targetBin)) {
+                unlinkSync(targetBin);
+                console.log(`Removed: ${targetBin}`);
+                removed = true;
+            }
+            if (existsSync(targetDir)) {
+                rmSync(targetDir, { recursive: true });
+                console.log(`Removed: ${targetDir}`);
+                removed = true;
+            }
+            if (!removed) {
                 console.log("Not installed.");
             }
         } catch (e) {
