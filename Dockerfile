@@ -26,9 +26,11 @@ RUN apt-get update && apt-get install -y \
     openbox \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chromium (works on both amd64 and arm64)
-RUN apt-get update && \
-    apt-get install -y chromium-browser || apt-get install -y chromium && \
+# Install Google Chrome (official - supports extensions)
+RUN wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+    apt-get update && \
+    apt-get install -y /tmp/google-chrome.deb && \
+    rm /tmp/google-chrome.deb && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for running docker commands inside container)
@@ -45,6 +47,10 @@ RUN useradd -m -s /bin/bash ccc && \
 # Add ccc user to docker group
 RUN groupadd -g 999 docker || true && usermod -aG docker ccc
 
+# Setup Chrome extension force-install policy
+RUN mkdir -p /etc/opt/chrome/policies/managed && \
+    echo '{ "ExtensionInstallForcelist": ["fcoeoabgfenejglbffodgkkbkcdhcgfn;https://clients2.google.com/service/update2/crx"] }' > /etc/opt/chrome/policies/managed/claude-code.json
+
 USER ccc
 WORKDIR /home/ccc
 
@@ -59,9 +65,10 @@ RUN mkdir -p ~/.config/mise && \
 # Configure bashrc for mise (for interactive shells)
 RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
-# Copy helper scripts (Chrome wrapper, VNC starter)
-COPY --chown=ccc:ccc scripts/google-chrome scripts/start-vnc /home/ccc/bin/
-RUN chmod +x ~/bin/*
+# Copy helper scripts (Chrome wrapper, VNC starter, extension setup)
+COPY --chown=ccc:ccc scripts/google-chrome scripts/start-vnc scripts/setup-chrome-extension.sh /home/ccc/bin/
+# Fix Windows line endings (CRLF -> LF) and make executable
+RUN sed -i 's/\r$//' ~/bin/* && chmod +x ~/bin/*
 
 ENV PATH="/home/ccc/bin:${PATH}"
 
@@ -73,6 +80,9 @@ RUN ~/.local/bin/mise use -g maven@latest && \
 
 # Install claude-code native binary
 RUN curl -fsSL https://claude.ai/install.sh | bash
+
+# Setup Chrome extension native messaging host
+RUN ~/bin/setup-chrome-extension.sh
 
 # Add mise shims to PATH so non-interactive shells can use tools
 ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"

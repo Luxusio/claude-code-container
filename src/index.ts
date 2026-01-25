@@ -404,6 +404,7 @@ CONTAINER MANAGEMENT:
     ccc stop                Stop current project's container
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
+    ccc vnc                 Start VNC server (for Chrome extension)
 
 REMOTE (run on remote host via Tailscale + Mutagen):
     ccc remote <host>       Connect to host (first time: prompts for config)
@@ -499,13 +500,13 @@ async function main(): Promise<void> {
             break;
 
         case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {env: customEnv});
+            await exec(cwd, ["claude", "--dangerously-skip-permissions", "--chrome"], {env: customEnv});
             break;
 
         default:
             // Check if it's a claude flag (--continue, --resume, etc.)
             if (command.startsWith("-")) {
-                await exec(cwd, ["claude", "--dangerously-skip-permissions", ...filteredArgs], {env: customEnv});
+                await exec(cwd, ["claude", "--dangerously-skip-permissions", "--chrome", ...filteredArgs], {env: customEnv});
             } else {
                 await exec(cwd, filteredArgs, {env: customEnv});
             }
