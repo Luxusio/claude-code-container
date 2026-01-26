@@ -1,6 +1,6 @@
 FROM ubuntu:24.04
 
-# Install dependencies + Xvfb + VNC for virtual display
+# Install dependencies + Xvfb for headless browser
 RUN apt-get update && apt-get install -y \
     curl \
     git \
@@ -20,17 +20,14 @@ RUN apt-get update && apt-get install -y \
     libgbm1 \
     libasound2t64 \
     xvfb \
-    x11vnc \
-    dbus-x11 \
-    x11-utils \
-    openbox \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Google Chrome (official - supports extensions)
-RUN wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+# Install Chromium from PPA (snap doesn't work in containers)
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository -y ppa:xtradeb/apps && \
     apt-get update && \
-    apt-get install -y /tmp/google-chrome.deb && \
-    rm /tmp/google-chrome.deb && \
+    apt-get install -y chromium && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Docker CLI (for running docker commands inside container)
@@ -44,12 +41,8 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 RUN useradd -m -s /bin/bash ccc && \
     echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-# Add ccc user to docker group
-RUN groupadd -g 999 docker || true && usermod -aG docker ccc
-
-# Setup Chrome extension force-install policy
-RUN mkdir -p /etc/opt/chrome/policies/managed && \
-    echo '{ "ExtensionInstallForcelist": ["fcoeoabgfenejglbffodgkkbkcdhcgfn;https://clients2.google.com/service/update2/crx"] }' > /etc/opt/chrome/policies/managed/claude-code.json
+# Add ccc user to docker group (create if not exists, use existing GID if 999 is taken)
+RUN (getent group docker || groupadd docker) && usermod -aG docker ccc
 
 USER ccc
 WORKDIR /home/ccc
@@ -65,12 +58,8 @@ RUN mkdir -p ~/.config/mise && \
 # Configure bashrc for mise (for interactive shells)
 RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
-# Copy helper scripts (Chrome wrapper, VNC starter, extension setup)
-COPY --chown=ccc:ccc scripts/google-chrome scripts/start-vnc scripts/setup-chrome-extension.sh /home/ccc/bin/
-# Fix Windows line endings (CRLF -> LF) and make executable
-RUN sed -i 's/\r$//' ~/bin/* && chmod +x ~/bin/*
-
-ENV PATH="/home/ccc/bin:${PATH}"
+# Install Node.js via mise (needed for Playwright MCP)
+RUN ~/.local/bin/mise use -g node@22
 
 # Install global tools via mise (maven, gradle, yarn, pnpm)
 RUN ~/.local/bin/mise use -g maven@latest && \
@@ -81,17 +70,13 @@ RUN ~/.local/bin/mise use -g maven@latest && \
 # Install claude-code native binary
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Setup Chrome extension native messaging host
-RUN ~/bin/setup-chrome-extension.sh
-
 # Add mise shims to PATH so non-interactive shells can use tools
 ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
-ENV CHROME_BIN="/home/ccc/bin/google-chrome"
-ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu"
 ENV DISPLAY=":99"
+ENV CHROME_PATH="/usr/bin/chromium"
+ENV CHROMIUM_PATH="/usr/bin/chromium"
 
 WORKDIR /project
 
-# Nothing starts by default - use start-chrome, start-vnc when needed
 CMD ["tail", "-f", "/dev/null"]

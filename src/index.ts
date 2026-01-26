@@ -2,7 +2,7 @@
 
 import {spawnSync} from "child_process";
 import {randomUUID} from "crypto";
-import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, realpathSync} from "fs";
+import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, realpathSync, readFileSync} from "fs";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
@@ -34,6 +34,32 @@ function ensureDirs(): void {
     mkdirSync(claudeDir, {recursive: true});
     mkdirSync(miseCacheDir, {recursive: true});
     mkdirSync(locksDir, {recursive: true});
+    ensurePlaywrightMcp();
+}
+
+function ensurePlaywrightMcp(): void {
+    const claudeConfigPath = join(claudeDir, ".claude.json");
+    let config: Record<string, unknown> = {};
+
+    if (existsSync(claudeConfigPath)) {
+        try {
+            config = JSON.parse(readFileSync(claudeConfigPath, 'utf-8'));
+        } catch {
+            config = {};
+        }
+    }
+
+    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+        config.mcpServers = {};
+    }
+
+    const mcpServers = config.mcpServers as Record<string, unknown>;
+    mcpServers.playwright = {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@latest", "--headless", "--vision"]
+    };
+
+    writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
 }
 
 // === Lock File Management ===
@@ -350,9 +376,9 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
 
     execArgs.push(containerName);
 
-    // For claude, run mise trust, install, and reshim first
+    // For claude, run mise setup first
     if (cmd[0] === "claude") {
-        // Trust all mise.toml files recursively, install tools, and create shims
+        // Trust mise.toml files, install tools, then run claude
         execArgs.push("sh", "-c", `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(" ")}`);
     } else {
         execArgs.push(...cmd);
@@ -404,7 +430,6 @@ CONTAINER MANAGEMENT:
     ccc stop                Stop current project's container
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
-    ccc vnc                 Start VNC server (for Chrome extension)
 
 REMOTE (run on remote host via Tailscale + Mutagen):
     ccc remote <host>       Connect to host (first time: prompts for config)
@@ -495,18 +520,14 @@ async function main(): Promise<void> {
             await exec(cwd, ["bash"], {env: customEnv});
             break;
 
-        case "vnc":
-            await exec(cwd, ["start-vnc"], {interactive: false, env: customEnv});
-            break;
-
         case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions", "--chrome"], {env: customEnv});
+            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {env: customEnv});
             break;
 
         default:
             // Check if it's a claude flag (--continue, --resume, etc.)
             if (command.startsWith("-")) {
-                await exec(cwd, ["claude", "--dangerously-skip-permissions", "--chrome", ...filteredArgs], {env: customEnv});
+                await exec(cwd, ["claude", "--dangerously-skip-permissions", ...filteredArgs], {env: customEnv});
             } else {
                 await exec(cwd, filteredArgs, {env: customEnv});
             }
