@@ -56,7 +56,7 @@ function ensurePlaywrightMcp(): void {
     const mcpServers = config.mcpServers as Record<string, unknown>;
     mcpServers.playwright = {
         command: "npx",
-        args: ["-y", "@playwright/mcp@latest", "--headless", "--vision"]
+        args: ["-y", "@playwright/mcp@latest", "--headless", "--caps=vision", "--executable-path", "/usr/bin/chromium"]
     };
 
     writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
@@ -145,11 +145,9 @@ function isImageExists(): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
-function buildImage(): void {
-    console.log("Building ccc image...");
-
-    // When installed globally, Dockerfile is in __dirname (ccc-dist/)
-    // When running from source, Dockerfile is in parent dir (project root)
+function getPackageDir(): string {
+    // When installed globally, files are in __dirname (ccc-dist/)
+    // When running from source, files are in parent dir (project root)
     let packageDir = __dirname;
     let dockerfilePath = join(packageDir, "Dockerfile");
 
@@ -162,6 +160,15 @@ function buildImage(): void {
         console.error(`Dockerfile not found at ${dockerfilePath}`);
         process.exit(1);
     }
+
+    return packageDir;
+}
+
+function buildImage(): void {
+    console.log("Building ccc image...");
+
+    const packageDir = getPackageDir();
+    const dockerfilePath = join(packageDir, "Dockerfile");
 
     const result = spawnSync("docker", [
         "build",
@@ -216,6 +223,7 @@ function startProjectContainer(projectPath: string): string {
         "run", "-d",
         "--name", containerName,
         "--network", "host",
+        "--security-opt", "seccomp=unconfined",
         "-v", `${fullPath}:${projectMountPath}`,
         "-v", `${claudeDir}:/claude`,
         "-v", `${hostClaudeIdeDir}:/claude/ide`,  // Mount host IDE lock files for /ide command
