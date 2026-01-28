@@ -2,13 +2,14 @@
 
 import {spawnSync} from "child_process";
 import {randomUUID} from "crypto";
-import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, realpathSync, readFileSync} from "fs";
+import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, readFileSync} from "fs";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
 import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
 import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt} from "./utils.js";
+import {syncCredentials} from "./credentials.js";
 
 // Re-export for tests
 export {hashPath, getProjectId} from "./utils.js";
@@ -343,6 +344,9 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
 
 async function exec(projectPath: string, cmd: string[], options: {interactive?: boolean, env?: Record<string, string>} = {}): Promise<void> {
     const fullPath = resolve(projectPath);
+
+    // Sync and refresh credentials from host system
+    await syncCredentials({ claudeDir });
 
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
