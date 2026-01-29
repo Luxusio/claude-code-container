@@ -35,10 +35,10 @@ function ensureDirs(): void {
     mkdirSync(claudeDir, {recursive: true});
     mkdirSync(miseCacheDir, {recursive: true});
     mkdirSync(locksDir, {recursive: true});
-    ensurePlaywrightMcp();
+    ensureBrowserMcp();
 }
 
-function ensurePlaywrightMcp(): void {
+function ensureBrowserMcp(): void {
     const claudeConfigPath = join(claudeDir, ".claude.json");
     let config: Record<string, unknown> = {};
 
@@ -55,10 +55,14 @@ function ensurePlaywrightMcp(): void {
     }
 
     const mcpServers = config.mcpServers as Record<string, unknown>;
-    mcpServers.playwright = {
-        command: "npx",
-        args: ["-y", "@playwright/mcp@latest", "--headless", "--caps=vision", "--executable-path", "/usr/bin/chromium"]
+    // Use mise exec to run with Node.js 22+ regardless of project's Node version
+    mcpServers["chrome-devtools"] = {
+        command: "mise",
+        args: ["exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp@latest", "--headless", "--isolated", "--executable-path", "/usr/bin/chromium"]
     };
+
+    // Remove old playwright MCP if exists
+    delete mcpServers["playwright"];
 
     writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
 }
