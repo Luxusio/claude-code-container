@@ -150,53 +150,10 @@ function isImageExists(): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
-function getPackageDir(): string {
-    // When installed globally, files are in __dirname (ccc-dist/)
-    // When running from source, files are in parent dir (project root)
-    let packageDir = __dirname;
-    let dockerfilePath = join(packageDir, "Dockerfile");
-
-    if (!existsSync(dockerfilePath)) {
-        packageDir = join(__dirname, "..");
-        dockerfilePath = join(packageDir, "Dockerfile");
-    }
-
-    if (!existsSync(dockerfilePath)) {
-        console.error(`Dockerfile not found at ${dockerfilePath}`);
-        process.exit(1);
-    }
-
-    return packageDir;
-}
-
-function buildImage(): void {
-    console.log("Building ccc image...");
-
-    const packageDir = getPackageDir();
-    const dockerfilePath = join(packageDir, "Dockerfile");
-
-    const result = spawnSync("docker", [
-        "build",
-        "-t", imageName,
-        "-f", dockerfilePath,
-        packageDir
-    ], {stdio: "inherit"});
-
-    if (result.status !== 0 && result.status !== null) {
-        console.error("Failed to build image");
-        process.exit(1);
-    }
-    if (result.error) {
-        console.error("Failed to build image:", result.error.message);
-        process.exit(1);
-    }
-
-    console.log("Image built successfully");
-}
-
 function ensureImage(): void {
     if (!isImageExists()) {
-        buildImage();
+        console.error("ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'");
+        process.exit(1);
     }
 }
 

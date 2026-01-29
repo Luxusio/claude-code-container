@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync } from "fs";
+import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { execSync } from "child_process";
@@ -20,6 +21,21 @@ function getInstallDir() {
     }
 }
 
+function getDockerfileHash() {
+    const dockerfilePath = join(projectRoot, "Dockerfile");
+    const content = readFileSync(dockerfilePath, "utf-8");
+    return createHash("sha256").update(content).digest("hex").substring(0, 12);
+}
+
+function getImageHash() {
+    try {
+        const result = execSync("docker inspect ccc --format '{{index .Config.Labels \"dockerfile.hash\"}}'", { encoding: "utf-8" }).trim();
+        return result || null;
+    } catch (e) {
+        return null; // Image doesn't exist
+    }
+}
+
 function install() {
     // Always run npm install (dependencies may have updated)
     console.log("Installing dependencies...");
@@ -28,6 +44,41 @@ function install() {
     // Always build (source may have updated)
     console.log("Building...");
     execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
+
+    // Check if image rebuild is needed
+    const currentHash = getDockerfileHash();
+    const imageHash = getImageHash();
+    const needsRebuild = currentHash !== imageHash;
+
+    if (needsRebuild) {
+        console.log(`Dockerfile changed (${imageHash || "none"} -> ${currentHash})`);
+
+        // Stop all running ccc containers
+        console.log("Stopping running ccc containers...");
+        try {
+            const containers = execSync("docker ps -q --filter 'name=^ccc-'", { encoding: "utf-8" }).trim();
+            if (containers) {
+                execSync(`docker stop ${containers.split("\n").join(" ")}`, { stdio: "inherit" });
+                console.log("Containers stopped.");
+            } else {
+                console.log("No running containers.");
+            }
+        } catch (e) {
+            // Docker not available or no containers - ignore
+        }
+
+        // Remove old image and rebuild
+        console.log("Rebuilding Docker image...");
+        try {
+            execSync("docker rmi ccc 2>/dev/null || true", { stdio: "inherit" });
+            execSync(`docker build -t ccc --label dockerfile.hash=${currentHash} .`, { cwd: projectRoot, stdio: "inherit" });
+            console.log("Docker image built.");
+        } catch (e) {
+            console.error("Failed to build Docker image:", e.message);
+        }
+    } else {
+        console.log(`Docker image up to date (hash: ${currentHash})`);
+    }
 
     const installDir = getInstallDir();
 
