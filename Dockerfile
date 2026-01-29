@@ -1,15 +1,45 @@
 FROM ubuntu:24.04
 
-# Install dependencies + Xvfb for headless browser
+# ============================================================
+# LAYER 0: Use faster mirror for ARM64 (ports.ubuntu.com is slow)
+# ============================================================
+RUN sed -i 's|http://ports.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources
+
+# ============================================================
+# LAYER 1: Minimal base for Chromium PPA (절대 안 바뀜)
+# ============================================================
 RUN apt-get update && apt-get install -y \
-    curl \
-    git \
+    software-properties-common \
     ca-certificates \
+    curl \
+    gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 2: Chromium (무겁고 절대 안 바뀜)
+# ============================================================
+RUN add-apt-repository -y ppa:xtradeb/apps && \
+    apt-get update && \
+    apt-get install -y chromium && \
+    rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 3: Docker CLI (무겁고 절대 안 바뀜)
+# ============================================================
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list && \
+    apt-get update && \
+    apt-get install -y docker-ce-cli && \
+    rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 4: Chromium dependencies + dev tools (거의 안 바뀜)
+# ============================================================
+RUN apt-get update && apt-get install -y \
+    git \
     sudo \
     unzip \
     wget \
-    gnupg \
-    fonts-liberation \
     libnss3 \
     libatk-bridge2.0-0 \
     libdrm2 \
@@ -22,55 +52,50 @@ RUN apt-get update && apt-get install -y \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Chromium from PPA (snap doesn't work in containers)
-RUN apt-get update && \
-    apt-get install -y software-properties-common && \
-    add-apt-repository -y ppa:xtradeb/apps && \
-    apt-get update && \
-    apt-get install -y chromium && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Docker CLI (for running docker commands inside container)
-RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu noble stable" > /etc/apt/sources.list.d/docker.list && \
-    apt-get update && \
-    apt-get install -y docker-ce-cli && \
-    rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
+# ============================================================
+# LAYER 5: User setup (절대 안 바뀜)
+# ============================================================
 RUN useradd -m -s /bin/bash ccc && \
-    echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
-
-# Add ccc user to docker group (create if not exists, use existing GID if 999 is taken)
-RUN (getent group docker || groupadd docker) && usermod -aG docker ccc
+    echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    (getent group docker || groupadd docker) && usermod -aG docker ccc
 
 USER ccc
 WORKDIR /home/ccc
 
-# Install mise
-RUN curl https://mise.run | sh
-
-# Configure mise settings
-RUN mkdir -p ~/.config/mise && \
+# ============================================================
+# LAYER 6: mise 설치 + 설정 (거의 안 바뀜)
+# ============================================================
+RUN curl https://mise.run | sh && \
+    mkdir -p ~/.config/mise && \
     echo '[settings]' > ~/.config/mise/config.toml && \
-    echo 'experimental = true' >> ~/.config/mise/config.toml
+    echo 'experimental = true' >> ~/.config/mise/config.toml && \
+    echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
 
-# Configure bashrc for mise (for interactive shells)
-RUN echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
+# ============================================================
+# LAYER 7: mise global tools (가끔 바뀜 - 버전 고정)
+# ============================================================
+RUN ~/.local/bin/mise use -g node@22 && \
+    ~/.local/bin/mise use -g maven@3 && \
+    ~/.local/bin/mise use -g gradle@8 && \
+    ~/.local/bin/mise use -g yarn@4 && \
+    ~/.local/bin/mise use -g pnpm@9
 
-# Install Node.js via mise (needed for Playwright MCP)
-RUN ~/.local/bin/mise use -g node@22
+# ============================================================
+# LAYER 8: Fonts (가끔 바뀜)
+# ============================================================
+RUN sudo apt-get update && sudo apt-get install -y \
+    fonts-liberation \
+    fonts-noto-cjk \
+    && sudo rm -rf /var/lib/apt/lists/*
 
-# Install global tools via mise (maven, gradle, yarn, pnpm)
-RUN ~/.local/bin/mise use -g maven@latest && \
-    ~/.local/bin/mise use -g gradle@latest && \
-    ~/.local/bin/mise use -g yarn@latest && \
-    ~/.local/bin/mise use -g pnpm@latest
-
-# Install claude-code native binary
+# ============================================================
+# LAYER 9: claude-code (자주 업데이트됨 - 제일 아래)
+# ============================================================
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-# Add mise shims to PATH so non-interactive shells can use tools
+# ============================================================
+# Environment variables
+# ============================================================
 ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
 ENV DISPLAY=":99"
@@ -78,5 +103,4 @@ ENV CHROME_PATH="/usr/bin/chromium"
 ENV CHROMIUM_PATH="/usr/bin/chromium"
 
 WORKDIR /project
-
 CMD ["tail", "-f", "/dev/null"]
