@@ -1,5 +1,6 @@
 import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
-import {mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync} from 'fs';
+import {mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync, renameSync, unlinkSync, openSync, writeSync, closeSync} from 'fs';
+import {randomBytes} from 'crypto';
 import {join} from 'path';
 import {tmpdir} from 'os';
 import {SpawnSyncReturns} from 'child_process';
@@ -7,11 +8,11 @@ import {
     needsCredentialSync,
     syncCredentials,
     syncFromMacKeychain,
-    syncFromLinuxFile,
-    syncFromWindowsFile,
+    readHostCredentials,
     syncFromWindowsCredentialManager,
     readValidCredentialsFile,
-    CredentialDeps
+    CredentialDeps,
+    TokenRefreshError
 } from '../credentials.js';
 
 // Mock fetch globally - always fail to skip refresh in tests
@@ -65,6 +66,13 @@ function createMockDeps(overrides: Partial<CredentialDeps> = {}): CredentialDeps
         readFileSync: (p: string, e: BufferEncoding) => readFileSync(p, e),
         writeFileSync: (p: string, d: string, o?: object) => writeFileSync(p, d, o),
         chmodSync,
+        mkdirSync,
+        renameSync,
+        unlinkSync,
+        openSync,
+        writeSync,
+        closeSync,
+        randomBytes,
         platform: 'linux',
         ...overrides
     };
@@ -91,11 +99,11 @@ describe('credentials', () => {
             expect(needsCredentialSync(credPath)).toBe(true);
         });
 
-        it('should return false if credentials are expired but have refreshToken', () => {
-            // Expired credentials with refreshToken can be refreshed by Claude Code
+        it('should return true if credentials are expired even with refreshToken', () => {
+            // Expired credentials need sync to get fresh token from external source
             const credPath = join(testClaudeDir, '.credentials.json');
             writeFileSync(credPath, JSON.stringify(createExpiredCredentials()));
-            expect(needsCredentialSync(credPath)).toBe(false);
+            expect(needsCredentialSync(credPath)).toBe(true);
         });
 
         it('should return false if credentials are valid', () => {
@@ -154,10 +162,10 @@ describe('credentials', () => {
         });
     });
 
-    describe('syncFromLinuxFile', () => {
+    describe('readHostCredentials', () => {
         it('should return null if host credentials file does not exist', () => {
             const deps = createMockDeps();
-            expect(syncFromLinuxFile(deps)).toBeNull();
+            expect(readHostCredentials(deps)).toBeNull();
         });
 
         it('should return credentials if host file exists and is valid', () => {
@@ -167,7 +175,7 @@ describe('credentials', () => {
             writeFileSync(hostCredPath, JSON.stringify(validCreds));
 
             const deps = createMockDeps();
-            const result = syncFromLinuxFile(deps);
+            const result = readHostCredentials(deps);
             expect(result).not.toBeNull();
             expect(JSON.parse(result!).claudeAiOauth.accessToken).toBe('test-access-token');
         });
@@ -178,26 +186,19 @@ describe('credentials', () => {
             writeFileSync(hostCredPath, JSON.stringify(createExpiredCredentials()));
 
             const deps = createMockDeps();
-            const result = syncFromLinuxFile(deps);
+            const result = readHostCredentials(deps);
             expect(result).not.toBeNull();
             expect(JSON.parse(result!).claudeAiOauth.refreshToken).toBe('expired-refresh-token');
         });
-    });
 
-    describe('syncFromWindowsFile', () => {
-        it('should return null if host credentials file does not exist', () => {
-            const deps = createMockDeps({ platform: 'win32' });
-            expect(syncFromWindowsFile(deps)).toBeNull();
-        });
-
-        it('should return credentials if host file exists and is valid', () => {
+        it('should work on Windows platform', () => {
             const hostCredPath = join(testDir, '.claude', '.credentials.json');
             mkdirSync(join(testDir, '.claude'), {recursive: true});
             const validCreds = createValidCredentials();
             writeFileSync(hostCredPath, JSON.stringify(validCreds));
 
             const deps = createMockDeps({ platform: 'win32' });
-            const result = syncFromWindowsFile(deps);
+            const result = readHostCredentials(deps);
             expect(result).not.toBeNull();
             expect(JSON.parse(result!).claudeAiOauth.accessToken).toBe('test-access-token');
         });
@@ -366,7 +367,7 @@ describe('credentials', () => {
             expect(spawnCalled).toBe(false);
         });
 
-        it('should always refresh and save on macOS', async () => {
+        it('should save valid credentials on macOS', async () => {
             const validCreds = createValidCredentials();
 
             let writtenContent = '';
@@ -380,12 +381,43 @@ describe('credentials', () => {
                     output: [],
                     signal: null
                 }),
-                writeFileSync: (_path: string, content: string) => { writtenContent = content; }
+                openSync: (path: string, _flags: string, _mode?: number) => {
+                    return 999; // fake fd
+                },
+                writeSync: (_fd: number, content: string) => {
+                    writtenContent = content;
+                    return content.length;
+                },
+                closeSync: () => {},
+                renameSync: (oldPath: string, newPath: string) => {
+                    // In tests, just verify the atomic write pattern
+                    expect(oldPath).toContain('.tmp.');
+                    expect(newPath).toBe(join(testClaudeDir, '.credentials.json'));
+                }
             });
 
             await syncCredentials({claudeDir: testClaudeDir}, deps);
-            // Should write credentials (refresh failed, so fallback to original)
+            // Should write credentials (no refresh needed)
             expect(writtenContent).toBe(JSON.stringify(validCreds));
+        });
+
+        it('should throw error when refresh fails for expired credentials', async () => {
+            const expiredCreds = createExpiredCredentials();
+
+            const deps = createMockDeps({
+                platform: 'darwin',
+                spawnSync: () => ({
+                    status: 0,
+                    stdout: JSON.stringify(expiredCreds),
+                    stderr: '',
+                    pid: 0,
+                    output: [],
+                    signal: null
+                })
+            });
+
+            await expect(syncCredentials({claudeDir: testClaudeDir}, deps))
+                .rejects.toThrow(TokenRefreshError);
         });
 
         it('should sync on macOS using Keychain', async () => {
@@ -510,10 +542,10 @@ describe('credentials', () => {
             expect(existsSync(credPath)).toBe(false);
         });
 
-        it('should call chmodSync on non-Windows platforms', async () => {
+        it('should set correct permissions via openSync on non-Windows platforms', async () => {
             const validCreds = createValidCredentials();
             const credJson = JSON.stringify(validCreds);
-            let chmodCalled = false;
+            let openSyncMode: number | undefined;
 
             const deps = createMockDeps({
                 platform: 'darwin',
@@ -525,17 +557,23 @@ describe('credentials', () => {
                     output: [],
                     signal: null
                 }),
-                chmodSync: () => { chmodCalled = true; }
+                openSync: (_path: string, _flags: string, mode?: number) => {
+                    openSyncMode = mode;
+                    return 999;
+                },
+                writeSync: () => credJson.length,
+                closeSync: () => {}
             });
 
             await syncCredentials({claudeDir: testClaudeDir}, deps);
-            expect(chmodCalled).toBe(true);
+            expect(openSyncMode).toBe(0o600);
         });
 
-        it('should not call chmodSync on Windows', async () => {
+        it('should use writeFileSync on Windows (no openSync with mode)', async () => {
             const validCreds = createValidCredentials();
             const credJson = JSON.stringify(validCreds);
-            let chmodCalled = false;
+            let writeFileSyncCalled = false;
+            let openSyncCalled = false;
 
             const deps = createMockDeps({
                 platform: 'win32',
@@ -547,11 +585,62 @@ describe('credentials', () => {
                     output: [],
                     signal: null
                 }),
-                chmodSync: () => { chmodCalled = true; }
+                writeFileSync: () => { writeFileSyncCalled = true; },
+                openSync: () => { openSyncCalled = true; return 999; }
             });
 
             await syncCredentials({claudeDir: testClaudeDir}, deps);
-            expect(chmodCalled).toBe(false);
+            expect(writeFileSyncCalled).toBe(true);
+            expect(openSyncCalled).toBe(false);
+        });
+
+        it('should use atomic write pattern with temp file and rename', async () => {
+            // Use valid credentials to test atomic write pattern
+            const validCreds = createValidCredentials();
+            const credJson = JSON.stringify(validCreds);
+            const writePaths: string[] = [];
+            const renameCalls: { from: string; to: string }[] = [];
+
+            const deps: CredentialDeps = {
+                homedir: () => testDir,
+                spawnSync: () => ({
+                    status: 0,
+                    stdout: credJson,
+                    stderr: '',
+                    pid: 0,
+                    output: [],
+                    signal: null
+                }),
+                existsSync: () => false,
+                readFileSync: () => { throw new Error('ENOENT'); },
+                writeFileSync: (path: string, _content: string) => {
+                    writePaths.push(path);
+                },
+                chmodSync: () => {},
+                mkdirSync: () => {},
+                renameSync: (oldPath: string, newPath: string) => {
+                    renameCalls.push({ from: oldPath, to: newPath });
+                },
+                unlinkSync: () => {},
+                openSync: (path: string, _flags: string, _mode?: number) => {
+                    writePaths.push(path);
+                    return 1;
+                },
+                writeSync: () => 0,
+                closeSync: () => {},
+                randomBytes: (size: number) => randomBytes(size),
+                platform: 'darwin'
+            };
+
+            await syncCredentials({claudeDir: testClaudeDir}, deps);
+
+            // Should write to temp file first
+            expect(writePaths.length).toBeGreaterThan(0);
+            expect(writePaths[0]).toContain('.tmp.');
+            // Should rename temp to final path
+            expect(renameCalls.length).toBeGreaterThan(0);
+            expect(renameCalls[0].from).toBe(writePaths[0]);
+            expect(renameCalls[0].to).toBe(join(testClaudeDir, '.credentials.json'));
         });
     });
 });

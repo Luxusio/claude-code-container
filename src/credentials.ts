@@ -1,11 +1,12 @@
 /**
  * Cross-platform credential sync for Claude Code Container
  * Syncs credentials from host system to container's credential file
- * Refreshes tokens at startup to ensure fresh 8-hour validity
+ * Refreshes tokens when expired
  */
 
 import {spawnSync, SpawnSyncReturns} from "child_process";
-import {existsSync, readFileSync, writeFileSync, chmodSync} from "fs";
+import {randomBytes} from "crypto";
+import {readFileSync, writeFileSync, chmodSync, mkdirSync, renameSync, accessSync, constants, openSync, writeSync, closeSync, unlinkSync} from "fs";
 import {homedir as osHomedir} from "os";
 import {join} from "path";
 
@@ -13,8 +14,22 @@ import {join} from "path";
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const OAUTH_TOKEN_URL = 'https://console.anthropic.com/v1/oauth/token';
 
-// Only refresh if token is already expired (prevents token revocation when multiple instances run)
-const TOKEN_REFRESH_THRESHOLD_MS = 0;
+/** Error thrown when OAuth token refresh fails */
+export class TokenRefreshError extends Error {
+    constructor() {
+        super('Failed to refresh OAuth token. Please re-authenticate with Claude.');
+        this.name = 'TokenRefreshError';
+    }
+}
+
+// Constants for validation
+const MAX_TOKEN_LENGTH = 10000;  // OAuth tokens should never exceed this
+const MIN_TOKEN_LENGTH = 10;    // Minimum reasonable token length
+const CREDENTIAL_STORAGE_KEY = 'Claude Code-credentials';
+const DEFAULT_TOKEN_LIFETIME_SECONDS = 28800;  // 8 hours default
+const MAX_TOKEN_LIFETIME_SECONDS = 31536000;   // 1 year max
+const REFRESH_TIMEOUT_MS = 10000;  // 10 second timeout for refresh
+const POWERSHELL_TIMEOUT_MS = 15000;  // 15 second timeout for PowerShell
 
 export interface CredentialSyncOptions {
     claudeDir: string;
@@ -28,39 +43,105 @@ export interface CredentialDeps {
     readFileSync: (path: string, encoding: BufferEncoding) => string;
     writeFileSync: (path: string, data: string, opts?: object) => void;
     chmodSync: (path: string, mode: number) => void;
+    mkdirSync: (path: string, options?: { recursive?: boolean; mode?: number }) => void;
+    renameSync: (oldPath: string, newPath: string) => void;
+    unlinkSync: (path: string) => void;
+    openSync: (path: string, flags: string, mode?: number) => number;
+    writeSync: (fd: number, data: string) => number;
+    closeSync: (fd: number) => void;
+    randomBytes: (size: number) => Buffer;
     platform: NodeJS.Platform;
 }
 
 const defaultDeps: CredentialDeps = {
     homedir: osHomedir,
     spawnSync: spawnSync as CredentialDeps['spawnSync'],
-    existsSync,
+    existsSync: (path: string) => {
+        try {
+            accessSync(path, constants.F_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    },
     readFileSync: readFileSync as CredentialDeps['readFileSync'],
     writeFileSync: writeFileSync as CredentialDeps['writeFileSync'],
     chmodSync,
+    mkdirSync,
+    renameSync,
+    unlinkSync,
+    openSync,
+    writeSync,
+    closeSync,
+    randomBytes,
     platform: process.platform
 };
 
 /**
- * Check if credentials file needs sync (missing or no refreshToken)
+ * Check if token is expired
+ */
+function isTokenExpired(expiresAt?: number): boolean {
+    return !expiresAt || Date.now() >= expiresAt;
+}
+
+/**
+ * Validate token format, length, and trimming
+ * @param token - Token value to validate
+ * @param required - Whether the token is required (true) or optional (false)
+ * @returns Trimmed token string, or null if invalid, or undefined if optional and not provided
+ */
+function validateToken(token: unknown, required: boolean): string | null {
+    if (token === undefined) return required ? null : undefined as unknown as string;
+    if (typeof token !== 'string') return null;
+    const trimmed = token.trim();
+    if (trimmed.length < MIN_TOKEN_LENGTH || trimmed.length > MAX_TOKEN_LENGTH) return null;
+    return trimmed;
+}
+
+/**
+ * Check if credentials file needs sync (missing, no refreshToken, or expired)
  */
 export function needsCredentialSync(credentialsPath: string, deps = defaultDeps): boolean {
-    if (!deps.existsSync(credentialsPath)) return true;
     try {
         const existing = JSON.parse(deps.readFileSync(credentialsPath, 'utf-8'));
-        return !existing?.claudeAiOauth?.refreshToken;
+        if (!existing?.claudeAiOauth?.refreshToken) return true;
+        return isTokenExpired(existing?.claudeAiOauth?.expiresAt);
     } catch {
         return true;
     }
 }
 
 /**
- * Check if token needs refresh (only when already expired)
+ * Write credentials atomically to file
+ * Uses openSync with exclusive flag and proper mode to avoid race conditions
  */
-function tokenNeedsRefresh(creds: { claudeAiOauth?: { expiresAt?: number } }): boolean {
-    const expiresAt = creds?.claudeAiOauth?.expiresAt;
-    if (!expiresAt) return true;
-    return Date.now() >= expiresAt; // Only refresh if expired
+function writeCredentialsAtomic(credentialsPath: string, content: string, deps: CredentialDeps): void {
+    const uniqueId = deps.randomBytes(8).toString('hex');
+    const tempPath = `${credentialsPath}.tmp.${process.pid}.${uniqueId}`;
+
+    try {
+        if (deps.platform !== 'win32') {
+            // Create file with correct permissions atomically (wx = exclusive write)
+            const fd = deps.openSync(tempPath, 'wx', 0o600);
+            try {
+                deps.writeSync(fd, content);
+            } finally {
+                deps.closeSync(fd);
+            }
+        } else {
+            // Windows doesn't support mode in openSync the same way
+            deps.writeFileSync(tempPath, content);
+        }
+        deps.renameSync(tempPath, credentialsPath);
+    } catch (error) {
+        // Clean up temp file on any error
+        try {
+            deps.unlinkSync(tempPath);
+        } catch {
+            // Ignore cleanup errors (file may not exist)
+        }
+        throw error;
+    }
 }
 
 /**
@@ -73,6 +154,8 @@ export async function refreshOAuthToken(credentials: {
         [key: string]: unknown;
     };
 }): Promise<typeof credentials | null> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
     try {
         const params = new URLSearchParams({
             grant_type: 'refresh_token',
@@ -84,104 +167,134 @@ export async function refreshOAuthToken(credentials: {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: params.toString(),
+            signal: controller.signal,
         });
 
         if (!response.ok) {
             return null;
         }
 
-        const data = await response.json() as {
-            access_token?: string;
-            refresh_token?: string;
-            expires_in?: number;
-        };
-
-        if (!data.access_token) {
+        let data: unknown;
+        try {
+            data = await response.json();
+        } catch {
             return null;
+        }
+
+        if (!data || typeof data !== 'object') {
+            return null;
+        }
+
+        const tokenData = data as Record<string, unknown>;
+        const expires_in = tokenData.expires_in;
+
+        // Validate access token (required)
+        const trimmedAccessToken = validateToken(tokenData.access_token, true);
+        if (trimmedAccessToken === null) {
+            return null;
+        }
+
+        // Validate refresh token (optional)
+        const trimmedRefreshToken = validateToken(tokenData.refresh_token, false);
+        if (trimmedRefreshToken === null) {
+            return null;
+        }
+
+        // Validate expires_in is a positive integer and reasonable
+        let validExpiresIn = DEFAULT_TOKEN_LIFETIME_SECONDS;
+        if (typeof expires_in === 'number') {
+            if (!Number.isInteger(expires_in) || expires_in <= 0 || expires_in > MAX_TOKEN_LIFETIME_SECONDS) {
+                return null;
+            }
+            validExpiresIn = expires_in;
         }
 
         return {
             ...credentials,
             claudeAiOauth: {
                 ...credentials.claudeAiOauth,
-                accessToken: data.access_token,
-                refreshToken: data.refresh_token ?? credentials.claudeAiOauth.refreshToken,
-                expiresAt: Date.now() + (data.expires_in ?? 28800) * 1000,
+                accessToken: trimmedAccessToken,
+                refreshToken: trimmedRefreshToken ?? credentials.claudeAiOauth.refreshToken,
+                expiresAt: Date.now() + validExpiresIn * 1000,
             }
         };
     } catch {
         return null;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
 /**
+ * Get credentials from platform-specific source
+ */
+function getCredentialsFromSource(deps: CredentialDeps): string | null {
+    switch (deps.platform) {
+        case 'darwin':
+            return syncFromMacKeychain(deps);
+        case 'linux':
+            return readHostCredentials(deps);
+        case 'win32':
+            return readHostCredentials(deps) ?? syncFromWindowsCredentialManager(deps);
+        default:
+            return null;
+    }
+}
+
+/**
+ * Refresh credentials if expired and save to file
+ * @returns true if credentials were saved (refreshed or as-is)
+ */
+async function refreshAndSave(
+    creds: { claudeAiOauth?: { refreshToken?: string; expiresAt?: number } },
+    credentialsPath: string,
+    originalJson: string | null,
+    deps: CredentialDeps
+): Promise<boolean> {
+    if (!creds?.claudeAiOauth?.refreshToken) return false;
+
+    if (isTokenExpired(creds.claudeAiOauth.expiresAt)) {
+        const refreshed = await refreshOAuthToken(creds as Parameters<typeof refreshOAuthToken>[0]);
+        if (!refreshed) throw new TokenRefreshError();
+        writeCredentialsAtomic(credentialsPath, JSON.stringify(refreshed), deps);
+        return true;
+    }
+
+    // Not expired - save original if provided
+    if (originalJson) {
+        writeCredentialsAtomic(credentialsPath, originalJson, deps);
+        return true;
+    }
+    return false;
+}
+
+/**
  * Sync credentials from host system to container credential file
- * Refreshes token at startup to ensure fresh 8-hour validity
- *
- * On macOS: Syncs from Keychain, then refreshes
- * On Linux/Windows: Syncs from file if missing, then refreshes
+ * Refreshes tokens when expired
  */
 export async function syncCredentials(options: CredentialSyncOptions, deps = defaultDeps): Promise<void> {
     const credentialsPath = join(options.claudeDir, '.credentials.json');
-    let credentialsJson: string | null = null;
 
-    // Get credentials from appropriate source
-    if (deps.platform === 'darwin') {
-        credentialsJson = syncFromMacKeychain(deps);
-    } else if (deps.platform === 'linux') {
-        // Only sync from file if we don't have valid credentials
-        if (needsCredentialSync(credentialsPath, deps)) {
-            credentialsJson = syncFromLinuxFile(deps);
-        }
-    } else if (deps.platform === 'win32') {
-        if (needsCredentialSync(credentialsPath, deps)) {
-            credentialsJson = syncFromWindowsFile(deps) ?? syncFromWindowsCredentialManager(deps);
+    // Try external source if local credentials are missing/expired
+    if (needsCredentialSync(credentialsPath, deps)) {
+        const credentialsJson = getCredentialsFromSource(deps);
+        if (credentialsJson) {
+            try {
+                const creds = JSON.parse(credentialsJson);
+                await refreshAndSave(creds, credentialsPath, credentialsJson, deps);
+            } catch (e) {
+                if (e instanceof TokenRefreshError) throw e;
+            }
+            return;
         }
     }
 
-    // If we got credentials from a source, check if refresh is needed
-    if (credentialsJson) {
-        try {
-            const creds = JSON.parse(credentialsJson);
-            if (creds?.claudeAiOauth?.refreshToken && tokenNeedsRefresh(creds)) {
-                // Only refresh if token is expiring soon (within 1 hour)
-                const refreshed = await refreshOAuthToken(creds);
-                if (refreshed) {
-                    deps.writeFileSync(credentialsPath, JSON.stringify(refreshed), { mode: 0o600 });
-                    if (deps.platform !== 'win32') {
-                        deps.chmodSync(credentialsPath, 0o600);
-                    }
-                    return;
-                }
-            }
-            // Save credentials (original or if refresh not needed)
-            deps.writeFileSync(credentialsPath, credentialsJson, { mode: 0o600 });
-            if (deps.platform !== 'win32') {
-                deps.chmodSync(credentialsPath, 0o600);
-            }
-        } catch {
-            // Invalid JSON, skip
-        }
-        return;
-    }
-
-    // No new credentials from source, try to refresh existing if needed
-    if (deps.existsSync(credentialsPath)) {
-        try {
-            const existing = JSON.parse(deps.readFileSync(credentialsPath, 'utf-8'));
-            if (existing?.claudeAiOauth?.refreshToken && tokenNeedsRefresh(existing)) {
-                // Only refresh if token is expiring soon
-                const refreshed = await refreshOAuthToken(existing);
-                if (refreshed) {
-                    deps.writeFileSync(credentialsPath, JSON.stringify(refreshed), { mode: 0o600 });
-                    if (deps.platform !== 'win32') {
-                        deps.chmodSync(credentialsPath, 0o600);
-                    }
-                }
-            }
-        } catch {
-            // Failed to read/parse
-        }
+    // Fallback: refresh existing local credentials if needed
+    try {
+        const existing = JSON.parse(deps.readFileSync(credentialsPath, 'utf-8'));
+        await refreshAndSave(existing, credentialsPath, null, deps);
+    } catch (e) {
+        if (e instanceof TokenRefreshError) throw e;
     }
 }
 
@@ -191,7 +304,7 @@ export async function syncCredentials(options: CredentialSyncOptions, deps = def
 export function syncFromMacKeychain(deps = defaultDeps): string | null {
     const result = deps.spawnSync('security', [
         'find-generic-password',
-        '-s', 'Claude Code-credentials',
+        '-s', CREDENTIAL_STORAGE_KEY,
         '-w'
     ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -202,17 +315,9 @@ export function syncFromMacKeychain(deps = defaultDeps): string | null {
 }
 
 /**
- * Linux: Copy credentials from ~/.claude/.credentials.json
+ * Read credentials from host file at ~/.claude/.credentials.json
  */
-export function syncFromLinuxFile(deps = defaultDeps): string | null {
-    const hostCredentials = join(deps.homedir(), '.claude', '.credentials.json');
-    return readValidCredentialsFile(hostCredentials, deps);
-}
-
-/**
- * Windows: Copy credentials from %USERPROFILE%\.claude\.credentials.json
- */
-export function syncFromWindowsFile(deps = defaultDeps): string | null {
+export function readHostCredentials(deps = defaultDeps): string | null {
     const hostCredentials = join(deps.homedir(), '.claude', '.credentials.json');
     return readValidCredentialsFile(hostCredentials, deps);
 }
@@ -221,8 +326,6 @@ export function syncFromWindowsFile(deps = defaultDeps): string | null {
  * Read credentials file and validate it has refresh token
  */
 export function readValidCredentialsFile(filePath: string, deps = defaultDeps): string | null {
-    if (!deps.existsSync(filePath)) return null;
-
     try {
         const content = deps.readFileSync(filePath, 'utf-8');
         const parsed = JSON.parse(content);
@@ -230,7 +333,7 @@ export function readValidCredentialsFile(filePath: string, deps = defaultDeps): 
             return content;
         }
     } catch {
-        // File corrupt or invalid
+        // File not found or corrupt
     }
     return null;
 }
@@ -273,7 +376,7 @@ try {
 }
 
 $ptr = [IntPtr]::Zero
-$success = [ADVAPI32.Util]::CredRead('Claude Code-credentials', 1, 0, [ref]$ptr)
+$success = [ADVAPI32.Util]::CredRead('${CREDENTIAL_STORAGE_KEY}', 1, 0, [ref]$ptr)
 
 if ($success -and $ptr -ne [IntPtr]::Zero) {
     try {
@@ -291,7 +394,7 @@ if ($success -and $ptr -ne [IntPtr]::Zero) {
         '-NonInteractive',
         '-Command',
         psScript
-    ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: POWERSHELL_TIMEOUT_MS });
 
     if (result.status === 0 && result.stdout?.trim()) {
         const credentials = result.stdout.trim();
