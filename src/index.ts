@@ -182,11 +182,10 @@ function startProjectContainer(projectPath: string): string {
         "--network", "host",
         "--security-opt", "seccomp=unconfined",
         "-v", `${fullPath}:${projectMountPath}`,
-        "-v", `${CLAUDE_DIR}:/claude`,
-        "-v", `${hostClaudeIdeDir}:/claude/ide`,  // Mount host IDE lock files for /ide command
+        "-v", `${CLAUDE_DIR}:/home/ccc/.claude`,
+        "-v", `${hostClaudeIdeDir}:/home/ccc/.claude/ide`,  // Mount host IDE lock files for /ide command
         "-v", `${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise`,
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-e", "CLAUDE_CONFIG_DIR=/claude",
         "-w", projectMountPath,
         "--pids-limit", CONTAINER_PID_LIMIT,
         IMAGE_NAME

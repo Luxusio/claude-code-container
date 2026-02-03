@@ -85,10 +85,9 @@ async function startRemoteContainer(config: RemoteConfig, projectId: string): Pr
     // Build docker run command (no project volume, just credentials and mise cache)
     const dockerCmd = `docker run -d --name ${containerName} \
         --network host \
-        -v ~/.ccc/claude:/claude \
+        -v ~/.ccc/claude:/home/ccc/.claude \
         -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
         -v /var/run/docker.sock:/var/run/docker.sock \
-        -e CLAUDE_CONFIG_DIR=/claude \
         -w /project/${projectId} \
         --pids-limit ${CONTAINER_PID_LIMIT} \
         ${IMAGE_NAME} sleep infinity 2>/dev/null || docker start ${containerName}`;
