@@ -8,7 +8,7 @@ import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
 import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, DATA_DIR, CLAUDE_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT} from "./utils.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, DATA_DIR, CLAUDE_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, MISE_VOLUME_NAME} from "./utils.js";
 import {syncCredentials} from "./credentials.js";
 
 // Re-export for tests
@@ -18,7 +18,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // === Configuration ===
-const miseCacheDir = join(DATA_DIR, "mise");
 const locksDir = join(DATA_DIR, "locks");
 const hostClaudeIdeDir = join(homedir(), ".claude", "ide");  // Host IDE lock files
 
@@ -30,7 +29,6 @@ let currentProjectPath: string | null = null;
 function ensureDirs(): void {
     mkdirSync(DATA_DIR, {recursive: true});
     mkdirSync(CLAUDE_DIR, {recursive: true});
-    mkdirSync(miseCacheDir, {recursive: true});
     mkdirSync(locksDir, {recursive: true});
     ensureBrowserMcp();
 }
@@ -186,7 +184,7 @@ function startProjectContainer(projectPath: string): string {
         "-v", `${fullPath}:${projectMountPath}`,
         "-v", `${CLAUDE_DIR}:/claude`,
         "-v", `${hostClaudeIdeDir}:/claude/ide`,  // Mount host IDE lock files for /ide command
-        "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
+        "-v", `${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise`,
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-e", "CLAUDE_CONFIG_DIR=/claude",
         "-w", projectMountPath,

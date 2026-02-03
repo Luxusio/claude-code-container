@@ -11,6 +11,7 @@ export const CLAUDE_DIR = join(DATA_DIR, "claude");
 export const REMOTE_CONFIG_DIR = join(DATA_DIR, "remote");
 export const IMAGE_NAME = "ccc";
 export const CONTAINER_PID_LIMIT = "512";
+export const MISE_VOLUME_NAME = "ccc-mise-cache";
 export const COMMON_IGNORE_DIRS = [
     "node_modules", ".git", "dist", "build", "target",
     "__pycache__", ".next", ".nuxt", "vendor"

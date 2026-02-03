@@ -11,6 +11,7 @@ import {
     readHostCredentials,
     syncFromWindowsCredentialManager,
     readValidCredentialsFile,
+    validateToken,
     CredentialDeps,
     TokenRefreshError
 } from '../credentials.js';
@@ -641,6 +642,51 @@ describe('credentials', () => {
             expect(renameCalls.length).toBeGreaterThan(0);
             expect(renameCalls[0].from).toBe(writePaths[0]);
             expect(renameCalls[0].to).toBe(join(testClaudeDir, '.credentials.json'));
+        });
+    });
+
+    describe('validateToken', () => {
+        it('should return null for required token when undefined', () => {
+            expect(validateToken(undefined, true)).toBeNull();
+        });
+
+        it('should return undefined for optional token when undefined', () => {
+            expect(validateToken(undefined, false)).toBeUndefined();
+        });
+
+        it('should return null for non-string token', () => {
+            expect(validateToken(123, true)).toBeNull();
+            expect(validateToken({}, true)).toBeNull();
+            expect(validateToken(null, true)).toBeNull();
+        });
+
+        it('should return null for token shorter than MIN_TOKEN_LENGTH', () => {
+            expect(validateToken('short', true)).toBeNull();  // less than 10 chars
+        });
+
+        it('should return null for token longer than MAX_TOKEN_LENGTH', () => {
+            const longToken = 'a'.repeat(10001);
+            expect(validateToken(longToken, true)).toBeNull();
+        });
+
+        it('should return trimmed token for valid token', () => {
+            const validToken = 'a'.repeat(50);
+            expect(validateToken(validToken, true)).toBe(validToken);
+        });
+
+        it('should trim whitespace from token', () => {
+            const validToken = 'a'.repeat(50);
+            expect(validateToken(`  ${validToken}  `, true)).toBe(validToken);
+        });
+
+        it('should accept token at MIN_TOKEN_LENGTH boundary', () => {
+            const minToken = 'a'.repeat(10);
+            expect(validateToken(minToken, true)).toBe(minToken);
+        });
+
+        it('should accept token at MAX_TOKEN_LENGTH boundary', () => {
+            const maxToken = 'a'.repeat(10000);
+            expect(validateToken(maxToken, true)).toBe(maxToken);
         });
     });
 });

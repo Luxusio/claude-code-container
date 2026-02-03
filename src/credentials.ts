@@ -90,7 +90,7 @@ function isTokenExpired(expiresAt?: number): boolean {
  * @param required - Whether the token is required (true) or optional (false)
  * @returns Trimmed token string, or null if invalid, or undefined if optional and not provided
  */
-function validateToken(token: unknown, required: boolean): string | null {
+export function validateToken(token: unknown, required: boolean): string | null | undefined {
     if (token === undefined) return required ? null : undefined as unknown as string;
     if (typeof token !== 'string') return null;
     const trimmed = token.trim();

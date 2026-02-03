@@ -3,7 +3,7 @@
 import {spawn, spawnSync} from "child_process";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS} from "./utils.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
 
 // === Types ===
 
@@ -86,7 +86,7 @@ async function startRemoteContainer(config: RemoteConfig, projectId: string): Pr
     const dockerCmd = `docker run -d --name ${containerName} \
         --network host \
         -v ~/.ccc/claude:/claude \
-        -v ~/.ccc/mise:/home/ccc/.local/share/mise \
+        -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -e CLAUDE_CONFIG_DIR=/claude \
         -w /project/${projectId} \
