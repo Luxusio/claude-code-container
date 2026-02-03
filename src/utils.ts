@@ -39,7 +39,7 @@ export function getProjectId(projectPath: string): string {
 export const EXCLUDE_ENV_KEYS = new Set([
     "PATH", "HOME", "USER", "SHELL", "LOGNAME", "PWD", "OLDPWD",
     "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
-    "TMPDIR", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
+    "TMPDIR", "TEMP", "TMP", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
     "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
     "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
     "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",

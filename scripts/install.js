@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync,
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,8 +29,12 @@ function getDockerfileHash() {
 
 function getImageHash() {
     try {
-        const result = execSync("docker inspect ccc --format '{{index .Config.Labels \"dockerfile.hash\"}}'", { encoding: "utf-8" }).trim();
-        return result || null;
+        const result = spawnSync("docker", [
+            "inspect", "ccc",
+            "--format", '{{index .Config.Labels "dockerfile.hash"}}'
+        ], { encoding: "utf-8" });
+        if (result.status !== 0) return null;
+        return result.stdout.trim() || null;
     } catch (e) {
         return null; // Image doesn't exist
     }
@@ -56,9 +60,10 @@ function install() {
         // Stop all running ccc containers
         console.log("Stopping running ccc containers...");
         try {
-            const containers = execSync("docker ps -q --filter 'name=^ccc-'", { encoding: "utf-8" }).trim();
+            const psResult = spawnSync("docker", ["ps", "-q", "--filter", "name=^ccc-"], { encoding: "utf-8" });
+            const containers = (psResult.stdout || "").trim();
             if (containers) {
-                execSync(`docker stop ${containers.split("\n").join(" ")}`, { stdio: "inherit" });
+                spawnSync("docker", ["stop", ...containers.split("\n")], { stdio: "inherit" });
                 console.log("Containers stopped.");
             } else {
                 console.log("No running containers.");
@@ -70,8 +75,18 @@ function install() {
         // Remove old image and rebuild
         console.log("Rebuilding Docker image...");
         try {
-            execSync("docker rmi ccc 2>/dev/null || true", { stdio: "inherit" });
-            execSync(`docker build -t ccc --label dockerfile.hash=${currentHash} .`, { cwd: projectRoot, stdio: "inherit" });
+            // Remove old image (ignore errors if it doesn't exist)
+            spawnSync("docker", ["rmi", "ccc"], { stdio: "ignore" });
+
+            const buildResult = spawnSync("docker", [
+                "build", "-t", "ccc",
+                "--label", `dockerfile.hash=${currentHash}`,
+                "."
+            ], { cwd: projectRoot, stdio: "inherit" });
+
+            if (buildResult.status !== 0) {
+                throw new Error(`Docker build exited with code ${buildResult.status}`);
+            }
             console.log("Docker image built.");
         } catch (e) {
             console.error("Failed to build Docker image:", e.message);
