@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { hashPath, getProjectHash, getMutagenSessionName } from '../remote.js'
+import { hashPath } from '../utils.js'
+import { getProjectHash, getMutagenSessionName } from '../remote.js'
 
 describe('hashPath', () => {
   it('returns 12 character hash', () => {

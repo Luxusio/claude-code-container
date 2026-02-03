@@ -3,11 +3,7 @@
 import {spawn, spawnSync} from "child_process";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
-import {homedir} from "os";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt} from "./utils.js";
-
-// Re-export for tests
-export {hashPath} from "./utils.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS} from "./utils.js";
 
 // === Types ===
 
@@ -17,15 +13,10 @@ interface RemoteConfig {
     remotePath: string;
 }
 
-// === Configuration ===
-
-const dataDir = join(homedir(), ".ccc");
-const remoteConfigDir = join(dataDir, "remote");
-
 // === Tool Detection ===
 
-export function checkTailscale(): {installed: boolean; version?: string} {
-    const result = spawnSync("tailscale", ["version"], {encoding: "utf-8"});
+function checkTool(cmd: string, args: string[]): {installed: boolean; version?: string} {
+    const result = spawnSync(cmd, args, {encoding: "utf-8"});
     if (result.error || result.status !== 0) {
         return {installed: false};
     }
@@ -33,14 +24,8 @@ export function checkTailscale(): {installed: boolean; version?: string} {
     return {installed: true, version};
 }
 
-export function checkMutagen(): {installed: boolean; version?: string} {
-    const result = spawnSync("mutagen", ["version"], {encoding: "utf-8"});
-    if (result.error || result.status !== 0) {
-        return {installed: false};
-    }
-    const version = (result.stdout ?? "").trim();
-    return {installed: true, version};
-}
+export const checkTailscale = () => checkTool("tailscale", ["version"]);
+export const checkMutagen = () => checkTool("mutagen", ["version"]);
 
 // === Connectivity ===
 
@@ -76,7 +61,7 @@ export function getMutagenSessionName(projectPath: string): string {
  */
 async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
     // Check if image exists on remote
-    const checkCmd = `docker images -q ccc`;
+    const checkCmd = `docker images -q ${IMAGE_NAME}`;
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
         checkCmd
@@ -105,8 +90,8 @@ async function startRemoteContainer(config: RemoteConfig, projectId: string): Pr
         -v /var/run/docker.sock:/var/run/docker.sock \
         -e CLAUDE_CONFIG_DIR=/claude \
         -w /project/${projectId} \
-        --pids-limit 512 \
-        ccc sleep infinity 2>/dev/null || docker start ${containerName}`;
+        --pids-limit ${CONTAINER_PID_LIMIT} \
+        ${IMAGE_NAME} sleep infinity 2>/dev/null || docker start ${containerName}`;
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
@@ -145,7 +130,7 @@ function printStatus(label: string, ok: boolean, detail?: string): void {
 
 function getConfigPath(projectPath: string): string {
     const hash = getProjectHash(projectPath);
-    return join(remoteConfigDir, `${hash}.json`);
+    return join(REMOTE_CONFIG_DIR, `${hash}.json`);
 }
 
 function loadRemoteConfig(projectPath: string): RemoteConfig | null {
@@ -162,7 +147,7 @@ function loadRemoteConfig(projectPath: string): RemoteConfig | null {
 }
 
 function saveRemoteConfig(projectPath: string, config: RemoteConfig): void {
-    mkdirSync(remoteConfigDir, {recursive: true});
+    mkdirSync(REMOTE_CONFIG_DIR, {recursive: true});
     const configPath = getConfigPath(projectPath);
     writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
@@ -204,22 +189,15 @@ async function ensureSync(projectPath: string, config: RemoteConfig, containerNa
 
     // Mutagen sync to remote docker container
     // Format: user@host:docker://container/path
-    const createResult = spawnSync("mutagen", [
+    const mutagenArgs = [
         "sync", "create",
         fullPath,
         `${config.user}@${config.host}:docker://${containerName}/project/${projectId}`,
         "--name", sessionName,
         "--ignore-vcs",
-        "--ignore=node_modules",
-        "--ignore=.git",
-        "--ignore=dist",
-        "--ignore=build",
-        "--ignore=target",
-        "--ignore=__pycache__",
-        "--ignore=.next",
-        "--ignore=.nuxt",
-        "--ignore=vendor"
-    ], {stdio: "inherit"});
+        ...COMMON_IGNORE_DIRS.map(dir => `--ignore=${dir}`)
+    ];
+    const createResult = spawnSync("mutagen", mutagenArgs, {stdio: "inherit"});
 
     if (createResult.status !== 0) {
         throw new Error("Failed to create sync session");

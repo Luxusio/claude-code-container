@@ -1,5 +1,6 @@
 import {existsSync, readdirSync, readFileSync, statSync} from "fs";
 import {join, relative} from "path";
+import {COMMON_IGNORE_DIRS} from "./utils.js";
 
 // Version detection file patterns by language
 const VERSION_FILES: Record<string, string[]> = {
@@ -71,10 +72,10 @@ const VERSION_FILES: Record<string, string[]> = {
     universal: [".tool-versions", ".mise.toml", ".rtx.toml", ".asdf"]
 };
 
-// Directories to skip during scanning
+// Directories to skip during scanning (extends COMMON_IGNORE_DIRS with scanner-specific dirs)
 const SKIP_DIRS = new Set([
-    "node_modules", ".git", ".svn", ".hg", "vendor", "target", "build", "dist",
-    ".gradle", ".maven", "__pycache__", ".venv", "venv", ".tox", ".pytest_cache",
+    ...COMMON_IGNORE_DIRS,
+    ".svn", ".hg", ".gradle", ".maven", ".venv", "venv", ".tox", ".pytest_cache",
     "Pods", ".flutter", ".dart_tool", ".pub-cache", "bin", "obj", ".vs", ".idea"
 ]);
 

@@ -8,7 +8,7 @@ import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
 import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
 import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt} from "./utils.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, DATA_DIR, CLAUDE_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT} from "./utils.js";
 import {syncCredentials} from "./credentials.js";
 
 // Re-export for tests
@@ -18,12 +18,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // === Configuration ===
-const dataDir = join(homedir(), ".ccc");
-const claudeDir = join(dataDir, "claude");
-const miseCacheDir = join(dataDir, "mise");
-const locksDir = join(dataDir, "locks");
+const miseCacheDir = join(DATA_DIR, "mise");
+const locksDir = join(DATA_DIR, "locks");
 const hostClaudeIdeDir = join(homedir(), ".claude", "ide");  // Host IDE lock files
-const imageName = "ccc";
 
 // === Session State ===
 let currentSessionLockFile: string | null = null;
@@ -31,15 +28,15 @@ let currentProjectPath: string | null = null;
 
 // === Helpers ===
 function ensureDirs(): void {
-    mkdirSync(dataDir, {recursive: true});
-    mkdirSync(claudeDir, {recursive: true});
+    mkdirSync(DATA_DIR, {recursive: true});
+    mkdirSync(CLAUDE_DIR, {recursive: true});
     mkdirSync(miseCacheDir, {recursive: true});
     mkdirSync(locksDir, {recursive: true});
     ensureBrowserMcp();
 }
 
 function ensureBrowserMcp(): void {
-    const claudeConfigPath = join(claudeDir, ".claude.json");
+    const claudeConfigPath = join(CLAUDE_DIR, ".claude.json");
     let config: Record<string, unknown> = {};
 
     if (existsSync(claudeConfigPath)) {
@@ -146,7 +143,7 @@ function isContainerExists(containerName: string): boolean {
 }
 
 function isImageExists(): boolean {
-    const result = spawnSync("docker", ["images", "-q", imageName], {encoding: "utf-8"});
+    const result = spawnSync("docker", ["images", "-q", IMAGE_NAME], {encoding: "utf-8"});
     return (result.stdout ?? "").trim().length > 0;
 }
 
@@ -187,14 +184,14 @@ function startProjectContainer(projectPath: string): string {
         "--network", "host",
         "--security-opt", "seccomp=unconfined",
         "-v", `${fullPath}:${projectMountPath}`,
-        "-v", `${claudeDir}:/claude`,
+        "-v", `${CLAUDE_DIR}:/claude`,
         "-v", `${hostClaudeIdeDir}:/claude/ide`,  // Mount host IDE lock files for /ide command
         "-v", `${miseCacheDir}:/home/ccc/.local/share/mise`,
         "-v", "/var/run/docker.sock:/var/run/docker.sock",
         "-e", "CLAUDE_CONFIG_DIR=/claude",
         "-w", projectMountPath,
-        "--pids-limit", "512",
-        imageName
+        "--pids-limit", CONTAINER_PID_LIMIT,
+        IMAGE_NAME
     ];
 
     const result = spawnSync("docker", args, {stdio: "inherit"});
@@ -307,7 +304,7 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     const fullPath = resolve(projectPath);
 
     // Sync and refresh credentials from host system
-    await syncCredentials({ claudeDir });
+    await syncCredentials({ claudeDir: CLAUDE_DIR });
 
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
