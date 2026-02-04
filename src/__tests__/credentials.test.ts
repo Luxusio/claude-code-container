@@ -563,7 +563,8 @@ describe('credentials', () => {
                     return 999;
                 },
                 writeSync: () => credJson.length,
-                closeSync: () => {}
+                closeSync: () => {},
+                renameSync: () => {}
             });
 
             await syncCredentials({claudeDir: testClaudeDir}, deps);
@@ -587,7 +588,8 @@ describe('credentials', () => {
                     signal: null
                 }),
                 writeFileSync: () => { writeFileSyncCalled = true; },
-                openSync: () => { openSyncCalled = true; return 999; }
+                openSync: () => { openSyncCalled = true; return 999; },
+                renameSync: () => {}
             });
 
             await syncCredentials({claudeDir: testClaudeDir}, deps);

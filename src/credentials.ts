@@ -283,7 +283,7 @@ export async function syncCredentials(options: CredentialSyncOptions, deps = def
                 const creds = JSON.parse(credentialsJson);
                 await refreshAndSave(creds, credentialsPath, credentialsJson, deps);
             } catch (e) {
-                if (e instanceof TokenRefreshError) throw e;
+                throw e;
             }
             return;
         }
@@ -293,8 +293,8 @@ export async function syncCredentials(options: CredentialSyncOptions, deps = def
     try {
         const existing = JSON.parse(deps.readFileSync(credentialsPath, 'utf-8'));
         await refreshAndSave(existing, credentialsPath, null, deps);
-    } catch (e) {
-        if (e instanceof TokenRefreshError) throw e;
+    } catch {
+        // Ignore if no existing credentials file
     }
 }
 

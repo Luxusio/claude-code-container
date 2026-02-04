@@ -2,13 +2,41 @@
 
 import {spawnSync} from "child_process";
 import {randomUUID} from "crypto";
-import {existsSync, mkdirSync, writeFileSync, readdirSync, unlinkSync, readFileSync} from "fs";
+import {
+    existsSync,
+    mkdirSync,
+    writeFileSync,
+    readdirSync,
+    unlinkSync,
+    readFileSync,
+} from "fs";
 import {homedir} from "os";
 import {basename, dirname, join, resolve} from "path";
 import {fileURLToPath} from "url";
-import {formatScannedFiles, scanVersionFiles, extractVersionHints, formatVersionHints} from "./scanner.js";
-import {remoteSetup, remoteCheck, remoteExec, remoteTerminate} from "./remote.js";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, DATA_DIR, CLAUDE_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, MISE_VOLUME_NAME} from "./utils.js";
+import {
+    formatScannedFiles,
+    scanVersionFiles,
+    extractVersionHints,
+    formatVersionHints,
+} from "./scanner.js";
+import {
+    remoteSetup,
+    remoteCheck,
+    remoteExec,
+    remoteTerminate,
+} from "./remote.js";
+import {
+    hashPath,
+    getProjectId,
+    EXCLUDE_ENV_KEYS,
+    prompt,
+    DATA_DIR,
+    CLAUDE_DIR,
+    CLAUDE_JSON_FILE,
+    IMAGE_NAME,
+    CONTAINER_PID_LIMIT,
+    MISE_VOLUME_NAME,
+} from "./utils.js";
 import {syncCredentials} from "./credentials.js";
 
 // Re-export for tests
@@ -19,7 +47,7 @@ const __dirname = dirname(__filename);
 
 // === Configuration ===
 const locksDir = join(DATA_DIR, "locks");
-const hostClaudeIdeDir = join(homedir(), ".claude", "ide");  // Host IDE lock files
+const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
 
 // === Session State ===
 let currentSessionLockFile: string | null = null;
@@ -30,30 +58,46 @@ function ensureDirs(): void {
     mkdirSync(DATA_DIR, {recursive: true});
     mkdirSync(CLAUDE_DIR, {recursive: true});
     mkdirSync(locksDir, {recursive: true});
+    // Ensure claude.json exists for file mount (onboarding state)
+    if (!existsSync(CLAUDE_JSON_FILE)) {
+        writeFileSync(CLAUDE_JSON_FILE, "{}");
+    }
     ensureBrowserMcp();
 }
 
 function ensureBrowserMcp(): void {
-    const claudeConfigPath = join(CLAUDE_DIR, ".claude.json");
+    // Claude user MCP config is at ~/.claude/mcp.json
+    const claudeConfigPath = join(CLAUDE_DIR, "mcp.json");
     let config: Record<string, unknown> = {};
 
     if (existsSync(claudeConfigPath)) {
         try {
-            config = JSON.parse(readFileSync(claudeConfigPath, 'utf-8'));
+            config = JSON.parse(readFileSync(claudeConfigPath, "utf-8"));
         } catch {
             config = {};
         }
     }
 
-    if (!config.mcpServers || typeof config.mcpServers !== 'object') {
+    if (!config.mcpServers || typeof config.mcpServers !== "object") {
         config.mcpServers = {};
     }
 
     const mcpServers = config.mcpServers as Record<string, unknown>;
     // Use mise exec to run with Node.js 22+ regardless of project's Node version
+    // Docker container needs --no-sandbox for Chromium
     mcpServers["chrome-devtools"] = {
         command: "mise",
-        args: ["exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp@latest", "--headless", "--isolated", "--executable-path", "/usr/bin/chromium"]
+        args: [
+            "exec",
+            "node@22",
+            "--",
+            "npx",
+            "-y",
+            "chrome-devtools-mcp@latest",
+            "--headless=true",
+            "--isolated=true",
+            "--chromeArg=--no-sandbox",
+        ],
     };
 
     // Remove old playwright MCP if exists
@@ -81,20 +125,28 @@ function removeSessionLock(lockFile: string): void {
 }
 
 function getActiveSessionsForProject(projectId: string): string[] {
-    if (!existsSync(locksDir)) return [];
+    if (!existsSync(locksDir)) {
+        return [];
+    }
 
-    return readdirSync(locksDir)
-        .filter(f => f.startsWith(`${projectId}-`) && f.endsWith(".lock"));
+    return readdirSync(locksDir).filter(
+        (f) => f.startsWith(`${projectId}-`) && f.endsWith(".lock"),
+    );
 }
 
-function hasOtherActiveSessions(projectId: string, currentLockFile: string): boolean {
+function hasOtherActiveSessions(
+    projectId: string,
+    currentLockFile: string,
+): boolean {
     const sessions = getActiveSessionsForProject(projectId);
     const currentLockName = basename(currentLockFile);
-    return sessions.some(s => s !== currentLockName);
+    return sessions.some((s) => s !== currentLockName);
 }
 
 function cleanupSession(): void {
-    if (!currentSessionLockFile || !currentProjectPath) return;
+    if (!currentSessionLockFile || !currentProjectPath) {
+        return;
+    }
 
     const projectId = getProjectId(currentProjectPath);
     const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
@@ -131,23 +183,35 @@ export function getContainerName(projectPath: string): string {
 }
 
 function isContainerRunning(containerName: string): boolean {
-    const result = spawnSync("docker", ["ps", "-q", "-f", `name=^${containerName}$`], {encoding: "utf-8"});
+    const result = spawnSync(
+        "docker",
+        ["ps", "-q", "-f", `name=^${containerName}$`],
+        {encoding: "utf-8"},
+    );
     return (result.stdout ?? "").trim().length > 0;
 }
 
 function isContainerExists(containerName: string): boolean {
-    const result = spawnSync("docker", ["ps", "-aq", "-f", `name=^${containerName}$`], {encoding: "utf-8"});
+    const result = spawnSync(
+        "docker",
+        ["ps", "-aq", "-f", `name=^${containerName}$`],
+        {encoding: "utf-8"},
+    );
     return (result.stdout ?? "").trim().length > 0;
 }
 
 function isImageExists(): boolean {
-    const result = spawnSync("docker", ["images", "-q", IMAGE_NAME], {encoding: "utf-8"});
+    const result = spawnSync("docker", ["images", "-q", IMAGE_NAME], {
+        encoding: "utf-8",
+    });
     return (result.stdout ?? "").trim().length > 0;
 }
 
 function ensureImage(): void {
     if (!isImageExists()) {
-        console.error("ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'");
+        console.error(
+            "ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'",
+        );
         process.exit(1);
     }
 }
@@ -177,18 +241,31 @@ function startProjectContainer(projectPath: string): string {
     mkdirSync(hostClaudeIdeDir, {recursive: true});
 
     const args = [
-        "run", "-d",
-        "--name", containerName,
-        "--network", "host",
-        "--security-opt", "seccomp=unconfined",
-        "-v", `${fullPath}:${projectMountPath}`,
-        "-v", `${CLAUDE_DIR}:/home/ccc/.claude`,
-        "-v", `${hostClaudeIdeDir}:/home/ccc/.claude/ide`,  // Mount host IDE lock files for /ide command
-        "-v", `${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise`,
-        "-v", "/var/run/docker.sock:/var/run/docker.sock",
-        "-w", projectMountPath,
-        "--pids-limit", CONTAINER_PID_LIMIT,
-        IMAGE_NAME
+        "run",
+        "-d",
+        "--name",
+        containerName,
+        "--network",
+        "host",
+        "--security-opt",
+        "seccomp=unconfined",
+        "-v",
+        `${fullPath}:${projectMountPath}`,
+        "-v",
+        `${CLAUDE_DIR}:/home/ccc/.claude`,
+        "-v",
+        `${CLAUDE_JSON_FILE}:/home/ccc/.claude.json`, // Persist onboarding state
+        "-v",
+        `${hostClaudeIdeDir}:/home/ccc/.claude/ide`, // Mount host IDE lock files for /ide command
+        "-v",
+        `${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise`,
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "-w",
+        projectMountPath,
+        "--pids-limit",
+        CONTAINER_PID_LIMIT,
+        IMAGE_NAME,
     ];
 
     const result = spawnSync("docker", args, {stdio: "inherit"});
@@ -237,7 +314,9 @@ function detectProjectToolsAndWriteMiseConfig(projectPath: string): void {
     const hintsText = formatVersionHints(hints);
     const filesContext = formatScannedFiles(scannedFiles);
 
-    console.log(`Found ${scannedFiles.size} version file(s), ${hints.length} version hint(s). Analyzing with Claude...`);
+    console.log(
+        `Found ${scannedFiles.size} version file(s), ${hints.length} version hint(s). Analyzing with Claude...`,
+    );
 
     const defaultContent = `[tools]
 # No tools detected - add your tools here
@@ -268,7 +347,7 @@ ${defaultContent}`;
         encoding: "utf-8",
         cwd: projectPath,
         timeout: 60000,
-        stdio: "inherit"
+        stdio: "inherit",
     });
 
     // Ensure file exists with default content if Claude didn't create it
@@ -288,7 +367,10 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
     }
 
     console.log(`\nNo mise.toml found in project.`);
-    const answer = await prompt("Create mise.toml? (auto-detect tools) [Y/n]: ", true);
+    const answer = await prompt(
+        "Create mise.toml? (auto-detect tools) [Y/n]: ",
+        true,
+    );
 
     if (answer === "" || answer === "y" || answer === "yes") {
         detectProjectToolsAndWriteMiseConfig(projectPath);
@@ -297,11 +379,18 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
     }
 }
 
-async function exec(projectPath: string, cmd: string[], options: {interactive?: boolean, env?: Record<string, string>} = {}): Promise<void> {
+async function exec(
+    projectPath: string,
+    cmd: string[],
+    options: { interactive?: boolean; env?: Record<string, string> } = {},
+): Promise<void> {
     const fullPath = resolve(projectPath);
 
+    // Ensure directories exist before syncing credentials
+    ensureDirs();
+
     // Sync and refresh credentials from host system
-    await syncCredentials({ claudeDir: CLAUDE_DIR });
+    await syncCredentials({claudeDir: CLAUDE_DIR});
 
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
@@ -318,10 +407,7 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
 
-    const execArgs = [
-        "exec",
-        "-w", projectMountPath
-    ];
+    const execArgs = ["exec", "-w", projectMountPath];
 
     // Pass through host environment variables (except system ones)
     for (const [key, value] of Object.entries(process.env)) {
@@ -346,7 +432,13 @@ async function exec(projectPath: string, cmd: string[], options: {interactive?: 
     // For claude, run mise setup first
     if (cmd[0] === "claude") {
         // Trust mise.toml files, install tools, then run claude
-        execArgs.push("sh", "-c", `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(" ")}`);
+        // Use bash -l to load .bashrc (mise activation) and use full path to claude binary
+        execArgs.push(
+            "sh",
+            "-c",
+            `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(
+                " ")}`,
+        );
     } else {
         execArgs.push(...cmd);
     }
@@ -368,14 +460,25 @@ function showStatus(): void {
     }
 
     // List all ccc containers
-    const result = spawnSync("docker", ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.Names}}\t{{.Status}}"], {encoding: "utf-8"});
+    const result = spawnSync(
+        "docker",
+        [
+            "ps",
+            "-a",
+            "--filter",
+            "name=^ccc-",
+            "--format",
+            "{{.Names}}\t{{.Status}}",
+        ],
+        {encoding: "utf-8"},
+    );
     const containers = (result.stdout ?? "").trim().split("\n").filter(Boolean);
 
     console.log("\nContainers:");
     if (containers.length === 0) {
         console.log("  (none)");
     } else {
-        containers.forEach(c => {
+        containers.forEach((c) => {
             const [name, ...status] = c.split("\t");
             console.log(`  - ${name}: ${status.join("\t")}`);
         });
@@ -488,13 +591,19 @@ async function main(): Promise<void> {
             break;
 
         case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {env: customEnv});
+            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {
+                env: customEnv,
+            });
             break;
 
         default:
             // Check if it's a claude flag (--continue, --resume, etc.)
             if (command.startsWith("-")) {
-                await exec(cwd, ["claude", "--dangerously-skip-permissions", ...filteredArgs], {env: customEnv});
+                await exec(
+                    cwd,
+                    ["claude", "--dangerously-skip-permissions", ...filteredArgs],
+                    {env: customEnv},
+                );
             } else {
                 await exec(cwd, filteredArgs, {env: customEnv});
             }

@@ -8,6 +8,7 @@ import {basename, join, resolve} from "path";
 // === Shared Constants ===
 export const DATA_DIR = join(homedir(), ".ccc");
 export const CLAUDE_DIR = join(DATA_DIR, "claude");
+export const CLAUDE_JSON_FILE = join(DATA_DIR, "claude.json"); // ~/.claude.json in container (onboarding state)
 export const REMOTE_CONFIG_DIR = join(DATA_DIR, "remote");
 export const IMAGE_NAME = "ccc";
 export const CONTAINER_PID_LIMIT = "512";
