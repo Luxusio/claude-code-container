@@ -44,8 +44,12 @@ Container (ccc-<project>-<hash>):
 
 ### 이미지 빌드
 
-첫 `ccc` 실행 시:
-1. `ccc` 이미지가 없으면 Dockerfile로 빌드
+`sudo node scripts/install.js` 실행 시:
+1. 실행 중인 `ccc-*` 컨테이너 정지
+2. 기존 `ccc` 이미지 삭제 후 Dockerfile로 재빌드
+
+`ccc` 실행 시:
+1. `ccc` 이미지가 없으면 에러 (install.js 안내)
 2. 이미지로 프로젝트별 컨테이너 생성
 
 Dockerfile 포함 내용:
@@ -135,7 +139,7 @@ npm run uninstall:global
 - `startProjectContainer()`: 프로젝트 컨테이너 생성/시작
 - `stopProjectContainer()`: 컨테이너 중지
 - `removeProjectContainer()`: 컨테이너 삭제
-- `buildImage()`: Dockerfile로 이미지 빌드
+- `ensureImage()`: 이미지 존재 확인 (없으면 install.js 안내)
 
 ### 세션 관리
 
@@ -219,9 +223,7 @@ ccc
 ### 이미지 재빌드
 
 ```bash
-ccc rm
-docker rmi ccc
-ccc  # 자동으로 새 이미지 빌드
+sudo node scripts/install.js  # 컨테이너 정지 + 이미지 재빌드
 ```
 
 ### 스테일 세션 수동 정리

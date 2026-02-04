@@ -44,8 +44,10 @@ ccc npm test
 ```
 ~/.ccc/
 ├── claude/       # Claude credentials (/claude로 마운트)
-├── locks/        # 세션 락 파일 (세션별)
-└── mise/         # 공유 mise 캐시
+└── locks/        # 세션 락 파일 (세션별)
+
+Docker Volume:
+└── ccc-mise-cache  # mise 캐시 (named volume, macOS/Windows 성능 최적화)
 ```
 
 ### 세션 라이프사이클

@@ -18,15 +18,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```
 ~/.ccc/
 ├── claude/             # Claude credentials (mounted to /claude)
-├── locks/              # Session lock files (per session)
-│   ├── my-project-a1b2c3d4e5f6-uuid1.lock
-│   └── my-project-a1b2c3d4e5f6-uuid2.lock
-└── mise/               # Shared mise cache
+└── locks/              # Session lock files (per session)
+    ├── my-project-a1b2c3d4e5f6-uuid1.lock
+    └── my-project-a1b2c3d4e5f6-uuid2.lock
+
+Docker Volume:
+└── ccc-mise-cache      # Shared mise cache (named volume for macOS/Windows performance)
 
 Container (ccc-<project>-<hash>):
 ├── /project/<project>-<hash>  # Mounted from actual project path
 ├── /claude                     # Mounted from ~/.ccc/claude
-└── /home/ccc/.local/share/mise # Mounted mise cache
+└── /home/ccc/.local/share/mise # Named volume (ccc-mise-cache)
 ```
 
 ## Session Lifecycle
@@ -114,7 +116,7 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 - Projects use `.mise.toml` for tool version management
 - On first `ccc` run, prompts to auto-detect and create `.mise.toml`
 - `mise install` runs automatically before `claude` command
-- mise cache shared across all sessions (`~/.ccc/mise`)
+- mise cache stored in Docker named volume (`ccc-mise-cache`) for better macOS/Windows performance
 
 ### Container Image
 

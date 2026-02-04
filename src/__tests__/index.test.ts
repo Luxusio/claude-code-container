@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { hashPath, getProjectId, getContainerName } from '../index.js'
+import { MISE_VOLUME_NAME } from '../utils.js'
 
 describe('hashPath', () => {
   it('returns 12 character hash', () => {
@@ -58,5 +59,11 @@ describe('getContainerName', () => {
     const n1 = getContainerName('/home/user/project')
     const n2 = getContainerName('/home/user/project')
     expect(n1).toBe(n2)
+  })
+})
+
+describe('named volume integration', () => {
+  it('MISE_VOLUME_NAME should be ccc-mise-cache', () => {
+    expect(MISE_VOLUME_NAME).toBe('ccc-mise-cache')
   })
 })
