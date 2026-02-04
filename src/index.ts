@@ -66,13 +66,13 @@ function ensureDirs(): void {
 }
 
 function ensureBrowserMcp(): void {
-    // Claude user MCP config is at ~/.claude/mcp.json
-    const claudeConfigPath = join(CLAUDE_DIR, "mcp.json");
+    // Claude Code reads user-level MCP config from ~/.claude.json (NOT ~/.claude/mcp.json)
+    // CLAUDE_JSON_FILE (~/.ccc/claude.json) is mounted to /home/ccc/.claude.json in container
     let config: Record<string, unknown> = {};
 
-    if (existsSync(claudeConfigPath)) {
+    if (existsSync(CLAUDE_JSON_FILE)) {
         try {
-            config = JSON.parse(readFileSync(claudeConfigPath, "utf-8"));
+            config = JSON.parse(readFileSync(CLAUDE_JSON_FILE, "utf-8"));
         } catch {
             config = {};
         }
@@ -84,7 +84,7 @@ function ensureBrowserMcp(): void {
 
     const mcpServers = config.mcpServers as Record<string, unknown>;
     // Use mise exec to run with Node.js 22+ regardless of project's Node version
-    // Docker container needs --no-sandbox for Chromium
+    // Docker container needs --executablePath for Chromium and sandbox-related flags
     mcpServers["chrome-devtools"] = {
         command: "mise",
         args: [
@@ -94,16 +94,19 @@ function ensureBrowserMcp(): void {
             "npx",
             "-y",
             "chrome-devtools-mcp@latest",
-            "--headless=true",
-            "--isolated=true",
+            "--headless",
+            "--isolated",
+            "--executablePath=/usr/bin/chromium",
             "--chromeArg=--no-sandbox",
+            "--chromeArg=--disable-setuid-sandbox",
+            "--chromeArg=--disable-dev-shm-usage",
         ],
     };
 
     // Remove old playwright MCP if exists
     delete mcpServers["playwright"];
 
-    writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2));
+    writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2));
 }
 
 // === Lock File Management ===
