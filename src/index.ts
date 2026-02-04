@@ -100,6 +100,8 @@ function ensureBrowserMcp(): void {
             "--chromeArg=--no-sandbox",
             "--chromeArg=--disable-setuid-sandbox",
             "--chromeArg=--disable-dev-shm-usage",
+            // Map localhost to host.docker.internal so container can access host's web servers
+            "--chromeArg=--host-resolver-rules=MAP localhost host.docker.internal",
         ],
     };
 
