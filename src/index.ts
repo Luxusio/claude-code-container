@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import {spawnSync} from "child_process";
-import {randomUUID} from "crypto";
+import { spawnSync } from "child_process";
+import { randomUUID } from "crypto";
 import {
     existsSync,
     mkdirSync,
@@ -10,9 +10,9 @@ import {
     unlinkSync,
     readFileSync,
 } from "fs";
-import {homedir} from "os";
-import {basename, dirname, join, resolve} from "path";
-import {fileURLToPath} from "url";
+import { homedir } from "os";
+import { basename, dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
     scanVersionFiles,
@@ -37,10 +37,10 @@ import {
     CONTAINER_PID_LIMIT,
     MISE_VOLUME_NAME,
 } from "./utils.js";
-import {syncCredentials} from "./credentials.js";
+import { syncCredentials } from "./credentials.js";
 
 // Re-export for tests
-export {hashPath, getProjectId} from "./utils.js";
+export { hashPath, getProjectId } from "./utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -55,9 +55,9 @@ let currentProjectPath: string | null = null;
 
 // === Helpers ===
 function ensureDirs(): void {
-    mkdirSync(DATA_DIR, {recursive: true});
-    mkdirSync(CLAUDE_DIR, {recursive: true});
-    mkdirSync(locksDir, {recursive: true});
+    mkdirSync(DATA_DIR, { recursive: true });
+    mkdirSync(CLAUDE_DIR, { recursive: true });
+    mkdirSync(locksDir, { recursive: true });
     // Ensure claude.json exists for file mount (onboarding state)
     if (!existsSync(CLAUDE_JSON_FILE)) {
         writeFileSync(CLAUDE_JSON_FILE, "{}");
@@ -163,7 +163,7 @@ function cleanupSession(): void {
     if (!hasOthers) {
         const containerName = getContainerName(currentProjectPath);
         if (isContainerRunning(containerName)) {
-            spawnSync("docker", ["stop", containerName], {stdio: "ignore"});
+            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
         }
     }
 
@@ -187,11 +187,27 @@ export function getContainerName(projectPath: string): string {
     return `ccc-${getProjectId(projectPath)}`;
 }
 
+function isDockerRunning(): boolean {
+    const result = spawnSync("docker", ["info"], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    return result.status === 0;
+}
+
+function ensureDockerRunning(): void {
+    if (!isDockerRunning()) {
+        console.error("Error: Docker is not running.");
+        console.error("Please start Docker Desktop and try again.");
+        process.exit(1);
+    }
+}
+
 function isContainerRunning(containerName: string): boolean {
     const result = spawnSync(
         "docker",
         ["ps", "-q", "-f", `name=^${containerName}$`],
-        {encoding: "utf-8"},
+        { encoding: "utf-8" },
     );
     return (result.stdout ?? "").trim().length > 0;
 }
@@ -200,7 +216,7 @@ function isContainerExists(containerName: string): boolean {
     const result = spawnSync(
         "docker",
         ["ps", "-aq", "-f", `name=^${containerName}$`],
-        {encoding: "utf-8"},
+        { encoding: "utf-8" },
     );
     return (result.stdout ?? "").trim().length > 0;
 }
@@ -233,7 +249,7 @@ function startProjectContainer(projectPath: string): string {
     }
 
     if (isContainerExists(containerName)) {
-        spawnSync("docker", ["start", containerName], {stdio: "inherit"});
+        spawnSync("docker", ["start", containerName], { stdio: "inherit" });
         return containerName;
     }
 
@@ -243,7 +259,7 @@ function startProjectContainer(projectPath: string): string {
     const projectMountPath = `/project/${projectId}`;
 
     // Ensure host IDE directory exists for mount
-    mkdirSync(hostClaudeIdeDir, {recursive: true});
+    mkdirSync(hostClaudeIdeDir, { recursive: true });
 
     const args = [
         "run",
@@ -273,7 +289,7 @@ function startProjectContainer(projectPath: string): string {
         IMAGE_NAME,
     ];
 
-    const result = spawnSync("docker", args, {stdio: "inherit"});
+    const result = spawnSync("docker", args, { stdio: "inherit" });
     if (result.status !== 0) {
         console.error("Failed to create container");
         process.exit(1);
@@ -283,6 +299,7 @@ function startProjectContainer(projectPath: string): string {
 }
 
 function stopProjectContainer(projectPath: string): void {
+    ensureDockerRunning();
     const containerName = getContainerName(resolve(projectPath));
 
     if (!isContainerExists(containerName)) {
@@ -291,11 +308,12 @@ function stopProjectContainer(projectPath: string): void {
     }
 
     console.log("Stopping container...");
-    spawnSync("docker", ["stop", containerName], {stdio: "inherit"});
+    spawnSync("docker", ["stop", containerName], { stdio: "inherit" });
     console.log("Container stopped");
 }
 
 function removeProjectContainer(projectPath: string): void {
+    ensureDockerRunning();
     const containerName = getContainerName(resolve(projectPath));
 
     if (!isContainerExists(containerName)) {
@@ -305,7 +323,7 @@ function removeProjectContainer(projectPath: string): void {
 
     stopProjectContainer(projectPath);
     console.log("Removing container...");
-    spawnSync("docker", ["rm", containerName], {stdio: "inherit"});
+    spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
     console.log("Container removed");
 }
 
@@ -389,13 +407,16 @@ async function exec(
     cmd: string[],
     options: { interactive?: boolean; env?: Record<string, string> } = {},
 ): Promise<void> {
+    // Check Docker is running first
+    ensureDockerRunning();
+
     const fullPath = resolve(projectPath);
 
     // Ensure directories exist before syncing credentials
     ensureDirs();
 
     // Sync and refresh credentials from host system
-    await syncCredentials({claudeDir: CLAUDE_DIR});
+    // await syncCredentials({claudeDir: CLAUDE_DIR});
 
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
@@ -442,19 +463,21 @@ async function exec(
             "sh",
             "-c",
             `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(
-                " ")}`,
+                " ",
+            )}`,
         );
     } else {
         execArgs.push(...cmd);
     }
 
-    spawnSync("docker", execArgs, {stdio: "inherit"});
+    spawnSync("docker", execArgs, { stdio: "inherit" });
 
     // Cleanup on normal exit
     cleanupSession();
 }
 
 function showStatus(): void {
+    ensureDockerRunning();
     console.log("\n=== CCC Status ===\n");
 
     // Image status
@@ -475,7 +498,7 @@ function showStatus(): void {
             "--format",
             "{{.Names}}\t{{.Status}}",
         ],
-        {encoding: "utf-8"},
+        { encoding: "utf-8" },
     );
     const containers = (result.stdout ?? "").trim().split("\n").filter(Boolean);
 
@@ -499,6 +522,7 @@ ccc - Claude Code Container
 USAGE:
     ccc                     Run claude in current project
     ccc shell               Open bash shell in current project
+    ccc update              Update claude to latest version
     ccc <command>           Run command in current project
 
 CONTAINER MANAGEMENT:
@@ -592,7 +616,11 @@ async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], {env: customEnv});
+            await exec(cwd, ["bash"], { env: customEnv });
+            break;
+
+        case "update":
+            await exec(cwd, ["claude", "update"], { env: customEnv });
             break;
 
         case undefined:
@@ -606,11 +634,15 @@ async function main(): Promise<void> {
             if (command.startsWith("-")) {
                 await exec(
                     cwd,
-                    ["claude", "--dangerously-skip-permissions", ...filteredArgs],
-                    {env: customEnv},
+                    [
+                        "claude",
+                        "--dangerously-skip-permissions",
+                        ...filteredArgs,
+                    ],
+                    { env: customEnv },
                 );
             } else {
-                await exec(cwd, filteredArgs, {env: customEnv});
+                await exec(cwd, filteredArgs, { env: customEnv });
             }
             break;
     }
