@@ -132,7 +132,7 @@ Built from Dockerfile on first run. Includes:
 ### Resource Limits
 
 - **Memory/CPU**: No limits (shares host resources)
-- **PIDs**: Limited to 512 processes
+- **PIDs**: Unlimited (same as host)
 
 ### Signal Handling
 

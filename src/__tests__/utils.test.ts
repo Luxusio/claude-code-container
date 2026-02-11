@@ -29,8 +29,8 @@ describe('utils constants', () => {
         expect(IMAGE_NAME).toBe('ccc');
     });
 
-    it('CONTAINER_PID_LIMIT should be 512', () => {
-        expect(CONTAINER_PID_LIMIT).toBe('512');
+    it('CONTAINER_PID_LIMIT should be -1 (unlimited)', () => {
+        expect(CONTAINER_PID_LIMIT).toBe('-1');
     });
 
     it('MISE_VOLUME_NAME should be ccc-mise-cache', () => {
