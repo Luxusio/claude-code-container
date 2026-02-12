@@ -19,6 +19,7 @@ function makeOpts(
         pidsLimit: "-1",
         imageName: "ccc",
         hostSshDir: null,
+        sshAgentSocket: null,
         ...overrides,
     };
 }
@@ -181,6 +182,85 @@ describe("buildDockerRunArgs — GIT_SSH_COMMAND", () => {
 });
 
 // ===========================================================================
+// 1c. SSH Agent socket — forwarding tests
+// ===========================================================================
+describe("buildDockerRunArgs — SSH agent socket", () => {
+    it("mounts agent socket when sshAgentSocket is provided", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({ sshAgentSocket: "/tmp/ssh-XXXX/agent.1234" }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain(
+            "/tmp/ssh-XXXX/agent.1234:/tmp/ssh-agent.sock",
+        );
+    });
+
+    it("omits agent socket when sshAgentSocket is null", () => {
+        const args = buildDockerRunArgs(makeOpts({ sshAgentSocket: null }));
+        const mounts = extractVolumeMounts(args);
+        const agentMount = mounts.find((m) => m.includes("ssh-agent.sock"));
+        expect(agentMount).toBeUndefined();
+    });
+
+    it("sets SSH_AUTH_SOCK env to /tmp/ssh-agent.sock", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({ sshAgentSocket: "/tmp/ssh-XXXX/agent.1234" }),
+        );
+        const envs = extractEnvVars(args);
+        expect(envs.SSH_AUTH_SOCK).toBe("/tmp/ssh-agent.sock");
+    });
+
+    it("does not set SSH_AUTH_SOCK when no agent socket", () => {
+        const args = buildDockerRunArgs(makeOpts({ sshAgentSocket: null }));
+        const envs = extractEnvVars(args);
+        expect(envs.SSH_AUTH_SOCK).toBeUndefined();
+    });
+
+    it("works with macOS Docker Desktop socket path", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({
+                sshAgentSocket: "/run/host-services/ssh-auth.sock",
+            }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain(
+            "/run/host-services/ssh-auth.sock:/tmp/ssh-agent.sock",
+        );
+        const envs = extractEnvVars(args);
+        expect(envs.SSH_AUTH_SOCK).toBe("/tmp/ssh-agent.sock");
+    });
+
+    it("can coexist with SSH key mount", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({
+                hostSshDir: "/home/user/.ssh",
+                sshAgentSocket: "/tmp/ssh-XXXX/agent.1234",
+            }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain("/home/user/.ssh:/home/ccc/.ssh:ro");
+        expect(mounts).toContain(
+            "/tmp/ssh-XXXX/agent.1234:/tmp/ssh-agent.sock",
+        );
+        const envs = extractEnvVars(args);
+        expect(envs.SSH_AUTH_SOCK).toBe("/tmp/ssh-agent.sock");
+        expect(envs.GIT_SSH_COMMAND).toBeDefined();
+    });
+
+    it("agent socket mount appears before image name", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({ sshAgentSocket: "/tmp/ssh-XXXX/agent.1234" }),
+        );
+        const mountIdx = args.indexOf(
+            "/tmp/ssh-XXXX/agent.1234:/tmp/ssh-agent.sock",
+        );
+        const imageIdx = args.lastIndexOf("ccc");
+        expect(mountIdx).toBeGreaterThan(0);
+        expect(mountIdx).toBeLessThan(imageIdx);
+    });
+});
+
+// ===========================================================================
 // 2. Structural integrity — args format
 // ===========================================================================
 describe("buildDockerRunArgs — structure", () => {
@@ -296,17 +376,33 @@ describe("buildDockerRunArgs — volume mounts", () => {
     });
 
     it("has exactly 6 volume mounts without SSH", () => {
-        const args = buildDockerRunArgs(makeOpts({ hostSshDir: null }));
+        const args = buildDockerRunArgs(makeOpts({ hostSshDir: null, sshAgentSocket: null }));
         const mounts = extractVolumeMounts(args);
         expect(mounts).toHaveLength(6);
     });
 
-    it("has exactly 7 volume mounts with SSH", () => {
+    it("has exactly 7 volume mounts with SSH keys only", () => {
         const args = buildDockerRunArgs(
-            makeOpts({ hostSshDir: "/home/user/.ssh" }),
+            makeOpts({ hostSshDir: "/home/user/.ssh", sshAgentSocket: null }),
         );
         const mounts = extractVolumeMounts(args);
         expect(mounts).toHaveLength(7);
+    });
+
+    it("has exactly 7 volume mounts with agent socket only", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({ hostSshDir: null, sshAgentSocket: "/tmp/agent.sock" }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toHaveLength(7);
+    });
+
+    it("has exactly 8 volume mounts with both SSH keys and agent socket", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({ hostSshDir: "/home/user/.ssh", sshAgentSocket: "/tmp/agent.sock" }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toHaveLength(8);
     });
 });
 

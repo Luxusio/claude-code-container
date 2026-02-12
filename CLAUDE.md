@@ -28,6 +28,8 @@ Docker Volume:
 Container (ccc-<project>-<hash>):
 ├── /project/<project>-<hash>  # Mounted from actual project path
 ├── /claude                     # Mounted from ~/.ccc/claude
+├── /home/ccc/.ssh              # Mounted from ~/.ssh (read-only)
+├── /tmp/ssh-agent.sock         # SSH agent socket (auto-detected per platform)
 └── /home/ccc/.local/share/mise # Named volume (ccc-mise-cache)
 ```
 

@@ -54,6 +54,7 @@ export interface DockerRunArgsOptions {
     pidsLimit: string;
     imageName: string;
     hostSshDir: string | null;
+    sshAgentSocket: string | null;
 }
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
@@ -93,6 +94,18 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         args.push(
             "-e",
             "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
+        );
+    }
+
+    // Forward SSH agent socket for key-based auth without exposing key files
+    // On macOS: Docker Desktop provides /run/host-services/ssh-auth.sock inside the VM
+    // On Linux: mount the host's $SSH_AUTH_SOCK directly
+    if (opts.sshAgentSocket) {
+        args.push(
+            "-v",
+            `${opts.sshAgentSocket}:/tmp/ssh-agent.sock`,
+            "-e",
+            "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
         );
     }
 
@@ -321,6 +334,20 @@ function startProjectContainer(projectPath: string): string {
 
     const hostSshDir = join(homedir(), ".ssh");
 
+    // Detect SSH agent socket per platform
+    // macOS Docker Desktop: provides a built-in socket at /run/host-services/ssh-auth.sock
+    // Linux: use $SSH_AUTH_SOCK if it exists on the host filesystem
+    let sshAgentSocket: string | null = null;
+    if (process.platform === "darwin") {
+        // Docker Desktop for Mac always exposes this path inside the VM
+        sshAgentSocket = "/run/host-services/ssh-auth.sock";
+    } else {
+        const hostSock = process.env.SSH_AUTH_SOCK;
+        if (hostSock && existsSync(hostSock)) {
+            sshAgentSocket = hostSock;
+        }
+    }
+
     const args = buildDockerRunArgs({
         containerName,
         fullPath,
@@ -332,6 +359,7 @@ function startProjectContainer(projectPath: string): string {
         pidsLimit: CONTAINER_PID_LIMIT,
         imageName: IMAGE_NAME,
         hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
+        sshAgentSocket,
     });
 
     const result = spawnSync("docker", args, { stdio: "inherit" });

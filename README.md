@@ -93,6 +93,40 @@ ccc  # 컨테이너 안에서 JIRA_API_KEY 사용 가능
 ccc --env API_KEY=xxx --env DEBUG=true
 ```
 
+## SSH 접근
+
+컨테이너에서 Git SSH(private repo clone, 플러그인 설치 등)가 필요할 때 자동으로 호스트의 SSH 설정을 사용합니다.
+
+### 자동 마운트 (설정 불필요)
+
+| 항목 | macOS (Docker Desktop) | Linux |
+|------|----------------------|-------|
+| SSH 키 (`~/.ssh`) | 읽기전용 마운트 | 읽기전용 마운트 |
+| SSH Agent | Docker Desktop 내장 소켓 자동 | `$SSH_AUTH_SOCK` 자동 감지 |
+
+### SSH 인증이 안 될 때
+
+```bash
+# 1. 호스트에서 SSH agent에 키가 등록되어 있는지 확인
+ssh-add -l
+
+# 키가 없으면 등록
+ssh-add ~/.ssh/id_ed25519   # 또는 id_rsa
+
+# 2. 컨테이너 재생성 (새 마운트 적용)
+ccc rm
+ccc
+```
+
+### 확인 방법
+
+```bash
+ccc shell
+ssh-add -l                          # agent 키 목록
+ssh -T git@github.com               # GitHub 접속 테스트
+ssh -T git@gitlab.example.com       # GitLab 접속 테스트
+```
+
 ## 원격 개발 (Remote Development)
 
 저사양 PC에서 고사양 원격 PC의 리소스를 활용하여 개발할 수 있습니다.
