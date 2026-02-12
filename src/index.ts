@@ -42,6 +42,64 @@ import { syncCredentials } from "./credentials.js";
 // Re-export for tests
 export { hashPath, getProjectId } from "./utils.js";
 
+// === Docker Args Builder (exported for testing) ===
+export interface DockerRunArgsOptions {
+    containerName: string;
+    fullPath: string;
+    projectMountPath: string;
+    claudeDir: string;
+    claudeJsonFile: string;
+    hostClaudeIdeDir: string;
+    miseVolumeName: string;
+    pidsLimit: string;
+    imageName: string;
+    hostSshDir: string | null;
+}
+
+export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
+    const args = [
+        "run",
+        "-d",
+        "--name",
+        opts.containerName,
+        "--network",
+        "host",
+        "--security-opt",
+        "seccomp=unconfined",
+        "-v",
+        `${opts.fullPath}:${opts.projectMountPath}`,
+        "-v",
+        `${opts.claudeDir}:/home/ccc/.claude`,
+        "-v",
+        `${opts.claudeJsonFile}:/home/ccc/.claude.json`,
+        "-v",
+        `${opts.hostClaudeIdeDir}:/home/ccc/.claude/ide`,
+        "-v",
+        `${opts.miseVolumeName}:/home/ccc/.local/share/mise`,
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "-w",
+        opts.projectMountPath,
+        "--pids-limit",
+        opts.pidsLimit,
+    ];
+
+    // Mount host SSH keys (read-only) for git SSH access
+    if (opts.hostSshDir) {
+        args.push("-v", `${opts.hostSshDir}:/home/ccc/.ssh:ro`);
+        // Use copied SSH keys (/tmp/.ssh-copy) to avoid UID mismatch permissions
+        // StrictHostKeyChecking=accept-new: auto-accept first-seen host keys
+        // UserKnownHostsFile=/tmp/.ssh-copy/known_hosts: writable known_hosts
+        args.push(
+            "-e",
+            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
+        );
+    }
+
+    args.push(opts.imageName);
+    return args;
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -261,38 +319,46 @@ function startProjectContainer(projectPath: string): string {
     // Ensure host IDE directory exists for mount
     mkdirSync(hostClaudeIdeDir, { recursive: true });
 
-    const args = [
-        "run",
-        "-d",
-        "--name",
+    const hostSshDir = join(homedir(), ".ssh");
+
+    const args = buildDockerRunArgs({
         containerName,
-        "--network",
-        "host",
-        "--security-opt",
-        "seccomp=unconfined",
-        "-v",
-        `${fullPath}:${projectMountPath}`,
-        "-v",
-        `${CLAUDE_DIR}:/home/ccc/.claude`,
-        "-v",
-        `${CLAUDE_JSON_FILE}:/home/ccc/.claude.json`, // Persist onboarding state
-        "-v",
-        `${hostClaudeIdeDir}:/home/ccc/.claude/ide`, // Mount host IDE lock files for /ide command
-        "-v",
-        `${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise`,
-        "-v",
-        "/var/run/docker.sock:/var/run/docker.sock",
-        "-w",
+        fullPath,
         projectMountPath,
-        "--pids-limit",
-        CONTAINER_PID_LIMIT,
-        IMAGE_NAME,
-    ];
+        claudeDir: CLAUDE_DIR,
+        claudeJsonFile: CLAUDE_JSON_FILE,
+        hostClaudeIdeDir,
+        miseVolumeName: MISE_VOLUME_NAME,
+        pidsLimit: CONTAINER_PID_LIMIT,
+        imageName: IMAGE_NAME,
+        hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
+    });
 
     const result = spawnSync("docker", args, { stdio: "inherit" });
     if (result.status !== 0) {
         console.error("Failed to create container");
         process.exit(1);
+    }
+
+    // Fix SSH key permissions: copy from ro mount to writable location
+    // This solves UID mismatch (host user UID != container ccc UID 1000)
+    if (existsSync(hostSshDir)) {
+        spawnSync(
+            "docker",
+            [
+                "exec",
+                containerName,
+                "sh",
+                "-c",
+                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
+                    "chmod 700 /tmp/.ssh-copy && " +
+                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
+                    "true",
+            ],
+            { stdio: "ignore" },
+        );
     }
 
     return containerName;
