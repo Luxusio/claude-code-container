@@ -234,6 +234,8 @@ function cleanupSession(): void {
     if (!hasOthers) {
         const containerName = getContainerName(currentProjectPath);
         if (isContainerRunning(containerName)) {
+            // Save claude binary to volume before stopping (handles `claude update`)
+            saveClaudeBinaryToVolume(containerName);
             spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
         }
     }
@@ -306,6 +308,87 @@ function ensureImage(): void {
         );
         process.exit(1);
     }
+}
+
+// Claude binary persist path inside the mise volume
+const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
+const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
+
+/**
+ * Ensure claude binary is available in the container.
+ * 1. If claude is already on PATH → do nothing
+ * 2. If volume has a cached copy → symlink it
+ * 3. Otherwise → fresh install and cache to volume
+ */
+function ensureClaudeInContainer(containerName: string): void {
+    // Check if claude is already available
+    const check = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", "command -v claude >/dev/null 2>&1"],
+        { encoding: "utf-8" },
+    );
+    if (check.status === 0) {
+        return;
+    }
+
+    // Check if volume has cached claude binary
+    const volumeCheck = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_PERSIST_DIR}/claude`],
+        { encoding: "utf-8" },
+    );
+
+    if (volumeCheck.status === 0) {
+        // Restore from volume cache via symlink
+        console.log("Restoring claude from cache...");
+        spawnSync(
+            "docker",
+            [
+                "exec",
+                containerName,
+                "sh",
+                "-c",
+                `mkdir -p $(dirname ${CLAUDE_BIN_PATH}) && ln -sf ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
+            ],
+            { stdio: "inherit" },
+        );
+    } else {
+        // Fresh install and save to volume
+        console.log("Installing claude (first run)...");
+        const installResult = spawnSync(
+            "docker",
+            [
+                "exec",
+                containerName,
+                "sh",
+                "-c",
+                `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
+            ],
+            { stdio: "inherit" },
+        );
+        if (installResult.status !== 0) {
+            console.error("Failed to install claude in container");
+            process.exit(1);
+        }
+    }
+}
+
+/**
+ * Save claude binary back to volume (in case `claude update` replaced the symlink).
+ * Uses cp -L to follow symlinks and copy the actual file content.
+ */
+function saveClaudeBinaryToVolume(containerName: string): void {
+    spawnSync(
+        "docker",
+        [
+            "exec",
+            containerName,
+            "sh",
+            "-c",
+            `mkdir -p ${CLAUDE_PERSIST_DIR} && [ -x ${CLAUDE_BIN_PATH} ] && cp -L ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude || true`,
+        ],
+        { stdio: "ignore" },
+    );
 }
 
 function startProjectContainer(projectPath: string): string {
@@ -517,6 +600,9 @@ async function exec(
 
     // Start or get container
     const containerName = startProjectContainer(fullPath);
+
+    // Ensure claude binary is available (cached in volume or fresh install)
+    ensureClaudeInContainer(containerName);
 
     // Create session lock and setup cleanup
     const projectId = getProjectId(fullPath);

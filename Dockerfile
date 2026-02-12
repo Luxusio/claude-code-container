@@ -89,9 +89,9 @@ RUN sudo apt-get update && sudo apt-get install -y \
     && sudo rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LAYER 9: claude-code (자주 업데이트됨 - 제일 아래)
+# claude-code is installed at runtime and cached in mise volume.
+# See ensureClaudeInContainer() in src/index.ts
 # ============================================================
-RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # ============================================================
 # Environment variables
