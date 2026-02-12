@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { hashPath } from '../utils.js'
-import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen } from '../remote.js'
+import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus } from '../remote.js'
 import * as childProcess from 'child_process'
 
 vi.mock('child_process', async () => {
@@ -169,5 +169,138 @@ describe('checkTool helper (via checkTailscale/checkMutagen)', () => {
 
     expect(result.installed).toBe(false)
     expect(result.version).toBeUndefined()
+  })
+})
+
+describe('isHostReachable', () => {
+  const mockSpawnSync = vi.mocked(childProcess.spawnSync)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns true when ping succeeds', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: 'PING host (1.2.3.4): 56 data bytes\n64 bytes from 1.2.3.4',
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    expect(isHostReachable('my-host')).toBe(true)
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      'ping',
+      ['-c', '1', '-W', '1', 'my-host'],
+      { encoding: 'utf-8' }
+    )
+  })
+
+  it('returns false when ping fails', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'ping: cannot resolve my-host',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    expect(isHostReachable('my-host')).toBe(false)
+  })
+
+  it('returns false when ping command errors', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 2,
+      stdout: '',
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null,
+      error: new Error('ENOENT')
+    })
+
+    expect(isHostReachable('my-host')).toBe(false)
+  })
+})
+
+describe('getMutagenSyncStatus', () => {
+  const mockSpawnSync = vi.mocked(childProcess.spawnSync)
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('returns status when sync session exists', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: 'Name: ccc-project-abc123\nStatus: Watching for changes\n',
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    const result = getMutagenSyncStatus('ccc-project-abc123')
+    expect(result).toBe('Watching for changes')
+    expect(mockSpawnSync).toHaveBeenCalledWith(
+      'mutagen',
+      ['sync', 'list', 'ccc-project-abc123'],
+      { encoding: 'utf-8' }
+    )
+  })
+
+  it('returns null when session does not exist', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'Error: unable to locate requested sessions',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    expect(getMutagenSyncStatus('nonexistent')).toBeNull()
+  })
+
+  it('returns null when mutagen command errors', () => {
+    mockSpawnSync.mockReturnValue({
+      status: null,
+      stdout: '',
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null,
+      error: new Error('Command not found')
+    })
+
+    expect(getMutagenSyncStatus('session-name')).toBeNull()
+  })
+
+  it('returns "Unknown" when status line not found in output', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: 'Name: ccc-project-abc123\nSome other info\n',
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    expect(getMutagenSyncStatus('ccc-project-abc123')).toBe('Unknown')
+  })
+
+  it('handles stdout being null', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: null as any,
+      stderr: '',
+      pid: 123,
+      output: [],
+      signal: null
+    })
+
+    expect(getMutagenSyncStatus('session')).toBe('Unknown')
   })
 })
