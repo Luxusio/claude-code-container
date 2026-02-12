@@ -57,27 +57,11 @@ function install() {
     if (needsRebuild) {
         console.log(`Dockerfile changed (${imageHash || "none"} -> ${currentHash})`);
 
-        // Stop all running ccc containers
-        console.log("Stopping running ccc containers...");
-        try {
-            const psResult = spawnSync("docker", ["ps", "-q", "--filter", "name=^ccc-"], { encoding: "utf-8" });
-            const containers = (psResult.stdout || "").trim();
-            if (containers) {
-                spawnSync("docker", ["stop", ...containers.split("\n")], { stdio: "inherit" });
-                console.log("Containers stopped.");
-            } else {
-                console.log("No running containers.");
-            }
-        } catch (e) {
-            // Docker not available or no containers - ignore
-        }
-
-        // Remove old image and rebuild
+        // No need to stop containers or remove old image.
+        // `docker build -t ccc` overwrites the tag; old image becomes <none>.
+        // Running containers keep using their original image layers.
         console.log("Rebuilding Docker image...");
         try {
-            // Remove old image (ignore errors if it doesn't exist)
-            spawnSync("docker", ["rmi", "ccc"], { stdio: "ignore" });
-
             const buildResult = spawnSync("docker", [
                 "build", "-t", "ccc",
                 "--label", `dockerfile.hash=${currentHash}`,
