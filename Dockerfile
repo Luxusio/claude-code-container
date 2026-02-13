@@ -96,7 +96,7 @@ RUN sudo apt-get update && sudo apt-get install -y \
 # ============================================================
 # Environment variables
 # ============================================================
-ENV PATH="/home/ccc/.local/share/mise/shims:/home/ccc/.local/bin:/home/ccc/.claude/local:$PATH"
+ENV PATH="/home/ccc/.local/bin:/home/ccc/.local/share/mise/shims:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
 ENV DISPLAY=":99"
 ENV CHROME_PATH="/usr/bin/chromium"

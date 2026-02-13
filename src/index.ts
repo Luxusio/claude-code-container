@@ -384,6 +384,63 @@ function ensureClaudeInContainer(containerName: string): void {
 }
 
 /**
+ * Ensure global npm tools (gemini-cli, codex) are installed.
+ *
+ * Uses `mise exec node@22 --` for both install and wrapper scripts so that
+ * project-local node versions (e.g. node 14) don't hide or break these tools.
+ * Wrapper scripts in ~/.local/bin/ (before shims on PATH) guarantee the tools
+ * are always available regardless of the active node version.
+ */
+export function ensureGlobalNpmTools(containerName: string): void {
+    const tools = [
+        { cmd: "gemini", pkg: "@google/gemini-cli" },
+        { cmd: "codex", pkg: "@openai/codex" },
+    ];
+
+    // Check wrapper scripts in ~/.local/bin/ (not shims)
+    const missing = tools.filter((t) => {
+        const check = spawnSync(
+            "docker",
+            ["exec", containerName, "sh", "-c", `test -x /home/ccc/.local/bin/${t.cmd}`],
+            { encoding: "utf-8" },
+        );
+        return check.status !== 0;
+    });
+
+    if (missing.length === 0) {
+        return;
+    }
+
+    // Install under node@22 (persists in mise volume)
+    const pkgs = missing.map((t) => t.pkg).join(" ");
+    console.log(`Installing ${missing.map((t) => t.cmd).join(", ")}...`);
+    const installResult = spawnSync(
+        "docker",
+        [
+            "exec", containerName, "sh", "-c",
+            `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
+        ],
+        { stdio: "inherit" },
+    );
+    if (installResult.status !== 0) {
+        console.warn("Warning: Failed to install some global npm tools (non-fatal)");
+        return;
+    }
+
+    // Create wrapper scripts that always run with node@22
+    for (const t of missing) {
+        spawnSync(
+            "docker",
+            [
+                "exec", containerName, "sh", "-c",
+                `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
+            ],
+            { stdio: "pipe" },
+        );
+    }
+}
+
+/**
  * Save claude binary back to volume (in case `claude update` replaced the symlink).
  * Uses cp -L to follow symlinks and copy the actual file content.
  */
@@ -613,6 +670,7 @@ async function exec(
 
     // Ensure claude binary is available (cached in volume or fresh install)
     ensureClaudeInContainer(containerName);
+    ensureGlobalNpmTools(containerName);
 
     // Create session lock and setup cleanup
     const projectId = getProjectId(fullPath);
