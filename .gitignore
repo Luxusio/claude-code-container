@@ -1,5 +1,7 @@
 node_modules/
 dist/
+coverage/
+.DS_Store
 
 .claude/settings.local.json
 .omc

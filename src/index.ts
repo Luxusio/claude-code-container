@@ -38,6 +38,16 @@ import {
     MISE_VOLUME_NAME,
 } from "./utils.js";
 import { syncCredentials } from "./credentials.js";
+import {
+    parseWorktreeArg,
+    validateBranchName,
+    listWorkspaces,
+    createWorkspace,
+    removeWorkspace,
+    getWorkspacePath,
+    workspaceExists,
+    readWorkspaceMetadata,
+} from "./worktree.js";
 
 // Re-export for tests
 export { hashPath, getProjectId } from "./utils.js";
@@ -695,6 +705,177 @@ function showStatus(): void {
     console.log("");
 }
 
+// === Worktree Handlers ===
+
+function handleWorktreeList(cwd: string): void {
+    const workspaces = listWorkspaces(cwd);
+
+    if (workspaces.length === 0) {
+        console.log("No workspaces found.");
+        console.log(`\nCreate one with: ccc @<branch>`);
+        return;
+    }
+
+    console.log("\n=== Workspaces ===\n");
+
+    for (const ws of workspaces) {
+        const containerName = getContainerName(ws.path);
+        let status = "";
+        try {
+            if (isContainerRunning(containerName)) {
+                status = " (running)";
+            } else if (isContainerExists(containerName)) {
+                status = " (stopped)";
+            }
+        } catch {
+            // Docker may not be running
+        }
+
+        console.log(`  @${ws.branch}`);
+        console.log(`    path: ${ws.path}`);
+        if (status) {
+            console.log(`    container: ${containerName}${status}`);
+        }
+    }
+
+    console.log("");
+}
+
+async function handleWorktreeCommand(
+    cwd: string,
+    branch: string,
+    subArgs: string[],
+    env: Record<string, string>,
+): Promise<void> {
+    // Validate branch name early (C1 fix)
+    try {
+        validateBranchName(branch);
+    } catch (e) {
+        console.error(`Error: ${(e as Error).message}`);
+        process.exit(1);
+    }
+
+    const subCommand = subArgs[0];
+
+    // ccc @branch rm [-f]
+    if (subCommand === "rm") {
+        const force = subArgs.includes("-f") || subArgs.includes("--force");
+        handleWorktreeRemove(cwd, branch, force);
+        return;
+    }
+
+    // Create or reuse workspace, then run ccc
+    const wsPath = getWorkspacePath(cwd, branch);
+
+    if (workspaceExists(cwd, branch)) {
+        // Check for branch collision (C2 fix): different branch names can map
+        // to the same workspace path (e.g., feature/login → feature-login)
+        const meta = readWorkspaceMetadata(wsPath);
+        if (meta && meta.branch !== branch) {
+            console.error(
+                `Error: Workspace exists for branch '${meta.branch}', not '${branch}'.`,
+            );
+            console.error(
+                `Different branches map to the same directory due to '/' → '-' conversion.`,
+            );
+            process.exit(1);
+        }
+        console.log(`Using existing workspace: ${wsPath}`);
+    } else {
+        console.log(`Creating workspace for branch '${branch}'...`);
+        try {
+            const result = createWorkspace(cwd, branch);
+            console.log(`Workspace created: ${result.workspacePath}`);
+
+            for (const repo of result.created) {
+                const actionLabel =
+                    repo.action === "worktree-existing"
+                        ? "existing branch"
+                        : repo.action === "worktree-remote"
+                          ? "from remote"
+                          : "new branch";
+                console.log(`  ${repo.name}: worktree (${actionLabel})`);
+            }
+            for (const name of result.symlinked) {
+                console.log(`  ${name}: symlink`);
+            }
+        } catch (e) {
+            console.error(`Error: ${(e as Error).message}`);
+            process.exit(1);
+        }
+    }
+
+    // Collect remaining args that are claude flags (e.g., --continue)
+    const claudeFlags = subArgs.filter((a) => a.startsWith("-"));
+
+    // Run ccc in the workspace directory
+    if (claudeFlags.length > 0) {
+        await exec(
+            wsPath,
+            ["claude", "--dangerously-skip-permissions", ...claudeFlags],
+            { env },
+        );
+    } else {
+        await exec(wsPath, ["claude", "--dangerously-skip-permissions"], {
+            env,
+        });
+    }
+}
+
+function handleWorktreeRemove(
+    cwd: string,
+    branch: string,
+    force: boolean,
+): void {
+    const wsPath = getWorkspacePath(cwd, branch);
+
+    // Check for active sessions before removing (M2/M3 fix)
+    const wsProjectId = getProjectId(wsPath);
+    const activeSessions = getActiveSessionsForProject(wsProjectId);
+    if (activeSessions.length > 0 && !force) {
+        console.error(
+            `Error: Workspace @${branch} has ${activeSessions.length} active session(s).`,
+        );
+        console.error(`Stop sessions first or use -f to force removal.`);
+        process.exit(1);
+    }
+
+    // Stop and remove associated container first
+    try {
+        ensureDockerRunning();
+        const containerName = getContainerName(wsPath);
+        if (isContainerExists(containerName)) {
+            console.log(`Stopping container ${containerName}...`);
+            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
+            spawnSync("docker", ["rm", containerName], { stdio: "ignore" });
+        }
+    } catch {
+        // Docker not running, skip container cleanup
+    }
+
+    console.log(`Removing workspace @${branch}...`);
+    try {
+        const result = removeWorkspace(cwd, branch, { force });
+
+        for (const name of result.removed) {
+            console.log(`  removed: ${name}`);
+        }
+        for (const err of result.errors) {
+            console.error(`  error: ${err}`);
+        }
+
+        if (result.errors.length > 0 && !force) {
+            console.error(`\nSome items could not be removed. Use -f to force.`);
+            process.exit(1);
+        } else {
+            console.log("Workspace removed.");
+        }
+    } catch (e) {
+        console.error(`Error: ${(e as Error).message}`);
+        process.exit(1);
+    }
+}
+
 function showHelp(): void {
     console.log(`
 ccc - Claude Code Container
@@ -704,6 +885,13 @@ USAGE:
     ccc shell               Open bash shell in current project
     ccc update              Update claude to latest version
     ccc <command>           Run command in current project
+
+WORKTREES (multi-repo workspace):
+    ccc @<branch>           Create worktree workspace + run claude
+    ccc @<branch> --continue  Pass claude flags to worktree session
+    ccc @                   List all workspaces
+    ccc @<branch> rm        Remove workspace (container + worktrees)
+    ccc @<branch> rm -f     Force remove dirty worktrees
 
 CONTAINER MANAGEMENT:
     ccc stop                Stop current project's container
@@ -727,6 +915,10 @@ EXAMPLES:
     ccc shell               # Open shell in current project
     ccc npm install         # Run npm install in container
     ccc --env API_KEY=xxx   # Run with custom env var
+    ccc @feature            # Create workspace + run Claude
+    ccc @feature/login      # Branch with / (dir name uses -)
+    ccc @                   # List workspaces
+    ccc @feature rm         # Remove workspace
 `);
 }
 
@@ -757,6 +949,24 @@ async function main(): Promise<void> {
 
     const command = filteredArgs[0];
     const cwd = process.cwd();
+
+    // @ prefix → worktree workspace commands
+    if (command && command.startsWith("@")) {
+        const parsed = parseWorktreeArg(command);
+        if (parsed) {
+            if (parsed.branch === null) {
+                handleWorktreeList(cwd);
+            } else {
+                await handleWorktreeCommand(
+                    cwd,
+                    parsed.branch,
+                    filteredArgs.slice(1),
+                    customEnv,
+                );
+            }
+            return;
+        }
+    }
 
     switch (command) {
         case "-h":
