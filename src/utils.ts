@@ -38,15 +38,27 @@ export function getProjectId(projectPath: string): string {
  * Environment variables to exclude when forwarding to container
  */
 export const EXCLUDE_ENV_KEYS = new Set([
+    // Unix system
     "PATH", "HOME", "USER", "SHELL", "LOGNAME", "PWD", "OLDPWD",
     "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
     "TMPDIR", "TEMP", "TMP", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
     "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+    // macOS
     "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
     "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",
     "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
     "LC_ALL", "LC_CTYPE", "LANG",
-    "CLAUDE_CONFIG_DIR"
+    // Claude
+    "CLAUDE_CONFIG_DIR",
+    // Windows system (paths are meaningless inside Linux container)
+    "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
+    "CommonProgramFiles", "CommonProgramFiles(x86)",
+    "SystemRoot", "SystemDrive", "windir", "ComSpec", "PATHEXT",
+    "PSModulePath", "OS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER",
+    "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
+    // Windows package managers (contain Windows paths like C:\Users\...\AppData)
+    "PNPM_HOME", "NPM_CONFIG_PREFIX", "NPM_CONFIG_CACHE",
 ]);
 
 /**

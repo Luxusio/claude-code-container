@@ -10,7 +10,7 @@ import {
     unlinkSync,
     readFileSync,
 } from "fs";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -325,20 +325,45 @@ const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
 const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
 
 /**
+ * Check if a file in the container is a mise shim (shell script referencing mise)
+ * rather than a real native binary.
+ */
+function isMiseShim(containerName: string, path: string): boolean {
+    const result = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", `head -c 500 ${path} 2>/dev/null | grep -q mise`],
+        { encoding: "utf-8" },
+    );
+    return result.status === 0;
+}
+
+/**
  * Ensure claude binary is available in the container.
- * 1. If claude is already on PATH → do nothing
- * 2. If volume has a cached copy → symlink it
+ * 1. If real claude binary exists at known path → do nothing
+ * 2. If volume has a valid cached copy → symlink it
  * 3. Otherwise → fresh install and cache to volume
+ *
+ * Detects and purges stale mise shims that can masquerade as the binary.
  */
 function ensureClaudeInContainer(containerName: string): void {
-    // Check if claude is already available
+    // Check if claude binary actually exists at the known path.
+    // Do NOT use `command -v claude` — a stale mise shim can fool it.
     const check = spawnSync(
         "docker",
-        ["exec", containerName, "sh", "-c", "command -v claude >/dev/null 2>&1"],
+        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_BIN_PATH}`],
         { encoding: "utf-8" },
     );
     if (check.status === 0) {
-        return;
+        // Verify it's a real binary, not a mise shim script
+        if (!isMiseShim(containerName, CLAUDE_BIN_PATH)) {
+            return;
+        }
+        console.log("Detected stale mise shim at claude path, removing...");
+        spawnSync(
+            "docker",
+            ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_BIN_PATH}`],
+            { stdio: "ignore" },
+        );
     }
 
     // Check if volume has cached claude binary
@@ -349,37 +374,49 @@ function ensureClaudeInContainer(containerName: string): void {
     );
 
     if (volumeCheck.status === 0) {
-        // Restore from volume cache via symlink
-        console.log("Restoring claude from cache...");
-        spawnSync(
-            "docker",
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                `mkdir -p $(dirname ${CLAUDE_BIN_PATH}) && ln -sf ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
-            ],
-            { stdio: "inherit" },
-        );
-    } else {
-        // Fresh install and save to volume
-        console.log("Installing claude (first run)...");
-        const installResult = spawnSync(
-            "docker",
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
-            ],
-            { stdio: "inherit" },
-        );
-        if (installResult.status !== 0) {
-            console.error("Failed to install claude in container");
-            process.exit(1);
+        // Verify cached copy is a real binary, not a mise shim
+        if (isMiseShim(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
+            console.log("Cached claude is a mise shim, purging cache...");
+            spawnSync(
+                "docker",
+                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
+                { stdio: "ignore" },
+            );
+            // Fall through to fresh install
+        } else {
+            // Restore from volume cache via symlink
+            console.log("Restoring claude from cache...");
+            spawnSync(
+                "docker",
+                [
+                    "exec",
+                    containerName,
+                    "sh",
+                    "-c",
+                    `mkdir -p $(dirname ${CLAUDE_BIN_PATH}) && ln -sf ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
+                ],
+                { stdio: "inherit" },
+            );
+            return;
         }
+    }
+
+    // Fresh install and save to volume
+    console.log("Installing claude (first run)...");
+    const installResult = spawnSync(
+        "docker",
+        [
+            "exec",
+            containerName,
+            "sh",
+            "-c",
+            `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
+        ],
+        { stdio: "inherit" },
+    );
+    if (installResult.status !== 0) {
+        console.error("Failed to install claude in container");
+        process.exit(1);
     }
 }
 
@@ -424,10 +461,12 @@ export function ensureGlobalNpmTools(containerName: string): void {
         const scope = t.pkg.includes("/") ? t.pkg.split("/")[0] + "/" : "";
         return `"$gdir/${scope}.${name}-"*`;
     }).join(" ");
+    // Use -w /home/ccc to avoid project-level mise.toml interfering
+    // (project may have untrusted/malformed config or different node version)
     spawnSync(
         "docker",
         [
-            "exec", containerName, "sh", "-c",
+            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
         ],
         { stdio: "ignore" },
@@ -436,7 +475,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
     const installResult = spawnSync(
         "docker",
         [
-            "exec", containerName, "sh", "-c",
+            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
         ],
         { stdio: "inherit" },
@@ -447,11 +486,12 @@ export function ensureGlobalNpmTools(containerName: string): void {
     }
 
     // Create wrapper scripts that always run with node@22
+    // Use -w /home/ccc to avoid project mise.toml interference
     for (const t of missing) {
         spawnSync(
             "docker",
             [
-                "exec", containerName, "sh", "-c",
+                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                 `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
             ],
             { stdio: "pipe" },
@@ -462,8 +502,13 @@ export function ensureGlobalNpmTools(containerName: string): void {
 /**
  * Save claude binary back to volume (in case `claude update` replaced the symlink).
  * Uses cp -L to follow symlinks and copy the actual file content.
+ * Skips saving if the binary is a mise shim (to avoid poisoning the cache).
  */
 function saveClaudeBinaryToVolume(containerName: string): void {
+    // Don't cache mise shims — only save real native binaries
+    if (isMiseShim(containerName, CLAUDE_BIN_PATH)) {
+        return;
+    }
     spawnSync(
         "docker",
         [
@@ -711,16 +756,30 @@ async function exec(
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
 
+    // Forward only essential host env vars to the container via -e flags.
+    // Allowlist approach: only forward vars matching known patterns.
+    // This avoids both Windows' 32KB command-line limit and Linux's ~2MB
+    // ARG_MAX (execve limit) — a denylist approach can't guarantee safety
+    // because Windows hosts often have hundreds of large env vars.
+    // Users can pass additional vars with: ccc --env KEY=VALUE
+    const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((k) => k.toUpperCase()));
+    const allowPattern = /^(ANTHROPIC|OPENAI|CLAUDE|GOOGLE|GEMINI|GROQ|MISTRAL|COHERE|REPLICATE|HUGGING|AWS|AZURE|GCP|DO_|GITHUB|GH_|GITLAB|BITBUCKET|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|NODE_ENV|NODE_OPTIONS|NPM_TOKEN|NPM_CONFIG_REGISTRY|GIT_AUTHOR|GIT_COMMITTER|GIT_TERMINAL_PROMPT|SSH_|EDITOR|VISUAL|TZ|LANG|DOCKER_HOST|DOCKER_CERT|MISE_|DEBUG|VERBOSE|LOG_LEVEL|CI|SENTRY_|DATADOG_|STRIPE_|TWILIO_|SENDGRID_|VERCEL_|NETLIFY_|HEROKU_|NEXT_|NUXT_|VITE_|REACT_APP_|DATABASE|DB_|POSTGRES|MYSQL|MONGO|REDIS|PORT|HOST|API_URL|API_KEY|SECRET_|TOKEN_|CARGO|GOPATH|GOROOT|RUSTUP|PIPENV|POETRY|VIRTUAL_ENV|CONDA)/i;
+
     const execArgs = ["exec", "-w", projectMountPath];
 
-    // Pass through host environment variables (except system ones)
     for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key)) {
-            execArgs.push("-e", `${key}=${value}`);
-        }
+        if (value === undefined) continue;
+        if (excludeUpper.has(key.toUpperCase())) continue;
+        if (!allowPattern.test(key)) continue;
+        // Skip env vars with Windows paths (useless in Linux container)
+        if (/^[A-Za-z]:[/\\]/.test(value)) continue;
+        if (/;[A-Za-z]:[/\\]/.test(value)) continue;
+        // Skip oversized values
+        if (key.length + value.length > 4096) continue;
+        execArgs.push("-e", `${key}=${value}`);
     }
 
-    // Add --env options (override host env)
+    // Per-session --env options (override/supplement)
     if (options.env) {
         for (const [key, value] of Object.entries(options.env)) {
             execArgs.push("-e", `${key}=${value}`);
@@ -733,17 +792,23 @@ async function exec(
 
     execArgs.push(containerName);
 
-    // For claude, run mise setup first
+    // For claude, run mise setup and claude as SEPARATE docker exec calls.
+    // Running them in a single sh -c caused mise's shell hooks to intercept
+    // the exec syscall, producing spurious "Argument list too long" errors.
     if (cmd[0] === "claude") {
-        // Trust mise.toml files, install tools, then run claude
-        // Use bash -l to load .bashrc (mise activation) and use full path to claude binary
-        execArgs.push(
-            "sh",
-            "-c",
-            `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true; exec ${cmd.join(
-                " ",
-            )}`,
+        // Step 1: mise setup (trust, install, reshim) — separate exec
+        spawnSync(
+            "docker",
+            [
+                "exec", "-w", projectMountPath, containerName,
+                "sh", "-c",
+                `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
+            ],
+            { stdio: "inherit" },
         );
+
+        // Step 2: run claude directly (no shell wrapper — avoids mise interception)
+        execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
     } else {
         execArgs.push(...cmd);
     }
