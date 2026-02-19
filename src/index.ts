@@ -665,6 +665,16 @@ async function exec(
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
 
+    // Create session lock BEFORE starting container so other sessions
+    // see us during their cleanup and don't stop the container prematurely.
+    // This prevents a race condition where:
+    //   Terminal A cleanup checks for other sessions → finds none → stops container
+    //   Terminal B is still setting up but hasn't created its lock yet → container dies
+    const projectId = getProjectId(fullPath);
+    currentProjectPath = fullPath;
+    currentSessionLockFile = createSessionLock(projectId);
+    setupSignalHandlers();
+
     // Start or get container
     const containerName = startProjectContainer(fullPath);
 
@@ -672,11 +682,12 @@ async function exec(
     ensureClaudeInContainer(containerName);
     ensureGlobalNpmTools(containerName);
 
-    // Create session lock and setup cleanup
-    const projectId = getProjectId(fullPath);
-    currentProjectPath = fullPath;
-    currentSessionLockFile = createSessionLock(projectId);
-    setupSignalHandlers();
+    // Verify container is still running before exec.
+    // Another session's cleanup could have stopped it between our setup steps.
+    if (!isContainerRunning(containerName)) {
+        console.log("Container was stopped during setup, restarting...");
+        startProjectContainer(fullPath);
+    }
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
