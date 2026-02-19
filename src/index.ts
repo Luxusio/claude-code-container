@@ -414,6 +414,25 @@ export function ensureGlobalNpmTools(containerName: string): void {
     // Install under node@22 (persists in mise volume)
     const pkgs = missing.map((t) => t.pkg).join(" ");
     console.log(`Installing ${missing.map((t) => t.cmd).join(", ")}...`);
+
+    // Clean stale npm temp directories that cause ENOTEMPTY on reinstall.
+    // npm renames existing packages to `.<name>-<random>` before replacing them;
+    // if a previous install was interrupted, these leftover dirs block the next attempt.
+    // Only target the specific packages being installed to avoid side effects.
+    const cleanupPatterns = missing.map((t) => {
+        const name = t.pkg.split("/").pop(); // e.g. "gemini-cli", "codex"
+        const scope = t.pkg.includes("/") ? t.pkg.split("/")[0] + "/" : "";
+        return `"$gdir/${scope}.${name}-"*`;
+    }).join(" ");
+    spawnSync(
+        "docker",
+        [
+            "exec", containerName, "sh", "-c",
+            `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
+        ],
+        { stdio: "ignore" },
+    );
+
     const installResult = spawnSync(
         "docker",
         [
