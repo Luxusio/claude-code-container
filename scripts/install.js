@@ -62,11 +62,16 @@ function install() {
         // Running containers keep using their original image layers.
         console.log("Rebuilding Docker image...");
         try {
-            const buildResult = spawnSync("docker", [
+            const buildArgs = [
                 "build", "-t", "ccc",
                 "--label", `dockerfile.hash=${currentHash}`,
-                "."
-            ], { cwd: projectRoot, stdio: "inherit" });
+            ];
+            // Pass GITHUB_TOKEN as Docker secret to avoid GitHub API rate limits during mise install
+            if (process.env.GITHUB_TOKEN) {
+                buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
+            }
+            buildArgs.push(".");
+            const buildResult = spawnSync("docker", buildArgs, { cwd: projectRoot, stdio: "inherit" });
 
             if (buildResult.status !== 0) {
                 throw new Error(`Docker build exited with code ${buildResult.status}`);

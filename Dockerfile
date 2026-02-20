@@ -69,12 +69,15 @@ RUN curl https://mise.run | sh && \
     mkdir -p ~/.config/mise && \
     echo '[settings]' > ~/.config/mise/config.toml && \
     echo 'experimental = true' >> ~/.config/mise/config.toml && \
-    echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc
+    echo 'eval "$(~/.local/bin/mise activate bash)"' >> ~/.bashrc && \
+    printf '# Reset MISE_NODE_VERSION so Claude Bash tool uses project node version.\n# MISE_NODE_VERSION=22 is set for OMC hooks (which run via sh -c, ignoring BASH_ENV).\nunset MISE_NODE_VERSION\neval "$(~/.local/bin/mise activate bash)"\n' > ~/.bashrc_hooks
 
 # ============================================================
 # LAYER 7: mise global tools (가끔 바뀜 - 버전 고정)
 # ============================================================
-RUN ~/.local/bin/mise use -g node@22 && \
+RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
+    if [ -f /run/secrets/github_token ]; then export GITHUB_TOKEN=$(cat /run/secrets/github_token); fi && \
+    ~/.local/bin/mise use -g node@22 && \
     ~/.local/bin/mise use -g maven@3 && \
     ~/.local/bin/mise use -g gradle@8 && \
     ~/.local/bin/mise use -g yarn@4 && \

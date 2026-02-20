@@ -756,26 +756,18 @@ async function exec(
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
 
-    // Forward only essential host env vars to the container via -e flags.
-    // Allowlist approach: only forward vars matching known patterns.
-    // This avoids both Windows' 32KB command-line limit and Linux's ~2MB
-    // ARG_MAX (execve limit) — a denylist approach can't guarantee safety
-    // because Windows hosts often have hundreds of large env vars.
-    // Users can pass additional vars with: ccc --env KEY=VALUE
+    // Forward host env vars to the container via -e flags (denylist approach).
+    // Excludes system/platform vars that are meaningless inside the container.
     const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((k) => k.toUpperCase()));
-    const allowPattern = /^(ANTHROPIC|OPENAI|CLAUDE|GOOGLE|GEMINI|GROQ|MISTRAL|COHERE|REPLICATE|HUGGING|AWS|AZURE|GCP|DO_|GITHUB|GH_|GITLAB|BITBUCKET|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|NODE_ENV|NODE_OPTIONS|NPM_TOKEN|NPM_CONFIG_REGISTRY|GIT_AUTHOR|GIT_COMMITTER|GIT_TERMINAL_PROMPT|SSH_|EDITOR|VISUAL|TZ|LANG|DOCKER_HOST|DOCKER_CERT|MISE_|DEBUG|VERBOSE|LOG_LEVEL|CI|SENTRY_|DATADOG_|STRIPE_|TWILIO_|SENDGRID_|VERCEL_|NETLIFY_|HEROKU_|NEXT_|NUXT_|VITE_|REACT_APP_|DATABASE|DB_|POSTGRES|MYSQL|MONGO|REDIS|PORT|HOST|API_URL|API_KEY|SECRET_|TOKEN_|CARGO|GOPATH|GOROOT|RUSTUP|PIPENV|POETRY|VIRTUAL_ENV|CONDA)/i;
 
     const execArgs = ["exec", "-w", projectMountPath];
 
     for (const [key, value] of Object.entries(process.env)) {
         if (value === undefined) continue;
         if (excludeUpper.has(key.toUpperCase())) continue;
-        if (!allowPattern.test(key)) continue;
         // Skip env vars with Windows paths (useless in Linux container)
         if (/^[A-Za-z]:[/\\]/.test(value)) continue;
         if (/;[A-Za-z]:[/\\]/.test(value)) continue;
-        // Skip oversized values
-        if (key.length + value.length > 4096) continue;
         execArgs.push("-e", `${key}=${value}`);
     }
 
@@ -784,6 +776,14 @@ async function exec(
         for (const [key, value] of Object.entries(options.env)) {
             execArgs.push("-e", `${key}=${value}`);
         }
+    }
+
+    // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
+    // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
+    // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
+    if (cmd[0] === "claude") {
+        execArgs.push("-e", "MISE_NODE_VERSION=22");
+        execArgs.push("-e", "BASH_ENV=/home/ccc/.bashrc_hooks");
     }
 
     if (options.interactive !== false) {

@@ -19,6 +19,13 @@ cd claude-code-container
 sudo node scripts/install.js   # Windows는 sudo 제외
 ```
 
+Docker 이미지 빌드 시 GitHub API rate limit에 걸리면 토큰을 전달합니다:
+
+```bash
+export GITHUB_TOKEN=github_pat_xxx
+sudo -E node scripts/install.js
+```
+
 **제거:** `sudo node scripts/install.js --uninstall`
 
 ## 빠른 시작
