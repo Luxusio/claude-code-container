@@ -338,6 +338,19 @@ function isMiseShim(containerName: string, path: string): boolean {
 }
 
 /**
+ * Verify the binary at the given path is actually claude by checking --version output.
+ * Guards against bun or other binaries accidentally cached at the claude path.
+ */
+function isValidClaudeBinary(containerName: string, path: string): boolean {
+    const result = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", `${path} --version 2>&1 | grep -qi claude`],
+        { encoding: "utf-8", timeout: 10000 },
+    );
+    return result.status === 0;
+}
+
+/**
  * Ensure claude binary is available in the container.
  * 1. If real claude binary exists at known path → do nothing
  * 2. If volume has a valid cached copy → symlink it
@@ -356,9 +369,14 @@ function ensureClaudeInContainer(containerName: string): void {
     if (check.status === 0) {
         // Verify it's a real binary, not a mise shim script
         if (!isMiseShim(containerName, CLAUDE_BIN_PATH)) {
-            return;
+            // Also verify it's actually claude (not bun or another binary cached by mistake)
+            if (isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
+                return;
+            }
+            console.log("Binary at claude path is not valid claude, removing...");
+        } else {
+            console.log("Detected stale mise shim at claude path, removing...");
         }
-        console.log("Detected stale mise shim at claude path, removing...");
         spawnSync(
             "docker",
             ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_BIN_PATH}`],
@@ -374,9 +392,17 @@ function ensureClaudeInContainer(containerName: string): void {
     );
 
     if (volumeCheck.status === 0) {
-        // Verify cached copy is a real binary, not a mise shim
+        // Verify cached copy is a real binary, not a mise shim or wrong binary
         if (isMiseShim(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
             console.log("Cached claude is a mise shim, purging cache...");
+            spawnSync(
+                "docker",
+                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
+                { stdio: "ignore" },
+            );
+            // Fall through to fresh install
+        } else if (!isValidClaudeBinary(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
+            console.log("Cached binary is not valid claude, purging cache...");
             spawnSync(
                 "docker",
                 ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
@@ -415,8 +441,7 @@ function ensureClaudeInContainer(containerName: string): void {
         { stdio: "inherit" },
     );
     if (installResult.status !== 0) {
-        console.error("Failed to install claude in container");
-        process.exit(1);
+        throw new Error("Failed to install claude in container");
     }
 }
 
@@ -507,6 +532,10 @@ export function ensureGlobalNpmTools(containerName: string): void {
 function saveClaudeBinaryToVolume(containerName: string): void {
     // Don't cache mise shims — only save real native binaries
     if (isMiseShim(containerName, CLAUDE_BIN_PATH)) {
+        return;
+    }
+    // Don't cache non-claude binaries (e.g., bun accidentally at the claude path)
+    if (!isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
         return;
     }
     spawnSync(
@@ -742,8 +771,24 @@ async function exec(
     // Start or get container
     const containerName = startProjectContainer(fullPath);
 
-    // Ensure claude binary is available (cached in volume or fresh install)
-    ensureClaudeInContainer(containerName);
+    // Ensure claude binary is available (cached in volume or fresh install).
+    // Retry once if a concurrent session stopped the container during setup.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (!isContainerRunning(containerName)) {
+            console.log("Container stopped during setup (concurrent session), restarting...");
+            startProjectContainer(fullPath);
+        }
+        try {
+            ensureClaudeInContainer(containerName);
+            break;
+        } catch {
+            if (attempt === 1) {
+                console.error("Failed to install claude in container");
+                process.exit(1);
+            }
+            // Container may have been stopped mid-install; loop will restart it
+        }
+    }
     ensureGlobalNpmTools(containerName);
 
     // Verify container is still running before exec.
@@ -806,6 +851,9 @@ async function exec(
             ],
             { stdio: "inherit" },
         );
+
+        // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
+        ensureClaudeInContainer(containerName);
 
         // Step 2: run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));

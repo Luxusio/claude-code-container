@@ -134,6 +134,65 @@ ssh -T git@github.com               # GitHub 접속 테스트
 ssh -T git@gitlab.example.com       # GitLab 접속 테스트
 ```
 
+## Worktree 워크스페이스 (`ccc @<branch>`)
+
+`ccc @<branch>` 명령으로 브랜치별 격리 작업 환경을 만들 수 있습니다. 현재 디렉토리의 git 레포들에 `git worktree`를 자동 생성하고, claude를 그 워크스페이스에서 실행합니다.
+
+### 구조
+
+```
+~/projects/
+├── my-project/          # 원본 (git repos + 기타 파일)
+│   ├── backend/         # git repo
+│   ├── frontend/        # git repo
+│   └── shared/          # 일반 디렉토리
+└── my-project--feature/ # 워크스페이스 (자동 생성)
+    ├── backend/         # git worktree (feature 브랜치)
+    ├── frontend/        # git worktree (feature 브랜치)
+    └── shared -> ../my-project/shared  # 심링크
+```
+
+git 레포는 `git worktree`로, 나머지 항목은 심링크로 연결됩니다.
+
+### 명령어
+
+```bash
+# 워크스페이스 생성 + claude 실행
+ccc @feature
+
+# 이미 있으면 기존 워크스페이스 재사용
+ccc @feature --continue
+
+# 워크스페이스 목록 + 컨테이너 상태 확인
+ccc @
+
+# 워크스페이스 제거 (컨테이너 + worktree 함께 삭제)
+ccc @feature rm
+
+# 수정 중인 worktree도 강제 제거
+ccc @feature rm -f
+```
+
+### 브랜치 처리
+
+- **로컬 브랜치 있음**: 해당 브랜치로 worktree 생성
+- **리모트에만 있음**: `origin/<branch>` 기반으로 로컬 브랜치 생성
+- **없음**: HEAD 기준으로 새 브랜치 생성
+
+브랜치명의 `/`는 디렉토리명에서 `-`로 변환됩니다 (예: `feature/login` → `my-project--feature-login/`).
+
+### 병렬 작업
+
+각 워크스페이스는 독립 컨테이너를 가지므로 동시에 실행 가능합니다.
+
+```bash
+# 터미널 1
+cd ~/projects/my-project && ccc @feature --continue
+
+# 터미널 2 (동시에)
+cd ~/projects/my-project && ccc @bugfix --continue
+```
+
 ## 원격 개발 (Remote Development)
 
 저사양 PC에서 고사양 원격 PC의 리소스를 활용하여 개발할 수 있습니다.
