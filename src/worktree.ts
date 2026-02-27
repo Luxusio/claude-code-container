@@ -7,11 +7,11 @@ import {
     readdirSync,
     writeFileSync,
     readFileSync,
-    symlinkSync,
+    cpSync,
     rmSync,
     lstatSync,
 } from "fs";
-import { basename, dirname, join, relative, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 
 export const WORKTREE_SEPARATOR = "--";
 export const METADATA_FILE = ".ccc-meta.json";
@@ -32,7 +32,7 @@ export interface WorkspaceInfo {
 export interface WorktreeResult {
     workspacePath: string;
     created: WorktreeRepoResult[];
-    symlinked: string[];
+    copied: string[];
 }
 
 export interface WorktreeRepoResult {
@@ -182,8 +182,8 @@ export function scanDirectory(dirPath: string): WorkspaceEntry[] {
     const entries: WorkspaceEntry[] = [];
 
     for (const name of readdirSync(dirPath)) {
-        // Skip hidden files/directories
-        if (name.startsWith(".")) {
+        // Skip .git only — other dotfiles (.claude, .env, etc.) should be symlinked
+        if (name === ".git") {
             continue;
         }
 
@@ -195,7 +195,7 @@ export function scanDirectory(dirPath: string): WorkspaceEntry[] {
             continue;
         }
 
-        // Symlinks are included as non-repo entries (will be symlinked into workspace)
+        // Symlinks are included as non-repo entries (will be copied into workspace)
         if (lstat.isSymbolicLink()) {
             entries.push({ name, path: fullPath, isGitRepo: false });
             continue;
@@ -319,23 +319,185 @@ export function listWorkspaces(sourcePath: string): WorkspaceInfo[] {
     return workspaces;
 }
 
+/**
+ * Check if a directory needs submodule setup:
+ * - Directory is NOT itself a git repo
+ * - Directory contains child git repos
+ *
+ * Returns the list of child git repo names, or null if setup is not needed.
+ */
+export function needsSubmoduleSetup(dirPath: string): string[] | null {
+    const resolved = resolve(dirPath);
+
+    // Already a git repo → no setup needed
+    if (existsSync(join(resolved, ".git"))) {
+        return null;
+    }
+
+    const entries = scanDirectory(resolved);
+    const gitRepos = entries.filter((e) => e.isGitRepo);
+
+    if (gitRepos.length === 0) {
+        return null;
+    }
+
+    return gitRepos.map((e) => e.name);
+}
+
+/**
+ * Detect the default branch for submodule tracking.
+ * Priority: master → main → current branch.
+ * Returns empty string if nothing is detected (e.g. detached HEAD, no branches).
+ */
+function detectDefaultBranch(repoPath: string): string {
+    // Check if 'master' exists
+    const masterCheck = spawnSync(
+        "git",
+        ["rev-parse", "--verify", "refs/heads/master"],
+        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (masterCheck.status === 0) {
+        return "master";
+    }
+
+    // Check if 'main' exists
+    const mainCheck = spawnSync(
+        "git",
+        ["rev-parse", "--verify", "refs/heads/main"],
+        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (mainCheck.status === 0) {
+        return "main";
+    }
+
+    // Fall back to current branch
+    const result = spawnSync(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const branch = (result.stdout ?? "").trim();
+    if (!branch || branch === "HEAD") {
+        return "";
+    }
+    return branch;
+}
+
+/**
+ * Get the remote origin URL of a git repo.
+ * Returns empty string if no remote is configured.
+ */
+function getRemoteUrl(repoPath: string): string {
+    const result = spawnSync(
+        "git",
+        ["remote", "get-url", "origin"],
+        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return (result.stdout ?? "").trim();
+}
+
+/**
+ * Initialize a directory as a git repo with child repos as submodules.
+ *
+ * - git init the directory
+ * - For each child git repo: add as submodule using its remote URL
+ * - Submodules track their current branch (not pinned to specific commits)
+ * - Sets ignore = all so parent doesn't report submodule changes as dirty
+ * - Commits the initial state
+ *
+ * @throws {Error} If git init or submodule add fails
+ */
+export function initWithSubmodules(dirPath: string): void {
+    const resolved = resolve(dirPath);
+
+    // git init
+    const initResult = spawnSync("git", ["init"], {
+        cwd: resolved,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    if (initResult.status !== 0) {
+        throw new Error(
+            `Failed to git init: ${(initResult.stderr ?? "").trim()}`,
+        );
+    }
+
+    // Configure user if not set (needed for commit)
+    spawnSync("git", ["config", "user.email", "ccc@localhost"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
+    spawnSync("git", ["config", "user.name", "ccc"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
+
+    const entries = scanDirectory(resolved);
+    const gitRepos = entries.filter((e) => e.isGitRepo);
+
+    for (const repo of gitRepos) {
+        const branch = detectDefaultBranch(repo.path);
+        const remoteUrl = getRemoteUrl(repo.path);
+        // Prefer remote URL; fall back to relative path for local-only repos
+        const url = remoteUrl || `./${repo.name}`;
+
+        const args = ["submodule", "add"];
+        if (branch) {
+            args.push("-b", branch);
+        }
+        args.push(url, repo.name);
+
+        const addResult = spawnSync("git", args, {
+            cwd: resolved,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (addResult.status !== 0) {
+            throw new Error(
+                `Failed to add submodule ${repo.name}: ${(addResult.stderr ?? "").trim()}`,
+            );
+        }
+    }
+
+    // Configure submodules: ignore = all + update = rebase
+    // ignore = all: parent won't report submodule content changes as dirty
+    // update = rebase: submodules follow branch, not pinned to commits
+    for (const repo of gitRepos) {
+        spawnSync(
+            "git",
+            ["config", "-f", ".gitmodules", `submodule.${repo.name}.ignore`, "all"],
+            { cwd: resolved, stdio: "pipe" },
+        );
+        spawnSync(
+            "git",
+            ["config", "-f", ".gitmodules", `submodule.${repo.name}.update`, "rebase"],
+            { cwd: resolved, stdio: "pipe" },
+        );
+    }
+
+    // Add all and commit
+    spawnSync("git", ["add", "-A"], { cwd: resolved, stdio: "pipe" });
+    spawnSync("git", ["commit", "-m", "chore: init workspace with submodules"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
+}
+
 // === Write Functions ===
 
 /**
- * Create a workspace with git worktrees and symlinks.
+ * Create a workspace with git worktrees.
  *
- * - Validates the branch name before any operations
- * - Uses non-recursive mkdir for atomic creation (prevents concurrent races)
- * - Writes metadata file with original branch name
- * - Rolls back on failure (removes partial worktrees and workspace directory)
- * - Uses EEXIST handling instead of check-then-act for symlinks
+ * Two modes:
  *
- * For each git repo in sourcePath:
- *   - local branch exists: git worktree add <dest> <branch>
- *   - remote branch exists: git worktree add -b <branch> <dest> origin/<branch>
- *   - no branch: git worktree add -b <branch> <dest> (new from HEAD)
+ * 1. **Unified mode** (sourcePath is a git repo):
+ *    - Creates a single worktree of the top-level repo
+ *    - Initializes submodules with --remote (tracks branches, not pinned commits)
+ *    - All files (.claude, .env, etc.) are part of the repo, fully isolated
  *
- * For non-repo items: create relative symlinks.
+ * 2. **Multi-repo mode** (sourcePath is NOT a git repo):
+ *    - Creates worktrees per child git repo
+ *    - Copies non-repo items into workspace (isolated per worktree)
  *
  * @throws {Error} If branch name is invalid
  * @throws {Error} If no git repos found in sourcePath
@@ -351,6 +513,89 @@ export function createWorkspace(
     const resolved = resolve(sourcePath);
     const wsPath = getWorkspacePath(resolved, branch);
 
+    // Unified mode: top-level is a git repo
+    if (existsSync(join(resolved, ".git"))) {
+        return createUnifiedWorkspace(resolved, wsPath, branch);
+    }
+
+    // Multi-repo mode: scan children
+    return createMultiRepoWorkspace(resolved, wsPath, branch);
+}
+
+function createUnifiedWorkspace(
+    resolved: string,
+    wsPath: string,
+    branch: string,
+): WorktreeResult {
+    const existence = branchExistsInRepo(resolved, branch);
+
+    let args: string[];
+    let action: WorktreeRepoResult["action"];
+
+    switch (existence) {
+        case "local":
+            args = ["worktree", "add", wsPath, branch];
+            action = "worktree-existing";
+            break;
+        case "remote":
+            args = ["worktree", "add", "-b", branch, wsPath, `origin/${branch}`];
+            action = "worktree-remote";
+            break;
+        case "none":
+            args = ["worktree", "add", "-b", branch, wsPath];
+            action = "worktree-new";
+            break;
+    }
+
+    const result = spawnSync("git", args, {
+        cwd: resolved,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    if (result.status !== 0) {
+        const stderr = (result.stderr ?? "").trim();
+        throw new Error(`Failed to create worktree: ${stderr}`);
+    }
+
+    // Write metadata
+    const metadata: WorkspaceMetadata = {
+        branch,
+        sourcePath: resolved,
+        createdAt: new Date().toISOString(),
+    };
+    writeFileSync(
+        join(wsPath, METADATA_FILE),
+        JSON.stringify(metadata, null, 2),
+    );
+
+    // Init submodules tracking branches (not pinned to commits)
+    const submoduleCheck = spawnSync(
+        "git",
+        ["submodule", "status"],
+        { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (submoduleCheck.status === 0 && (submoduleCheck.stdout ?? "").trim()) {
+        spawnSync(
+            "git",
+            ["submodule", "update", "--init", "--remote"],
+            { cwd: wsPath, stdio: "pipe" },
+        );
+    }
+
+    const dirName = basename(resolved);
+    return {
+        workspacePath: wsPath,
+        created: [{ name: dirName, branch, action }],
+        copied: [],
+    };
+}
+
+function createMultiRepoWorkspace(
+    resolved: string,
+    wsPath: string,
+    branch: string,
+): WorktreeResult {
     const entries = scanDirectory(resolved);
     const gitRepos = entries.filter((e) => e.isGitRepo);
 
@@ -361,8 +606,6 @@ export function createWorkspace(
     }
 
     // Atomic create: ensure parent exists, then non-recursive mkdir
-    // mkdirSync without recursive throws EEXIST if directory already exists,
-    // preventing concurrent create races (M1 fix)
     const parentDir = dirname(wsPath);
     mkdirSync(parentDir, { recursive: true });
     try {
@@ -376,7 +619,7 @@ export function createWorkspace(
         throw e;
     }
 
-    // Write metadata (original branch name for round-trip fidelity)
+    // Write metadata
     const metadata: WorkspaceMetadata = {
         branch,
         sourcePath: resolved,
@@ -388,7 +631,7 @@ export function createWorkspace(
     );
 
     const created: WorktreeRepoResult[] = [];
-    const symlinked: string[] = [];
+    const copied: string[] = [];
 
     // Process git repos → worktree (with rollback on failure)
     try {
@@ -449,33 +692,29 @@ export function createWorkspace(
                 );
             }
         }
-        // Remove the workspace directory
         rmSync(wsPath, { recursive: true, force: true });
         throw e;
     }
 
-    // Process non-repo items → relative symlink
-    // Uses try/catch with EEXIST instead of check-then-act (eliminates TOCTOU)
+    // Process non-repo items → copy (isolated per worktree)
     const nonRepos = entries.filter((e) => !e.isGitRepo);
     for (const entry of nonRepos) {
         const destPath = join(wsPath, entry.name);
-        const relTarget = relative(wsPath, entry.path);
         try {
-            symlinkSync(relTarget, destPath);
-            symlinked.push(entry.name);
+            cpSync(entry.path, destPath, { recursive: true });
+            copied.push(entry.name);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-                continue; // already exists, skip
+                continue;
             }
-            // Non-EEXIST errors are unexpected but non-fatal for symlinks
         }
     }
 
-    return { workspacePath: wsPath, created, symlinked };
+    return { workspacePath: wsPath, created, copied };
 }
 
 /**
- * Remove a workspace: remove git worktrees, delete symlinks, remove directory.
+ * Remove a workspace: remove git worktrees, delete copied items, remove directory.
  *
  * Without --force:
  *   - Dirty worktrees are reported as errors
@@ -499,10 +738,58 @@ export function removeWorkspace(
         throw new Error(`Workspace not found: ${wsPath}`);
     }
 
+    // Unified mode: top-level is a git repo → remove single worktree
+    if (existsSync(join(resolved, ".git"))) {
+        return removeUnifiedWorkspace(resolved, wsPath, opts);
+    }
+
+    // Multi-repo mode
+    return removeMultiRepoWorkspace(resolved, wsPath, opts);
+}
+
+function removeUnifiedWorkspace(
+    resolved: string,
+    wsPath: string,
+    opts?: { force?: boolean },
+): RemoveResult {
     const removed: string[] = [];
     const errors: string[] = [];
 
-    // Find git worktrees in the workspace and remove them via the source repo
+    // Remove metadata file first
+    const metaPath = join(wsPath, METADATA_FILE);
+    if (existsSync(metaPath)) {
+        rmSync(metaPath);
+    }
+
+    const args = ["worktree", "remove", wsPath];
+    if (opts?.force) {
+        args.push("--force");
+    }
+
+    const result = spawnSync("git", args, {
+        cwd: resolved,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    if (result.status !== 0) {
+        const stderr = (result.stderr ?? "").trim();
+        errors.push(stderr);
+    } else {
+        removed.push(basename(resolved));
+    }
+
+    return { removed, errors };
+}
+
+function removeMultiRepoWorkspace(
+    resolved: string,
+    wsPath: string,
+    opts?: { force?: boolean },
+): RemoveResult {
+    const removed: string[] = [];
+    const errors: string[] = [];
+
     const sourceEntries = scanDirectory(resolved);
 
     for (const entry of sourceEntries) {
@@ -512,7 +799,6 @@ export function removeWorkspace(
         }
 
         if (entry.isGitRepo) {
-            // Remove worktree via git
             const args = ["worktree", "remove", wsEntryPath];
             if (opts?.force) {
                 args.push("--force");
@@ -531,13 +817,9 @@ export function removeWorkspace(
                 removed.push(entry.name);
             }
         } else {
-            // Remove symlink
             try {
-                const lstats = lstatSync(wsEntryPath);
-                if (lstats.isSymbolicLink()) {
-                    rmSync(wsEntryPath);
-                    removed.push(entry.name);
-                }
+                rmSync(wsEntryPath, { recursive: true, force: true });
+                removed.push(entry.name);
             } catch {
                 // ignore
             }
@@ -547,7 +829,6 @@ export function removeWorkspace(
     // Try to remove the workspace directory itself
     try {
         if (existsSync(wsPath)) {
-            // Remove metadata file
             const metaPath = join(wsPath, METADATA_FILE);
             if (existsSync(metaPath)) {
                 rmSync(metaPath);
@@ -559,7 +840,6 @@ export function removeWorkspace(
             } else if (opts?.force) {
                 rmSync(wsPath, { recursive: true, force: true });
             } else {
-                // Not empty and not forced — report as error (M4 fix: no silent data loss)
                 errors.push(
                     `Workspace directory not empty (${remaining.length} items remaining). Use -f to force.`,
                 );

@@ -47,6 +47,8 @@ import {
     getWorkspacePath,
     workspaceExists,
     readWorkspaceMetadata,
+    needsSubmoduleSetup,
+    initWithSubmodules,
 } from "./worktree.js";
 
 // Re-export for tests
@@ -983,6 +985,26 @@ async function handleWorktreeCommand(
         }
         console.log(`Using existing workspace: ${wsPath}`);
     } else {
+        // Check if submodule setup is needed (not a git repo but has child git repos)
+        const submoduleRepos = needsSubmoduleSetup(cwd);
+        if (submoduleRepos) {
+            console.log(`This directory is not a git repository.`);
+            console.log(`Found git repos: ${submoduleRepos.join(", ")}`);
+            const answer = await prompt(
+                `Initialize as git repo and add them as submodules? (y/N) `,
+                true,
+            );
+            if (answer === "y" || answer === "yes") {
+                try {
+                    initWithSubmodules(cwd);
+                    console.log(`Initialized git repo with submodules.`);
+                } catch (e) {
+                    console.error(`Error: ${(e as Error).message}`);
+                    process.exit(1);
+                }
+            }
+        }
+
         console.log(`Creating workspace for branch '${branch}'...`);
         try {
             const result = createWorkspace(cwd, branch);
@@ -997,8 +1019,8 @@ async function handleWorktreeCommand(
                           : "new branch";
                 console.log(`  ${repo.name}: worktree (${actionLabel})`);
             }
-            for (const name of result.symlinked) {
-                console.log(`  ${name}: symlink`);
+            for (const name of result.copied) {
+                console.log(`  ${name}: copied`);
             }
         } catch (e) {
             console.error(`Error: ${(e as Error).message}`);

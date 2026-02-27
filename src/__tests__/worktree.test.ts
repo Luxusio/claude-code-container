@@ -4,11 +4,11 @@ import {
     writeFileSync,
     rmSync,
     existsSync,
-    readlinkSync,
     symlinkSync,
     readFileSync,
+    lstatSync,
 } from "fs";
-import { join, relative } from "path";
+import { join } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
@@ -25,6 +25,8 @@ import {
     branchExistsInRepo,
     createWorkspace,
     removeWorkspace,
+    needsSubmoduleSetup,
+    initWithSubmodules,
 } from "../worktree.js";
 
 /** Helper: create a real git repo with an initial commit */
@@ -311,14 +313,15 @@ describe("scanDirectory", () => {
         expect(link!.isGitRepo).toBe(false);
     });
 
-    it("skips hidden files and directories", () => {
-        mkdirSync(join(tmpDir, ".hidden-dir"));
-        writeFileSync(join(tmpDir, ".hidden-file"), "secret");
+    it("skips .git but includes other dotfiles", () => {
+        mkdirSync(join(tmpDir, ".git"));
+        mkdirSync(join(tmpDir, ".claude"));
+        writeFileSync(join(tmpDir, ".env"), "SECRET=1");
         mkdirSync(join(tmpDir, "visible"));
 
         const entries = scanDirectory(tmpDir);
-        expect(entries).toHaveLength(1);
-        expect(entries[0].name).toBe("visible");
+        const names = entries.map((e) => e.name).sort();
+        expect(names).toEqual([".claude", ".env", "visible"]);
     });
 
     it("handles mixed content", () => {
@@ -326,7 +329,7 @@ describe("scanDirectory", () => {
         mkdirSync(join(tmpDir, "backend", ".git"), { recursive: true });
         mkdirSync(join(tmpDir, "shared"));
         writeFileSync(join(tmpDir, "README.md"), "# Test");
-        mkdirSync(join(tmpDir, ".git"), { recursive: true }); // hidden, skipped
+        mkdirSync(join(tmpDir, ".git"), { recursive: true }); // .git skipped
 
         const entries = scanDirectory(tmpDir);
         const names = entries.map((e) => e.name).sort();
@@ -550,9 +553,10 @@ describe("createWorkspace", () => {
         );
     });
 
-    it("creates worktrees for git repos and symlinks for others", () => {
+    it("creates worktrees for git repos and copies others", () => {
         initRepo(join(sourceDir, "repo-a"));
         mkdirSync(join(sourceDir, "shared"));
+        writeFileSync(join(sourceDir, "shared", "config.json"), '{"a":1}');
         writeFileSync(join(sourceDir, "docker-compose.yml"), "version: 3");
 
         const result = createWorkspace(sourceDir, "feature");
@@ -569,17 +573,15 @@ describe("createWorkspace", () => {
         // Check worktree directory exists
         expect(existsSync(join(result.workspacePath, "repo-a"))).toBe(true);
 
-        // Check symlinks
-        expect(result.symlinked).toContain("shared");
-        expect(result.symlinked).toContain("docker-compose.yml");
+        // Check copies
+        expect(result.copied).toContain("shared");
+        expect(result.copied).toContain("docker-compose.yml");
 
-        // Verify symlinks are relative
-        const sharedLink = readlinkSync(
-            join(result.workspacePath, "shared"),
-        );
-        expect(sharedLink).toBe(
-            relative(result.workspacePath, join(sourceDir, "shared")),
-        );
+        // Verify copies are independent (not symlinks)
+        expect(existsSync(join(result.workspacePath, "shared", "config.json"))).toBe(true);
+        const lstat = lstatSync(join(result.workspacePath, "shared"));
+        expect(lstat.isSymbolicLink()).toBe(false);
+        expect(lstat.isDirectory()).toBe(true);
     });
 
     it("writes metadata file with original branch name", () => {
@@ -732,26 +734,15 @@ describe("createWorkspace", () => {
         expect(wsResult.created[0].branch).toBe("remote-only");
     });
 
-    it("handles EEXIST symlinks gracefully (no TOCTOU)", () => {
+    it("handles EEXIST gracefully when workspace dir already exists", () => {
         initRepo(join(sourceDir, "repo-a"));
         writeFileSync(join(sourceDir, "config.yml"), "key: val");
 
-        // Pre-create workspace dir with the file already there
+        // Pre-create workspace dir
         const wsPath = getWorkspacePath(sourceDir, "pre-exist");
         mkdirSync(wsPath);
-        // Write metadata so atomic mkdir won't fail
-        writeFileSync(
-            join(wsPath, METADATA_FILE),
-            JSON.stringify({
-                branch: "pre-exist",
-                sourcePath: sourceDir,
-                createdAt: new Date().toISOString(),
-            }),
-        );
-        writeFileSync(join(wsPath, "config.yml"), "already here");
 
-        // Can't use createWorkspace since the dir exists, so we test the EEXIST
-        // behavior indirectly — the atomic mkdir will throw
+        // Atomic mkdir will throw EEXIST
         expect(() => createWorkspace(sourceDir, "pre-exist")).toThrow(
             /already exists/,
         );
@@ -784,7 +775,7 @@ describe("removeWorkspace", () => {
         );
     });
 
-    it("removes a workspace with worktrees and symlinks", () => {
+    it("removes a workspace with worktrees and copied items", () => {
         initRepo(join(sourceDir, "repo-a"));
         writeFileSync(join(sourceDir, "readme.txt"), "hi");
 
@@ -860,21 +851,19 @@ describe("removeWorkspace", () => {
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 
-    it("removes workspace with non-symlink file in workspace", () => {
+    it("removes workspace with copied directories", () => {
         initRepo(join(sourceDir, "repo-a"));
         mkdirSync(join(sourceDir, "shared"));
+        writeFileSync(join(sourceDir, "shared", "data.txt"), "hello");
 
         const wsResult = createWorkspace(sourceDir, "nonsym-test");
 
-        // Replace symlink with real dir
-        const sharedWs = join(wsResult.workspacePath, "shared");
-        rmSync(sharedWs);
-        mkdirSync(sharedWs);
+        // Copied dir should exist and be removable
+        expect(existsSync(join(wsResult.workspacePath, "shared", "data.txt"))).toBe(true);
 
-        const removeResult = removeWorkspace(sourceDir, "nonsym-test", {
-            force: true,
-        });
+        const removeResult = removeWorkspace(sourceDir, "nonsym-test");
         expect(removeResult.removed).toContain("repo-a");
+        expect(removeResult.removed).toContain("shared");
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 
@@ -888,6 +877,231 @@ describe("removeWorkspace", () => {
 
         const removeResult = removeWorkspace(sourceDir, "meta-clean");
         expect(removeResult.errors).toHaveLength(0);
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+});
+
+// === Submodule Setup Tests ===
+
+describe("needsSubmoduleSetup", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("returns null when directory is already a git repo", () => {
+        initRepo(tmpDir);
+        expect(needsSubmoduleSetup(tmpDir)).toBeNull();
+    });
+
+    it("returns null when no child git repos exist", () => {
+        mkdirSync(join(tmpDir, "shared"));
+        writeFileSync(join(tmpDir, "file.txt"), "hello");
+        expect(needsSubmoduleSetup(tmpDir)).toBeNull();
+    });
+
+    it("returns child repo names when setup is needed", () => {
+        initRepo(join(tmpDir, "frontend"));
+        initRepo(join(tmpDir, "backend"));
+        mkdirSync(join(tmpDir, "shared"));
+
+        const result = needsSubmoduleSetup(tmpDir);
+        expect(result).not.toBeNull();
+        expect(result!.sort()).toEqual(["backend", "frontend"]);
+    });
+});
+
+describe("initWithSubmodules", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("initializes git repo with submodules", () => {
+        initRepo(join(tmpDir, "repo-a"));
+        mkdirSync(join(tmpDir, "shared"));
+
+        initWithSubmodules(tmpDir);
+
+        // Top-level should now be a git repo
+        expect(existsSync(join(tmpDir, ".git"))).toBe(true);
+
+        // .gitmodules should exist with submodule config
+        expect(existsSync(join(tmpDir, ".gitmodules"))).toBe(true);
+
+        const gitmodules = readFileSync(
+            join(tmpDir, ".gitmodules"),
+            "utf-8",
+        );
+        expect(gitmodules).toContain("[submodule");
+        expect(gitmodules).toContain("repo-a");
+    });
+
+    it("configures ignore = all and update = rebase", () => {
+        initRepo(join(tmpDir, "repo-a"));
+
+        initWithSubmodules(tmpDir);
+
+        const gitmodules = readFileSync(
+            join(tmpDir, ".gitmodules"),
+            "utf-8",
+        );
+        // ignore = all: parent won't report submodule changes as dirty
+        expect(gitmodules).toContain("ignore = all");
+        // update = rebase: follow branch, not pinned to commits
+        expect(gitmodules).toContain("update = rebase");
+    });
+
+    it("uses remote URL when available", () => {
+        // Create a bare "remote" and clone it into tmpDir
+        const bareRepo = join(tmpDir, "bare-origin.git");
+        spawnSync("git", ["init", "--bare", bareRepo], { stdio: "pipe" });
+
+        const cloneDir = join(tmpDir, "workspace");
+        mkdirSync(cloneDir);
+
+        const repoInWorkspace = join(cloneDir, "my-repo");
+        spawnSync("git", ["clone", bareRepo, repoInWorkspace], { stdio: "pipe" });
+        spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: repoInWorkspace, stdio: "pipe" });
+        spawnSync("git", ["config", "user.name", "T"], { cwd: repoInWorkspace, stdio: "pipe" });
+        writeFileSync(join(repoInWorkspace, "file.txt"), "content");
+        spawnSync("git", ["add", "."], { cwd: repoInWorkspace, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "init"], { cwd: repoInWorkspace, stdio: "pipe" });
+
+        initWithSubmodules(cloneDir);
+
+        const gitmodules = readFileSync(
+            join(cloneDir, ".gitmodules"),
+            "utf-8",
+        );
+        // Should use the remote URL, not a relative path
+        expect(gitmodules).toContain(bareRepo);
+        expect(gitmodules).not.toContain("url = ./");
+    });
+
+    it("prefers master branch when it exists", () => {
+        // initRepo creates a repo with default branch (master in test env)
+        initRepo(join(tmpDir, "repo-a"));
+        // Create another branch and switch to it
+        spawnSync("git", ["checkout", "-b", "develop"], {
+            cwd: join(tmpDir, "repo-a"),
+            stdio: "pipe",
+        });
+
+        initWithSubmodules(tmpDir);
+
+        const gitmodules = readFileSync(
+            join(tmpDir, ".gitmodules"),
+            "utf-8",
+        );
+        // Should pick master even though current branch is develop
+        expect(gitmodules).toContain("branch = master");
+    });
+
+    it("falls back to current branch when no master/main", () => {
+        initRepo(join(tmpDir, "repo-a"));
+        // Rename master to something else
+        spawnSync("git", ["branch", "-m", "master", "develop"], {
+            cwd: join(tmpDir, "repo-a"),
+            stdio: "pipe",
+        });
+
+        initWithSubmodules(tmpDir);
+
+        const gitmodules = readFileSync(
+            join(tmpDir, ".gitmodules"),
+            "utf-8",
+        );
+        expect(gitmodules).toContain("branch = develop");
+    });
+});
+
+// === Unified Mode Tests ===
+
+describe("createWorkspace (unified mode)", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("creates single worktree when source is a git repo", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".env"), "SECRET=1");
+        spawnSync("git", ["add", "."], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add env"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+
+        const result = createWorkspace(tmpDir, "feature");
+
+        expect(existsSync(result.workspacePath)).toBe(true);
+        expect(result.created).toHaveLength(1);
+        expect(result.created[0].action).toBe("worktree-new");
+        expect(result.copied).toHaveLength(0);
+
+        // .env should exist in worktree (part of git repo)
+        expect(existsSync(join(result.workspacePath, ".env"))).toBe(true);
+    });
+
+    it("creates worktree after initWithSubmodules", () => {
+        initRepo(join(tmpDir, "repo-a"));
+        mkdirSync(join(tmpDir, ".claude"));
+        writeFileSync(join(tmpDir, ".claude", "settings.json"), "{}");
+
+        initWithSubmodules(tmpDir);
+
+        const result = createWorkspace(tmpDir, "feature");
+
+        expect(existsSync(result.workspacePath)).toBe(true);
+        expect(result.created).toHaveLength(1);
+
+        // .claude should exist in worktree (tracked by parent git repo)
+        expect(
+            existsSync(join(result.workspacePath, ".claude", "settings.json")),
+        ).toBe(true);
+    });
+});
+
+describe("removeWorkspace (unified mode)", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("removes unified worktree", () => {
+        initRepo(tmpDir);
+
+        const wsResult = createWorkspace(tmpDir, "to-remove");
+        expect(existsSync(wsResult.workspacePath)).toBe(true);
+
+        const removeResult = removeWorkspace(tmpDir, "to-remove");
+        expect(removeResult.errors).toHaveLength(0);
+        expect(removeResult.removed).toHaveLength(1);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 });
