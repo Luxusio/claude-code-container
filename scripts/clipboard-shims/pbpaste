@@ -1,0 +1,12 @@
+#!/bin/sh
+# pbpaste shim - proxies clipboard requests to CCC host clipboard server
+# Supports: pbpaste (no args) -> returns text content
+
+if [ -z "$CCC_CLIPBOARD_URL" ]; then
+    echo "pbpaste: clipboard not available (not running in CCC session)" >&2
+    exit 1
+fi
+
+_data=$(curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" "$CCC_CLIPBOARD_URL/clipboard/text" 2>/dev/null) || { echo "pbpaste: clipboard server error" >&2; exit 1; }
+[ -n "$_data" ] || { echo "pbpaste: clipboard is empty" >&2; exit 1; }
+printf '%s' "$_data"

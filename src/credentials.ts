@@ -7,6 +7,7 @@
 import {spawnSync, SpawnSyncReturns} from "child_process";
 import {randomBytes} from "crypto";
 import {readFileSync, writeFileSync, chmodSync, mkdirSync, renameSync, accessSync, constants, openSync, writeSync, closeSync, unlinkSync} from "fs";
+import {request as httpsRequest} from "https";
 import {homedir as osHomedir} from "os";
 import {join} from "path";
 
@@ -154,29 +155,44 @@ export async function refreshOAuthToken(credentials: {
         [key: string]: unknown;
     };
 }): Promise<typeof credentials | null> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
+    const body = [
+        `grant_type=refresh_token`,
+        `refresh_token=${encodeURIComponent(credentials.claudeAiOauth.refreshToken)}`,
+        `client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}`,
+    ].join('&');
+
     try {
-        const params = new URLSearchParams({
-            grant_type: 'refresh_token',
-            refresh_token: credentials.claudeAiOauth.refreshToken,
-            client_id: OAUTH_CLIENT_ID,
+        const responseBody = await new Promise<string>((resolve, reject) => {
+            const url = new URL(OAUTH_TOKEN_URL);
+            const req = httpsRequest({
+                hostname: url.hostname,
+                port: url.port || 443,
+                path: url.pathname,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Length': Buffer.byteLength(body),
+                },
+            }, (res) => {
+                if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+                    reject(new Error(`HTTP ${res.statusCode}`));
+                    res.resume();
+                    return;
+                }
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => resolve(data));
+            });
+            req.on('error', reject);
+            const timeoutId = setTimeout(() => { req.destroy(); reject(new Error('timeout')); }, REFRESH_TIMEOUT_MS);
+            req.on('close', () => clearTimeout(timeoutId));
+            req.write(body);
+            req.end();
         });
-
-        const response = await fetch(OAUTH_TOKEN_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: params.toString(),
-            signal: controller.signal,
-        });
-
-        if (!response.ok) {
-            return null;
-        }
 
         let data: unknown;
         try {
-            data = await response.json();
+            data = JSON.parse(responseBody);
         } catch {
             return null;
         }
@@ -220,8 +236,6 @@ export async function refreshOAuthToken(credentials: {
         };
     } catch {
         return null;
-    } finally {
-        clearTimeout(timeoutId);
     }
 }
 

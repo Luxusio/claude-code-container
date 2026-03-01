@@ -1,0 +1,94 @@
+#!/bin/sh
+# xclip shim - proxies clipboard requests to CCC host clipboard server
+# Supports the exact invocation patterns used by Claude Code:
+#   xclip -selection clipboard -t TARGETS -o
+#   xclip -selection clipboard -t image/png -o
+#   xclip -selection clipboard -t image/bmp -o
+#   xclip -selection clipboard -t text/plain -o
+#   xclip -selection clipboard -o
+
+if [ -z "$CCC_CLIPBOARD_URL" ]; then
+    echo "xclip: clipboard not available (not running in CCC session)" >&2
+    exit 1
+fi
+
+# Parse arguments
+SELECTION=""
+TARGET=""
+OUTPUT=0
+INPUT=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -selection)
+            SELECTION="$2"
+            shift 2
+            ;;
+        -t)
+            TARGET="$2"
+            shift 2
+            ;;
+        -o)
+            OUTPUT=1
+            shift
+            ;;
+        -i)
+            INPUT=1
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Helper: fetch text endpoint, fail if empty
+_fetch_text() {
+    _data=$(curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" "$1" 2>/dev/null) || { echo "xclip: clipboard server error" >&2; exit 1; }
+    [ -n "$_data" ] || { echo "xclip: clipboard is empty" >&2; exit 1; }
+    printf '%s' "$_data"
+}
+
+# Helper: fetch binary endpoint to temp file, fail if empty
+_fetch_binary() {
+    _tmp=$(mktemp)
+    trap 'rm -f "$_tmp"' EXIT
+    if curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" -o "$_tmp" "$1" 2>/dev/null && [ -s "$_tmp" ]; then
+        cat "$_tmp"
+    else
+        echo "xclip: clipboard is empty or server error" >&2
+        exit 1
+    fi
+}
+
+# Only handle clipboard selection output for now
+if [ "$OUTPUT" = "1" ]; then
+    case "$TARGET" in
+        TARGETS)
+            _fetch_text "$CCC_CLIPBOARD_URL/clipboard/targets"
+            ;;
+        image/png)
+            _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/png"
+            ;;
+        image/bmp)
+            _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/bmp"
+            ;;
+        image/*)
+            _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/png"
+            ;;
+        text/plain|"")
+            _fetch_text "$CCC_CLIPBOARD_URL/clipboard/text"
+            ;;
+        *)
+            _fetch_text "$CCC_CLIPBOARD_URL/clipboard/text"
+            ;;
+    esac
+fi
+
+# Input mode (copy) - not yet implemented, silently consume stdin
+if [ "$INPUT" = "1" ] || [ "$OUTPUT" = "0" -a "$SELECTION" = "clipboard" ]; then
+    cat > /dev/null
+    exit 0
+fi
+
+exit 0

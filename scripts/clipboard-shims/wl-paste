@@ -1,0 +1,75 @@
+#!/bin/sh
+# wl-paste shim - proxies clipboard requests to CCC host clipboard server
+# Supports the exact invocation patterns used by Claude Code:
+#   wl-paste -l                    (list types)
+#   wl-paste --list-types          (list types)
+#   wl-paste --type image/png      (get image as PNG)
+#   wl-paste --type image/bmp      (get image as BMP)
+#   wl-paste                       (get text)
+
+if [ -z "$CCC_CLIPBOARD_URL" ]; then
+    echo "wl-paste: clipboard not available (not running in CCC session)" >&2
+    exit 1
+fi
+
+# Parse arguments
+TYPE=""
+LIST_TYPES=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -l|--list-types)
+            LIST_TYPES=1
+            shift
+            ;;
+        --type|-t)
+            TYPE="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Helper: fetch text endpoint, fail if empty
+_fetch_text() {
+    _data=$(curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" "$1" 2>/dev/null) || { echo "wl-paste: clipboard server error" >&2; exit 1; }
+    [ -n "$_data" ] || { echo "wl-paste: clipboard is empty" >&2; exit 1; }
+    printf '%s' "$_data"
+}
+
+# Helper: fetch binary endpoint to temp file, fail if empty
+_fetch_binary() {
+    _tmp=$(mktemp)
+    trap 'rm -f "$_tmp"' EXIT
+    if curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" -o "$_tmp" "$1" 2>/dev/null && [ -s "$_tmp" ]; then
+        cat "$_tmp"
+    else
+        echo "wl-paste: clipboard is empty or server error" >&2
+        exit 1
+    fi
+}
+
+if [ "$LIST_TYPES" = "1" ]; then
+    _fetch_text "$CCC_CLIPBOARD_URL/clipboard/targets"
+    exit 0
+fi
+
+case "$TYPE" in
+    image/png)
+        _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/png"
+        ;;
+    image/bmp)
+        _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/bmp"
+        ;;
+    image/*)
+        _fetch_binary "$CCC_CLIPBOARD_URL/clipboard/image/png"
+        ;;
+    "")
+        _fetch_text "$CCC_CLIPBOARD_URL/clipboard/text"
+        ;;
+    *)
+        _fetch_text "$CCC_CLIPBOARD_URL/clipboard/text"
+        ;;
+esac

@@ -7,11 +7,25 @@ import {
     readdirSync,
     writeFileSync,
     readFileSync,
-    cpSync,
+    copyFileSync,
+    statSync,
     rmSync,
     lstatSync,
 } from "fs";
 import { basename, dirname, join, resolve } from "path";
+
+/** Recursive directory copy (Node 14 compatible replacement for cpSync) */
+function copyDirRecursive(src: string, dest: string): void {
+    const stat = statSync(src);
+    if (stat.isDirectory()) {
+        mkdirSync(dest, { recursive: true });
+        for (const entry of readdirSync(src)) {
+            copyDirRecursive(join(src, entry), join(dest, entry));
+        }
+    } else {
+        copyFileSync(src, dest);
+    }
+}
 
 export const WORKTREE_SEPARATOR = "--";
 export const METADATA_FILE = ".ccc-meta.json";
@@ -701,7 +715,7 @@ function createMultiRepoWorkspace(
     for (const entry of nonRepos) {
         const destPath = join(wsPath, entry.name);
         try {
-            cpSync(entry.path, destPath, { recursive: true });
+            copyDirRecursive(entry.path, destPath);
             copied.push(entry.name);
         } catch (e) {
             if ((e as NodeJS.ErrnoException).code === "EEXIST") {

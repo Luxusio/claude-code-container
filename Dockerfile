@@ -92,6 +92,17 @@ RUN sudo apt-get update && sudo apt-get install -y \
     && sudo rm -rf /var/lib/apt/lists/*
 
 # ============================================================
+# LAYER 9: Clipboard shims (host clipboard bridge for image paste)
+# ============================================================
+COPY --chmod=755 scripts/clipboard-shims/xclip /usr/local/bin/xclip
+COPY --chmod=755 scripts/clipboard-shims/xsel /usr/local/bin/xsel
+COPY --chmod=755 scripts/clipboard-shims/wl-paste /usr/local/bin/wl-paste
+COPY --chmod=755 scripts/clipboard-shims/wl-copy /usr/local/bin/wl-copy
+COPY --chmod=755 scripts/clipboard-shims/pbpaste /usr/local/bin/pbpaste
+# Strip Windows CRLF line endings (git on Windows may convert LF→CRLF)
+RUN sudo sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste
+
+# ============================================================
 # claude-code is installed at runtime and cached in mise volume.
 # See ensureClaudeInContainer() in src/index.ts
 # ============================================================

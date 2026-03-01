@@ -1,0 +1,44 @@
+#!/bin/sh
+# xsel shim - proxies clipboard requests to CCC host clipboard server
+# Supports: xsel --clipboard --output
+
+if [ -z "$CCC_CLIPBOARD_URL" ]; then
+    echo "xsel: clipboard not available (not running in CCC session)" >&2
+    exit 1
+fi
+
+OUTPUT=0
+INPUT=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --clipboard|-b)
+            shift
+            ;;
+        --output|-o)
+            OUTPUT=1
+            shift
+            ;;
+        --input|-i)
+            INPUT=1
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [ "$OUTPUT" = "1" ]; then
+    _data=$(curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" "$CCC_CLIPBOARD_URL/clipboard/text" 2>/dev/null) || { echo "xsel: clipboard server error" >&2; exit 1; }
+    [ -n "$_data" ] || { echo "xsel: clipboard is empty" >&2; exit 1; }
+    printf '%s' "$_data"
+    exit 0
+fi
+
+if [ "$INPUT" = "1" ]; then
+    cat > /dev/null
+    exit 0
+fi
+
+exit 0

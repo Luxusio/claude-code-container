@@ -15,7 +15,7 @@
     "uninstall:global": "node scripts/install.js --uninstall"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=14.14.0"
   },
   "keywords": [
     "claude",

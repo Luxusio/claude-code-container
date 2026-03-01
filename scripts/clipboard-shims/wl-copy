@@ -1,0 +1,12 @@
+#!/bin/sh
+# wl-copy shim - clipboard copy direction (not yet implemented)
+# Silently consumes stdin to avoid errors
+
+if [ -z "$CCC_CLIPBOARD_URL" ]; then
+    echo "wl-copy: clipboard not available (not running in CCC session)" >&2
+    exit 1
+fi
+
+# Consume stdin silently (copy not yet implemented)
+cat > /dev/null
+exit 0

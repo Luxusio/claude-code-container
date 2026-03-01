@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import {
     existsSync,
     mkdirSync,
@@ -38,6 +38,10 @@ import {
     MISE_VOLUME_NAME,
 } from "./utils.js";
 import { syncCredentials } from "./credentials.js";
+import {
+    ensureClipboardServer,
+    stopClipboardServerIfLast,
+} from "./clipboard-server.js";
 import {
     parseWorktreeArg,
     validateBranchName,
@@ -196,7 +200,7 @@ function ensureBrowserMcp(): void {
 
 // === Lock File Management ===
 function createSessionLock(projectId: string): string {
-    const sessionId = randomUUID();
+    const sessionId = randomBytes(16).toString("hex");
     const lockFile = join(locksDir, `${projectId}-${sessionId}.lock`);
     writeFileSync(lockFile, String(process.pid));
     return lockFile;
@@ -239,7 +243,10 @@ function cleanupSession(): void {
     const projectId = getProjectId(currentProjectPath);
     const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
 
-    // Remove our lock file first
+    // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
+    stopClipboardServerIfLast(currentSessionLockFile);
+
+    // Remove our lock file
     removeSessionLock(currentSessionLockFile);
 
     // Stop container if no other sessions are using this project
@@ -793,6 +800,14 @@ async function exec(
     }
     ensureGlobalNpmTools(containerName);
 
+    // Start clipboard server (singleton, shared across all sessions)
+    let clipboardPort: number | null = null;
+    try {
+        clipboardPort = await ensureClipboardServer();
+    } catch {
+        // Non-fatal: clipboard paste won't work but everything else is fine
+    }
+
     // Verify container is still running before exec.
     // Another session's cleanup could have stopped it between our setup steps.
     if (!isContainerRunning(containerName)) {
@@ -823,6 +838,20 @@ async function exec(
         for (const [key, value] of Object.entries(options.env)) {
             execArgs.push("-e", `${key}=${value}`);
         }
+    }
+
+    // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
+    if (clipboardPort) {
+        const clipboardHost = process.platform === "linux" ? "127.0.0.1" : "host.docker.internal";
+        execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
+        // Read token from port file for container auth
+        try {
+            const portFileContent = readFileSync(join(DATA_DIR, "clipboard.port"), "utf-8").trim();
+            const clipToken = portFileContent.split(":").slice(1).join(":");
+            if (clipToken) {
+                execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipToken}`);
+            }
+        } catch { /* token unavailable - shims will work without auth */ }
     }
 
     // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
