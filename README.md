@@ -111,14 +111,13 @@ ccc는 컨테이너 안에서 `container=docker`를 자동으로 설정합니다
 node = "22"
 
 [env]
-_.file = ".env"
-_.source = "{{ env.container != '' | iif('.env.ccc', '/dev/null') }}"
+_.file = [".env", "{% if env.container is defined %}.env.ccc{% endif %}"]
 ```
 
 | 파일 | 로드 환경 | 용도 |
 |------|----------|------|
 | `.env` | 항상 | 공통 환경변수 |
-| `.env.ccc` | 컨테이너만 | 컨테이너 전용 환경변수 |
+| `.env.ccc` | 컨테이너만 | 컨테이너 전용 오버라이드 |
 
 ```bash
 # .env - 공통

@@ -1,3 +1,14 @@
+# ==========================================================
+# Stage 1: Download Chromium via Playwright CDN (amd64/arm64)
+# ==========================================================
+FROM node:22-slim AS chromium-dl
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
+WORKDIR /tmp/pw
+RUN npm install playwright && npx playwright install chromium
+
+# ==========================================================
+# Stage 2: Main image
+# ==========================================================
 FROM ubuntu:24.04
 
 # ============================================================
@@ -9,22 +20,19 @@ RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
     fi
 
 # ============================================================
-# LAYER 1: Minimal base for Chromium PPA (절대 안 바뀜)
+# LAYER 1: Base packages (절대 안 바뀜)
 # ============================================================
 RUN apt-get update && apt-get install -y \
-    software-properties-common \
     ca-certificates \
     curl \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 # ============================================================
-# LAYER 2: Chromium (무겁고 절대 안 바뀜)
+# LAYER 2: Chromium binary (multi-stage에서 복사, 캐시 독립)
 # ============================================================
-RUN add-apt-repository -y ppa:xtradeb/apps && \
-    apt-get update && \
-    apt-get install -y chromium && \
-    rm -rf /var/lib/apt/lists/*
+COPY --from=chromium-dl /opt/browsers /opt/browsers
+RUN ln -s "$(find /opt/browsers -name chrome -type f | head -1)" /usr/bin/chromium
 
 # ============================================================
 # LAYER 3: Docker CLI (무겁고 절대 안 바뀜)
@@ -87,7 +95,7 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
     ~/.local/bin/mise use -g pnpm@9
 
 # ============================================================
-# LAYER 8: Fonts (가끔 바뀜)
+# LAYER 8: Fonts
 # ============================================================
 RUN sudo apt-get update && sudo apt-get install -y \
     fonts-liberation \
@@ -113,6 +121,7 @@ RUN sudo sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bi
 # ============================================================
 # Environment variables
 # ============================================================
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
 ENV PATH="/home/ccc/.local/bin:/home/ccc/.local/share/mise/shims:/home/ccc/.claude/local:$PATH"
 ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
 ENV DISPLAY=":99"
