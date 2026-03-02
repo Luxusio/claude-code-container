@@ -12,12 +12,10 @@ import {
     syncFromWindowsCredentialManager,
     readValidCredentialsFile,
     validateToken,
+    refreshOAuthToken,
     CredentialDeps,
     TokenRefreshError
 } from '../credentials.js';
-
-// Mock fetch globally - always fail to skip refresh in tests
-vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false })));
 
 // Test directory - use unique dir per test run
 let testDir: string;
@@ -644,6 +642,169 @@ describe('credentials', () => {
             expect(renameCalls.length).toBeGreaterThan(0);
             expect(renameCalls[0].from).toBe(writePaths[0]);
             expect(renameCalls[0].to).toBe(join(testClaudeDir, '.credentials.json'));
+        });
+    });
+
+    describe('refreshOAuthToken', () => {
+        function createMockHttpsRequest(statusCode: number, body: string, error?: Error) {
+            return (_options: unknown, callback: (res: unknown) => void) => {
+                const res = {
+                    statusCode,
+                    resume: () => {},
+                    on: (event: string, handler: (chunk?: unknown) => void) => {
+                        if (event === 'data') handler(Buffer.from(body));
+                        if (event === 'end') handler();
+                        return res;
+                    },
+                };
+                if (!error) {
+                    process.nextTick(() => callback(res));
+                }
+                return {
+                    on: (event: string, handler: (err?: unknown) => void) => {
+                        if (event === 'error' && error) process.nextTick(() => handler(error));
+                        // 'close' handler — no-op (timeout clearTimeout)
+                    },
+                    write: () => {},
+                    end: () => {},
+                    destroy: () => {},
+                };
+            };
+        }
+
+        const baseCredentials = {
+            claudeAiOauth: {
+                refreshToken: 'valid-refresh-token-abc',
+                accessToken: 'old-access-token-abc',
+            }
+        };
+
+        const validResponseBody = JSON.stringify({
+            access_token: 'new-access-token-abcdefghij',
+            refresh_token: 'new-refresh-token-abcdefghij',
+            expires_in: 3600,
+        });
+
+        it('returns null on network error', async () => {
+            const mock = createMockHttpsRequest(0, '', new Error('ECONNREFUSED'));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null on HTTP non-2xx status code', async () => {
+            const mock = createMockHttpsRequest(401, '{"error":"unauthorized"}');
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when response body is not valid JSON', async () => {
+            const mock = createMockHttpsRequest(200, 'not-json');
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when response body is null JSON', async () => {
+            const mock = createMockHttpsRequest(200, 'null');
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when response body is not an object', async () => {
+            const mock = createMockHttpsRequest(200, '"just-a-string"');
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when access_token is missing', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({ expires_in: 3600 }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when access_token is too short (< 10 chars)', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({ access_token: 'short', expires_in: 3600 }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when access_token is too long (> 10000 chars)', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({ access_token: 'a'.repeat(10001), expires_in: 3600 }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when refresh_token present but is non-string (invalid)', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({
+                access_token: 'new-access-token-abcdefghij',
+                refresh_token: 12345,
+                expires_in: 3600,
+            }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when expires_in is negative', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({
+                access_token: 'new-access-token-abcdefghij',
+                expires_in: -1,
+            }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when expires_in exceeds MAX_TOKEN_LIFETIME (1 year)', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({
+                access_token: 'new-access-token-abcdefghij',
+                expires_in: 31536001,
+            }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('returns null when expires_in is not an integer (float)', async () => {
+            const mock = createMockHttpsRequest(200, JSON.stringify({
+                access_token: 'new-access-token-abcdefghij',
+                expires_in: 3600.5,
+            }));
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).toBeNull();
+        });
+
+        it('success: returns refreshed credentials with new tokens', async () => {
+            const mock = createMockHttpsRequest(200, validResponseBody);
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).not.toBeNull();
+            expect(result!.claudeAiOauth.accessToken).toBe('new-access-token-abcdefghij');
+            expect(result!.claudeAiOauth.refreshToken).toBe('new-refresh-token-abcdefghij');
+        });
+
+        it('success: preserves original refresh_token when response omits new one', async () => {
+            const body = JSON.stringify({
+                access_token: 'new-access-token-abcdefghij',
+                expires_in: 3600,
+            });
+            const mock = createMockHttpsRequest(200, body);
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).not.toBeNull();
+            expect(result!.claudeAiOauth.refreshToken).toBe('valid-refresh-token-abc');
+        });
+
+        it('success: uses new refresh_token when provided in response', async () => {
+            const mock = createMockHttpsRequest(200, validResponseBody);
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            expect(result).not.toBeNull();
+            expect(result!.claudeAiOauth.refreshToken).toBe('new-refresh-token-abcdefghij');
+        });
+
+        it('success: sets expiresAt approximately now + expires_in seconds', async () => {
+            const before = Date.now();
+            const mock = createMockHttpsRequest(200, validResponseBody);
+            const result = await refreshOAuthToken(baseCredentials, { httpsRequest: mock as never });
+            const after = Date.now();
+            expect(result).not.toBeNull();
+            const expiresAt = result!.claudeAiOauth.expiresAt as number;
+            expect(expiresAt).toBeGreaterThanOrEqual(before + 3600 * 1000);
+            expect(expiresAt).toBeLessThanOrEqual(after + 3600 * 1000);
         });
     });
 

@@ -1,6 +1,17 @@
-import { describe, it, expect } from 'vitest'
-import { hashPath, getProjectId, getContainerName } from '../index.js'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { hashPath, getProjectId } from '../utils.js'
+import { getContainerName } from '../docker.js'
 import { MISE_VOLUME_NAME } from '../utils.js'
+
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs')
+    return {
+        ...actual,
+        existsSync: vi.fn(),
+        readFileSync: vi.fn(),
+        writeFileSync: vi.fn(),
+    }
+})
 
 describe('hashPath', () => {
   it('returns 12 character hash', () => {
@@ -65,5 +76,125 @@ describe('getContainerName', () => {
 describe('named volume integration', () => {
   it('MISE_VOLUME_NAME should be ccc-mise-cache', () => {
     expect(MISE_VOLUME_NAME).toBe('ccc-mise-cache')
+  })
+})
+
+describe('ensureBrowserMcp', () => {
+  let fsMock: typeof import('fs')
+  let existsSync: ReturnType<typeof vi.fn>
+  let readFileSync: ReturnType<typeof vi.fn>
+  let writeFileSync: ReturnType<typeof vi.fn>
+  let ensureBrowserMcp: () => void
+
+  beforeEach(async () => {
+    vi.resetModules()
+    fsMock = await import('fs')
+    existsSync = fsMock.existsSync as ReturnType<typeof vi.fn>
+    readFileSync = fsMock.readFileSync as ReturnType<typeof vi.fn>
+    writeFileSync = fsMock.writeFileSync as ReturnType<typeof vi.fn>
+    vi.clearAllMocks()
+    const mod = await import('../index.js')
+    ensureBrowserMcp = mod.ensureBrowserMcp
+  })
+
+  function getWrittenConfig(): Record<string, unknown> {
+    expect(writeFileSync).toHaveBeenCalled()
+    const rawJson = writeFileSync.mock.calls[0][1] as string
+    return JSON.parse(rawJson)
+  }
+
+  it('creates chrome-devtools entry when file contains empty object', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('{}')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    expect(servers['chrome-devtools']).toBeDefined()
+  })
+
+  it('preserves existing mcpServers entries while adding chrome-devtools', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue(JSON.stringify({ mcpServers: { 'my-tool': { command: 'foo' } } }))
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    expect(servers['my-tool']).toEqual({ command: 'foo' })
+    expect(servers['chrome-devtools']).toBeDefined()
+  })
+
+  it('removes old playwright entry if it exists', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue(JSON.stringify({ mcpServers: { playwright: { command: 'npx' } } }))
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    expect(servers['playwright']).toBeUndefined()
+  })
+
+  it('handles corrupt/invalid JSON by resetting config to empty object', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('not valid json {{{{')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    expect(config.mcpServers).toBeDefined()
+    const servers = config.mcpServers as Record<string, unknown>
+    expect(servers['chrome-devtools']).toBeDefined()
+  })
+
+  it('uses correct Chromium executable path', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('{}')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    const entry = servers['chrome-devtools'] as { args: string[] }
+    expect(entry.args).toContain('--executablePath=/usr/bin/chromium')
+  })
+
+  it('includes sandbox-disable flags', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('{}')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    const entry = servers['chrome-devtools'] as { args: string[] }
+    expect(entry.args).toContain('--chromeArg=--no-sandbox')
+    expect(entry.args).toContain('--chromeArg=--disable-setuid-sandbox')
+  })
+
+  it('includes host-resolver-rules for localhost mapping', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('{}')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    const entry = servers['chrome-devtools'] as { args: string[] }
+    expect(entry.args).toContain('--chromeArg=--host-resolver-rules=MAP localhost host.docker.internal')
+  })
+
+  it('uses mise exec node@22 as command wrapper', () => {
+    existsSync.mockReturnValue(true)
+    readFileSync.mockReturnValue('{}')
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    const entry = servers['chrome-devtools'] as { command: string; args: string[] }
+    expect(entry.command).toBe('mise')
+    expect(entry.args[0]).toBe('exec')
+    expect(entry.args[1]).toBe('node@22')
+  })
+
+  it('works when CLAUDE_JSON_FILE does not exist (skips read, still writes)', async () => {
+    existsSync.mockReturnValue(false)
+    ensureBrowserMcp()
+    const config = getWrittenConfig()
+    const servers = config.mcpServers as Record<string, unknown>
+    expect(servers['chrome-devtools']).toBeDefined()
+    // readFileSync should not have been called with CLAUDE_JSON_FILE since existsSync returned false
+    const { CLAUDE_JSON_FILE } = await import('../utils.js')
+    const calledWithConfig = readFileSync.mock.calls.some(
+      (call: unknown[]) => call[0] === CLAUDE_JSON_FILE
+    )
+    expect(calledWithConfig).toBe(false)
   })
 })

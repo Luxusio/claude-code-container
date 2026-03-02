@@ -230,8 +230,13 @@ async function readAllClipboardWindows(): Promise<Omit<ClipboardSnapshot, "times
 
     try {
         const json = JSON.parse(output);
+        // PowerShell's ConvertTo-Json may serialize single-element arrays as scalars
+        const rawTargets = json.targets;
+        const targets = Array.isArray(rawTargets) ? rawTargets
+            : typeof rawTargets === "string" ? [rawTargets]
+            : [];
         return {
-            targets: Array.isArray(json.targets) ? json.targets : [],
+            targets,
             text: json.text ? Buffer.from(json.text, "utf-8") : null,
             imagePng: json.imagePng ? Buffer.from(json.imagePng, "base64") : null,
             imageBmp: null,
@@ -509,9 +514,11 @@ function writePortFile(port: number, token: string): void {
 
 // === Server Shutdown (used for version upgrade restart) ===
 
-function shutdownServer(port: number): void {
+function shutdownServer(port: number, token?: string): void {
+    const headers: Record<string, string> = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
     const req = httpRequest(
-        { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", timeout: 2000 },
+        { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", timeout: 2000, headers },
         () => { /* response doesn't matter */ },
     );
     req.on("error", () => { /* server may already be gone */ });
@@ -568,7 +575,7 @@ export async function ensureClipboardServer(): Promise<number> {
             // Version match → reuse existing server
             if (health.version === SERVER_VERSION) return existing.port;
             // Version mismatch → shutdown old server, start new one
-            shutdownServer(existing.port);
+            shutdownServer(existing.port, existing.token);
             // Brief wait for old server to release the port
             await new Promise((r) => setTimeout(r, 500));
         }
@@ -656,7 +663,7 @@ export function stopClipboardServerIfLast(currentLockFile: string | null): void 
     const info = readPortFile();
     if (!info) return;
 
-    shutdownServer(info.port);
+    shutdownServer(info.port, info.token);
 
     // Clean up port file
     try { unlinkSync(PORT_FILE); } catch { /* ignore */ }

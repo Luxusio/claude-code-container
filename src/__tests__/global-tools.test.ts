@@ -12,7 +12,7 @@ vi.mock("child_process", async (importOriginal) => {
 });
 
 // Must import AFTER vi.mock so the mock is in effect
-const { ensureGlobalNpmTools } = await import("../index.js");
+const { ensureGlobalNpmTools } = await import("../container-setup.js");
 
 function makeResult(status: number): SpawnSyncReturns<string> {
     return {

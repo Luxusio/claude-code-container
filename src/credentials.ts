@@ -52,6 +52,7 @@ export interface CredentialDeps {
     closeSync: (fd: number) => void;
     randomBytes: (size: number) => Buffer;
     platform: NodeJS.Platform;
+    httpsRequest?: typeof httpsRequest;
 }
 
 const defaultDeps: CredentialDeps = {
@@ -154,17 +155,19 @@ export async function refreshOAuthToken(credentials: {
         refreshToken: string;
         [key: string]: unknown;
     };
-}): Promise<typeof credentials | null> {
+}, deps?: Pick<CredentialDeps, 'httpsRequest'>): Promise<typeof credentials | null> {
     const body = [
         `grant_type=refresh_token`,
         `refresh_token=${encodeURIComponent(credentials.claudeAiOauth.refreshToken)}`,
         `client_id=${encodeURIComponent(OAUTH_CLIENT_ID)}`,
     ].join('&');
 
+    const requestFn = deps?.httpsRequest ?? httpsRequest;
+
     try {
         const responseBody = await new Promise<string>((resolve, reject) => {
             const url = new URL(OAUTH_TOKEN_URL);
-            const req = httpsRequest({
+            const req = requestFn({
                 hostname: url.hostname,
                 port: url.port || 443,
                 path: url.pathname,

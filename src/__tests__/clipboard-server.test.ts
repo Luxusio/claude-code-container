@@ -620,8 +620,11 @@ describe("clipboard-server", () => {
                 });
 
                 const parsed = JSON.parse(json);
+                const rawTargets = parsed.targets;
                 const result = {
-                    targets: Array.isArray(parsed.targets) ? parsed.targets : [],
+                    targets: Array.isArray(rawTargets) ? rawTargets
+                        : typeof rawTargets === "string" ? [rawTargets]
+                        : [],
                     text: parsed.text ? Buffer.from(parsed.text, "utf-8") : null,
                     imagePng: parsed.imagePng ? Buffer.from(parsed.imagePng, "base64") : null,
                     imageBmp: null,
@@ -662,10 +665,24 @@ describe("clipboard-server", () => {
                 expect(Buffer.compare(decoded, pngBytes)).toBe(0);
             });
 
-            it("should handle non-array targets field", () => {
-                const json = JSON.stringify({ targets: "not-array", text: null, imagePng: null });
+            it("should handle scalar targets from PowerShell single-element array serialization", () => {
+                // PowerShell ConvertTo-Json may serialize single-element arrays as scalar strings
+                const json = JSON.stringify({ targets: "image/png", text: null, imagePng: "base64data" });
                 const parsed = JSON.parse(json);
-                const targets = Array.isArray(parsed.targets) ? parsed.targets : [];
+                const rawTargets = parsed.targets;
+                const targets = Array.isArray(rawTargets) ? rawTargets
+                    : typeof rawTargets === "string" ? [rawTargets]
+                    : [];
+                expect(targets).toEqual(["image/png"]);
+            });
+
+            it("should handle non-string non-array targets field", () => {
+                const json = JSON.stringify({ targets: 42, text: null, imagePng: null });
+                const parsed = JSON.parse(json);
+                const rawTargets = parsed.targets;
+                const targets = Array.isArray(rawTargets) ? rawTargets
+                    : typeof rawTargets === "string" ? [rawTargets]
+                    : [];
                 expect(targets).toEqual([]);
             });
         });
@@ -1723,7 +1740,7 @@ describe("clipboard-server", () => {
                 });
             });
 
-            // Replicate shutdownServer
+            // Replicate shutdownServer (no token)
             await new Promise<void>((resolve) => {
                 const req = httpRequest(
                     { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", timeout: 2000 },
@@ -1735,6 +1752,35 @@ describe("clipboard-server", () => {
 
             expect(receivedMethod).toBe("POST");
             expect(receivedPath).toBe("/shutdown");
+        });
+
+        it("should send Authorization header when token is provided", async () => {
+            let receivedAuth = "";
+
+            const port = await new Promise<number>((resolve) => {
+                shutdownTarget = createServer((req, res) => {
+                    receivedAuth = req.headers.authorization ?? "";
+                    res.writeHead(200);
+                    res.end("ok");
+                });
+                shutdownTarget.listen(0, "127.0.0.1", () => {
+                    const addr = shutdownTarget.address();
+                    if (addr && typeof addr !== "string") resolve(addr.port);
+                });
+            });
+
+            // Replicate shutdownServer with token
+            await new Promise<void>((resolve) => {
+                const headers: Record<string, string> = { "Authorization": "Bearer test-token-123" };
+                const req = httpRequest(
+                    { hostname: "127.0.0.1", port, path: "/shutdown", method: "POST", timeout: 2000, headers },
+                    () => { resolve(); },
+                );
+                req.on("error", () => { resolve(); });
+                req.end();
+            });
+
+            expect(receivedAuth).toBe("Bearer test-token-123");
         });
 
         it("should handle connection error gracefully", async () => {

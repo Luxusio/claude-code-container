@@ -1,0 +1,270 @@
+// src/docker.ts - Docker container lifecycle management
+//
+// Extracted from index.ts for separation of concerns.
+// Contains: Docker args builder, container CRUD, image checks.
+
+import { spawnSync } from "child_process";
+import { existsSync, mkdirSync } from "fs";
+import { homedir } from "os";
+import { join, resolve } from "path";
+import {
+    getProjectId,
+    CLAUDE_DIR,
+    CLAUDE_JSON_FILE,
+    IMAGE_NAME,
+    CONTAINER_PID_LIMIT,
+    MISE_VOLUME_NAME,
+} from "./utils.js";
+
+// === Docker Args Builder ===
+
+export interface DockerRunArgsOptions {
+    containerName: string;
+    fullPath: string;
+    projectMountPath: string;
+    claudeDir: string;
+    claudeJsonFile: string;
+    hostClaudeIdeDir: string;
+    miseVolumeName: string;
+    pidsLimit: string;
+    imageName: string;
+    hostSshDir: string | null;
+    sshAgentSocket: string | null;
+}
+
+export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
+    const args = [
+        "run",
+        "-d",
+        "--name",
+        opts.containerName,
+        "--network",
+        "host",
+        "--security-opt",
+        "seccomp=unconfined",
+        "-v",
+        `${opts.fullPath}:${opts.projectMountPath}`,
+        "-v",
+        `${opts.claudeDir}:/home/ccc/.claude`,
+        "-v",
+        `${opts.claudeJsonFile}:/home/ccc/.claude.json`,
+        "-v",
+        `${opts.hostClaudeIdeDir}:/home/ccc/.claude/ide`,
+        "-v",
+        `${opts.miseVolumeName}:/home/ccc/.local/share/mise`,
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "-w",
+        opts.projectMountPath,
+        "--pids-limit",
+        opts.pidsLimit,
+    ];
+
+    // Mount host SSH keys (read-only) for git SSH access
+    if (opts.hostSshDir) {
+        args.push("-v", `${opts.hostSshDir}:/home/ccc/.ssh:ro`);
+        args.push(
+            "-e",
+            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
+        );
+    }
+
+    // Forward SSH agent socket
+    if (opts.sshAgentSocket) {
+        args.push(
+            "-v",
+            `${opts.sshAgentSocket}:/tmp/ssh-agent.sock`,
+            "-e",
+            "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
+        );
+    }
+
+    args.push(opts.imageName);
+    return args;
+}
+
+// === Container Name ===
+
+export function getContainerName(projectPath: string): string {
+    return `ccc-${getProjectId(projectPath)}`;
+}
+
+// === Docker Status Checks ===
+
+export function isDockerRunning(): boolean {
+    const result = spawnSync("docker", ["info"], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+    return result.status === 0;
+}
+
+export function ensureDockerRunning(): void {
+    if (!isDockerRunning()) {
+        console.error("Error: Docker is not running.");
+        console.error("Please start Docker Desktop and try again.");
+        process.exit(1);
+    }
+}
+
+export function isContainerRunning(containerName: string): boolean {
+    const result = spawnSync(
+        "docker",
+        ["ps", "-q", "-f", `name=^${containerName}$`],
+        { encoding: "utf-8" },
+    );
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+export function isContainerExists(containerName: string): boolean {
+    const result = spawnSync(
+        "docker",
+        ["ps", "-aq", "-f", `name=^${containerName}$`],
+        { encoding: "utf-8" },
+    );
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+export function isImageExists(): boolean {
+    const result = spawnSync("docker", ["images", "-q", IMAGE_NAME], {
+        encoding: "utf-8",
+    });
+    return (result.stdout ?? "").trim().length > 0;
+}
+
+export function ensureImage(): void {
+    if (!isImageExists()) {
+        console.error(
+            "ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'",
+        );
+        process.exit(1);
+    }
+}
+
+// === Clipboard Shim Sync ===
+
+const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
+
+export function syncClipboardShims(containerName: string, distDir: string): void {
+    const shimsDir = join(distDir, "..", "scripts", "clipboard-shims");
+    if (!existsSync(shimsDir)) return;
+    for (const shim of CLIPBOARD_SHIMS) {
+        const src = join(shimsDir, shim);
+        if (existsSync(src)) {
+            spawnSync("docker", ["cp", src, `${containerName}:/usr/local/bin/${shim}`]);
+        }
+    }
+}
+
+// === Container Lifecycle ===
+
+export function startProjectContainer(
+    projectPath: string,
+    ensureDirs: () => void,
+): string {
+    ensureDirs();
+    ensureImage();
+
+    const fullPath = resolve(projectPath);
+    const containerName = getContainerName(fullPath);
+
+    if (isContainerRunning(containerName)) {
+        return containerName;
+    }
+
+    if (isContainerExists(containerName)) {
+        spawnSync("docker", ["start", containerName], { stdio: "inherit" });
+        return containerName;
+    }
+
+    console.log("Creating container...");
+
+    const projectId = getProjectId(fullPath);
+    const projectMountPath = `/project/${projectId}`;
+
+    const hostClaudeIdeDir = join(homedir(), ".claude", "ide");
+    mkdirSync(hostClaudeIdeDir, { recursive: true });
+
+    const hostSshDir = join(homedir(), ".ssh");
+
+    let sshAgentSocket: string | null = null;
+    if (process.platform === "darwin") {
+        sshAgentSocket = "/run/host-services/ssh-auth.sock";
+    } else {
+        const hostSock = process.env.SSH_AUTH_SOCK;
+        if (hostSock && existsSync(hostSock)) {
+            sshAgentSocket = hostSock;
+        }
+    }
+
+    const args = buildDockerRunArgs({
+        containerName,
+        fullPath,
+        projectMountPath,
+        claudeDir: CLAUDE_DIR,
+        claudeJsonFile: CLAUDE_JSON_FILE,
+        hostClaudeIdeDir,
+        miseVolumeName: MISE_VOLUME_NAME,
+        pidsLimit: CONTAINER_PID_LIMIT,
+        imageName: IMAGE_NAME,
+        hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
+        sshAgentSocket,
+    });
+
+    const result = spawnSync("docker", args, { stdio: "inherit" });
+    if (result.status !== 0) {
+        console.error("Failed to create container");
+        process.exit(1);
+    }
+
+    // Fix SSH key permissions
+    if (existsSync(hostSshDir)) {
+        spawnSync(
+            "docker",
+            [
+                "exec",
+                containerName,
+                "sh",
+                "-c",
+                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
+                    "chmod 700 /tmp/.ssh-copy && " +
+                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
+                    "true",
+            ],
+            { stdio: "ignore" },
+        );
+    }
+
+    return containerName;
+}
+
+export function stopProjectContainer(projectPath: string): void {
+    ensureDockerRunning();
+    const containerName = getContainerName(resolve(projectPath));
+
+    if (!isContainerExists(containerName)) {
+        console.log("Container not found");
+        return;
+    }
+
+    console.log("Stopping container...");
+    spawnSync("docker", ["stop", containerName], { stdio: "inherit" });
+    console.log("Container stopped");
+}
+
+export function removeProjectContainer(projectPath: string): void {
+    ensureDockerRunning();
+    const containerName = getContainerName(resolve(projectPath));
+
+    if (!isContainerExists(containerName)) {
+        console.log("Container not found");
+        return;
+    }
+
+    stopProjectContainer(projectPath);
+    console.log("Removing container...");
+    spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
+    console.log("Container removed");
+}

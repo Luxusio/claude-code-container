@@ -21,20 +21,35 @@ function getInstallDir() {
     }
 }
 
-function getDockerfileHash() {
-    const dockerfilePath = join(projectRoot, "Dockerfile");
-    const content = readFileSync(dockerfilePath, "utf-8");
-    return createHash("sha256").update(content).digest("hex").substring(0, 12);
+function getContentHash() {
+    const files = [
+        "Dockerfile",
+        "scripts/clipboard-shims/xclip",
+        "scripts/clipboard-shims/xsel",
+        "scripts/clipboard-shims/wl-paste",
+        "scripts/clipboard-shims/wl-copy",
+        "scripts/clipboard-shims/pbpaste",
+    ];
+    const hash = createHash("sha256");
+    for (const f of files) {
+        hash.update(readFileSync(join(projectRoot, f)));
+    }
+    return hash.digest("hex").substring(0, 12);
 }
 
 function getImageHash() {
     try {
-        const result = spawnSync("docker", [
-            "inspect", "ccc",
-            "--format", '{{index .Config.Labels "dockerfile.hash"}}'
-        ], { encoding: "utf-8" });
-        if (result.status !== 0) return null;
-        return result.stdout.trim() || null;
+        // Try new label first, fall back to old label for backward compat
+        for (const label of ["content.hash", "dockerfile.hash"]) {
+            const result = spawnSync("docker", [
+                "inspect", "ccc",
+                "--format", `{{index .Config.Labels "${label}"}}`
+            ], { encoding: "utf-8" });
+            if (result.status === 0 && result.stdout.trim()) {
+                return result.stdout.trim();
+            }
+        }
+        return null;
     } catch (e) {
         return null; // Image doesn't exist
     }
@@ -50,12 +65,12 @@ function install() {
     execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
 
     // Check if image rebuild is needed
-    const currentHash = getDockerfileHash();
+    const currentHash = getContentHash();
     const imageHash = getImageHash();
     const needsRebuild = currentHash !== imageHash;
 
     if (needsRebuild) {
-        console.log(`Dockerfile changed (${imageHash || "none"} -> ${currentHash})`);
+        console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
 
         // No need to stop containers or remove old image.
         // `docker build -t ccc` overwrites the tag; old image becomes <none>.
@@ -64,7 +79,7 @@ function install() {
         try {
             const buildArgs = [
                 "build", "-t", "ccc",
-                "--label", `dockerfile.hash=${currentHash}`,
+                "--label", `content.hash=${currentHash}`,
             ];
             // Pass GITHUB_TOKEN as Docker secret to avoid GitHub API rate limits during mise install
             if (process.env.GITHUB_TOKEN) {

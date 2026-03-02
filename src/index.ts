@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "child_process";
-import { randomBytes } from "crypto";
 import {
     existsSync,
     mkdirSync,
     writeFileSync,
-    readdirSync,
-    unlinkSync,
     readFileSync,
 } from "fs";
-import { homedir, tmpdir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { homedir } from "os";
+import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
@@ -33,15 +30,9 @@ import {
     DATA_DIR,
     CLAUDE_DIR,
     CLAUDE_JSON_FILE,
-    IMAGE_NAME,
-    CONTAINER_PID_LIMIT,
-    MISE_VOLUME_NAME,
 } from "./utils.js";
 import { syncCredentials } from "./credentials.js";
-import {
-    ensureClipboardServer,
-    stopClipboardServerIfLast,
-} from "./clipboard-server.js";
+import { ensureClipboardServer } from "./clipboard-server.js";
 import {
     parseWorktreeArg,
     validateBranchName,
@@ -54,97 +45,46 @@ import {
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "./worktree.js";
+import {
+    getContainerName,
+    isDockerRunning,
+    ensureDockerRunning,
+    isContainerRunning,
+    isContainerExists,
+    isImageExists,
+    ensureImage,
+    startProjectContainer,
+    stopProjectContainer,
+    removeProjectContainer,
+    buildDockerRunArgs,
+    syncClipboardShims,
+    type DockerRunArgsOptions,
+} from "./docker.js";
+import {
+    ensureClaudeInContainer,
+    ensureGlobalNpmTools,
+    saveClaudeBinaryToVolume,
+    CLAUDE_BIN_PATH,
+} from "./container-setup.js";
+import {
+    createSessionLock,
+    getActiveSessionsForProject,
+    cleanupSession,
+    setupSignalHandlers,
+    setSession,
+} from "./session.js";
 
-// Re-export for tests
-export { hashPath, getProjectId } from "./utils.js";
-
-// === Docker Args Builder (exported for testing) ===
-export interface DockerRunArgsOptions {
-    containerName: string;
-    fullPath: string;
-    projectMountPath: string;
-    claudeDir: string;
-    claudeJsonFile: string;
-    hostClaudeIdeDir: string;
-    miseVolumeName: string;
-    pidsLimit: string;
-    imageName: string;
-    hostSshDir: string | null;
-    sshAgentSocket: string | null;
-}
-
-export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
-    const args = [
-        "run",
-        "-d",
-        "--name",
-        opts.containerName,
-        "--network",
-        "host",
-        "--security-opt",
-        "seccomp=unconfined",
-        "-v",
-        `${opts.fullPath}:${opts.projectMountPath}`,
-        "-v",
-        `${opts.claudeDir}:/home/ccc/.claude`,
-        "-v",
-        `${opts.claudeJsonFile}:/home/ccc/.claude.json`,
-        "-v",
-        `${opts.hostClaudeIdeDir}:/home/ccc/.claude/ide`,
-        "-v",
-        `${opts.miseVolumeName}:/home/ccc/.local/share/mise`,
-        "-v",
-        "/var/run/docker.sock:/var/run/docker.sock",
-        "-w",
-        opts.projectMountPath,
-        "--pids-limit",
-        opts.pidsLimit,
-    ];
-
-    // Mount host SSH keys (read-only) for git SSH access
-    if (opts.hostSshDir) {
-        args.push("-v", `${opts.hostSshDir}:/home/ccc/.ssh:ro`);
-        // Use copied SSH keys (/tmp/.ssh-copy) to avoid UID mismatch permissions
-        // StrictHostKeyChecking=accept-new: auto-accept first-seen host keys
-        // UserKnownHostsFile=/tmp/.ssh-copy/known_hosts: writable known_hosts
-        args.push(
-            "-e",
-            "GIT_SSH_COMMAND=ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/.ssh-copy/known_hosts -o IdentityFile=/tmp/.ssh-copy/id_rsa -o IdentityFile=/tmp/.ssh-copy/id_ed25519",
-        );
-    }
-
-    // Forward SSH agent socket for key-based auth without exposing key files
-    // On macOS: Docker Desktop provides /run/host-services/ssh-auth.sock inside the VM
-    // On Linux: mount the host's $SSH_AUTH_SOCK directly
-    if (opts.sshAgentSocket) {
-        args.push(
-            "-v",
-            `${opts.sshAgentSocket}:/tmp/ssh-agent.sock`,
-            "-e",
-            "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
-        );
-    }
-
-    args.push(opts.imageName);
-    return args;
-}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // === Configuration ===
-const locksDir = join(DATA_DIR, "locks");
 const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
-
-// === Session State ===
-let currentSessionLockFile: string | null = null;
-let currentProjectPath: string | null = null;
 
 // === Helpers ===
 function ensureDirs(): void {
     mkdirSync(DATA_DIR, { recursive: true });
     mkdirSync(CLAUDE_DIR, { recursive: true });
-    mkdirSync(locksDir, { recursive: true });
     // Ensure claude.json exists for file mount (onboarding state)
     if (!existsSync(CLAUDE_JSON_FILE)) {
         writeFileSync(CLAUDE_JSON_FILE, "{}");
@@ -152,7 +92,7 @@ function ensureDirs(): void {
     ensureBrowserMcp();
 }
 
-function ensureBrowserMcp(): void {
+export function ensureBrowserMcp(): void {
     // Claude Code reads user-level MCP config from ~/.claude.json (NOT ~/.claude/mcp.json)
     // CLAUDE_JSON_FILE (~/.ccc/claude.json) is mounted to /home/ccc/.claude.json in container
     let config: Record<string, unknown> = {};
@@ -196,481 +136,6 @@ function ensureBrowserMcp(): void {
     delete mcpServers["playwright"];
 
     writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2));
-}
-
-// === Lock File Management ===
-function createSessionLock(projectId: string): string {
-    const sessionId = randomBytes(16).toString("hex");
-    const lockFile = join(locksDir, `${projectId}-${sessionId}.lock`);
-    writeFileSync(lockFile, String(process.pid));
-    return lockFile;
-}
-
-function removeSessionLock(lockFile: string): void {
-    try {
-        if (existsSync(lockFile)) {
-            unlinkSync(lockFile);
-        }
-    } catch {
-        // Ignore errors during cleanup
-    }
-}
-
-function getActiveSessionsForProject(projectId: string): string[] {
-    if (!existsSync(locksDir)) {
-        return [];
-    }
-
-    return readdirSync(locksDir).filter(
-        (f) => f.startsWith(`${projectId}-`) && f.endsWith(".lock"),
-    );
-}
-
-function hasOtherActiveSessions(
-    projectId: string,
-    currentLockFile: string,
-): boolean {
-    const sessions = getActiveSessionsForProject(projectId);
-    const currentLockName = basename(currentLockFile);
-    return sessions.some((s) => s !== currentLockName);
-}
-
-function cleanupSession(): void {
-    if (!currentSessionLockFile || !currentProjectPath) {
-        return;
-    }
-
-    const projectId = getProjectId(currentProjectPath);
-    const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
-
-    // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
-    stopClipboardServerIfLast(currentSessionLockFile);
-
-    // Remove our lock file
-    removeSessionLock(currentSessionLockFile);
-
-    // Stop container if no other sessions are using this project
-    if (!hasOthers) {
-        const containerName = getContainerName(currentProjectPath);
-        if (isContainerRunning(containerName)) {
-            // Save claude binary to volume before stopping (handles `claude update`)
-            saveClaudeBinaryToVolume(containerName);
-            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
-        }
-    }
-
-    currentSessionLockFile = null;
-    currentProjectPath = null;
-}
-
-// Setup signal handlers for cleanup
-function setupSignalHandlers(): void {
-    const cleanup = () => {
-        cleanupSession();
-        process.exit(0);
-    };
-
-    process.on("SIGINT", cleanup);
-    process.on("SIGTERM", cleanup);
-    process.on("SIGHUP", cleanup);
-}
-
-export function getContainerName(projectPath: string): string {
-    return `ccc-${getProjectId(projectPath)}`;
-}
-
-function isDockerRunning(): boolean {
-    const result = spawnSync("docker", ["info"], {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-    });
-    return result.status === 0;
-}
-
-function ensureDockerRunning(): void {
-    if (!isDockerRunning()) {
-        console.error("Error: Docker is not running.");
-        console.error("Please start Docker Desktop and try again.");
-        process.exit(1);
-    }
-}
-
-function isContainerRunning(containerName: string): boolean {
-    const result = spawnSync(
-        "docker",
-        ["ps", "-q", "-f", `name=^${containerName}$`],
-        { encoding: "utf-8" },
-    );
-    return (result.stdout ?? "").trim().length > 0;
-}
-
-function isContainerExists(containerName: string): boolean {
-    const result = spawnSync(
-        "docker",
-        ["ps", "-aq", "-f", `name=^${containerName}$`],
-        { encoding: "utf-8" },
-    );
-    return (result.stdout ?? "").trim().length > 0;
-}
-
-function isImageExists(): boolean {
-    const result = spawnSync("docker", ["images", "-q", IMAGE_NAME], {
-        encoding: "utf-8",
-    });
-    return (result.stdout ?? "").trim().length > 0;
-}
-
-function ensureImage(): void {
-    if (!isImageExists()) {
-        console.error(
-            "ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'",
-        );
-        process.exit(1);
-    }
-}
-
-// Claude binary persist path inside the mise volume
-const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
-const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
-
-/**
- * Check if a file in the container is a mise shim (shell script referencing mise)
- * rather than a real native binary.
- */
-function isMiseShim(containerName: string, path: string): boolean {
-    const result = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `head -c 500 ${path} 2>/dev/null | grep -q mise`],
-        { encoding: "utf-8" },
-    );
-    return result.status === 0;
-}
-
-/**
- * Verify the binary at the given path is actually claude by checking --version output.
- * Guards against bun or other binaries accidentally cached at the claude path.
- */
-function isValidClaudeBinary(containerName: string, path: string): boolean {
-    const result = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `${path} --version 2>&1 | grep -qi claude`],
-        { encoding: "utf-8", timeout: 10000 },
-    );
-    return result.status === 0;
-}
-
-/**
- * Ensure claude binary is available in the container.
- * 1. If real claude binary exists at known path → do nothing
- * 2. If volume has a valid cached copy → symlink it
- * 3. Otherwise → fresh install and cache to volume
- *
- * Detects and purges stale mise shims that can masquerade as the binary.
- */
-function ensureClaudeInContainer(containerName: string): void {
-    // Check if claude binary actually exists at the known path.
-    // Do NOT use `command -v claude` — a stale mise shim can fool it.
-    const check = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_BIN_PATH}`],
-        { encoding: "utf-8" },
-    );
-    if (check.status === 0) {
-        // Verify it's a real binary, not a mise shim script
-        if (!isMiseShim(containerName, CLAUDE_BIN_PATH)) {
-            // Also verify it's actually claude (not bun or another binary cached by mistake)
-            if (isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
-                return;
-            }
-            console.log("Binary at claude path is not valid claude, removing...");
-        } else {
-            console.log("Detected stale mise shim at claude path, removing...");
-        }
-        spawnSync(
-            "docker",
-            ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_BIN_PATH}`],
-            { stdio: "ignore" },
-        );
-    }
-
-    // Check if volume has cached claude binary
-    const volumeCheck = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_PERSIST_DIR}/claude`],
-        { encoding: "utf-8" },
-    );
-
-    if (volumeCheck.status === 0) {
-        // Verify cached copy is a real binary, not a mise shim or wrong binary
-        if (isMiseShim(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
-            console.log("Cached claude is a mise shim, purging cache...");
-            spawnSync(
-                "docker",
-                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
-                { stdio: "ignore" },
-            );
-            // Fall through to fresh install
-        } else if (!isValidClaudeBinary(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
-            console.log("Cached binary is not valid claude, purging cache...");
-            spawnSync(
-                "docker",
-                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
-                { stdio: "ignore" },
-            );
-            // Fall through to fresh install
-        } else {
-            // Restore from volume cache via symlink
-            console.log("Restoring claude from cache...");
-            spawnSync(
-                "docker",
-                [
-                    "exec",
-                    containerName,
-                    "sh",
-                    "-c",
-                    `mkdir -p $(dirname ${CLAUDE_BIN_PATH}) && ln -sf ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
-                ],
-                { stdio: "inherit" },
-            );
-            return;
-        }
-    }
-
-    // Fresh install and save to volume
-    console.log("Installing claude (first run)...");
-    const installResult = spawnSync(
-        "docker",
-        [
-            "exec",
-            containerName,
-            "sh",
-            "-c",
-            `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
-        ],
-        { stdio: "inherit" },
-    );
-    if (installResult.status !== 0) {
-        throw new Error("Failed to install claude in container");
-    }
-}
-
-/**
- * Ensure global npm tools (gemini-cli, codex) are installed.
- *
- * Uses `mise exec node@22 --` for both install and wrapper scripts so that
- * project-local node versions (e.g. node 14) don't hide or break these tools.
- * Wrapper scripts in ~/.local/bin/ (before shims on PATH) guarantee the tools
- * are always available regardless of the active node version.
- */
-export function ensureGlobalNpmTools(containerName: string): void {
-    const tools = [
-        { cmd: "gemini", pkg: "@google/gemini-cli" },
-        { cmd: "codex", pkg: "@openai/codex" },
-    ];
-
-    // Check wrapper scripts in ~/.local/bin/ (not shims)
-    const missing = tools.filter((t) => {
-        const check = spawnSync(
-            "docker",
-            ["exec", containerName, "sh", "-c", `test -x /home/ccc/.local/bin/${t.cmd}`],
-            { encoding: "utf-8" },
-        );
-        return check.status !== 0;
-    });
-
-    if (missing.length === 0) {
-        return;
-    }
-
-    // Install under node@22 (persists in mise volume)
-    const pkgs = missing.map((t) => t.pkg).join(" ");
-    console.log(`Installing ${missing.map((t) => t.cmd).join(", ")}...`);
-
-    // Clean stale npm temp directories that cause ENOTEMPTY on reinstall.
-    // npm renames existing packages to `.<name>-<random>` before replacing them;
-    // if a previous install was interrupted, these leftover dirs block the next attempt.
-    // Only target the specific packages being installed to avoid side effects.
-    const cleanupPatterns = missing.map((t) => {
-        const name = t.pkg.split("/").pop(); // e.g. "gemini-cli", "codex"
-        const scope = t.pkg.includes("/") ? t.pkg.split("/")[0] + "/" : "";
-        return `"$gdir/${scope}.${name}-"*`;
-    }).join(" ");
-    // Use -w /home/ccc to avoid project-level mise.toml interfering
-    // (project may have untrusted/malformed config or different node version)
-    spawnSync(
-        "docker",
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
-        ],
-        { stdio: "ignore" },
-    );
-
-    const installResult = spawnSync(
-        "docker",
-        [
-            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
-        ],
-        { stdio: "inherit" },
-    );
-    if (installResult.status !== 0) {
-        console.warn("Warning: Failed to install some global npm tools (non-fatal)");
-        return;
-    }
-
-    // Create wrapper scripts that always run with node@22
-    // Use -w /home/ccc to avoid project mise.toml interference
-    for (const t of missing) {
-        spawnSync(
-            "docker",
-            [
-                "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-                `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
-            ],
-            { stdio: "pipe" },
-        );
-    }
-}
-
-/**
- * Save claude binary back to volume (in case `claude update` replaced the symlink).
- * Uses cp -L to follow symlinks and copy the actual file content.
- * Skips saving if the binary is a mise shim (to avoid poisoning the cache).
- */
-function saveClaudeBinaryToVolume(containerName: string): void {
-    // Don't cache mise shims — only save real native binaries
-    if (isMiseShim(containerName, CLAUDE_BIN_PATH)) {
-        return;
-    }
-    // Don't cache non-claude binaries (e.g., bun accidentally at the claude path)
-    if (!isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
-        return;
-    }
-    spawnSync(
-        "docker",
-        [
-            "exec",
-            containerName,
-            "sh",
-            "-c",
-            `mkdir -p ${CLAUDE_PERSIST_DIR} && [ -x ${CLAUDE_BIN_PATH} ] && cp -L ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude || true`,
-        ],
-        { stdio: "ignore" },
-    );
-}
-
-function startProjectContainer(projectPath: string): string {
-    ensureDirs();
-    ensureImage();
-
-    const fullPath = resolve(projectPath);
-    const containerName = getContainerName(fullPath);
-
-    if (isContainerRunning(containerName)) {
-        return containerName;
-    }
-
-    if (isContainerExists(containerName)) {
-        spawnSync("docker", ["start", containerName], { stdio: "inherit" });
-        return containerName;
-    }
-
-    console.log("Creating container...");
-
-    const projectId = getProjectId(fullPath);
-    const projectMountPath = `/project/${projectId}`;
-
-    // Ensure host IDE directory exists for mount
-    mkdirSync(hostClaudeIdeDir, { recursive: true });
-
-    const hostSshDir = join(homedir(), ".ssh");
-
-    // Detect SSH agent socket per platform
-    // macOS Docker Desktop: provides a built-in socket at /run/host-services/ssh-auth.sock
-    // Linux: use $SSH_AUTH_SOCK if it exists on the host filesystem
-    let sshAgentSocket: string | null = null;
-    if (process.platform === "darwin") {
-        // Docker Desktop for Mac always exposes this path inside the VM
-        sshAgentSocket = "/run/host-services/ssh-auth.sock";
-    } else {
-        const hostSock = process.env.SSH_AUTH_SOCK;
-        if (hostSock && existsSync(hostSock)) {
-            sshAgentSocket = hostSock;
-        }
-    }
-
-    const args = buildDockerRunArgs({
-        containerName,
-        fullPath,
-        projectMountPath,
-        claudeDir: CLAUDE_DIR,
-        claudeJsonFile: CLAUDE_JSON_FILE,
-        hostClaudeIdeDir,
-        miseVolumeName: MISE_VOLUME_NAME,
-        pidsLimit: CONTAINER_PID_LIMIT,
-        imageName: IMAGE_NAME,
-        hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
-        sshAgentSocket,
-    });
-
-    const result = spawnSync("docker", args, { stdio: "inherit" });
-    if (result.status !== 0) {
-        console.error("Failed to create container");
-        process.exit(1);
-    }
-
-    // Fix SSH key permissions: copy from ro mount to writable location
-    // This solves UID mismatch (host user UID != container ccc UID 1000)
-    if (existsSync(hostSshDir)) {
-        spawnSync(
-            "docker",
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
-                    "chmod 700 /tmp/.ssh-copy && " +
-                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
-                    "true",
-            ],
-            { stdio: "ignore" },
-        );
-    }
-
-    return containerName;
-}
-
-function stopProjectContainer(projectPath: string): void {
-    ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath));
-
-    if (!isContainerExists(containerName)) {
-        console.log("Container not found");
-        return;
-    }
-
-    console.log("Stopping container...");
-    spawnSync("docker", ["stop", containerName], { stdio: "inherit" });
-    console.log("Container stopped");
-}
-
-function removeProjectContainer(projectPath: string): void {
-    ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath));
-
-    if (!isContainerExists(containerName)) {
-        console.log("Container not found");
-        return;
-    }
-
-    stopProjectContainer(projectPath);
-    console.log("Removing container...");
-    spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
-    console.log("Container removed");
 }
 
 // Detect project tools using Claude CLI and write mise.toml
@@ -773,19 +238,19 @@ async function exec(
     //   Terminal A cleanup checks for other sessions → finds none → stops container
     //   Terminal B is still setting up but hasn't created its lock yet → container dies
     const projectId = getProjectId(fullPath);
-    currentProjectPath = fullPath;
-    currentSessionLockFile = createSessionLock(projectId);
+    const sessionLockFile = createSessionLock(projectId);
+    setSession(sessionLockFile, fullPath);
     setupSignalHandlers();
 
     // Start or get container
-    const containerName = startProjectContainer(fullPath);
+    const containerName = startProjectContainer(fullPath, ensureDirs);
 
     // Ensure claude binary is available (cached in volume or fresh install).
     // Retry once if a concurrent session stopped the container during setup.
     for (let attempt = 0; attempt < 2; attempt++) {
         if (!isContainerRunning(containerName)) {
             console.log("Container stopped during setup (concurrent session), restarting...");
-            startProjectContainer(fullPath);
+            startProjectContainer(fullPath, ensureDirs);
         }
         try {
             ensureClaudeInContainer(containerName);
@@ -812,8 +277,11 @@ async function exec(
     // Another session's cleanup could have stopped it between our setup steps.
     if (!isContainerRunning(containerName)) {
         console.log("Container was stopped during setup, restarting...");
-        startProjectContainer(fullPath);
+        startProjectContainer(fullPath, ensureDirs);
     }
+
+    // Sync clipboard shims (ensures container has latest version after code updates)
+    syncClipboardShims(containerName, __dirname);
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
@@ -851,7 +319,7 @@ async function exec(
             if (clipToken) {
                 execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipToken}`);
             }
-        } catch { /* token unavailable - shims will work without auth */ }
+        } catch { /* token unavailable - clipboard will fail with 401 */ }
     }
 
     // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.

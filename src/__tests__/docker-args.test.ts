@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
     buildDockerRunArgs,
     type DockerRunArgsOptions,
-} from "../index.js";
+} from "../docker.js";
 
 // Factory for default options — every test overrides only what it needs
 function makeOpts(
