@@ -60,6 +60,10 @@ RUN apt-get update && apt-get install -y \
     libxrandr2 \
     libgbm1 \
     libasound2t64 \
+    libcups2t64 \
+    libxfixes3 \
+    libcairo2 \
+    libpango-1.0-0 \
     xvfb \
     && rm -rf /var/lib/apt/lists/*
 
