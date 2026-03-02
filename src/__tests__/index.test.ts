@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName } from '../docker.js'
-import { MISE_VOLUME_NAME } from '../utils.js'
+import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from '../utils.js'
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -76,6 +76,26 @@ describe('getContainerName', () => {
 describe('named volume integration', () => {
   it('MISE_VOLUME_NAME should be ccc-mise-cache', () => {
     expect(MISE_VOLUME_NAME).toBe('ccc-mise-cache')
+  })
+})
+
+describe('container environment marker', () => {
+  it('CONTAINER_ENV_KEY follows systemd convention (lowercase)', () => {
+    expect(CONTAINER_ENV_KEY).toBe('container')
+  })
+
+  it('CONTAINER_ENV_VALUE is docker', () => {
+    expect(CONTAINER_ENV_VALUE).toBe('docker')
+  })
+
+  it('formats correctly as docker exec -e flag', () => {
+    const flag = `${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`
+    expect(flag).toBe('container=docker')
+  })
+
+  it('formats correctly as shell-escaped remote env flag', () => {
+    const flag = `-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`
+    expect(flag).toBe("-e 'container=docker'")
   })
 })
 

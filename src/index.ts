@@ -26,6 +26,8 @@ import {
     hashPath,
     getProjectId,
     EXCLUDE_ENV_KEYS,
+    CONTAINER_ENV_KEY,
+    CONTAINER_ENV_VALUE,
     prompt,
     DATA_DIR,
     CLAUDE_DIR,
@@ -291,6 +293,9 @@ async function exec(
     const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((k) => k.toUpperCase()));
 
     const execArgs = ["exec", "-w", projectMountPath];
+
+    // Container marker: enables per-project env separation via mise.toml [env] conditionals
+    execArgs.push("-e", `${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`);
 
     for (const [key, value] of Object.entries(process.env)) {
         if (value === undefined) continue;

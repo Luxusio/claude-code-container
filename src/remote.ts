@@ -3,7 +3,7 @@
 import {spawn, spawnSync} from "child_process";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
+import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
 
 // === Types ===
 
@@ -355,6 +355,8 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
         // Collect environment variables to forward (exclude system vars)
         const envFlags: string[] = [];
+        // Container marker: enables per-project env separation via mise.toml [env] conditionals
+        envFlags.push(`-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`);
         for (const [key, value] of Object.entries(process.env)) {
             if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key) && isValidEnvKey(key)) {
                 // Escape single quotes in value for shell safety

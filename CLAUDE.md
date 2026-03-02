@@ -113,6 +113,8 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 
 **Per-session**: `ccc --env KEY=VALUE`
 
+**Container marker**: `container=docker` is auto-set inside the container (systemd convention). Use in mise.toml `[env]` for per-project container/desktop env separation.
+
 ### mise Integration
 
 - Projects use `.mise.toml` for tool version management

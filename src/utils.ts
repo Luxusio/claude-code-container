@@ -18,6 +18,11 @@ export const COMMON_IGNORE_DIRS = [
     "__pycache__", ".next", ".nuxt", "vendor"
 ];
 
+// Container marker: set inside container to enable per-project env separation via mise.toml [env]
+// Uses systemd convention (https://systemd.io/CONTAINER_INTERFACE/)
+export const CONTAINER_ENV_KEY = "container";
+export const CONTAINER_ENV_VALUE = "docker";
+
 /**
  * Generate a 12-character SHA256 hash of a path
  */

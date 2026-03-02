@@ -100,6 +100,36 @@ ccc  # 컨테이너 안에서 JIRA_API_KEY 사용 가능
 ccc --env API_KEY=xxx --env DEBUG=true
 ```
 
+### 컨테이너/데스크탑 환경변수 분리
+
+ccc는 컨테이너 안에서 `container=docker`를 자동으로 설정합니다 (systemd 표준 변수).
+이를 활용해 mise.toml `[env]`에서 환경별로 다른 .env 파일을 로드할 수 있습니다.
+
+```toml
+# mise.toml
+[tools]
+node = "22"
+
+[env]
+_.file = ".env"
+_.source = "{{ env.container != '' | iif('.env.ccc', '/dev/null') }}"
+```
+
+| 파일 | 로드 환경 | 용도 |
+|------|----------|------|
+| `.env` | 항상 | 공통 환경변수 |
+| `.env.ccc` | 컨테이너만 | 컨테이너 전용 환경변수 |
+
+```bash
+# .env - 공통
+API_KEY=xxx
+LOG_LEVEL=debug
+
+# .env.ccc - 컨테이너 전용 (같은 키로 오버라이드 가능)
+DB_HOST=host.docker.internal
+API_URL=http://host.docker.internal:3000
+```
+
 ## SSH 접근
 
 컨테이너에서 Git SSH(private repo clone, 플러그인 설치 등)가 필요할 때 자동으로 호스트의 SSH 설정을 사용합니다.
