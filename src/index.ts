@@ -87,7 +87,7 @@ function ensureDirs(): void {
     mkdirSync(CLAUDE_DIR, { recursive: true });
     // Ensure claude.json exists for file mount (onboarding state)
     if (!existsSync(CLAUDE_JSON_FILE)) {
-        writeFileSync(CLAUDE_JSON_FILE, "{}");
+        writeFileSync(CLAUDE_JSON_FILE, "{}", { mode: 0o600 });
     }
     ensureBrowserMcp();
 }
@@ -120,7 +120,7 @@ export function ensureBrowserMcp(): void {
             "--",
             "npx",
             "-y",
-            "chrome-devtools-mcp@latest",
+            "chrome-devtools-mcp",
             "--headless",
             "--isolated",
             "--executablePath=/usr/bin/chromium",
@@ -135,7 +135,7 @@ export function ensureBrowserMcp(): void {
     // Remove old playwright MCP if exists
     delete mcpServers["playwright"];
 
-    writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2));
+    writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
 // Detect project tools using Claude CLI and write mise.toml
@@ -360,10 +360,11 @@ async function exec(
         execArgs.push(...cmd);
     }
 
-    spawnSync("docker", execArgs, { stdio: "inherit" });
+    const result = spawnSync("docker", execArgs, { stdio: "inherit" });
 
     // Cleanup on normal exit
     cleanupSession();
+    process.exit(result.status ?? 1);
 }
 
 function showStatus(): void {
@@ -758,5 +759,10 @@ async function main(): Promise<void> {
     }
 }
 
-// Always run main - this module is the entry point
-main().catch(console.error);
+// Run main only when executed directly (not when imported by test frameworks)
+if (!process.env.VITEST) {
+    main().catch((err) => {
+        console.error(err);
+        process.exit(1);
+    });
+}

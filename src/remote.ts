@@ -44,6 +44,32 @@ export function getMutagenSyncStatus(sessionName: string): string | null {
     return statusMatch ? statusMatch[1].trim() : "Unknown";
 }
 
+// === Shell Safety Helpers ===
+
+/**
+ * Validate that a hostname/user string contains only safe characters.
+ * Prevents shell injection via crafted hostnames or usernames.
+ */
+export function isValidHostOrUser(value: string): boolean {
+    return /^[a-zA-Z0-9._-]+$/.test(value) && value.length > 0 && value.length <= 253;
+}
+
+/**
+ * Validate that an env key matches POSIX naming rules.
+ * Prevents shell injection via maliciously-named environment variable keys.
+ */
+export function isValidEnvKey(key: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+}
+
+/**
+ * Escape a single argument for safe interpolation inside a shell command.
+ * Wraps the value in single quotes and escapes any embedded single quotes.
+ */
+export function shellEscapeArg(arg: string): string {
+    return "'" + arg.replace(/'/g, "'\\''") + "'";
+}
+
 // === Helpers ===
 
 export function getProjectHash(projectPath: string): string {
@@ -148,7 +174,7 @@ function loadRemoteConfig(projectPath: string): RemoteConfig | null {
 function saveRemoteConfig(projectPath: string, config: RemoteConfig): void {
     mkdirSync(REMOTE_CONFIG_DIR, {recursive: true});
     const configPath = getConfigPath(projectPath);
-    writeFileSync(configPath, JSON.stringify(config, null, 2));
+    writeFileSync(configPath, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
 // === Sync Functions ===
@@ -266,10 +292,20 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     let config = loadRemoteConfig(fullPath);
 
     if (config && !host) {
+        // Validate loaded config values (defense against tampered config files)
+        if (!isValidHostOrUser(config.host) || !isValidHostOrUser(config.user)) {
+            console.error("Saved remote config contains invalid host or user. Please reconfigure with 'ccc remote <host>'.");
+            process.exit(1);
+        }
         // Use saved config
         console.log(`Using saved config: ${config.user}@${config.host}`);
     } else if (host) {
         // Create/update config with provided host
+        if (!isValidHostOrUser(host)) {
+            console.error(`Invalid hostname: ${host}. Only alphanumeric, dots, hyphens, and underscores allowed.`);
+            process.exit(1);
+        }
+
         if (!isHostReachable(host)) {
             console.error(`Host ${host} is not reachable. Check if it's online and accessible.`);
             process.exit(1);
@@ -278,6 +314,11 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         const defaultUser = process.env.USER || "user";
         const userInput = await prompt(`Remote user [${defaultUser}]: `);
         const user = userInput || defaultUser;
+
+        if (!isValidHostOrUser(user)) {
+            console.error(`Invalid username: ${user}. Only alphanumeric, dots, hyphens, and underscores allowed.`);
+            process.exit(1);
+        }
 
         config = {host, user, remotePath: ""};  // remotePath not used anymore
         saveRemoteConfig(fullPath, config);
@@ -310,12 +351,12 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         // 6. Run claude via docker exec
         console.log(`Connecting to ${config.host}...`);
 
-        const claudeArgs = args.length > 0 ? args.join(" ") : "--dangerously-skip-permissions";
+        const claudeArgs = args.length > 0 ? args.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
 
         // Collect environment variables to forward (exclude system vars)
         const envFlags: string[] = [];
         for (const [key, value] of Object.entries(process.env)) {
-            if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key)) {
+            if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key) && isValidEnvKey(key)) {
                 // Escape single quotes in value for shell safety
                 const escapedValue = value.replace(/'/g, "'\\''");
                 envFlags.push(`-e '${key}=${escapedValue}'`);

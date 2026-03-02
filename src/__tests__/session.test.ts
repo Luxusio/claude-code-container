@@ -17,6 +17,7 @@ const mockWriteFileSync = vi.fn();
 const mockUnlinkSync = vi.fn();
 const mockReaddirSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockReadFileSync = vi.fn();
 vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
@@ -26,6 +27,7 @@ vi.mock("fs", async (importOriginal) => {
         unlinkSync: (...args: unknown[]) => mockUnlinkSync(...args),
         readdirSync: (...args: unknown[]) => mockReaddirSync(...args),
         mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+        readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
     };
 });
 
@@ -86,6 +88,7 @@ describe("session.ts", () => {
         mockUnlinkSync.mockReset();
         mockReaddirSync.mockReset();
         mockMkdirSync.mockReset();
+        mockReadFileSync.mockReset();
         mockGetProjectId.mockReset();
         mockStopClipboardServerIfLast.mockReset();
         mockIsContainerRunning.mockReset();
@@ -174,6 +177,9 @@ describe("session.ts", () => {
                 "other-project-xyz-session3.lock",
                 "my-project-abc-session3.lock",
             ]);
+            // All matching locks have the current process PID (alive)
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
 
             const result = getActiveSessionsForProject("my-project-abc");
 
@@ -204,6 +210,72 @@ describe("session.ts", () => {
             expect(result).toEqual([]);
             expect(mockReaddirSync).not.toHaveBeenCalled();
         });
+
+        it("filters out lock files whose PID is not alive", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "proj-abc-alive.lock",
+                "proj-abc-dead.lock",
+            ]);
+            mockReadFileSync
+                .mockReturnValueOnce("12345")  // alive.lock PID
+                .mockReturnValueOnce("99999"); // dead.lock PID
+            vi.spyOn(process, "kill").mockImplementation((_pid: number, _sig: number | NodeJS.Signals) => {
+                if (_pid === 12345) return true;
+                const err = new Error("ESRCH") as NodeJS.ErrnoException;
+                err.code = "ESRCH";
+                throw err;
+            });
+            mockUnlinkSync.mockImplementation(() => {});
+
+            const result = getActiveSessionsForProject("proj-abc");
+
+            expect(result).toEqual(["proj-abc-alive.lock"]);
+            expect(result).not.toContain("proj-abc-dead.lock");
+        });
+
+        it("deletes stale lock files whose PID is not alive", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc-stale.lock"]);
+            mockReadFileSync.mockReturnValue("99999");
+            vi.spyOn(process, "kill").mockImplementation(() => {
+                const err = new Error("ESRCH") as NodeJS.ErrnoException;
+                err.code = "ESRCH";
+                throw err;
+            });
+            mockUnlinkSync.mockImplementation(() => {});
+
+            getActiveSessionsForProject("proj-abc");
+
+            // Should attempt to delete the stale lock file
+            expect(mockUnlinkSync).toHaveBeenCalledOnce();
+            const [calledPath] = mockUnlinkSync.mock.calls[0] as [string];
+            expect(calledPath).toContain("proj-abc-stale.lock");
+        });
+
+        it("keeps lock files with valid alive PIDs", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc-running.lock"]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+
+            const result = getActiveSessionsForProject("proj-abc");
+
+            expect(result).toEqual(["proj-abc-running.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("treats lock files with non-numeric content as stale and deletes them", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc-corrupt.lock"]);
+            mockReadFileSync.mockReturnValue("not-a-pid");
+            mockUnlinkSync.mockImplementation(() => {});
+
+            const result = getActiveSessionsForProject("proj-abc");
+
+            expect(result).toEqual([]);
+            expect(mockUnlinkSync).toHaveBeenCalledOnce();
+        });
     });
 
     // ── hasOtherActiveSessions ───────────────────────────────────────────────
@@ -215,6 +287,9 @@ describe("session.ts", () => {
                 "proj-abc-session1.lock",
                 "proj-abc-session2.lock",
             ]);
+            // Stale lock detection: both PIDs are alive
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
 
             const currentLockFile = "/locks/proj-abc-session1.lock";
             const result = hasOtherActiveSessions("proj-abc", currentLockFile);
@@ -321,6 +396,9 @@ describe("session.ts", () => {
             // Two sessions exist → hasOtherActiveSessions returns true
             mockReaddirSync.mockReturnValue([lockFileName1, lockFileName2]);
             mockUnlinkSync.mockImplementation(() => {});
+            // Stale lock detection: both PIDs are alive
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
 
             setSession(lockFile, projectPath);
             cleanupSession();
@@ -344,6 +422,9 @@ describe("session.ts", () => {
             // Only one session → no others → container path taken (isContainerRunning → false)
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
+            // Stale lock detection: PID is alive
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
             mockIsContainerRunning.mockReturnValue(false);
 
@@ -474,6 +555,38 @@ describe("session.ts", () => {
 
             // Should not throw even though unlinkSync throws
             expect(() => cleanupSession()).not.toThrow();
+        });
+
+        it("cleanupSession should be idempotent (second call is no-op)", () => {
+            const projectId = "my-project-abc123";
+            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFile = `/locks/${lockFileName}`;
+            const projectPath = "/home/user/my-project";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync
+                .mockReturnValueOnce(true)   // locksDir exists
+                .mockReturnValueOnce(true);   // lockFile exists
+            mockReaddirSync.mockReturnValue([lockFileName]);
+            mockUnlinkSync.mockImplementation(() => {});
+            mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
+            mockIsContainerRunning.mockReturnValue(false);
+
+            setSession(lockFile, projectPath);
+            cleanupSession();
+
+            // Reset mocks to detect any calls from a second invocation
+            mockGetProjectId.mockReset();
+            mockUnlinkSync.mockReset();
+            mockSpawnSync.mockReset();
+            mockStopClipboardServerIfLast.mockReset();
+
+            // Second call must be a no-op
+            expect(() => cleanupSession()).not.toThrow();
+            expect(mockGetProjectId).not.toHaveBeenCalled();
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockStopClipboardServerIfLast).not.toHaveBeenCalled();
         });
 
         it("does NOT call saveClaudeBinaryToVolume when other sessions are active", () => {

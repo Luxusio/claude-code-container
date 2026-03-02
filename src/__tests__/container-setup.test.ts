@@ -69,7 +69,7 @@ describe("container-setup.ts module", () => {
                     container,
                     "sh",
                     "-c",
-                    "head -c 500 /usr/bin/claude 2>/dev/null | grep -q mise",
+                    "head -c 500 '/usr/bin/claude' 2>/dev/null | grep -q mise",
                 ],
                 expect.any(Object),
             );

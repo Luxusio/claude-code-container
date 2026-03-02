@@ -296,12 +296,8 @@ export async function syncCredentials(options: CredentialSyncOptions, deps = def
     if (needsCredentialSync(credentialsPath, deps)) {
         const credentialsJson = getCredentialsFromSource(deps);
         if (credentialsJson) {
-            try {
-                const creds = JSON.parse(credentialsJson);
-                await refreshAndSave(creds, credentialsPath, credentialsJson, deps);
-            } catch (e) {
-                throw e;
-            }
+            const creds = JSON.parse(credentialsJson);
+            await refreshAndSave(creds, credentialsPath, credentialsJson, deps);
             return;
         }
     }

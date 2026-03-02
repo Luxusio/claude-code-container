@@ -1,9 +1,12 @@
 FROM ubuntu:24.04
 
 # ============================================================
-# LAYER 0: Use faster mirror for ARM64 (ports.ubuntu.com is slow)
+# LAYER 0: Optional faster mirror for ARM64 (ports.ubuntu.com is slow)
 # ============================================================
-RUN sed -i 's|http://ports.ubuntu.com|http://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources
+ARG USE_CN_MIRROR=false
+RUN if [ "$USE_CN_MIRROR" = "true" ]; then \
+        sed -i 's|http://ports.ubuntu.com|https://mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
 
 # ============================================================
 # LAYER 1: Minimal base for Chromium PPA (절대 안 바뀜)

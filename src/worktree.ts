@@ -15,12 +15,14 @@ import {
 import { basename, dirname, join, resolve } from "path";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
-function copyDirRecursive(src: string, dest: string): void {
-    const stat = statSync(src);
+function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
+    if (depth > 20) return;
+    const stat = lstatSync(src);
+    if (stat.isSymbolicLink()) return;
     if (stat.isDirectory()) {
         mkdirSync(dest, { recursive: true });
         for (const entry of readdirSync(src)) {
-            copyDirRecursive(join(src, entry), join(dest, entry));
+            copyDirRecursive(join(src, entry), join(dest, entry), depth + 1);
         }
     } else {
         copyFileSync(src, dest);

@@ -6,7 +6,7 @@
 
 import { createServer, request as httpRequest, type Server } from "http";
 import { spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "child_process";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes, createHash, timingSafeEqual } from "crypto";
 import {
     existsSync,
     readFileSync,
@@ -42,6 +42,12 @@ const HEALTH_CHECK_TIMEOUT_MS = 2000;
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_POLL_TIMEOUT_MS = 5000;
 const PS_MARKER = "<<<CCC_CB_DONE>>>";
+
+// === Security Helpers ===
+function safeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 // === Platform Detection ===
 type ClipboardPlatform = "darwin" | "linux-x11" | "linux-wayland" | "wsl" | "windows" | "unsupported";
@@ -389,18 +395,20 @@ function createClipboardServer(token: string, plat: ClipboardPlatform): { server
         const method = req.method ?? "GET";
 
         try {
-            if (method === "GET" && url.startsWith("/health")) {
-                const urlObj = new URL(url, `http://localhost`);
-                const qToken = urlObj.searchParams.get("token");
-                const valid = qToken === token;
+            if (method === "GET" && url === "/health") {
+                // Unauthenticated liveness probe - no token info exposed
+                const authH = req.headers.authorization;
+                const expected = `Bearer ${token}`;
+                const isValid = authH !== undefined && safeCompare(authH, expected);
                 res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ service: "ccc-clipboard", version: SERVER_VERSION, valid }));
+                res.end(JSON.stringify({ service: "ccc-clipboard", ...(isValid ? { version: SERVER_VERSION, valid: true } : {}) }));
                 return;
             }
 
             // Authenticate all other endpoints
             const authHeader = req.headers.authorization;
-            if (!authHeader || authHeader !== `Bearer ${token}`) {
+            const expectedAuth = `Bearer ${token}`;
+            if (!authHeader || !safeCompare(authHeader, expectedAuth)) {
                 res.writeHead(401, { "Content-Type": "text/plain" });
                 res.end("Unauthorized");
                 return;
@@ -498,7 +506,10 @@ function readPortFile(): { port: number; token: string } | null {
     try {
         if (!existsSync(PORT_FILE)) return null;
         const content = readFileSync(PORT_FILE, "utf-8").trim();
-        const [portStr, token] = content.split(":");
+        const colonIdx = content.indexOf(":");
+        if (colonIdx === -1) return null;
+        const portStr = content.substring(0, colonIdx);
+        const token = content.substring(colonIdx + 1);
         const port = parseInt(portStr, 10);
         if (isNaN(port) || !token) return null;
         return { port, token };
@@ -536,7 +547,7 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
     return new Promise((resolve) => {
         const timeout = setTimeout(() => resolve({ alive: false }), HEALTH_CHECK_TIMEOUT_MS);
         const req = httpRequest(
-            { hostname: bindAddr, port, path: `/health?token=${expectedToken}`, method: "GET", timeout: HEALTH_CHECK_TIMEOUT_MS },
+            { hostname: bindAddr, port, path: "/health", method: "GET", headers: { "Authorization": `Bearer ${expectedToken}` }, timeout: HEALTH_CHECK_TIMEOUT_MS },
             (res) => {
                 let data = "";
                 res.on("data", (chunk) => { data += chunk; });
@@ -544,7 +555,7 @@ function checkServerHealth(port: number, expectedToken: string, bindAddr: string
                     clearTimeout(timeout);
                     try {
                         const json = JSON.parse(data);
-                        const alive = json.service === "ccc-clipboard" && json.valid === true;
+                        const alive = json.service === "ccc-clipboard" && json.valid === true;  // valid only present when auth header sent
                         resolve({ alive, version: json.version });
                     } catch {
                         resolve({ alive: false });
@@ -650,7 +661,29 @@ export function hasAnyActiveSessionsExcept(currentLockFile: string | null): bool
     if (!existsSync(LOCKS_DIR)) return false;
     const currentLockName = currentLockFile ? basename(currentLockFile) : "";
     const locks = readdirSync(LOCKS_DIR).filter((f) => f.endsWith(".lock"));
-    return locks.some((f) => f !== currentLockName);
+    return locks.some((f) => {
+        if (f === currentLockName) return false;
+        // Validate PID liveness — delete stale lock files from crashed sessions
+        const lockPath = join(LOCKS_DIR, f);
+        try {
+            const content = readFileSync(lockPath, "utf-8").trim();
+            const pid = parseInt(content, 10);
+            if (isNaN(pid)) {
+                try { unlinkSync(lockPath); } catch { /* ignore */ }
+                return false;
+            }
+            try {
+                process.kill(pid, 0);
+                return true; // PID is alive
+            } catch {
+                try { unlinkSync(lockPath); } catch { /* ignore */ }
+                return false; // PID is dead — stale lock
+            }
+        } catch {
+            try { unlinkSync(lockPath); } catch { /* ignore */ }
+            return false;
+        }
+    });
 }
 
 /**
@@ -693,14 +726,16 @@ if (isMainModule && process.argv.includes("--serve")) {
         });
 
     // Handle signals for clean shutdown
-    process.on("SIGTERM", () => gracefulShutdown(server));
-    process.on("SIGINT", () => gracefulShutdown(server));
+    process.once("SIGTERM", () => gracefulShutdown(server));
+    process.once("SIGINT", () => gracefulShutdown(server));
 
-    // Log but don't crash on unexpected errors - try to keep serving
+    // Graceful shutdown on unexpected errors — don't continue in unknown state
     process.on("uncaughtException", (err) => {
         console.error("clipboard-server uncaughtException:", err);
+        gracefulShutdown(server);
     });
     process.on("unhandledRejection", (err) => {
         console.error("clipboard-server unhandledRejection:", err);
+        gracefulShutdown(server);
     });
 }

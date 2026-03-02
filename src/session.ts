@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
@@ -25,13 +25,14 @@ export function getCurrentSession(): { lockFile: string | null; projectPath: str
 export function clearSession(): void {
     currentSessionLockFile = null;
     currentProjectPath = null;
+    cleanedUp = false;
 }
 
 export function createSessionLock(projectId: string): string {
     mkdirSync(locksDir, { recursive: true });
     const sessionId = randomBytes(16).toString("hex");
     const lockFile = join(locksDir, `${projectId}-${sessionId}.lock`);
-    writeFileSync(lockFile, String(process.pid));
+    writeFileSync(lockFile, String(process.pid), { mode: 0o600 });
     return lockFile;
 }
 
@@ -45,13 +46,37 @@ export function removeSessionLock(lockFile: string): void {
     }
 }
 
+function isPidAlive(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export function getActiveSessionsForProject(projectId: string): string[] {
     if (!existsSync(locksDir)) {
         return [];
     }
-    return readdirSync(locksDir).filter(
+    const locks = readdirSync(locksDir).filter(
         (f) => f.startsWith(`${projectId}-`) && f.endsWith(".lock"),
     );
+    return locks.filter((f) => {
+        const lockPath = join(locksDir, f);
+        try {
+            const content = readFileSync(lockPath, "utf-8").trim();
+            const pid = parseInt(content, 10);
+            if (isNaN(pid) || !isPidAlive(pid)) {
+                try { unlinkSync(lockPath); } catch { /* ignore */ }
+                return false;
+            }
+            return true;
+        } catch {
+            try { unlinkSync(lockPath); } catch { /* ignore */ }
+            return false;
+        }
+    });
 }
 
 export function hasOtherActiveSessions(
@@ -63,10 +88,13 @@ export function hasOtherActiveSessions(
     return sessions.some((s) => s !== currentLockName);
 }
 
+let cleanedUp = false;
+
 export function cleanupSession(): void {
-    if (!currentSessionLockFile || !currentProjectPath) {
+    if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
         return;
     }
+    cleanedUp = true;
 
     const projectId = getProjectId(currentProjectPath);
     const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
@@ -98,7 +126,7 @@ export function setupSignalHandlers(): void {
         process.exit(0);
     };
 
-    process.on("SIGINT", cleanup);
-    process.on("SIGTERM", cleanup);
-    process.on("SIGHUP", cleanup);
+    process.once("SIGINT", cleanup);
+    process.once("SIGTERM", cleanup);
+    process.once("SIGHUP", cleanup);
 }

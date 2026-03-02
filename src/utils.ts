@@ -69,6 +69,7 @@ export const EXCLUDE_ENV_KEYS = new Set([
 export async function prompt(question: string, lowercase: boolean = false): Promise<string> {
     const rl = createInterface({input: process.stdin, output: process.stdout});
     return new Promise((resolve) => {
+        rl.on("close", () => resolve(""));
         rl.question(question, (answer) => {
             rl.close();
             const result = answer.trim();

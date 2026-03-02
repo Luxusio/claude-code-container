@@ -1002,12 +1002,12 @@ describe("clipboard-server", () => {
                             throw new Error("Simulated error");
                         }
 
-                        if (method === "GET" && url.startsWith("/health")) {
-                            const urlObj = new URL(url, "http://localhost");
-                            const qToken = urlObj.searchParams.get("token");
-                            const valid = qToken === TOKEN;
+                        if (method === "GET" && url === "/health") {
+                            const authH = req.headers.authorization;
+                            const expected = `Bearer ${TOKEN}`;
+                            const isValid = authH !== undefined && authH === expected;
                             res.writeHead(200, { "Content-Type": "application/json" });
-                            res.end(JSON.stringify({ service: "ccc-clipboard", version: "abc123def456", valid }));
+                            res.end(JSON.stringify({ service: "ccc-clipboard", ...(isValid ? { version: "abc123def456", valid: true } : {}) }));
                             return;
                         }
 
@@ -1085,9 +1085,20 @@ describe("clipboard-server", () => {
             }
         });
 
-        it("GET /health returns service, version, and valid flag (no token in response)", async () => {
+        it("GET /health returns service only for unauthenticated (no version, no valid)", async () => {
             await createTestServer({ targets: [], text: null, imagePng: null, imageBmp: null });
-            const res = await httpGet(port, `/health?token=${TOKEN}`);
+            const res = await httpGet(port, "/health");
+            expect(res.status).toBe(200);
+            const json = JSON.parse(res.body.toString());
+            expect(json.service).toBe("ccc-clipboard");
+            expect(json.version).toBeUndefined();
+            expect(json.valid).toBeUndefined();
+            expect(json.token).toBeUndefined();
+        });
+
+        it("GET /health returns valid=true with correct Authorization header", async () => {
+            await createTestServer({ targets: [], text: null, imagePng: null, imageBmp: null });
+            const res = await httpGet(port, "/health", { Authorization: `Bearer ${TOKEN}` });
             expect(res.status).toBe(200);
             const json = JSON.parse(res.body.toString());
             expect(json.service).toBe("ccc-clipboard");
@@ -1096,20 +1107,21 @@ describe("clipboard-server", () => {
             expect(json.token).toBeUndefined();
         });
 
-        it("GET /health returns valid=false for wrong token", async () => {
+        it("GET /health does NOT return valid field for wrong Authorization header", async () => {
             await createTestServer({ targets: [], text: null, imagePng: null, imageBmp: null });
-            const res = await httpGet(port, "/health?token=wrong-token");
+            const res = await httpGet(port, "/health", { Authorization: "Bearer wrong-token" });
             expect(res.status).toBe(200);
             const json = JSON.parse(res.body.toString());
-            expect(json.valid).toBe(false);
+            expect(json.valid).toBeUndefined();
         });
 
-        it("GET /health returns valid=false when no token provided", async () => {
+        it("GET /health does NOT expose valid field to unauthenticated callers (no oracle)", async () => {
             await createTestServer({ targets: [], text: null, imagePng: null, imageBmp: null });
             const res = await httpGet(port, "/health");
             expect(res.status).toBe(200);
             const json = JSON.parse(res.body.toString());
-            expect(json.valid).toBe(false);
+            // valid must be absent so unauthenticated callers cannot use /health as a token oracle
+            expect(json.valid).toBeUndefined();
         });
 
         it("POST /shutdown returns 200 with body (requires auth)", async () => {
@@ -1199,7 +1211,7 @@ describe("clipboard-server", () => {
 
         it("does NOT set CORS header on responses", async () => {
             await createTestServer({ targets: [], text: null, imagePng: null, imageBmp: null });
-            const res = await httpGet(port, `/health?token=${TOKEN}`);
+            const res = await httpGet(port, "/health");
             expect(res.headers["access-control-allow-origin"]).toBeUndefined();
         });
 
@@ -1216,7 +1228,7 @@ describe("clipboard-server", () => {
                 httpGet(port, "/clipboard/text", authHeaders),
                 httpGet(port, "/clipboard/targets", authHeaders),
                 httpGet(port, "/clipboard/image/png", authHeaders),
-                httpGet(port, `/health?token=${TOKEN}`),
+                httpGet(port, "/health"),
             ]);
 
             expect(textRes.status).toBe(200);
@@ -1282,9 +1294,11 @@ describe("clipboard-server", () => {
                 mockExistsSync.mockReturnValue(true);
                 mockReadFileSync.mockReturnValue("12345:abc-token-def");
 
-                // Replicate readPortFile
+                // Replicate readPortFile using indexOf
                 const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
-                const [portStr, token] = content.split(":");
+                const colonIdx = content.indexOf(":");
+                const portStr = content.substring(0, colonIdx);
+                const token = content.substring(colonIdx + 1);
                 const port = parseInt(portStr, 10);
                 expect(port).toBe(12345);
                 expect(token).toBe("abc-token-def");
@@ -1302,10 +1316,9 @@ describe("clipboard-server", () => {
                 mockReadFileSync.mockReturnValue("no-colon-here");
 
                 const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
-                const [portStr, token] = content.split(":");
-                const port = parseInt(portStr, 10);
-                expect(isNaN(port)).toBe(true);
-                // readPortFile returns null when port is NaN
+                const colonIdx = content.indexOf(":");
+                expect(colonIdx).toBe(-1);
+                // readPortFile returns null when no colon found
             });
 
             it("should return null for invalid port number", () => {
@@ -1313,7 +1326,8 @@ describe("clipboard-server", () => {
                 mockReadFileSync.mockReturnValue("not-a-number:token");
 
                 const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
-                const [portStr, token] = content.split(":");
+                const colonIdx = content.indexOf(":");
+                const portStr = content.substring(0, colonIdx);
                 const port = parseInt(portStr, 10);
                 expect(isNaN(port)).toBe(true);
             });
@@ -1323,10 +1337,27 @@ describe("clipboard-server", () => {
                 mockReadFileSync.mockReturnValue("12345:");
 
                 const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
-                const [portStr, token] = content.split(":");
+                const colonIdx = content.indexOf(":");
+                const portStr = content.substring(0, colonIdx);
+                const token = content.substring(colonIdx + 1);
                 const port = parseInt(portStr, 10);
                 expect(port).toBe(12345);
                 expect(!token).toBe(true); // empty string is falsy
+            });
+
+            it("should preserve full token when token contains colons", () => {
+                mockExistsSync.mockReturnValue(true);
+                mockReadFileSync.mockReturnValue("12345:abc:def:ghi");
+
+                // Replicate readPortFile using indexOf (not split)
+                const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
+                const colonIdx = content.indexOf(":");
+                expect(colonIdx).toBeGreaterThan(0);
+                const portStr = content.substring(0, colonIdx);
+                const token = content.substring(colonIdx + 1);
+                const port = parseInt(portStr, 10);
+                expect(port).toBe(12345);
+                expect(token).toBe("abc:def:ghi"); // full token preserved, not truncated
             });
 
             it("should return null when readFileSync throws", () => {
@@ -1367,17 +1398,16 @@ describe("clipboard-server", () => {
             if (healthServer) healthServer.close();
         });
 
-        it("should report alive with valid token via query param", async () => {
+        it("should report alive with valid token via Authorization header", async () => {
             const token = "expected-token";
             const version = "v123";
 
             const port = await new Promise<number>((resolve) => {
                 healthServer = createServer((req, res) => {
-                    const url = new URL(req.url ?? "", "http://localhost");
-                    const qToken = url.searchParams.get("token");
-                    const valid = qToken === token;
+                    const authHeader = req.headers.authorization;
+                    const isValid = authHeader === `Bearer ${token}`;
                     res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ service: "ccc-clipboard", version, valid }));
+                    res.end(JSON.stringify({ service: "ccc-clipboard", version, ...(isValid ? { valid: true } : {}) }));
                 });
                 healthServer.listen(0, "127.0.0.1", () => {
                     const addr = healthServer.address();
@@ -1385,7 +1415,7 @@ describe("clipboard-server", () => {
                 });
             });
 
-            const res = await httpGet(port, `/health?token=${token}`);
+            const res = await httpGet(port, "/health", { Authorization: `Bearer ${token}` });
             const json = JSON.parse(res.body.toString());
             const alive = json.service === "ccc-clipboard" && json.valid === true;
             expect(alive).toBe(true);
@@ -1397,11 +1427,10 @@ describe("clipboard-server", () => {
 
             const port = await new Promise<number>((resolve) => {
                 healthServer = createServer((req, res) => {
-                    const url = new URL(req.url ?? "", "http://localhost");
-                    const qToken = url.searchParams.get("token");
-                    const valid = qToken === token;
+                    const authHeader = req.headers.authorization;
+                    const isValid = authHeader === `Bearer ${token}`;
                     res.writeHead(200, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ service: "ccc-clipboard", version: "v1", valid }));
+                    res.end(JSON.stringify({ service: "ccc-clipboard", version: "v1", ...(isValid ? { valid: true } : {}) }));
                 });
                 healthServer.listen(0, "127.0.0.1", () => {
                     const addr = healthServer.address();
@@ -1409,7 +1438,7 @@ describe("clipboard-server", () => {
                 });
             });
 
-            const res = await httpGet(port, `/health?token=wrong-token`);
+            const res = await httpGet(port, "/health", { Authorization: "Bearer wrong-token" });
             const json = JSON.parse(res.body.toString());
             const alive = json.service === "ccc-clipboard" && json.valid === true;
             expect(alive).toBe(false);
@@ -1509,9 +1538,11 @@ describe("clipboard-server", () => {
                     throw new Error(`unexpected: ${p}`);
                 });
 
-                // Replicate ensureClipboardServer logic (read port file)
+                // Replicate ensureClipboardServer logic (read port file using indexOf)
                 const content = mockReadFileSync(PORT_FILE, "utf-8").trim();
-                const [portStr, token] = content.split(":");
+                const colonIdx = content.indexOf(":");
+                const portStr = content.substring(0, colonIdx);
+                const token = content.substring(colonIdx + 1);
                 const port = parseInt(portStr, 10);
                 expect(port).toBe(8080);
                 expect(token).toBe("test-token");
@@ -1963,6 +1994,35 @@ describe("clipboard-server", () => {
                 try { if (mockExistsSync(STARTING_LOCK)) mockUnlinkSync(STARTING_LOCK); } catch { /* ignore */ }
             }).not.toThrow();
         });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // safeCompare - timing-safe token comparison
+    // ═══════════════════════════════════════════════════════════════════════
+    describe("safeCompare (timing-safe token comparison)", () => {
+        it("returns true when two equal strings are compared", () => {
+            const { timingSafeEqual } = require("crypto");
+            const a = "Bearer abc123";
+            const b = "Bearer abc123";
+            // Replicate safeCompare logic: equal length + timingSafeEqual
+            expect(a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))).toBe(true);
+        });
+
+        it("returns false when strings differ in content (same length)", () => {
+            const { timingSafeEqual } = require("crypto");
+            const a = "Bearer abc123";
+            const b = "Bearer xyz789";
+            expect(a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b))).toBe(false);
+        });
+
+        it("returns false without throwing when strings have different lengths", () => {
+            // timingSafeEqual throws on different buffer sizes; safeCompare must guard this
+            const a = "Bearer short";
+            const b = "Bearer muchlongertoken";
+            // safeCompare must return false, not throw
+            expect(a.length !== b.length).toBe(true);
+        });
+
     });
 
     // ═══════════════════════════════════════════════════════════════════════

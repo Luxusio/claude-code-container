@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { hashPath } from '../utils.js'
-import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus } from '../remote.js'
+import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser } from '../remote.js'
 import * as childProcess from 'child_process'
 
 vi.mock('child_process', async () => {
@@ -302,5 +302,98 @@ describe('getMutagenSyncStatus', () => {
     })
 
     expect(getMutagenSyncStatus('session')).toBe('Unknown')
+  })
+})
+
+describe('isValidEnvKey', () => {
+  it('accepts valid POSIX env key names', () => {
+    expect(isValidEnvKey('FOO')).toBe(true)
+    expect(isValidEnvKey('FOO_BAR')).toBe(true)
+    expect(isValidEnvKey('_PRIVATE')).toBe(true)
+    expect(isValidEnvKey('MY_VAR_123')).toBe(true)
+    expect(isValidEnvKey('a')).toBe(true)
+  })
+
+  it('rejects keys starting with a digit', () => {
+    expect(isValidEnvKey('1FOO')).toBe(false)
+    expect(isValidEnvKey('0BAR')).toBe(false)
+  })
+
+  it('rejects keys with shell metacharacters', () => {
+    expect(isValidEnvKey("FOO'BAR")).toBe(false)
+    expect(isValidEnvKey('KEY;echo')).toBe(false)
+    expect(isValidEnvKey('KEY$OTHER')).toBe(false)
+    expect(isValidEnvKey('KEY=VALUE')).toBe(false)
+    expect(isValidEnvKey('KEY SPACE')).toBe(false)
+    expect(isValidEnvKey('KEY&CMD')).toBe(false)
+    expect(isValidEnvKey('KEY|pipe')).toBe(false)
+    expect(isValidEnvKey('KEY`cmd`')).toBe(false)
+    expect(isValidEnvKey('KEY(paren')).toBe(false)
+    expect(isValidEnvKey('KEY>redir')).toBe(false)
+  })
+
+  it('rejects empty string', () => {
+    expect(isValidEnvKey('')).toBe(false)
+  })
+})
+
+describe('isValidHostOrUser', () => {
+  it('accepts valid hostnames', () => {
+    expect(isValidHostOrUser('my-desktop')).toBe(true)
+    expect(isValidHostOrUser('server.local')).toBe(true)
+    expect(isValidHostOrUser('192.168.1.1')).toBe(true)
+    expect(isValidHostOrUser('host_name')).toBe(true)
+  })
+
+  it('accepts valid usernames', () => {
+    expect(isValidHostOrUser('john')).toBe(true)
+    expect(isValidHostOrUser('root')).toBe(true)
+    expect(isValidHostOrUser('user.name')).toBe(true)
+    expect(isValidHostOrUser('user-name')).toBe(true)
+  })
+
+  it('rejects shell metacharacters', () => {
+    expect(isValidHostOrUser('host;rm -rf /')).toBe(false)
+    expect(isValidHostOrUser('host$(cmd)')).toBe(false)
+    expect(isValidHostOrUser('host`cmd`')).toBe(false)
+    expect(isValidHostOrUser("host'inject")).toBe(false)
+    expect(isValidHostOrUser('host"inject')).toBe(false)
+    expect(isValidHostOrUser('host&bg')).toBe(false)
+    expect(isValidHostOrUser('host|pipe')).toBe(false)
+    expect(isValidHostOrUser('host name')).toBe(false)
+  })
+
+  it('rejects empty string', () => {
+    expect(isValidHostOrUser('')).toBe(false)
+  })
+
+  it('rejects strings longer than 253 characters', () => {
+    expect(isValidHostOrUser('a'.repeat(254))).toBe(false)
+    expect(isValidHostOrUser('a'.repeat(253))).toBe(true)
+  })
+})
+
+describe('shellEscapeArg', () => {
+  it('wraps argument in single quotes', () => {
+    expect(shellEscapeArg('hello')).toBe("'hello'")
+  })
+
+  it('escapes single quotes inside the argument', () => {
+    expect(shellEscapeArg("it's")).toBe("'it'\\''s'")
+  })
+
+  it('does not need to escape other special characters inside single quotes', () => {
+    expect(shellEscapeArg('hello; rm -rf /')).toBe("'hello; rm -rf /'")
+    expect(shellEscapeArg('$HOME')).toBe("'$HOME'")
+    expect(shellEscapeArg('foo`bar`')).toBe("'foo`bar`'")
+    expect(shellEscapeArg('key=value')).toBe("'key=value'")
+  })
+
+  it('escapes multiple single quotes', () => {
+    expect(shellEscapeArg("a'b'c")).toBe("'a'\\''b'\\''c'")
+  })
+
+  it('handles empty string', () => {
+    expect(shellEscapeArg('')).toBe("''")
   })
 })

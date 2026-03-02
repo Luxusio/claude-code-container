@@ -16,7 +16,7 @@ export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
 export function isMiseShim(containerName: string, path: string): boolean {
     const result = spawnSync(
         "docker",
-        ["exec", containerName, "sh", "-c", `head -c 500 ${path} 2>/dev/null | grep -q mise`],
+        ["exec", containerName, "sh", "-c", `head -c 500 '${path.replace(/'/g, "'\\''")}' 2>/dev/null | grep -q mise`],
         { encoding: "utf-8" },
     );
     return result.status === 0;
@@ -29,7 +29,7 @@ export function isMiseShim(containerName: string, path: string): boolean {
 export function isValidClaudeBinary(containerName: string, path: string): boolean {
     const result = spawnSync(
         "docker",
-        ["exec", containerName, "sh", "-c", `${path} --version 2>&1 | grep -qi claude`],
+        ["exec", containerName, "sh", "-c", `'${path.replace(/'/g, "'\\''")}' --version 2>&1 | grep -qi claude`],
         { encoding: "utf-8", timeout: 10000 },
     );
     return result.status === 0;
