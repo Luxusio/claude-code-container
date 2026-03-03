@@ -7,8 +7,9 @@ import {
     symlinkSync,
     readFileSync,
     lstatSync,
+    statSync,
 } from "fs";
-import { join } from "path";
+import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
@@ -17,14 +18,17 @@ import {
     getWorkspacePath,
     validateBranchName,
     WORKTREE_SEPARATOR,
-    METADATA_FILE,
     scanDirectory,
     workspaceExists,
     listWorkspaces,
-    readWorkspaceMetadata,
     branchExistsInRepo,
     createWorkspace,
     removeWorkspace,
+    repairWorkspace,
+    isValidWorktree,
+    detectBrokenWorktrees,
+    fixBrokenWorktree,
+    getWorktreeGitMounts,
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
@@ -363,39 +367,6 @@ describe("workspaceExists", () => {
     });
 });
 
-describe("readWorkspaceMetadata", () => {
-    let tmpDir: string;
-
-    beforeEach(() => {
-        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
-        mkdirSync(tmpDir, { recursive: true });
-    });
-
-    afterEach(() => {
-        rmSync(tmpDir, { recursive: true, force: true });
-    });
-
-    it("returns null when metadata file does not exist", () => {
-        expect(readWorkspaceMetadata(tmpDir)).toBeNull();
-    });
-
-    it("returns metadata when file exists", () => {
-        const meta = {
-            branch: "feature/login",
-            sourcePath: "/projects",
-            createdAt: "2025-01-01T00:00:00.000Z",
-        };
-        writeFileSync(join(tmpDir, METADATA_FILE), JSON.stringify(meta));
-        const result = readWorkspaceMetadata(tmpDir);
-        expect(result).toEqual(meta);
-    });
-
-    it("returns null for invalid JSON", () => {
-        writeFileSync(join(tmpDir, METADATA_FILE), "not json");
-        expect(readWorkspaceMetadata(tmpDir)).toBeNull();
-    });
-});
-
 describe("listWorkspaces", () => {
     let parentDir: string;
     let sourceDir: string;
@@ -431,22 +402,14 @@ describe("listWorkspaces", () => {
             `projects${WORKTREE_SEPARATOR}feature-login`,
         );
         mkdirSync(wsDir);
-        writeFileSync(
-            join(wsDir, METADATA_FILE),
-            JSON.stringify({
-                branch: "feature/login",
-                sourcePath: sourceDir,
-                createdAt: "2025-01-01T00:00:00.000Z",
-            }),
-        );
 
         const workspaces = listWorkspaces(sourceDir);
         expect(workspaces).toHaveLength(1);
-        // Original branch name preserved via metadata
-        expect(workspaces[0].branch).toBe("feature/login");
+        // Without git, falls back to dirname-derived branch name
+        expect(workspaces[0].branch).toBe("feature-login");
     });
 
-    it("falls back to dirname when no metadata", () => {
+    it("falls back to dirname when not a git repo", () => {
         mkdirSync(join(parentDir, `projects${WORKTREE_SEPARATOR}feature`));
 
         const workspaces = listWorkspaces(sourceDir);
@@ -584,18 +547,18 @@ describe("createWorkspace", () => {
         expect(lstat.isDirectory()).toBe(true);
     });
 
-    it("writes metadata file with original branch name", () => {
+    it("creates worktree on the correct branch", () => {
         initRepo(join(sourceDir, "repo-a"));
 
         const result = createWorkspace(sourceDir, "feature/login");
 
-        const metaPath = join(result.workspacePath, METADATA_FILE);
-        expect(existsSync(metaPath)).toBe(true);
-
-        const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-        expect(meta.branch).toBe("feature/login");
-        expect(meta.sourcePath).toBe(join(tmpDir, "projects"));
-        expect(meta.createdAt).toBeTruthy();
+        // Verify branch via git
+        const gitResult = spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: join(result.workspacePath, "repo-a"), encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        expect(gitResult.stdout.trim()).toBe("feature/login");
     });
 
     it("creates worktree from existing local branch", () => {
@@ -867,15 +830,12 @@ describe("removeWorkspace", () => {
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 
-    it("removes metadata file during cleanup", () => {
+    it("fully removes workspace directory during cleanup", () => {
         initRepo(join(sourceDir, "repo-a"));
 
-        const wsResult = createWorkspace(sourceDir, "meta-clean");
-        expect(
-            existsSync(join(wsResult.workspacePath, METADATA_FILE)),
-        ).toBe(true);
+        const wsResult = createWorkspace(sourceDir, "clean-test");
 
-        const removeResult = removeWorkspace(sourceDir, "meta-clean");
+        const removeResult = removeWorkspace(sourceDir, "clean-test");
         expect(removeResult.errors).toHaveLength(0);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
@@ -1072,12 +1032,457 @@ describe("createWorkspace (unified mode)", () => {
         const result = createWorkspace(tmpDir, "feature");
 
         expect(existsSync(result.workspacePath)).toBe(true);
-        expect(result.created).toHaveLength(1);
+        expect(result.created.length).toBeGreaterThanOrEqual(1);
 
         // .claude should exist in worktree (tracked by parent git repo)
         expect(
             existsSync(join(result.workspacePath, ".claude", "settings.json")),
         ).toBe(true);
+
+        // Submodule files should be checked out in worktree
+        expect(
+            existsSync(join(result.workspacePath, "repo-a", "init.txt")),
+        ).toBe(true);
+    });
+
+    it("creates worktrees for nested git repos not managed as submodules", () => {
+        // Top-level is a git repo
+        initRepo(tmpDir);
+
+        // Create nested git repos (not submodules, gitignored by parent)
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "export default {}");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        initRepo(join(tmpDir, "backend"));
+        writeFileSync(join(tmpDir, "backend", "server.ts"), "export default {}");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add server"], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+
+        const result = createWorkspace(tmpDir, "feature");
+
+        expect(existsSync(result.workspacePath)).toBe(true);
+
+        // Nested repos should have worktrees created
+        expect(
+            existsSync(join(result.workspacePath, "frontend", "app.ts")),
+        ).toBe(true);
+        expect(
+            existsSync(join(result.workspacePath, "backend", "server.ts")),
+        ).toBe(true);
+
+        // Should report nested repos in created list
+        const createdNames = result.created.map((c) => c.name).sort();
+        expect(createdNames).toContain("frontend");
+        expect(createdNames).toContain("backend");
+    });
+});
+
+describe("repairWorkspace", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("creates worktrees for missing nested git repos in existing workspace", () => {
+        // Setup: top-level git repo with nested repos
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "export default {}");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        // Create workspace (which now handles nested repos)
+        const wsResult = createWorkspace(tmpDir, "repair-test");
+
+        // Simulate a new nested repo added AFTER workspace was created
+        initRepo(join(tmpDir, "backend"));
+        writeFileSync(join(tmpDir, "backend", "server.ts"), "export default {}");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add server"], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+
+        // backend/ doesn't exist in workspace yet
+        expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(false);
+
+        // Repair should create the missing worktree
+        const repaired = repairWorkspace(tmpDir, wsResult.workspacePath, "repair-test");
+
+        expect(repaired.length).toBeGreaterThanOrEqual(1);
+        const repairedNames = repaired.map((r) => r.name);
+        expect(repairedNames).toContain("backend");
+
+        // backend files should now exist
+        expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(true);
+    });
+
+    it("skips nested repos that are already valid worktrees", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "skip-test");
+
+        // frontend should already be a worktree in the workspace
+        expect(existsSync(join(wsResult.workspacePath, "frontend"))).toBe(true);
+
+        // Repair should skip it (already a valid worktree)
+        const repaired = repairWorkspace(tmpDir, wsResult.workspacePath, "skip-test");
+        const repairedNames = repaired.map((r) => r.name);
+        expect(repairedNames).not.toContain("frontend");
+    });
+
+    it("auto-fixes nested repos with content that are not valid worktrees", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "export default {}");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        // Create workspace (top-level only, no nested worktrees yet)
+        const wsPath = getWorkspacePath(tmpDir, "autofix-test");
+        spawnSync("git", ["worktree", "add", wsPath, "-b", "autofix-test"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+
+        // Simulate submodule checkout: copy frontend as a regular git repo (not a worktree)
+        const destFrontend = join(wsPath, "frontend");
+        mkdirSync(destFrontend, { recursive: true });
+        // Clone the source repo to simulate a submodule checkout
+        spawnSync("git", ["clone", join(tmpDir, "frontend"), destFrontend], {
+            encoding: "utf-8", stdio: "pipe",
+        });
+        expect(existsSync(join(destFrontend, "app.ts"))).toBe(true);
+
+        // Verify it's NOT a valid worktree (it's a clone, not a worktree)
+        const gitPath = join(destFrontend, ".git");
+        expect(statSync(gitPath).isDirectory()).toBe(true); // .git is a directory, not a file
+
+        // Repair should auto-fix it
+        const repaired = repairWorkspace(tmpDir, wsPath, "autofix-test");
+        const repairedNames = repaired.map((r) => r.name);
+        expect(repairedNames).toContain("frontend");
+
+        // Should now be a valid worktree with content preserved
+        expect(existsSync(join(destFrontend, "app.ts"))).toBe(true);
+        const gitStat = lstatSync(join(destFrontend, ".git"));
+        expect(gitStat.isFile()).toBe(true); // .git is now a file (worktree gitlink)
+    });
+
+    it("auto-fixes submodule gitlink to proper worktree", () => {
+        // Setup: parent repo + nested independent repo
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "backend"));
+        writeFileSync(join(tmpDir, "backend", "api.ts"), "export const api = true;");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add api"], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+
+        // Create workspace (top-level worktree only)
+        const wsPath = getWorkspacePath(tmpDir, "submod-fix");
+        spawnSync("git", ["worktree", "add", wsPath, "-b", "submod-fix"], {
+            cwd: tmpDir, encoding: "utf-8", stdio: "pipe",
+        });
+
+        // Simulate submodule checkout: .git FILE pointing to parent's modules
+        const destBackend = join(wsPath, "backend");
+        mkdirSync(destBackend, { recursive: true });
+        writeFileSync(join(destBackend, "api.ts"), "export const api = true;");
+
+        // Create fake parent modules dir and write .git gitlink
+        const fakeModulesDir = join(tmpDir, ".git", "worktrees", basename(wsPath), "modules", "backend");
+        mkdirSync(fakeModulesDir, { recursive: true });
+        writeFileSync(join(destBackend, ".git"), `gitdir: ${fakeModulesDir}\n`);
+
+        // Verify pre-condition: has .git file but NOT a valid worktree of backend
+        expect(lstatSync(join(destBackend, ".git")).isFile()).toBe(true);
+        expect(isValidWorktree(destBackend, join(tmpDir, "backend"))).toBe(false);
+
+        // Repair should auto-fix: replace submodule checkout with proper worktree
+        const repaired = repairWorkspace(tmpDir, wsPath, "submod-fix");
+        const repairedNames = repaired.map((r) => r.name);
+        expect(repairedNames).toContain("backend");
+
+        // Should now be a valid worktree
+        expect(isValidWorktree(destBackend, join(tmpDir, "backend"))).toBe(true);
+
+        // Content should be preserved
+        expect(existsSync(join(destBackend, "api.ts"))).toBe(true);
+    });
+
+    it("returns empty array for non-git-repo source", () => {
+        mkdirSync(join(tmpDir, "workspace"));
+        const repaired = repairWorkspace(tmpDir, join(tmpDir, "workspace"), "test");
+        expect(repaired).toEqual([]);
+    });
+
+    it("returns empty array when no nested repos exist", () => {
+        initRepo(tmpDir);
+        const wsResult = createWorkspace(tmpDir, "no-nested");
+        const repaired = repairWorkspace(tmpDir, wsResult.workspacePath, "no-nested");
+        expect(repaired).toEqual([]);
+    });
+});
+
+describe("isValidWorktree", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("returns true for a valid worktree", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "valid-wt");
+        // frontend should be a valid worktree of the source
+        expect(isValidWorktree(
+            join(wsResult.workspacePath, "frontend"),
+            join(tmpDir, "frontend"),
+        )).toBe(true);
+    });
+
+    it("returns false for directory without .git", () => {
+        const dir = join(tmpDir, "no-git");
+        mkdirSync(dir);
+        writeFileSync(join(dir, "file.txt"), "hello");
+        expect(isValidWorktree(dir, tmpDir)).toBe(false);
+    });
+
+    it("returns false for regular git repo (not a worktree)", () => {
+        initRepo(join(tmpDir, "regular-repo"));
+        expect(isValidWorktree(join(tmpDir, "regular-repo"), tmpDir)).toBe(false);
+    });
+
+    it("returns false for non-existent directory", () => {
+        expect(isValidWorktree(join(tmpDir, "nope"), tmpDir)).toBe(false);
+    });
+
+    it("returns true for valid worktree when source repo is a submodule (gitlink .git file)", () => {
+        // Setup: parent repo with a submodule-like nested repo
+        const parentGitDir = join(tmpDir, "parent", ".git");
+        mkdirSync(parentGitDir, { recursive: true });
+
+        // The "source" nested repo has .git as a FILE (submodule gitlink)
+        // pointing to the parent's modules directory — this is how git submodules work
+        const sourceRepo = join(tmpDir, "parent", "backend");
+        const modulesDir = join(parentGitDir, "modules", "backend");
+        mkdirSync(sourceRepo, { recursive: true });
+        // Initialize a real git repo inside modules dir (the actual git storage)
+        spawnSync("git", ["init", "--bare", modulesDir], { stdio: "pipe" });
+        // Source .git is a gitlink file → parent's modules
+        writeFileSync(join(sourceRepo, ".git"), `gitdir: ${modulesDir}\n`);
+        // Make git recognize this as a valid repo
+        spawnSync("git", ["config", "core.bare", "false"], { cwd: sourceRepo, stdio: "pipe" });
+        spawnSync("git", ["-c", "user.name=test", "-c", "user.email=t@t", "commit", "--allow-empty", "-m", "init"], { cwd: sourceRepo, stdio: "pipe" });
+
+        // Create a worktree from this submodule source
+        const wtDest = join(tmpDir, "ws", "backend");
+        spawnSync("git", ["worktree", "add", "-b", "feat", wtDest], { cwd: sourceRepo, stdio: "pipe" });
+
+        // The worktree .git file should point to modules/backend/worktrees/backend
+        // isValidWorktree must return TRUE — it's a valid worktree of the source
+        expect(existsSync(join(wtDest, ".git"))).toBe(true);
+        expect(isValidWorktree(wtDest, sourceRepo)).toBe(true);
+    });
+
+    it("returns false for submodule gitlink (points to parent modules, not source worktrees)", () => {
+        // Setup: source repo (what we'd want a worktree of)
+        initRepo(join(tmpDir, "backend"));
+
+        // Simulate a submodule checkout: directory with .git file pointing
+        // to parent's modules dir (not backend's worktrees dir)
+        const fakeSubmodule = join(tmpDir, "ws", "backend");
+        mkdirSync(fakeSubmodule, { recursive: true });
+        writeFileSync(join(fakeSubmodule, "server.ts"), "export default {}");
+
+        // Create the parent .git/modules/backend directory to make the gitdir valid
+        const parentModules = join(tmpDir, "parent-repo", ".git", "worktrees", "ws", "modules", "backend");
+        mkdirSync(parentModules, { recursive: true });
+
+        // .git file points to parent's modules, NOT to backend's .git/worktrees/
+        writeFileSync(
+            join(fakeSubmodule, ".git"),
+            `gitdir: ${parentModules}\n`,
+        );
+
+        // isValidWorktree should reject this — it points to parent's modules, not backend's worktrees
+        expect(isValidWorktree(fakeSubmodule, join(tmpDir, "backend"))).toBe(false);
+    });
+});
+
+describe("detectBrokenWorktrees", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("detects directory with content that is not a valid worktree", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "broken-detect");
+
+        // Simulate broken state: remove the worktree and put loose files
+        spawnSync("git", ["worktree", "remove", "--force",
+            join(wsResult.workspacePath, "frontend")], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+        mkdirSync(join(wsResult.workspacePath, "frontend"));
+        writeFileSync(join(wsResult.workspacePath, "frontend", "dirty.ts"), "dirty");
+
+        const broken = detectBrokenWorktrees(tmpDir, wsResult.workspacePath);
+        expect(broken).toHaveLength(1);
+        expect(broken[0].name).toBe("frontend");
+    });
+
+    it("returns empty for valid worktrees", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "all-good");
+
+        const broken = detectBrokenWorktrees(tmpDir, wsResult.workspacePath);
+        expect(broken).toHaveLength(0);
+    });
+
+    it("returns empty for non-git-repo source", () => {
+        mkdirSync(join(tmpDir, "ws"));
+        expect(detectBrokenWorktrees(tmpDir, join(tmpDir, "ws"))).toEqual([]);
+    });
+});
+
+describe("fixBrokenWorktree", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `ccc-test-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("backs up content, creates worktree, restores content", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "original");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        const wsResult = createWorkspace(tmpDir, "fix-broken");
+
+        // Simulate broken state: remove worktree, put custom content
+        spawnSync("git", ["worktree", "remove", "--force",
+            join(wsResult.workspacePath, "frontend")], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+        mkdirSync(join(wsResult.workspacePath, "frontend"));
+        writeFileSync(join(wsResult.workspacePath, "frontend", "wip.ts"), "work in progress");
+
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fix-broken");
+
+        expect(result).not.toBeNull();
+        expect(result!.name).toBe("frontend");
+
+        // Original repo file should be in worktree (from git)
+        expect(existsSync(join(wsResult.workspacePath, "frontend", "app.ts"))).toBe(true);
+
+        // Backed up file should be restored
+        expect(existsSync(join(wsResult.workspacePath, "frontend", "wip.ts"))).toBe(true);
+        expect(readFileSync(join(wsResult.workspacePath, "frontend", "wip.ts"), "utf-8")).toBe("work in progress");
+
+        // Backup should be cleaned up
+        expect(existsSync(wsResult.workspacePath + ".ccc-backup")).toBe(false);
+    });
+
+    it("returns null for non-existent repo name", () => {
+        initRepo(tmpDir);
+        const wsResult = createWorkspace(tmpDir, "no-repo");
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "nonexistent", "no-repo");
+        expect(result).toBeNull();
+    });
+
+    it("restores backup if worktree creation fails", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "fail-fix");
+
+        // Simulate broken state
+        spawnSync("git", ["worktree", "remove", "--force",
+            join(wsResult.workspacePath, "frontend")], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+        mkdirSync(join(wsResult.workspacePath, "frontend"));
+        writeFileSync(join(wsResult.workspacePath, "frontend", "precious.ts"), "don't lose me");
+
+        // Make worktree creation fail by checking out the same branch in the source
+        spawnSync("git", ["checkout", "fail-fix"], {
+            cwd: join(tmpDir, "frontend"), stdio: "pipe",
+        });
+
+        // fail-fix branch is now checked out in source, so worktree add should fail
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fail-fix");
+
+        // Should fail gracefully
+        expect(result).toBeNull();
+
+        // Content should be restored (not lost)
+        expect(existsSync(join(wsResult.workspacePath, "frontend", "precious.ts"))).toBe(true);
+        expect(readFileSync(join(wsResult.workspacePath, "frontend", "precious.ts"), "utf-8")).toBe("don't lose me");
+    });
+    it("succeeds with stale worktree registration (prune cleans it up)", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "original");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+
+        const wsResult = createWorkspace(tmpDir, "stale-wt");
+
+        // frontend is now a worktree on branch "stale-wt"
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        expect(isValidWorktree(wsFrontend, join(tmpDir, "frontend"))).toBe(true);
+
+        // Simulate: delete the worktree directory WITHOUT git cleanup
+        // This leaves a stale registration in frontend/.git/worktrees/
+        rmSync(wsFrontend, { recursive: true, force: true });
+
+        // Put non-worktree content back (simulating submodule re-init)
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "app.ts"), "submodule version");
+        writeFileSync(join(wsFrontend, ".git"), "gitdir: /some/fake/modules/path\n");
+
+        // Without prune, git worktree add would fail because "stale-wt" is
+        // still registered. With prune (in fixBrokenWorktree), it should succeed.
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "stale-wt");
+
+        expect(result).not.toBeNull();
+        expect(result!.name).toBe("frontend");
+
+        // Should be a valid worktree now
+        expect(isValidWorktree(wsFrontend, join(tmpDir, "frontend"))).toBe(true);
+
+        // Content should be preserved
+        expect(existsSync(join(wsFrontend, "app.ts"))).toBe(true);
     });
 });
 
@@ -1103,5 +1508,130 @@ describe("removeWorkspace (unified mode)", () => {
         expect(removeResult.errors).toHaveLength(0);
         expect(removeResult.removed).toHaveLength(1);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+
+    it("removes unified worktree with nested git repo worktrees", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+
+        const wsResult = createWorkspace(tmpDir, "nested-rm");
+        expect(existsSync(wsResult.workspacePath)).toBe(true);
+        expect(existsSync(join(wsResult.workspacePath, "frontend"))).toBe(true);
+
+        const removeResult = removeWorkspace(tmpDir, "nested-rm");
+        expect(removeResult.errors).toHaveLength(0);
+        expect(removeResult.removed).toContain("frontend");
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+});
+
+// === getWorktreeGitMounts Tests ===
+
+describe("getWorktreeGitMounts", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = join(tmpdir(), `wt-mounts-${randomUUID()}`);
+        mkdirSync(tmpDir, { recursive: true });
+    });
+
+    afterEach(() => {
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it("returns empty for regular git repo (not a worktree)", () => {
+        const repoPath = join(tmpDir, "repo");
+        initRepo(repoPath);
+
+        const mounts = getWorktreeGitMounts(repoPath);
+        expect(mounts).toEqual([]);
+    });
+
+    it("returns empty for non-existent directory", () => {
+        const mounts = getWorktreeGitMounts(join(tmpDir, "nonexistent"));
+        expect(mounts).toEqual([]);
+    });
+
+    it("returns empty for non-git directory", () => {
+        const dirPath = join(tmpDir, "plain");
+        mkdirSync(dirPath);
+        writeFileSync(join(dirPath, "file.txt"), "hello");
+
+        const mounts = getWorktreeGitMounts(dirPath);
+        expect(mounts).toEqual([]);
+    });
+
+    it("returns mounts for a worktree directory", () => {
+        const repoPath = join(tmpDir, "source");
+        initRepo(repoPath);
+
+        const wtPath = join(tmpDir, "source--feat");
+        spawnSync("git", ["worktree", "add", "-b", "feat", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+
+        const mounts = getWorktreeGitMounts(wtPath);
+        expect(mounts.length).toBeGreaterThanOrEqual(1);
+
+        // Should include mount at the absolute host path of source .git
+        const sourceGitDir = join(repoPath, ".git");
+        const absoluteMount = mounts.find((m) => m.hostPath === sourceGitDir && m.containerPath === sourceGitDir);
+        expect(absoluteMount).toBeDefined();
+
+        // Should include mount at /project/<basename>/.git for relative refs
+        const relativeMount = mounts.find((m) => m.containerPath === "/project/source/.git");
+        expect(relativeMount).toBeDefined();
+        expect(relativeMount!.hostPath).toBe(sourceGitDir);
+    });
+
+    it("includes nested git repo mounts", () => {
+        const repoPath = join(tmpDir, "parent");
+        initRepo(repoPath);
+
+        // Create nested git repo
+        const nestedPath = join(repoPath, "nested-repo");
+        initRepo(nestedPath);
+
+        // Gitignore the nested repo in parent
+        writeFileSync(join(repoPath, ".gitignore"), "nested-repo/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested"], { cwd: repoPath, stdio: "pipe" });
+
+        // Create worktree of parent
+        const wtPath = join(tmpDir, "parent--feat");
+        spawnSync("git", ["worktree", "add", "-b", "feat", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+
+        const mounts = getWorktreeGitMounts(wtPath);
+
+        // Should have mounts for parent .git
+        const parentGitDir = join(repoPath, ".git");
+        expect(mounts.some((m) => m.hostPath === parentGitDir)).toBe(true);
+
+        // Should have mounts for nested repo .git
+        const nestedGitDir = join(nestedPath, ".git");
+        expect(mounts.some((m) => m.hostPath === nestedGitDir)).toBe(true);
+
+        // Should have relative mount for nested repo
+        expect(mounts.some((m) => m.containerPath === "/project/parent/nested-repo/.git")).toBe(true);
+    });
+
+    it("deduplicates identical mounts", () => {
+        const repoPath = join(tmpDir, "dedup");
+        initRepo(repoPath);
+
+        const wtPath = join(tmpDir, "dedup--feat");
+        spawnSync("git", ["worktree", "add", "-b", "feat", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+
+        const mounts = getWorktreeGitMounts(wtPath);
+        const keys = mounts.map((m) => `${m.hostPath}:${m.containerPath}`);
+        const uniqueKeys = new Set(keys);
+        expect(keys.length).toBe(uniqueKeys.size);
     });
 });

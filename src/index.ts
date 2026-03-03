@@ -41,9 +41,12 @@ import {
     listWorkspaces,
     createWorkspace,
     removeWorkspace,
+    repairWorkspace,
+    detectBrokenWorktrees,
+    fixBrokenWorktree,
     getWorkspacePath,
+    getWorktreeGitMounts,
     workspaceExists,
-    readWorkspaceMetadata,
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "./worktree.js";
@@ -244,8 +247,15 @@ async function exec(
     setSession(sessionLockFile, fullPath);
     setupSignalHandlers();
 
-    // Start or get container
-    const containerName = startProjectContainer(fullPath, ensureDirs);
+    // Detect worktree mounts (source .git directories needed for git operations)
+    const worktreeMounts = getWorktreeGitMounts(fullPath);
+
+    // Start or get container (with extra mounts for worktree workspaces)
+    const containerName = startProjectContainer(
+        fullPath,
+        ensureDirs,
+        worktreeMounts.length > 0 ? worktreeMounts : undefined,
+    );
 
     // Ensure claude binary is available (cached in volume or fresh install).
     // Retry once if a concurrent session stopped the container during setup.
@@ -476,10 +486,15 @@ async function handleWorktreeCommand(
     if (workspaceExists(cwd, branch)) {
         // Check for branch collision (C2 fix): different branch names can map
         // to the same workspace path (e.g., feature/login → feature-login)
-        const meta = readWorkspaceMetadata(wsPath);
-        if (meta && meta.branch !== branch) {
+        const gitResult = spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const actualBranch = (gitResult.stdout ?? "").trim();
+        if (actualBranch && actualBranch !== branch) {
             console.error(
-                `Error: Workspace exists for branch '${meta.branch}', not '${branch}'.`,
+                `Error: Workspace exists for branch '${actualBranch}', not '${branch}'.`,
             );
             console.error(
                 `Different branches map to the same directory due to '/' → '-' conversion.`,
@@ -487,6 +502,35 @@ async function handleWorktreeCommand(
             process.exit(1);
         }
         console.log(`Using existing workspace: ${wsPath}`);
+
+        // Repair: create worktrees for nested git repos that are missing
+        const repaired = repairWorkspace(cwd, wsPath, branch);
+        for (const repo of repaired) {
+            console.log(`  ${repo.name}: worktree (repaired)`);
+        }
+
+        // Detect broken worktrees (directories with content but not valid worktrees)
+        const broken = detectBrokenWorktrees(cwd, wsPath);
+        if (broken.length > 0) {
+            console.log(`Found ${broken.length} broken worktree(s):`);
+            for (const entry of broken) {
+                console.log(`  ${entry.name}: has content but is not a valid worktree`);
+            }
+            const answer = await prompt(
+                `Stash content and recreate as proper worktrees? (y/N) `,
+                true,
+            );
+            if (answer === "y" || answer === "yes") {
+                for (const entry of broken) {
+                    const fixed = fixBrokenWorktree(cwd, wsPath, entry.name, branch);
+                    if (fixed) {
+                        console.log(`  ${entry.name}: fixed (content preserved)`);
+                    } else {
+                        console.log(`  ${entry.name}: failed to fix (content unchanged)`);
+                    }
+                }
+            }
+        }
     } else {
         // Check if submodule setup is needed (not a git repo but has child git repos)
         const submoduleRepos = needsSubmoduleSetup(cwd);

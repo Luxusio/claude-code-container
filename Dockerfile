@@ -73,6 +73,9 @@ RUN useradd -m -s /bin/bash ccc && \
 USER ccc
 WORKDIR /home/ccc
 
+# Trust all directories (container is isolated, ownership mismatches from bind mounts)
+RUN git config --global --add safe.directory '*'
+
 # ============================================================
 # LAYER 6: mise 설치 + 설정 (거의 안 바뀜)
 # ============================================================

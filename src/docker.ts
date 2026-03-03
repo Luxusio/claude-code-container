@@ -30,6 +30,7 @@ export interface DockerRunArgsOptions {
     imageName: string;
     hostSshDir: string | null;
     sshAgentSocket: string | null;
+    extraMounts?: Array<{ hostPath: string; containerPath: string }>;
 }
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
@@ -77,6 +78,13 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
             "-e",
             "SSH_AUTH_SOCK=/tmp/ssh-agent.sock",
         );
+    }
+
+    // Extra volume mounts (e.g., source .git for worktree workspaces)
+    if (opts.extraMounts) {
+        for (const mount of opts.extraMounts) {
+            args.push("-v", `${mount.hostPath}:${mount.containerPath}`);
+        }
     }
 
     args.push(opts.imageName);
@@ -156,17 +164,60 @@ export function syncClipboardShims(containerName: string, distDir: string): void
     }
 }
 
+/**
+ * Check if a container has all the required volume mounts.
+ * Uses `docker inspect` to read current mount configuration.
+ */
+function containerHasMounts(
+    containerName: string,
+    requiredMounts: Array<{ hostPath: string; containerPath: string }>,
+): boolean {
+    const result = spawnSync(
+        "docker",
+        ["inspect", "-f", "{{json .Mounts}}", containerName],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) return false;
+
+    try {
+        const mounts = JSON.parse((result.stdout ?? "").trim()) as Array<{
+            Source: string;
+            Destination: string;
+        }>;
+        for (const req of requiredMounts) {
+            const found = mounts.some(
+                (m) => m.Source === req.hostPath && m.Destination === req.containerPath,
+            );
+            if (!found) return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // === Container Lifecycle ===
 
 export function startProjectContainer(
     projectPath: string,
     ensureDirs: () => void,
+    extraMounts?: Array<{ hostPath: string; containerPath: string }>,
 ): string {
     ensureDirs();
     ensureImage();
 
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath);
+
+    // Check if existing container needs recreation (e.g., missing worktree git mounts)
+    if (isContainerExists(containerName) && extraMounts && extraMounts.length > 0) {
+        if (!containerHasMounts(containerName, extraMounts)) {
+            console.log("Recreating container (missing git mounts for worktree)...");
+            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
+            spawnSync("docker", ["rm", containerName], { stdio: "ignore" });
+            // Fall through to create new container below
+        }
+    }
 
     if (isContainerRunning(containerName)) {
         return containerName;
@@ -209,6 +260,7 @@ export function startProjectContainer(
         imageName: IMAGE_NAME,
         hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
         sshAgentSocket,
+        extraMounts,
     });
 
     const result = spawnSync("docker", args, { stdio: "inherit" });

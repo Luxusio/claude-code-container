@@ -5,12 +5,13 @@ import {
     existsSync,
     mkdirSync,
     readdirSync,
-    writeFileSync,
     readFileSync,
     copyFileSync,
     statSync,
     rmSync,
     lstatSync,
+    renameSync,
+    realpathSync,
 } from "fs";
 import { basename, dirname, join, resolve } from "path";
 
@@ -30,7 +31,6 @@ function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
 }
 
 export const WORKTREE_SEPARATOR = "--";
-export const METADATA_FILE = ".ccc-meta.json";
 
 // === Types ===
 
@@ -60,12 +60,6 @@ export interface WorktreeRepoResult {
 export interface RemoveResult {
     removed: string[];
     errors: string[];
-}
-
-export interface WorkspaceMetadata {
-    branch: string;
-    sourcePath: string;
-    createdAt: string;
 }
 
 // === Pure Functions ===
@@ -271,24 +265,6 @@ export function workspaceExists(sourcePath: string, branch: string): boolean {
 }
 
 /**
- * Read workspace metadata from the .ccc-meta.json file.
- * Returns null if metadata file doesn't exist or is invalid.
- */
-export function readWorkspaceMetadata(
-    wsPath: string,
-): WorkspaceMetadata | null {
-    const metaPath = join(wsPath, METADATA_FILE);
-    if (!existsSync(metaPath)) {
-        return null;
-    }
-    try {
-        return JSON.parse(readFileSync(metaPath, "utf-8")) as WorkspaceMetadata;
-    } catch {
-        return null;
-    }
-}
-
-/**
  * List all workspaces for a given source path.
  * Finds sibling directories matching the pattern: {dirname}--*
  * Reads metadata files to recover original branch names.
@@ -322,9 +298,16 @@ export function listWorkspaces(sourcePath: string): WorkspaceInfo[] {
             continue;
         }
 
-        // Read metadata for original branch name; fall back to dirname-derived name
-        const meta = readWorkspaceMetadata(fullPath);
-        const branch = meta?.branch ?? name.slice(prefix.length);
+        // Get branch name from git; fall back to dirname-derived name
+        let branch = name.slice(prefix.length);
+        const gitBranch = spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: fullPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (gitBranch.status === 0 && (gitBranch.stdout ?? "").trim()) {
+            branch = (gitBranch.stdout ?? "").trim();
+        }
 
         workspaces.push({
             branch,
@@ -454,8 +437,9 @@ export function initWithSubmodules(dirPath: string): void {
     for (const repo of gitRepos) {
         const branch = detectDefaultBranch(repo.path);
         const remoteUrl = getRemoteUrl(repo.path);
-        // Prefer remote URL; fall back to relative path for local-only repos
-        const url = remoteUrl || `./${repo.name}`;
+        // Prefer remote URL; fall back to absolute path for local-only repos
+        // (absolute path avoids resolution issues in worktrees)
+        const url = remoteUrl || repo.path;
 
         const args = ["submodule", "add"];
         if (branch) {
@@ -574,18 +558,7 @@ function createUnifiedWorkspace(
         throw new Error(`Failed to create worktree: ${stderr}`);
     }
 
-    // Write metadata
-    const metadata: WorkspaceMetadata = {
-        branch,
-        sourcePath: resolved,
-        createdAt: new Date().toISOString(),
-    };
-    writeFileSync(
-        join(wsPath, METADATA_FILE),
-        JSON.stringify(metadata, null, 2),
-    );
-
-    // Init submodules tracking branches (not pinned to commits)
+    // Init submodules if any (without --remote to avoid fetch failures on local repos)
     const submoduleCheck = spawnSync(
         "git",
         ["submodule", "status"],
@@ -594,15 +567,17 @@ function createUnifiedWorkspace(
     if (submoduleCheck.status === 0 && (submoduleCheck.stdout ?? "").trim()) {
         spawnSync(
             "git",
-            ["submodule", "update", "--init", "--remote"],
-            { cwd: wsPath, stdio: "pipe" },
+            ["submodule", "update", "--init", "--recursive"],
+            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
     }
 
     const dirName = basename(resolved);
+    const nestedCreated = repairWorkspace(resolved, wsPath, branch);
+
     return {
         workspacePath: wsPath,
-        created: [{ name: dirName, branch, action }],
+        created: [{ name: dirName, branch, action }, ...nestedCreated],
         copied: [],
     };
 }
@@ -634,17 +609,6 @@ function createMultiRepoWorkspace(
         }
         throw e;
     }
-
-    // Write metadata
-    const metadata: WorkspaceMetadata = {
-        branch,
-        sourcePath: resolved,
-        createdAt: new Date().toISOString(),
-    };
-    writeFileSync(
-        join(wsPath, METADATA_FILE),
-        JSON.stringify(metadata, null, 2),
-    );
 
     const created: WorktreeRepoResult[] = [];
     const copied: string[] = [];
@@ -730,6 +694,418 @@ function createMultiRepoWorkspace(
 }
 
 /**
+ * Repair an existing workspace by creating worktrees for nested git repos
+ * that are missing or empty in the workspace directory.
+ *
+ * Also initializes submodules if they haven't been initialized yet.
+ *
+ * This is useful when:
+ * - A workspace was created before this feature existed
+ * - New nested git repos were added to the source after workspace creation
+ *
+ * Only operates in unified mode (source is a git repo).
+ * Returns the list of repos that were repaired.
+ */
+export function repairWorkspace(
+    sourcePath: string,
+    wsPath: string,
+    branch: string,
+): WorktreeRepoResult[] {
+    const resolved = resolve(sourcePath);
+
+    // Only works in unified mode (source is a git repo)
+    if (!existsSync(join(resolved, ".git"))) {
+        return [];
+    }
+
+    // Try to init submodules that may not be initialized yet
+    const submoduleCheck = spawnSync(
+        "git",
+        ["submodule", "status"],
+        { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (submoduleCheck.status === 0 && (submoduleCheck.stdout ?? "").trim()) {
+        spawnSync(
+            "git",
+            ["submodule", "update", "--init", "--recursive"],
+            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+    }
+
+    // Create worktrees for nested git repos not managed as submodules.
+    // In unified mode, git worktree only checks out the top-level repo.
+    // Nested git repos (gitignored or gitlink entries without submodule config)
+    // end up as empty or missing directories in the worktree.
+    const created: WorktreeRepoResult[] = [];
+    const sourceEntries = scanDirectory(resolved);
+
+    for (const entry of sourceEntries) {
+        if (!entry.isGitRepo) continue;
+
+        const destPath = join(wsPath, entry.name);
+
+        // Check existing directory
+        if (existsSync(destPath)) {
+            try {
+                const contents = readdirSync(destPath);
+                if (contents.length > 0) {
+                    // Has content — skip if already a valid worktree
+                    if (isValidWorktree(destPath, entry.path)) {
+                        continue;
+                    }
+                    // Not a valid worktree (submodule checkout, copy, etc.) — auto-fix
+                    const fixed = fixBrokenWorktree(resolved, wsPath, entry.name, branch);
+                    if (fixed) {
+                        created.push(fixed);
+                    }
+                    continue;
+                }
+                // Empty directory — remove so git worktree add can create it
+                rmSync(destPath, { recursive: true });
+            } catch {
+                continue;
+            }
+        }
+
+        const nestedExistence = branchExistsInRepo(entry.path, branch);
+        let nestedArgs: string[];
+        let nestedAction: WorktreeRepoResult["action"];
+
+        switch (nestedExistence) {
+            case "local":
+                nestedArgs = ["worktree", "add", destPath, branch];
+                nestedAction = "worktree-existing";
+                break;
+            case "remote":
+                nestedArgs = ["worktree", "add", "-b", branch, destPath, `origin/${branch}`];
+                nestedAction = "worktree-remote";
+                break;
+            case "none":
+                nestedArgs = ["worktree", "add", "-b", branch, destPath];
+                nestedAction = "worktree-new";
+                break;
+        }
+
+        const nestedResult = spawnSync("git", nestedArgs, {
+            cwd: entry.path,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+
+        if (nestedResult.status === 0) {
+            created.push({ name: entry.name, branch, action: nestedAction });
+        }
+    }
+
+    return created;
+}
+
+// === Docker Mount Helpers ===
+
+export interface WorktreeGitMount {
+    hostPath: string;
+    containerPath: string;
+}
+
+/**
+ * Get additional Docker volume mounts needed for a worktree workspace.
+ *
+ * Git worktrees contain .git files (not directories) that reference the
+ * source repo's .git directory via absolute or relative paths. These paths
+ * don't resolve inside a Docker container because only the worktree directory
+ * is mounted, not the source repo.
+ *
+ * Returns mounts for:
+ * - Source repo's .git at the host's absolute path (for absolute gitdir refs)
+ * - Source repo's .git at /project/<basename>/.git (for relative refs from submodules)
+ * - Each nested git repo's .git directories similarly
+ */
+export function getWorktreeGitMounts(worktreePath: string): WorktreeGitMount[] {
+    const resolved = resolve(worktreePath);
+    const gitFile = join(resolved, ".git");
+
+    // Not a worktree if .git doesn't exist or is a directory (regular repo)
+    if (!existsSync(gitFile)) return [];
+    try {
+        if (!lstatSync(gitFile).isFile()) return [];
+    } catch {
+        return [];
+    }
+
+    const content = readFileSync(gitFile, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return [];
+
+    const gitdirPath = match[1].trim();
+    const resolvedGitdir = resolve(resolved, gitdirPath);
+
+    // Navigate from .git/worktrees/<name> up to .git/
+    const sourceGitDir = resolve(resolvedGitdir, "..", "..");
+    if (!existsSync(sourceGitDir)) return [];
+
+    const sourceRepoDir = dirname(sourceGitDir);
+    const sourceBasename = basename(sourceRepoDir);
+
+    const mounts: WorktreeGitMount[] = [];
+    const seen = new Set<string>();
+
+    function addMount(hostPath: string, containerPath: string): void {
+        const key = `${hostPath}:${containerPath}`;
+        if (!seen.has(key)) {
+            seen.add(key);
+            mounts.push({ hostPath, containerPath });
+        }
+    }
+
+    // Mount source .git at absolute host path (for absolute gitdir references)
+    addMount(sourceGitDir, sourceGitDir);
+
+    // Mount source .git at /project/<basename>/.git (for relative refs from submodules)
+    // Submodule .git files use paths like ../../<source_basename>/.git/worktrees/...
+    const relMountPath = `/project/${sourceBasename}/.git`;
+    if (relMountPath !== sourceGitDir) {
+        addMount(sourceGitDir, relMountPath);
+    }
+
+    // Scan source for nested git repos and mount their .git directories too
+    try {
+        const entries = scanDirectory(sourceRepoDir);
+        for (const entry of entries) {
+            if (!entry.isGitRepo) continue;
+            const nestedGitPath = join(entry.path, ".git");
+            try {
+                if (lstatSync(nestedGitPath).isDirectory()) {
+                    addMount(nestedGitPath, nestedGitPath);
+                    const nestedRelPath = `/project/${sourceBasename}/${entry.name}/.git`;
+                    if (nestedRelPath !== nestedGitPath) {
+                        addMount(nestedGitPath, nestedRelPath);
+                    }
+                }
+            } catch { /* skip inaccessible entries */ }
+        }
+    } catch { /* skip if source scan fails */ }
+
+    return mounts;
+}
+
+// === Broken Worktree Detection & Fix ===
+
+export interface BrokenWorktreeEntry {
+    name: string;
+    sourcePath: string;
+    destPath: string;
+}
+
+/**
+ * Check if a directory is a valid git worktree of a given source repo.
+ * Returns true only if:
+ *   - The directory has a .git file (not directory)
+ *   - The gitdir reference points back to the source repo's .git/worktrees/
+ *
+ * Uses direct .git file parsing + realpathSync instead of git rev-parse
+ * to handle symlinks and macOS path resolution differences.
+ */
+export function isValidWorktree(
+    dirPath: string,
+    sourceRepoPath: string,
+): boolean {
+    if (!existsSync(dirPath)) return false;
+
+    const gitPath = join(dirPath, ".git");
+    if (!existsSync(gitPath)) return false;
+
+    // Must be a file (gitlink), not a directory — directories are regular repos
+    try {
+        if (!lstatSync(gitPath).isFile()) return false;
+    } catch {
+        return false;
+    }
+
+    // Read and parse the .git file to get the gitdir reference
+    try {
+        const content = readFileSync(gitPath, "utf-8").trim();
+        const match = content.match(/^gitdir:\s*(.+)$/);
+        if (!match) return false;
+
+        const gitdirPath = match[1].trim();
+        const resolvedGitdir = resolve(dirPath, gitdirPath);
+
+        // gitdir format: <source>/.git/worktrees/<name>
+        // Navigate up to find the common .git dir
+        const commonGitDir = resolve(resolvedGitdir, "..", "..");
+
+        // Resolve the source repo's actual git directory.
+        // If the source is a submodule, its .git is a gitlink file pointing
+        // to the parent's .git/modules/<name> — we must follow that reference.
+        const sourceGitPath = join(sourceRepoPath, ".git");
+        let actualSourceGitDir: string;
+        try {
+            if (lstatSync(sourceGitPath).isFile()) {
+                // Source is a submodule — parse gitlink to find actual git dir
+                const srcContent = readFileSync(sourceGitPath, "utf-8").trim();
+                const srcMatch = srcContent.match(/^gitdir:\s*(.+)$/);
+                if (!srcMatch) return false;
+                actualSourceGitDir = resolve(sourceRepoPath, srcMatch[1].trim());
+            } else {
+                actualSourceGitDir = sourceGitPath;
+            }
+        } catch {
+            return false;
+        }
+
+        // Compare with realpathSync to handle symlinks (common on macOS)
+        try {
+            return realpathSync(commonGitDir) === realpathSync(actualSourceGitDir);
+        } catch {
+            // Fallback: compare without symlink resolution
+            return resolve(commonGitDir) === resolve(actualSourceGitDir);
+        }
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Detect nested git repo directories in a workspace that have content
+ * but are NOT valid worktrees of the source repo.
+ *
+ * These are "broken" entries that need user intervention (backup + recreate).
+ * Only operates in unified mode (source is a git repo).
+ */
+export function detectBrokenWorktrees(
+    sourcePath: string,
+    wsPath: string,
+): BrokenWorktreeEntry[] {
+    const resolved = resolve(sourcePath);
+
+    if (!existsSync(join(resolved, ".git"))) {
+        return [];
+    }
+
+    const broken: BrokenWorktreeEntry[] = [];
+    const sourceEntries = scanDirectory(resolved);
+
+    for (const entry of sourceEntries) {
+        if (!entry.isGitRepo) continue;
+
+        const destPath = join(wsPath, entry.name);
+        if (!existsSync(destPath)) continue;
+
+        try {
+            const contents = readdirSync(destPath);
+            if (contents.length === 0) continue; // Empty — handled by repairWorkspace
+        } catch {
+            continue;
+        }
+
+        // Has content — check if it's a valid worktree
+        if (isValidWorktree(destPath, entry.path)) {
+            continue; // Valid, nothing broken
+        }
+
+        broken.push({
+            name: entry.name,
+            sourcePath: entry.path,
+            destPath,
+        });
+    }
+
+    return broken;
+}
+
+/**
+ * Fix a broken worktree entry by:
+ * 1. Backing up existing content (rename to .ccc-backup)
+ * 2. Creating a proper git worktree
+ * 3. Restoring non-.git files from the backup
+ * 4. Cleaning up the backup
+ *
+ * If worktree creation fails, the backup is restored and null is returned.
+ */
+export function fixBrokenWorktree(
+    sourcePath: string,
+    wsPath: string,
+    repoName: string,
+    branch: string,
+): WorktreeRepoResult | null {
+    const resolved = resolve(sourcePath);
+    const destPath = join(wsPath, repoName);
+    const backupPath = destPath + ".ccc-backup";
+
+    // Find the source repo
+    const sourceEntries = scanDirectory(resolved);
+    const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
+    if (!sourceRepo) return null;
+
+    // Backup existing content
+    if (existsSync(destPath)) {
+        if (existsSync(backupPath)) {
+            rmSync(backupPath, { recursive: true, force: true });
+        }
+        renameSync(destPath, backupPath);
+    }
+
+    // Prune stale worktree references (previous fix attempts may leave orphaned entries)
+    spawnSync("git", ["worktree", "prune"], {
+        cwd: sourceRepo.path,
+        stdio: "pipe",
+    });
+
+    // Create worktree
+    const existence = branchExistsInRepo(sourceRepo.path, branch);
+    let args: string[];
+    let action: WorktreeRepoResult["action"];
+
+    switch (existence) {
+        case "local":
+            args = ["worktree", "add", destPath, branch];
+            action = "worktree-existing";
+            break;
+        case "remote":
+            args = ["worktree", "add", "-b", branch, destPath, `origin/${branch}`];
+            action = "worktree-remote";
+            break;
+        case "none":
+            args = ["worktree", "add", "-b", branch, destPath];
+            action = "worktree-new";
+            break;
+    }
+
+    const result = spawnSync("git", args, {
+        cwd: sourceRepo.path,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    if (result.status !== 0) {
+        // Restore backup — don't lose user's content
+        if (existsSync(backupPath)) {
+            if (existsSync(destPath)) {
+                rmSync(destPath, { recursive: true, force: true });
+            }
+            renameSync(backupPath, destPath);
+        }
+        return null;
+    }
+
+    // Restore non-.git content from backup into the new worktree
+    if (existsSync(backupPath)) {
+        for (const name of readdirSync(backupPath)) {
+            if (name === ".git") continue;
+            const srcItem = join(backupPath, name);
+            const dstItem = join(destPath, name);
+            // Only restore files that don't already exist in the worktree
+            if (!existsSync(dstItem)) {
+                copyDirRecursive(srcItem, dstItem);
+            }
+        }
+        rmSync(backupPath, { recursive: true, force: true });
+    }
+
+    return { name: repoName, branch, action };
+}
+
+/**
  * Remove a workspace: remove git worktrees, delete copied items, remove directory.
  *
  * Without --force:
@@ -771,10 +1147,36 @@ function removeUnifiedWorkspace(
     const removed: string[] = [];
     const errors: string[] = [];
 
-    // Remove metadata file first
-    const metaPath = join(wsPath, METADATA_FILE);
-    if (existsSync(metaPath)) {
-        rmSync(metaPath);
+    // Remove nested worktrees before removing the parent.
+    // These are worktrees created for nested git repos (non-submodule).
+    const sourceEntries = scanDirectory(resolved);
+    for (const entry of sourceEntries) {
+        if (!entry.isGitRepo) continue;
+
+        const nestedPath = join(wsPath, entry.name);
+        if (!existsSync(nestedPath)) continue;
+
+        // Check if it's a worktree (has .git file, not directory)
+        const gitPath = join(nestedPath, ".git");
+        if (!existsSync(gitPath)) continue;
+        try {
+            const stat = lstatSync(gitPath);
+            if (!stat.isFile()) continue;
+        } catch {
+            continue;
+        }
+
+        const nestedArgs = ["worktree", "remove", nestedPath];
+        if (opts?.force) nestedArgs.push("--force");
+
+        const nestedResult = spawnSync("git", nestedArgs, {
+            cwd: entry.path,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+        if (nestedResult.status === 0) {
+            removed.push(entry.name);
+        }
     }
 
     const args = ["worktree", "remove", wsPath];
@@ -845,11 +1247,6 @@ function removeMultiRepoWorkspace(
     // Try to remove the workspace directory itself
     try {
         if (existsSync(wsPath)) {
-            const metaPath = join(wsPath, METADATA_FILE);
-            if (existsSync(metaPath)) {
-                rmSync(metaPath);
-            }
-
             const remaining = readdirSync(wsPath);
             if (remaining.length === 0) {
                 rmSync(wsPath, { recursive: true });

@@ -463,4 +463,34 @@ describe("buildDockerRunArgs — edge cases", () => {
         expect(getLimit(unlimited)).toBe("-1");
         expect(getLimit(limited)).toBe("100");
     });
+
+    it("includes extra mounts when provided", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({
+                extraMounts: [
+                    { hostPath: "/host/.git", containerPath: "/host/.git" },
+                    { hostPath: "/host/.git", containerPath: "/project/source/.git" },
+                ],
+            }),
+        );
+        const mounts = extractVolumeMounts(args);
+
+        expect(mounts).toContain("/host/.git:/host/.git");
+        expect(mounts).toContain("/host/.git:/project/source/.git");
+    });
+
+    it("does not include extra mounts when not provided", () => {
+        const withMounts = buildDockerRunArgs(
+            makeOpts({
+                extraMounts: [
+                    { hostPath: "/host/.git", containerPath: "/host/.git" },
+                ],
+            }),
+        );
+        const withoutMounts = buildDockerRunArgs(makeOpts());
+
+        expect(extractVolumeMounts(withMounts).length).toBe(
+            extractVolumeMounts(withoutMounts).length + 1,
+        );
+    });
 });
