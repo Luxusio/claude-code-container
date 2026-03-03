@@ -111,8 +111,10 @@ ccc는 컨테이너 안에서 `container=docker`를 자동으로 설정합니다
 node = "22"
 
 [env]
-_.file = [".env", "{% if env.container is defined %}.env.ccc{% endif %}"]
+_.file = [".env", "{% if env.container is defined %}.env.ccc{% else %}/dev/null{% endif %}"]
 ```
+
+> **`/dev/null` fallback이 필요한 이유**: Jinja `{% if %}` 조건이 false일 때 빈 문자열 `""`이 반환됩니다. mise는 빈 문자열을 현재 디렉토리 경로로 해석하여 디렉토리를 dotenv 파일로 파싱하려 하고, `mise ERROR Is a directory (os error 21)` 에러가 발생합니다. `/dev/null`은 항상 존재하는 빈 파일이므로 dotenv로 파싱해도 에러 없이 변수도 로드되지 않습니다.
 
 | 파일 | 로드 환경 | 용도 |
 |------|----------|------|
