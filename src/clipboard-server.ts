@@ -79,6 +79,231 @@ function detectPlatform(): ClipboardPlatform {
     return "unsupported";
 }
 
+// === AppleScript Data Parsing ===
+
+/**
+ * Parse macOS osascript image data output.
+ * osascript returns clipboard image data as AppleScript data literal:
+ *   «data PNGf89504E470D0A1A0A...»
+ * This is hex-encoded, NOT raw binary. We must extract and decode the hex.
+ * If the buffer already contains raw PNG binary (starts with PNG magic), return as-is.
+ * Returns null if the data cannot be parsed as image data.
+ */
+export function parseAppleScriptImageData(buf: Buffer): Buffer | null {
+    if (buf.length === 0) return null;
+
+    // Already raw PNG binary? (PNG magic: 0x89 0x50 0x4E 0x47)
+    if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) {
+        return buf;
+    }
+
+    // Try to parse «data XXXX<hex>» format
+    const str = buf.toString("utf-8");
+    const match = str.match(/«data \w{4}([0-9A-Fa-f\s]+)»/);
+    if (!match) return null;
+
+    const hexStr = match[1].replace(/\s+/g, "");
+    if (hexStr.length === 0 || hexStr.length % 2 !== 0) return null;
+
+    return Buffer.from(hexStr, "hex");
+}
+
+// === Persistent macOS Native Helper ===
+// Mirrors the Windows PowerShell pattern: one persistent process for fast clipboard reads.
+// Uses a compiled Objective-C binary that accesses NSPasteboard directly (~5ms per read).
+
+const DARWIN_HELPER_SOURCE_HASH_FILE = join(DATA_DIR, "bin", "clipboard-helper-darwin.hash");
+const DARWIN_HELPER_BINARY = join(DATA_DIR, "bin", "clipboard-helper-darwin");
+const DARWIN_MARKER = PS_MARKER; // Same protocol as Windows
+
+let persistentDarwin: ChildProcess | null = null;
+
+/**
+ * Parse JSON output from the native macOS clipboard helper.
+ * Format matches Windows PowerShell output for consistency.
+ */
+export function parseDarwinHelperOutput(output: string): Omit<ClipboardSnapshot, "timestamp"> | null {
+    if (!output) return null;
+    try {
+        const json = JSON.parse(output);
+        const rawTargets = json.targets;
+        const targets = Array.isArray(rawTargets) ? rawTargets
+            : typeof rawTargets === "string" ? [rawTargets]
+            : [];
+        return {
+            targets,
+            text: json.text ? Buffer.from(json.text, "utf-8") : null,
+            imagePng: json.imagePng ? Buffer.from(json.imagePng, "base64") : null,
+            imageBmp: null,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Fast check: is the native helper binary ready to use?
+ * No compilation — just checks if binary exists. Used at request time.
+ */
+function isDarwinHelperReady(): string | null {
+    if (platform() !== "darwin") return null;
+    if (!existsSync(DARWIN_HELPER_BINARY)) return null;
+    return DARWIN_HELPER_BINARY;
+}
+
+/**
+ * Background compile: build the Objective-C helper binary if needed.
+ * Non-blocking — uses async spawn so the server can serve requests immediately.
+ * First requests fall back to osascript; once compile finishes, native helper is used.
+ */
+function compileDarwinHelperAsync(): void {
+    try {
+        const __fn = fileURLToPath(import.meta.url);
+        const sourcePath = join(dirname(__fn), "..", "scripts", "clipboard-helper-darwin.m");
+        if (!existsSync(sourcePath)) return;
+
+        const sourceContent = readFileSync(sourcePath, "utf-8");
+        const sourceHash = createHash("sha256").update(sourceContent).digest("hex").slice(0, 16);
+
+        // Already up-to-date?
+        if (existsSync(DARWIN_HELPER_BINARY)) {
+            try {
+                const existingHash = readFileSync(DARWIN_HELPER_SOURCE_HASH_FILE, "utf-8").trim();
+                if (existingHash === sourceHash) return;
+            } catch { /* recompile */ }
+        }
+
+        const binDir = join(DATA_DIR, "bin");
+        mkdirSync(binDir, { recursive: true });
+
+        const child = spawn("cc", [
+            "-framework", "AppKit", "-framework", "Foundation",
+            "-O2", "-o", DARWIN_HELPER_BINARY, sourcePath,
+        ], { stdio: "ignore" });
+
+        child.on("close", (code) => {
+            if (code === 0) {
+                try { writeFileSync(DARWIN_HELPER_SOURCE_HASH_FILE, sourceHash); } catch { /* ignore */ }
+            }
+        });
+    } catch { /* compilation unavailable — osascript fallback will be used */ }
+}
+
+function ensurePersistentDarwin(): ChildProcess | null {
+    if (persistentDarwin && !persistentDarwin.killed && persistentDarwin.exitCode === null && persistentDarwin.stdin?.writable) {
+        return persistentDarwin;
+    }
+
+    if (persistentDarwin && !persistentDarwin.killed) {
+        try { persistentDarwin.kill(); } catch { /* ignore */ }
+    }
+    persistentDarwin = null;
+
+    const binaryPath = isDarwinHelperReady();
+    if (!binaryPath) return null;
+
+    const child = spawn(binaryPath, [], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+    });
+
+    child.stderr?.on("data", () => { /* drain */ });
+    child.on("exit", () => { if (persistentDarwin === child) persistentDarwin = null; });
+
+    persistentDarwin = child;
+    return persistentDarwin;
+}
+
+function runDarwinCommand(timeout = 5000): Promise<string> {
+    return new Promise((resolve) => {
+        let helper: ChildProcess | null;
+        try {
+            helper = ensurePersistentDarwin();
+        } catch {
+            resolve("");
+            return;
+        }
+        if (!helper || !helper.stdin?.writable) {
+            resolve("");
+            return;
+        }
+
+        let output = "";
+
+        const timer = setTimeout(() => {
+            helper!.stdout!.removeListener("data", onData);
+            try { helper!.kill(); } catch { /* ignore */ }
+            persistentDarwin = null;
+            resolve("");
+        }, timeout);
+
+        const onData = (chunk: Buffer) => {
+            output += chunk.toString("utf-8");
+            const idx = output.indexOf(DARWIN_MARKER);
+            if (idx !== -1) {
+                clearTimeout(timer);
+                helper!.stdout!.removeListener("data", onData);
+                resolve(output.substring(0, idx).trim());
+            }
+        };
+
+        helper.stdout!.on("data", onData);
+
+        try {
+            helper.stdin!.write("READ\n");
+        } catch {
+            clearTimeout(timer);
+            helper.stdout!.removeListener("data", onData);
+            resolve("");
+        }
+    });
+}
+
+function killPersistentDarwin(): void {
+    if (persistentDarwin && !persistentDarwin.killed) {
+        persistentDarwin.kill();
+        persistentDarwin = null;
+    }
+}
+
+// === Async Command Execution (for parallel reads) ===
+
+/**
+ * Async version of execCommand using spawn instead of spawnSync.
+ * Allows parallel process execution via Promise.all.
+ */
+export function execCommandAsync(cmd: string, args: string[], timeout = 5000): Promise<{ stdout: Buffer; status: number }> {
+    return new Promise((resolve) => {
+        try {
+            const child = spawn(cmd, args, {
+                stdio: ["pipe", "pipe", "pipe"],
+                windowsHide: true,
+            });
+
+            const chunks: Buffer[] = [];
+            child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+            child.stderr?.on("data", () => {}); // drain
+
+            const timer = setTimeout(() => {
+                try { child.kill(); } catch { /* ignore */ }
+                resolve({ stdout: Buffer.concat(chunks), status: 1 });
+            }, timeout);
+
+            child.on("close", (code) => {
+                clearTimeout(timer);
+                resolve({ stdout: Buffer.concat(chunks), status: code ?? 1 });
+            });
+
+            child.on("error", () => {
+                clearTimeout(timer);
+                resolve({ stdout: Buffer.alloc(0), status: 1 });
+            });
+        } catch {
+            resolve({ stdout: Buffer.alloc(0), status: 1 });
+        }
+    });
+}
+
 // === Clipboard Reading (platform-specific) ===
 
 function execCommand(cmd: string, args: string[], timeout = 5000): { stdout: Buffer; status: number } {
@@ -223,6 +448,50 @@ interface ClipboardSnapshot {
 let clipboardCache: ClipboardSnapshot | null = null;
 
 /**
+ * macOS: Read all clipboard data with parallel process spawns.
+ * Skips 'clipboard info' — infers targets from actual data availability.
+ * Runs osascript (image) and pbpaste (text) concurrently for ~2x speedup.
+ */
+async function readAllClipboardDarwin(): Promise<Omit<ClipboardSnapshot, "timestamp">> {
+    // Try native helper first (persistent process, ~5ms per read)
+    const nativeOutput = await runDarwinCommand();
+    if (nativeOutput) {
+        const parsed = parseDarwinHelperOutput(nativeOutput);
+        if (parsed) return parsed;
+    }
+
+    // Fallback: parallel osascript + pbpaste (~250ms)
+    const [imgResult, textResult] = await Promise.all([
+        execCommandAsync("osascript", ["-e",
+            'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']),
+        execCommandAsync("pbpaste", []),
+    ]);
+
+    const targets: string[] = [];
+    let imagePng: Buffer | null = null;
+    let text: Buffer | null = null;
+
+    if (imgResult.status === 0 && imgResult.stdout.length > 0) {
+        imagePng = parseAppleScriptImageData(imgResult.stdout);
+    }
+    // Fallback: pngpaste outputs raw PNG binary
+    if (!imagePng) {
+        const r = execCommand("pngpaste", ["-"]);
+        if (r.status === 0 && r.stdout.length > 0) {
+            imagePng = r.stdout;
+        }
+    }
+    if (imagePng) targets.push("image/png");
+
+    if (textResult.status === 0 && textResult.stdout.length > 0) {
+        text = textResult.stdout;
+        targets.push("text/plain");
+    }
+
+    return { targets, text, imagePng, imageBmp: null };
+}
+
+/**
  * Windows/WSL: Read all clipboard data via the persistent PowerShell process.
  * Single command returns targets + text + image as JSON.
  */
@@ -264,7 +533,13 @@ async function getCachedClipboard(plat: ClipboardPlatform): Promise<ClipboardSna
         return clipboardCache;
     }
 
-    // Other platforms: individual calls (fast, no process startup overhead)
+    // macOS: parallel reads (skip clipboard info, infer targets from actual data)
+    if (plat === "darwin") {
+        clipboardCache = { timestamp: now, ...await readAllClipboardDarwin() };
+        return clipboardCache;
+    }
+
+    // Linux: individual calls
     const targets = readClipboardTargets(plat);
     const hasImage = targets.some(t => /image\/(png|jpeg|jpg|gif|webp|bmp)/.test(t));
     const hasText = targets.some(t => t.includes("text/plain") || t === "STRING" || t === "UTF8_STRING");
@@ -345,9 +620,13 @@ function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp"): Buf
             if (format === "png") {
                 r = execCommand("osascript", ["-e",
                     'try\nset d to the clipboard as «class PNGf»\nreturn d\nend try']);
-                if (r.status !== 0 || r.stdout.length === 0) {
-                    r = execCommand("pngpaste", ["-"]);
+                if (r.status === 0 && r.stdout.length > 0) {
+                    // osascript returns «data PNGf<hex>» format, not raw binary
+                    const parsed = parseAppleScriptImageData(r.stdout);
+                    if (parsed) return parsed;
                 }
+                // Fallback: pngpaste outputs raw PNG binary
+                r = execCommand("pngpaste", ["-"]);
             } else {
                 return null;
             }
@@ -370,6 +649,7 @@ function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp"): Buf
 function gracefulShutdown(server: Server, idleTimer?: ReturnType<typeof setInterval>): void {
     if (idleTimer) clearInterval(idleTimer);
     killPersistentPS();
+    killPersistentDarwin();
     server.close(() => {
         cleanupStateFiles();
         process.exit(0);
@@ -712,6 +992,9 @@ if (isMainModule && process.argv.includes("--serve")) {
     const token = randomBytes(16).toString("hex");
     const plat = detectPlatform();
     const bindAddr = "127.0.0.1";
+
+    // Pre-compile native clipboard helper on macOS (non-blocking background)
+    if (plat === "darwin") compileDarwinHelperAsync();
 
     const { server, start } = createClipboardServer(token, plat);
 

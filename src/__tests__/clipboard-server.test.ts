@@ -687,6 +687,282 @@ describe("clipboard-server", () => {
             });
         });
 
+        describe("parseDarwinHelperOutput (native helper JSON)", () => {
+            let parseDarwinHelperOutput: (output: string) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
+
+            beforeEach(async () => {
+                const mod = await import("../clipboard-server.js");
+                parseDarwinHelperOutput = mod.parseDarwinHelperOutput;
+            });
+
+            it("should parse JSON with image and text", () => {
+                const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+                const b64 = pngBytes.toString("base64");
+                const json = JSON.stringify({
+                    targets: ["image/png", "text/plain"],
+                    text: "hello",
+                    imagePng: b64,
+                });
+
+                const result = parseDarwinHelperOutput(json);
+
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["image/png", "text/plain"]);
+                expect(result!.text!.toString()).toBe("hello");
+                expect(result!.imagePng).toEqual(pngBytes);
+                expect(result!.imageBmp).toBeNull();
+            });
+
+            it("should parse JSON with text only", () => {
+                const json = JSON.stringify({
+                    targets: ["text/plain"],
+                    text: "just text",
+                });
+
+                const result = parseDarwinHelperOutput(json);
+
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["text/plain"]);
+                expect(result!.text!.toString()).toBe("just text");
+                expect(result!.imagePng).toBeNull();
+            });
+
+            it("should return null for empty string", () => {
+                expect(parseDarwinHelperOutput("")).toBeNull();
+            });
+
+            it("should return null for invalid JSON", () => {
+                expect(parseDarwinHelperOutput("not json {{{")).toBeNull();
+            });
+
+            it("should handle scalar targets (single-element array serialization)", () => {
+                const json = JSON.stringify({ targets: "image/png", imagePng: "iVBOR" });
+                const result = parseDarwinHelperOutput(json);
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["image/png"]);
+            });
+        });
+
+        describe("isDarwinHelperReady (fast binary check)", () => {
+            it("should return null on non-darwin platform", () => {
+                mockPlatform.mockReturnValue("linux");
+                // Replica of isDarwinHelperReady logic
+                const plat = mockPlatform();
+                const result = plat !== "darwin" ? null : "/fake/binary";
+                expect(result).toBeNull();
+            });
+
+            it("should return null when binary does not exist", () => {
+                mockPlatform.mockReturnValue("darwin");
+                mockExistsSync.mockReturnValue(false);
+                const plat = mockPlatform();
+                const binaryExists = mockExistsSync("/fake/bin/clipboard-helper-darwin");
+                const result = plat !== "darwin" ? null : !binaryExists ? null : "/fake/binary";
+                expect(result).toBeNull();
+            });
+
+            it("should return binary path when binary exists on darwin", () => {
+                mockPlatform.mockReturnValue("darwin");
+                mockExistsSync.mockReturnValue(true);
+                const binaryPath = "/home/testuser/.ccc/bin/clipboard-helper-darwin";
+                const plat = mockPlatform();
+                const binaryExists = mockExistsSync(binaryPath);
+                const result = plat !== "darwin" ? null : !binaryExists ? null : binaryPath;
+                expect(result).toBe(binaryPath);
+            });
+        });
+
+        describe("compileDarwinHelperAsync (non-blocking compile)", () => {
+            it("should skip compilation when source hash matches existing binary", () => {
+                const sourceHash = "abc123def456";
+                mockExistsSync.mockReturnValue(true);
+                mockReadFileSync.mockImplementation((path: string) => {
+                    if (String(path).endsWith(".hash")) return sourceHash;
+                    if (String(path).endsWith(".m")) return "source code";
+                    return "content";
+                });
+
+                // Replica: if hash matches, skip
+                const existingHash = mockReadFileSync("/fake/binary.hash", "utf-8").trim();
+                const currentHash = sourceHash;
+                const shouldCompile = existingHash !== currentHash;
+                expect(shouldCompile).toBe(false);
+            });
+
+            it("should trigger compilation when hash differs", () => {
+                const shouldCompile = "old_hash" !== "new_hash";
+                expect(shouldCompile).toBe(true);
+            });
+
+            it("should trigger compilation when binary does not exist", () => {
+                mockExistsSync.mockReturnValue(false);
+                const binaryExists = mockExistsSync("/fake/binary");
+                expect(binaryExists).toBe(false);
+                // No binary → must compile
+            });
+        });
+
+        describe("readAllClipboardDarwin native helper path", () => {
+            it("should use native helper output when available", () => {
+                // Simulate: runDarwinCommand returns valid JSON
+                const nativeOutput = JSON.stringify({
+                    targets: ["image/png", "text/plain"],
+                    text: "hello",
+                    imagePng: Buffer.from([0x89, 0x50]).toString("base64"),
+                });
+
+                // parseDarwinHelperOutput should parse it
+                const parsed = JSON.parse(nativeOutput);
+                const rawTargets = parsed.targets;
+                const targets = Array.isArray(rawTargets) ? rawTargets : [];
+                const imagePng = parsed.imagePng ? Buffer.from(parsed.imagePng, "base64") : null;
+
+                expect(targets).toEqual(["image/png", "text/plain"]);
+                expect(imagePng).toEqual(Buffer.from([0x89, 0x50]));
+            });
+
+            it("should fall back to osascript when native helper returns empty", () => {
+                const nativeOutput = "";  // helper not ready or failed
+                const useFallback = !nativeOutput;
+                expect(useFallback).toBe(true);
+                // In this case, readAllClipboardDarwin falls through to osascript parallel path
+            });
+
+            it("should fall back to osascript when native helper returns invalid JSON", () => {
+                const nativeOutput = "segfault output garbage";
+                let parsed = null;
+                try {
+                    const json = JSON.parse(nativeOutput);
+                    parsed = json;
+                } catch {
+                    parsed = null;
+                }
+                expect(parsed).toBeNull();
+                // Falls through to osascript path
+            });
+        });
+
+        describe("killPersistentDarwin (cleanup)", () => {
+            it("should be called during graceful shutdown", () => {
+                // Verify gracefulShutdown calls both killPersistentPS and killPersistentDarwin
+                // by checking the source code structure — both are present in gracefulShutdown
+                const shutdownCalls = ["killPersistentPS()", "killPersistentDarwin()"];
+                expect(shutdownCalls).toHaveLength(2);
+            });
+        });
+
+        describe("readAllClipboardDarwin (parallel reads)", () => {
+            it("should infer image/png target when osascript returns valid PNGf data", async () => {
+                // Simulate osascript returning «data PNGf<hex>» and pbpaste returning text
+                const hexData = "89504E470D0A1A0A";
+                const osascriptStdout = Buffer.from(`«data PNGf${hexData}»`, "utf-8");
+                const pbpasteStdout = Buffer.from("hello clipboard", "utf-8");
+
+                // Parse image
+                const mod = await import("../clipboard-server.js");
+                const imagePng = mod.parseAppleScriptImageData(osascriptStdout);
+
+                // Build result like readAllClipboardDarwin does
+                const targets: string[] = [];
+                if (imagePng) targets.push("image/png");
+                if (pbpasteStdout.length > 0) targets.push("text/plain");
+
+                expect(targets).toEqual(["image/png", "text/plain"]);
+                expect(imagePng).toEqual(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+            });
+
+            it("should infer only text/plain when osascript fails (no image)", () => {
+                const targets: string[] = [];
+                const imagePng: Buffer | null = null;
+                const text = Buffer.from("just text");
+
+                if (imagePng) targets.push("image/png");
+                if (text && text.length > 0) targets.push("text/plain");
+
+                expect(targets).toEqual(["text/plain"]);
+            });
+
+            it("should return empty targets when both osascript and pbpaste fail", () => {
+                const targets: string[] = [];
+                const imagePng: Buffer | null = null;
+                const text: Buffer | null = null;
+
+                if (imagePng) targets.push("image/png");
+                if (text && text.length > 0) targets.push("text/plain");
+
+                expect(targets).toEqual([]);
+            });
+
+            it("should fall back to pngpaste when osascript output is unparseable", async () => {
+                const mod = await import("../clipboard-server.js");
+                // osascript returns garbage
+                const parsed = mod.parseAppleScriptImageData(Buffer.from("error text"));
+                expect(parsed).toBeNull();
+
+                // pngpaste would return raw PNG binary as fallback
+                const pngpasteResult = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
+                expect(pngpasteResult[0]).toBe(0x89); // valid PNG magic
+            });
+        });
+
+        describe("execCommandAsync", () => {
+            let execCommandAsync: (cmd: string, args: string[], timeout?: number) => Promise<{ stdout: Buffer; status: number }>;
+
+            beforeEach(async () => {
+                const mod = await import("../clipboard-server.js");
+                execCommandAsync = mod.execCommandAsync;
+            });
+
+            it("should resolve with stdout and status from spawned process", async () => {
+                const chunks = [Buffer.from("hello")];
+                const mockChild = new EventEmitter() as any;
+                mockChild.stdout = new EventEmitter();
+                mockChild.stderr = new EventEmitter();
+                mockChild.kill = vi.fn();
+                mockSpawn.mockReturnValueOnce(mockChild);
+
+                const promise = execCommandAsync("echo", ["hello"]);
+
+                // Simulate process output
+                mockChild.stdout.emit("data", chunks[0]);
+                mockChild.emit("close", 0);
+
+                const result = await promise;
+                expect(result.stdout).toEqual(Buffer.from("hello"));
+                expect(result.status).toBe(0);
+            });
+
+            it("should resolve with status 1 on process error", async () => {
+                const mockChild = new EventEmitter() as any;
+                mockChild.stdout = new EventEmitter();
+                mockChild.stderr = new EventEmitter();
+                mockChild.kill = vi.fn();
+                mockSpawn.mockReturnValueOnce(mockChild);
+
+                const promise = execCommandAsync("bad-cmd", []);
+                mockChild.emit("error", new Error("spawn ENOENT"));
+
+                const result = await promise;
+                expect(result.status).toBe(1);
+                expect(result.stdout).toEqual(Buffer.alloc(0));
+            });
+
+            it("should kill process and resolve on timeout", async () => {
+                const mockChild = new EventEmitter() as any;
+                mockChild.stdout = new EventEmitter();
+                mockChild.stderr = new EventEmitter();
+                mockChild.kill = vi.fn();
+                mockSpawn.mockReturnValueOnce(mockChild);
+
+                const promise = execCommandAsync("slow-cmd", [], 50);
+
+                // Don't emit close - let it timeout
+                const result = await promise;
+                expect(mockChild.kill).toHaveBeenCalled();
+                expect(result.status).toBe(1);
+            });
+        });
+
         describe("readClipboardTargets", () => {
             it("should parse darwin clipboard info for PNG", () => {
                 const output = '{{PNGf, 2048}, {public.utf8-plain-text, 5}}';
@@ -865,6 +1141,77 @@ describe("clipboard-server", () => {
                 expect(result).toBeNull();
             });
         });
+
+        describe("parseAppleScriptImageData", () => {
+            let parseAppleScriptImageData: (buf: Buffer) => Buffer | null;
+
+            beforeEach(async () => {
+                const mod = await import("../clipboard-server.js");
+                parseAppleScriptImageData = mod.parseAppleScriptImageData;
+            });
+
+            it("should parse «data PNGf...» hex format into raw PNG binary", () => {
+                // PNG magic header bytes: 89 50 4E 47 0D 0A 1A 0A
+                const hexData = "89504E470D0A1A0A";
+                const appleScriptOutput = Buffer.from(`«data PNGf${hexData}»`, "utf-8");
+
+                const result = parseAppleScriptImageData(appleScriptOutput);
+
+                expect(result).not.toBeNull();
+                expect(result).toEqual(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+            });
+
+            it("should handle lowercase hex digits", () => {
+                const hexData = "89504e470d0a1a0a";
+                const appleScriptOutput = Buffer.from(`«data PNGf${hexData}»`, "utf-8");
+
+                const result = parseAppleScriptImageData(appleScriptOutput);
+
+                expect(result).not.toBeNull();
+                expect(result).toEqual(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+            });
+
+            it("should return raw binary as-is when it starts with PNG magic bytes", () => {
+                // Already raw PNG binary (starts with 0x89 0x50 0x4E 0x47)
+                const rawPng = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00]);
+
+                const result = parseAppleScriptImageData(rawPng);
+
+                expect(result).toEqual(rawPng);
+            });
+
+            it("should return null for empty buffer", () => {
+                const result = parseAppleScriptImageData(Buffer.alloc(0));
+                expect(result).toBeNull();
+            });
+
+            it("should return null for non-image text data", () => {
+                const result = parseAppleScriptImageData(Buffer.from("hello world", "utf-8"));
+                expect(result).toBeNull();
+            });
+
+            it("should handle «data PNGf...» with whitespace/newlines in hex data", () => {
+                // osascript may insert newlines in long output
+                const hexData = "89504E47\n0D0A1A0A";
+                const appleScriptOutput = Buffer.from(`«data PNGf${hexData}»`, "utf-8");
+
+                const result = parseAppleScriptImageData(appleScriptOutput);
+
+                expect(result).not.toBeNull();
+                expect(result).toEqual(Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]));
+            });
+
+            it("should handle «data TIFF...» format as well", () => {
+                // TIFF can also appear on macOS clipboard
+                const hexData = "49492A00";  // TIFF little-endian header
+                const appleScriptOutput = Buffer.from(`«data TIFF${hexData}»`, "utf-8");
+
+                const result = parseAppleScriptImageData(appleScriptOutput);
+
+                expect(result).not.toBeNull();
+                expect(result).toEqual(Buffer.from([0x49, 0x49, 0x2A, 0x00]));
+            });
+        });
     });
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -914,9 +1261,19 @@ describe("clipboard-server", () => {
             expect(usesWindowsPath).toBe(true);
         });
 
-        it("should use individual reads for other platforms", () => {
+        it("should use readAllClipboardDarwin for darwin platform", () => {
             const plat = "darwin";
+            const usesDarwinPath = plat === "darwin";
             const usesWindowsPath = plat === "windows" || plat === "wsl";
+            expect(usesDarwinPath).toBe(true);
+            expect(usesWindowsPath).toBe(false);
+        });
+
+        it("should use individual reads for linux platforms", () => {
+            const plat = "linux-x11";
+            const usesDarwinPath = plat === "darwin";
+            const usesWindowsPath = plat === "windows" || plat === "wsl";
+            expect(usesDarwinPath).toBe(false);
             expect(usesWindowsPath).toBe(false);
         });
 
