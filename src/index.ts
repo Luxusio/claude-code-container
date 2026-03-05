@@ -33,7 +33,7 @@ import {
     CLAUDE_DIR,
     CLAUDE_JSON_FILE,
 } from "./utils.js";
-import { syncCredentials } from "./credentials.js";
+
 import { ensureClipboardServer } from "./clipboard-server.js";
 import {
     parseWorktreeArg,
@@ -78,6 +78,7 @@ import {
     setupSignalHandlers,
     setSession,
 } from "./session.js";
+import { buildMcpConfig } from "./mcp-forward.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -94,53 +95,6 @@ function ensureDirs(): void {
     if (!existsSync(CLAUDE_JSON_FILE)) {
         writeFileSync(CLAUDE_JSON_FILE, "{}", { mode: 0o600 });
     }
-    ensureBrowserMcp();
-}
-
-export function ensureBrowserMcp(): void {
-    // Claude Code reads user-level MCP config from ~/.claude.json (NOT ~/.claude/mcp.json)
-    // CLAUDE_JSON_FILE (~/.ccc/claude.json) is mounted to /home/ccc/.claude.json in container
-    let config: Record<string, unknown> = {};
-
-    if (existsSync(CLAUDE_JSON_FILE)) {
-        try {
-            config = JSON.parse(readFileSync(CLAUDE_JSON_FILE, "utf-8"));
-        } catch {
-            config = {};
-        }
-    }
-
-    if (!config.mcpServers || typeof config.mcpServers !== "object") {
-        config.mcpServers = {};
-    }
-
-    const mcpServers = config.mcpServers as Record<string, unknown>;
-    // Use mise exec to run with Node.js 22+ regardless of project's Node version
-    // Docker container needs --executablePath for Chromium and sandbox-related flags
-    mcpServers["chrome-devtools"] = {
-        command: "mise",
-        args: [
-            "exec",
-            "node@22",
-            "--",
-            "npx",
-            "-y",
-            "chrome-devtools-mcp",
-            "--headless",
-            "--isolated",
-            "--executablePath=/usr/bin/chromium",
-            "--chromeArg=--no-sandbox",
-            "--chromeArg=--disable-setuid-sandbox",
-            "--chromeArg=--disable-dev-shm-usage",
-            // Map localhost to host.docker.internal so container can access host's web servers
-            "--chromeArg=--host-resolver-rules=MAP localhost host.docker.internal",
-        ],
-    };
-
-    // Remove old playwright MCP if exists
-    delete mcpServers["playwright"];
-
-    writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
 // Detect project tools using Claude CLI and write mise.toml
@@ -231,8 +185,6 @@ async function exec(
     // Ensure directories exist before syncing credentials
     ensureDirs();
 
-    // Sync and refresh credentials from host system
-    // await syncCredentials({claudeDir: CLAUDE_DIR});
 
     // Check for mise.toml and offer to create if not exists
     await ensureMiseConfig(fullPath);
@@ -246,6 +198,9 @@ async function exec(
     const sessionLockFile = createSessionLock(projectId);
     setSession(sessionLockFile, fullPath);
     setupSignalHandlers();
+
+    // Start clipboard server early (async, independent of container/Docker).
+    const clipboardPromise = ensureClipboardServer().catch(() => null);
 
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
@@ -275,14 +230,20 @@ async function exec(
             // Container may have been stopped mid-install; loop will restart it
         }
     }
-    ensureGlobalNpmTools(containerName);
 
-    // Start clipboard server (singleton, shared across all sessions)
-    let clipboardPort: number | null = null;
-    try {
-        clipboardPort = await ensureClipboardServer();
-    } catch {
-        // Non-fatal: clipboard paste won't work but everything else is fine
+    // Run independent setup steps in parallel after claude is installed.
+    // These all need the container but are independent of each other.
+    const [, , forwardedMcp] = await Promise.all([
+        // 1. Install global npm tools (yarn, pnpm, etc.)
+        Promise.resolve(ensureGlobalNpmTools(containerName)),
+        // 2. Sync clipboard shims to container
+        Promise.resolve(syncClipboardShims(containerName, __dirname)),
+        // 3. Build MCP config (no container dependency, but grouped for clarity)
+        Promise.resolve(buildMcpConfig()),
+    ]);
+
+    if (forwardedMcp.length > 0) {
+        console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
     }
 
     // Verify container is still running before exec.
@@ -292,8 +253,8 @@ async function exec(
         startProjectContainer(fullPath, ensureDirs);
     }
 
-    // Sync clipboard shims (ensures container has latest version after code updates)
-    syncClipboardShims(containerName, __dirname);
+    // Await clipboard server (started before container, should be ready by now)
+    const clipboardPort = await clipboardPromise;
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
@@ -457,12 +418,14 @@ function handleWorktreeList(cwd: string): void {
     console.log("");
 }
 
-async function handleWorktreeCommand(
+/**
+ * Prepare worktree workspace (create or reuse), return the workspace path.
+ * Does NOT execute any command — the caller runs the standard command dispatch.
+ */
+async function prepareWorktree(
     cwd: string,
     branch: string,
-    subArgs: string[],
-    env: Record<string, string>,
-): Promise<void> {
+): Promise<string> {
     // Validate branch name early (C1 fix)
     try {
         validateBranchName(branch);
@@ -471,16 +434,6 @@ async function handleWorktreeCommand(
         process.exit(1);
     }
 
-    const subCommand = subArgs[0];
-
-    // ccc @branch rm [-f]
-    if (subCommand === "rm") {
-        const force = subArgs.includes("-f") || subArgs.includes("--force");
-        handleWorktreeRemove(cwd, branch, force);
-        return;
-    }
-
-    // Create or reuse workspace, then run ccc
     const wsPath = getWorkspacePath(cwd, branch);
 
     if (workspaceExists(cwd, branch)) {
@@ -575,21 +528,7 @@ async function handleWorktreeCommand(
         }
     }
 
-    // Collect remaining args that are claude flags (e.g., --continue)
-    const claudeFlags = subArgs.filter((a) => a.startsWith("-"));
-
-    // Run ccc in the workspace directory
-    if (claudeFlags.length > 0) {
-        await exec(
-            wsPath,
-            ["claude", "--dangerously-skip-permissions", ...claudeFlags],
-            { env },
-        );
-    } else {
-        await exec(wsPath, ["claude", "--dangerously-skip-permissions"], {
-            env,
-        });
-    }
+    return wsPath;
 }
 
 function handleWorktreeRemove(
@@ -667,6 +606,11 @@ CONTAINER MANAGEMENT:
     ccc stop                Stop current project's container
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
+    ccc doctor              Health check and diagnostics
+    ccc clean               Clean stopped containers and images
+    ccc clean --volumes     Also remove cached volumes
+    ccc clean --all         Remove everything (including running)
+    ccc clean --dry-run     Show what would be removed
 
 REMOTE (run on remote host via Tailscale + Mutagen):
     ccc remote <host>       Connect to host (first time: prompts for config)
@@ -717,24 +661,30 @@ async function main(): Promise<void> {
         }
     }
 
-    const command = filteredArgs[0];
-    const cwd = process.cwd();
+    let command = filteredArgs[0];
+    let cwd = process.cwd();
 
-    // @ prefix → worktree workspace commands
+    // @ prefix → worktree workspace
     if (command && command.startsWith("@")) {
         const parsed = parseWorktreeArg(command);
         if (parsed) {
             if (parsed.branch === null) {
                 handleWorktreeList(cwd);
-            } else {
-                await handleWorktreeCommand(
-                    cwd,
-                    parsed.branch,
-                    filteredArgs.slice(1),
-                    customEnv,
-                );
+                return;
             }
-            return;
+
+            // ccc @branch rm [-f] — worktree-specific command
+            const subCommand = filteredArgs[1];
+            if (subCommand === "rm") {
+                const force = filteredArgs.includes("-f") || filteredArgs.includes("--force");
+                handleWorktreeRemove(cwd, parsed.branch, force);
+                return;
+            }
+
+            // All other commands: prepare workspace, then fall through to standard switch
+            cwd = await prepareWorktree(cwd, parsed.branch);
+            filteredArgs.shift(); // remove @branch
+            command = filteredArgs[0]; // next arg becomes the command (shell, stop, etc. or undefined)
         }
     }
 
@@ -756,6 +706,25 @@ async function main(): Promise<void> {
         case "status":
             showStatus();
             break;
+
+        case "doctor": {
+            const { runDoctor } = await import("./doctor.js");
+            const healthy = runDoctor(cwd);
+            process.exit(healthy ? 0 : 1);
+            break;
+        }
+
+        case "clean": {
+            const cleanFlags = filteredArgs.slice(1);
+            const { cleanContainers } = await import("./clean.js");
+            await cleanContainers({
+                volumes: cleanFlags.includes("--volumes"),
+                all: cleanFlags.includes("--all"),
+                dryRun: cleanFlags.includes("--dry-run"),
+                yes: cleanFlags.includes("--yes") || cleanFlags.includes("-y"),
+            });
+            break;
+        }
 
         case "remote": {
             const subcommand = filteredArgs[1];

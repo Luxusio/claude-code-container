@@ -1,18 +1,35 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     hashPath,
     getProjectId,
     DATA_DIR,
     CLAUDE_DIR,
+    CLAUDE_JSON_FILE,
     REMOTE_CONFIG_DIR,
     IMAGE_NAME,
     CONTAINER_PID_LIMIT,
     COMMON_IGNORE_DIRS,
     MISE_VOLUME_NAME,
-    EXCLUDE_ENV_KEYS
+    EXCLUDE_ENV_KEYS,
+    CONTAINER_ENV_KEY,
+    CONTAINER_ENV_VALUE,
+    prompt,
 } from '../utils.js';
 import { homedir } from 'os';
 import { join } from 'path';
+
+// readline mock (hoisted at module level)
+const mockQuestion = vi.fn();
+const mockOn = vi.fn();
+const mockClose = vi.fn();
+const mockCreateInterface = vi.fn(() => ({
+    question: mockQuestion,
+    on: mockOn,
+    close: mockClose,
+}));
+vi.mock('readline', () => ({
+    createInterface: (...args: unknown[]) => mockCreateInterface(...args),
+}));
 
 describe('utils constants', () => {
     it('DATA_DIR should be ~/.ccc', () => {
@@ -186,5 +203,73 @@ describe('EXCLUDE_ENV_KEYS', () => {
         expect(EXCLUDE_ENV_KEYS.has('NODE_ENV')).toBe(false);
         expect(EXCLUDE_ENV_KEYS.has('DATABASE_URL')).toBe(false);
         expect(EXCLUDE_ENV_KEYS.has('AWS_ACCESS_KEY_ID')).toBe(false);
+    });
+});
+
+describe('additional constants', () => {
+    it('CLAUDE_JSON_FILE should be ~/.ccc/claude.json', () => {
+        expect(CLAUDE_JSON_FILE).toBe(join(homedir(), '.ccc', 'claude.json'));
+    });
+
+    it('CONTAINER_ENV_KEY should be "container"', () => {
+        expect(CONTAINER_ENV_KEY).toBe('container');
+    });
+
+    it('CONTAINER_ENV_VALUE should be "docker"', () => {
+        expect(CONTAINER_ENV_VALUE).toBe('docker');
+    });
+});
+
+describe('prompt', () => {
+    beforeEach(() => {
+        mockQuestion.mockReset();
+        mockOn.mockReset();
+        mockClose.mockReset();
+    });
+
+    afterEach(() => {
+        vi.clearAllMocks();
+    });
+
+    it('returns trimmed user input', async () => {
+        mockQuestion.mockImplementation((_q: string, cb: (answer: string) => void) => {
+            cb('  answer  ');
+        });
+
+        const result = await prompt('Enter value: ');
+        expect(result).toBe('answer');
+    });
+
+    it('lowercases result when lowercase flag is true', async () => {
+        mockQuestion.mockImplementation((_q: string, cb: (answer: string) => void) => {
+            cb('  HELLO World  ');
+        });
+
+        const result = await prompt('Enter value: ', true);
+        expect(result).toBe('hello world');
+    });
+
+    it('does not lowercase result when lowercase flag is false (default)', async () => {
+        mockQuestion.mockImplementation((_q: string, cb: (answer: string) => void) => {
+            cb('MixedCase');
+        });
+
+        const result = await prompt('Enter value: ');
+        expect(result).toBe('MixedCase');
+    });
+
+    it('returns empty string when stream closes (close event)', async () => {
+        // Simulate stream close: question never calls back, but 'close' fires
+        mockQuestion.mockImplementation(() => {
+            // does not call callback
+        });
+        mockOn.mockImplementation((event: string, cb: () => void) => {
+            if (event === 'close') {
+                cb();
+            }
+        });
+
+        const result = await prompt('Enter value: ');
+        expect(result).toBe('');
     });
 });

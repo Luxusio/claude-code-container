@@ -630,5 +630,36 @@ describe("session.ts", () => {
             process.removeAllListeners("SIGTERM");
             process.removeAllListeners("SIGHUP");
         });
+
+        it("cleanup callback calls cleanupSession and process.exit(0) when signal fires", () => {
+            const projectId = "my-project-abc123";
+            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFile = `/locks/${lockFileName}`;
+            const projectPath = "/home/user/my-project";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync
+                .mockReturnValueOnce(true)   // locksDir exists
+                .mockReturnValueOnce(true);   // lockFile exists
+            mockReaddirSync.mockReturnValue([lockFileName]);
+            mockUnlinkSync.mockImplementation(() => {});
+            mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
+            mockIsContainerRunning.mockReturnValue(false);
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation((() => {}) as () => never);
+
+            setSession(lockFile, projectPath);
+            setupSignalHandlers();
+
+            // Emit SIGINT to trigger the cleanup callback
+            process.emit("SIGINT");
+
+            expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
+            expect(mockExit).toHaveBeenCalledWith(0);
+
+            mockExit.mockRestore();
+            process.removeAllListeners("SIGTERM");
+            process.removeAllListeners("SIGHUP");
+        });
     });
 });

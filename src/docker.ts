@@ -184,11 +184,18 @@ function containerHasMounts(
             Source: string;
             Destination: string;
         }>;
+        const destinations = new Set(mounts.map((m) => m.Destination));
         for (const req of requiredMounts) {
-            const found = mounts.some(
-                (m) => m.Source === req.hostPath && m.Destination === req.containerPath,
-            );
-            if (!found) return false;
+            // Compare only Destination (container path) which we control.
+            // Source (host path) can differ on macOS Docker Desktop due to
+            // /host_mnt/ prefix, symlink resolution, or path canonicalization.
+            if (!destinations.has(req.containerPath)) {
+                if (process.env.DEBUG) {
+                    console.error(`[ccc] Missing mount: ${req.containerPath}`);
+                    console.error(`[ccc] Container has: ${[...destinations].join(", ")}`);
+                }
+                return false;
+            }
         }
         return true;
     } catch {
