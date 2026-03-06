@@ -7,7 +7,15 @@ WORKDIR /tmp/pw
 RUN npm install playwright && npx playwright install chromium
 
 # ==========================================================
-# Stage 2: Main image
+# Stage 2: Build localhost proxy (Go static binary)
+# ==========================================================
+FROM golang:1.22-alpine AS proxy-builder
+WORKDIR /build
+COPY scripts/localhost-proxy/ .
+RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o ccc-proxy .
+
+# ==========================================================
+# Stage 3: Main image
 # ==========================================================
 FROM ubuntu:24.04
 
@@ -67,6 +75,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     libcairo2 \
     libpango-1.0-0 \
     xvfb \
+    iptables \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8 \
     && locale-gen ko_KR.UTF-8 \
@@ -81,9 +90,14 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
 # ============================================================
 # LAYER 5: User setup (절대 안 바뀜)
 # ============================================================
-RUN useradd -m -s /bin/bash ccc && \
+RUN useradd -r -s /usr/sbin/nologin ccc-proxy && \
+    useradd -m -s /bin/bash ccc && \
+    chmod o+x /home/ccc && \
     echo "ccc ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     (getent group docker || groupadd docker) && usermod -aG docker ccc
+
+# Localhost proxy binary (transparent proxy for Docker Desktop)
+COPY --from=proxy-builder /build/ccc-proxy /usr/local/bin/ccc-proxy
 
 USER ccc
 WORKDIR /home/ccc

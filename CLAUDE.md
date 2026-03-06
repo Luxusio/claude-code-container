@@ -54,14 +54,22 @@ Container name is fixed per project path hash, ensuring `claude --continue` and 
 ```
 claude-code-container/
 ├── src/
-│   ├── index.ts        # Main CLI entry point
-│   ├── scanner.ts      # Project tool detection for mise
-│   ├── remote.ts       # Remote development helpers (Tailscale + Mutagen)
-│   └── utils.ts        # Shared utilities
+│   ├── index.ts               # Main CLI entry point
+│   ├── docker.ts              # Docker container lifecycle management
+│   ├── session.ts             # Session lock file management
+│   ├── scanner.ts             # Project tool detection for mise
+│   ├── container-setup.ts     # Claude binary installation in container
+│   ├── localhost-proxy.ts     # Transparent localhost proxy (macOS/Windows)
+│   ├── localhost-proxy-setup.ts # Proxy + iptables setup in container
+│   ├── clipboard-server.ts    # Host clipboard bridge
+│   ├── mcp-forward.ts         # MCP server forwarding
+│   ├── worktree.ts            # Git worktree workspace management
+│   ├── remote.ts              # Remote development helpers (Tailscale + Mutagen)
+│   └── utils.ts               # Shared utilities
 ├── scripts/
-│   └── install.js      # Cross-platform global installer
-├── dist/               # Compiled output
-├── Dockerfile          # Container image definition
+│   └── install.js             # Cross-platform global installer
+├── dist/                      # Compiled output
+├── Dockerfile                 # Container image definition
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -109,7 +117,9 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 
 ### Environment Variables
 
-**Auto-forwarded from host**: All host env vars except system ones (PATH, HOME, USER, SHELL, LC_*, etc.)
+**Auto-forwarded from host**: All host env vars except system ones (PATH, HOME, USER, SHELL, etc.)
+
+**Locale/Timezone**: `LANG`, `LC_ALL`, `LC_CTYPE` forwarded from host (common locales pre-generated in image). `TZ` auto-detected via `Intl.DateTimeFormat`. Defaults: `LANG=en_US.UTF-8`, `TZ=UTC`.
 
 **Per-session**: `ccc --env KEY=VALUE`
 
@@ -129,6 +139,8 @@ Built from Dockerfile on first run. Includes:
 - Dependencies: curl, git, ca-certificates, unzip
 - Chromium browser (`CHROME_BIN` env set)
 - Docker CLI (communicates with host Docker daemon via socket mount)
+- locales + tzdata (pre-generated: en_US, ko_KR, ja_JP, zh_CN, de_DE, fr_FR, es_ES, pt_BR)
+- iptables (for transparent localhost proxy on macOS/Windows)
 - mise with global tools: maven, gradle, yarn, pnpm
 - claude-code native binary
 - `.bashrc` configured for mise activation

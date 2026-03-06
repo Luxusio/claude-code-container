@@ -1,112 +1,136 @@
 # Contributing Guide
 
-claude-code-container(ccc) 개발 가이드입니다.
+Development guide for claude-code-container (ccc).
 
-## 개발 환경 설정
+## Development Setup
 
-### 요구사항
+### Requirements
 
 - Node.js 22+
 - Docker
 - npm
 
-### 설치
+### Installation
 
 ```bash
 git clone https://github.com/your-username/claude-code-container.git
 cd claude-code-container
-sudo node scripts/install.js   # Windows는 sudo 제외
+sudo node scripts/install.js   # Omit sudo on Windows
 ```
 
-npm install, build, 전역 설치까지 자동 처리됨.
+Handles npm install, build, and global installation automatically.
 
-## 아키텍처
+## Architecture
 
-### 디렉토리 구조
+### Directory Structure
 
 ```
 ~/.ccc/
-├── claude/             # Claude credentials (컨테이너에 마운트)
-├── locks/              # 세션 락 파일 (세션별 UUID)
+├── claude/             # Claude credentials (mounted to container)
+├── locks/              # Session lock files (per-session UUID)
 │   ├── my-project-a1b2c3d4e5f6-uuid1.lock
 │   └── my-project-a1b2c3d4e5f6-uuid2.lock
-└── mise/               # 공유 mise 캐시
+└── mise/               # Shared mise cache
 ```
 
-### 컨테이너 구조
+### Container Structure
 
 ```
 Container (ccc-<project>-<hash>):
-├── /project/<project>-<hash>   # 실제 프로젝트 경로 마운트
-├── /claude                      # ~/.ccc/claude 마운트
-└── /home/ccc/.local/share/mise  # mise 캐시 마운트
+├── /project/<project>-<hash>   # Project path mount
+├── /claude                      # ~/.ccc/claude mount
+└── /home/ccc/.local/share/mise  # mise cache mount
 ```
 
-### 이미지 빌드
+### Image Build
 
-`sudo node scripts/install.js` 실행 시:
-1. 실행 중인 `ccc-*` 컨테이너 정지
-2. 기존 `ccc` 이미지 삭제 후 Dockerfile로 재빌드
+When running `sudo node scripts/install.js`:
+1. Stops all running `ccc-*` containers
+2. Deletes existing `ccc` image and rebuilds from Dockerfile
 
-`ccc` 실행 시:
-1. `ccc` 이미지가 없으면 에러 (install.js 안내)
-2. 이미지로 프로젝트별 컨테이너 생성
+When running `ccc`:
+1. If no `ccc` image exists, shows error (directs to install.js)
+2. Creates per-project container from the image
 
-Dockerfile 포함 내용:
-- ubuntu:24.04 기반
-- curl, git, ca-certificates, unzip 설치
-- Chromium (headless 테스트용, `CHROME_BIN` 환경변수 설정)
-- mise 설치 및 설정
-- 글로벌 도구 설치: maven, gradle, yarn, pnpm
-- claude-code native 바이너리 (프로젝트 node 버전과 독립)
+Dockerfile includes:
+- Ubuntu 24.04 base
+- curl, git, ca-certificates, unzip
+- Chromium (for headless testing, `CHROME_BIN` env set)
+- locales and tzdata (pre-generated common locales)
+- iptables (for transparent localhost proxy on macOS/Windows)
+- mise installation and configuration
+- Global tools: maven, gradle, yarn, pnpm
+- claude-code native binary (independent of project node version)
 
-### 세션 라이프사이클
+### Session Lifecycle
 
-1. **시작**: `ccc` 실행 → 컨테이너 생성/시작 + 세션 락 파일 생성
-2. **실행 중**: 동일 프로젝트에 여러 세션 가능 (다른 락 파일)
-3. **종료**: 락 파일 삭제 → 활성 세션 없으면 컨테이너 자동 중지
-4. **크래시 복구**: 다음 `ccc` 실행 시 스테일 락 파일 정리
+1. **Start**: `ccc` runs → container created/started + session lock file created
+2. **Running**: Multiple sessions possible for the same project (different lock files)
+3. **Exit**: Lock file deleted → container auto-stops if no active sessions remain
+4. **Crash recovery**: Stale lock files cleaned up on next `ccc` run
 
-컨테이너 이름이 경로 해시 기반으로 고정되어 `claude --continue`, `--resume` 정상 작동.
+Container names are fixed per path hash, so `claude --continue` and `--resume` work correctly.
 
-### 환경변수 전달
+### Environment Variable Forwarding
 
-1. **호스트 환경변수 자동 전달**: 시스템 변수(PATH, HOME, LC_* 등) 제외하고 전부 전달
-2. **세션별**: `ccc --env KEY=VALUE`
+1. **Auto-forwarded from host**: All env vars except system ones (PATH, HOME, etc.) are forwarded
+2. **Locale/Timezone**: `LANG`, `LC_*`, `TZ` auto-forwarded; defaults to `en_US.UTF-8` and auto-detected timezone
+3. **Per-session**: `ccc --env KEY=VALUE`
 
-### 시그널 핸들링
+### Transparent Localhost Proxy (macOS/Windows)
 
-- SIGINT (Ctrl+C), SIGTERM, SIGHUP: 정리 후 종료
-- 정상 종료: 락 파일 삭제, 다른 세션 없으면 컨테이너 중지
+On macOS/Windows, `--network host` doesn't truly share the host network (runs in a VM). A transparent proxy handles this:
 
-## 프로젝트 구조
+1. iptables REDIRECT rule captures all TCP traffic to `127.0.0.1`
+2. Proxy tries connecting to `localhost:PORT` first (container server)
+3. On ECONNREFUSED, falls back to `host.docker.internal:PORT` (host server)
+4. On Linux, this is skipped entirely (`--network host` works natively)
+
+### Signal Handling
+
+- SIGINT (Ctrl+C), SIGTERM, SIGHUP: cleanup and exit
+- Normal exit: delete lock file, stop container if no other sessions
+
+## Project Structure
 
 ```
 claude-code-container/
 ├── src/
-│   ├── index.ts          # CLI 메인 진입점
-│   └── scanner.ts        # mise용 프로젝트 도구 감지
-├── dist/                 # 컴파일된 JavaScript (gitignore)
-├── Dockerfile            # 컨테이너 이미지 정의
+│   ├── index.ts               # CLI main entry point
+│   ├── docker.ts              # Docker container lifecycle management
+│   ├── session.ts             # Session lock file management
+│   ├── scanner.ts             # Project tool detection for mise
+│   ├── container-setup.ts     # Claude binary installation in container
+│   ├── localhost-proxy.ts     # Transparent localhost proxy core logic
+│   ├── localhost-proxy-setup.ts # Proxy + iptables setup in container
+│   ├── clipboard-server.ts    # Host clipboard bridge
+│   ├── mcp-forward.ts         # MCP server forwarding
+│   ├── worktree.ts            # Git worktree workspace management
+│   ├── remote.ts              # Remote development helpers
+│   └── utils.ts               # Shared utilities
+├── scripts/
+│   └── install.js             # Cross-platform global installer
+├── dist/                      # Compiled JavaScript (gitignored)
+├── Dockerfile                 # Container image definition
 ├── package.json
 ├── tsconfig.json
-├── CLAUDE.md             # Claude Code 지침
-├── CONTRIBUTING.md       # 이 파일
-└── README.md             # 사용자 문서
+├── CLAUDE.md                  # Claude Code instructions
+├── CONTRIBUTING.md            # This file
+└── README.md                  # User documentation
 ```
 
-## 개발 워크플로우
+## Development Workflow
 
 ```bash
-# 코드 수정 후 빌드
+# Build after code changes
 npm run build
 
-# ccc 명령어 테스트 (심볼릭 링크라 자동 반영)
+# Test ccc command (symlinked, auto-reflects changes)
 ccc --help
 ccc status
 ```
 
-### 전역 설치 제거
+### Uninstall Global
 
 ```bash
 # macOS/Linux
@@ -116,122 +140,137 @@ sudo npm run uninstall:global
 npm run uninstall:global
 ```
 
-## 빌드 명령어
+## Build Commands
 
-| 명령어 | 설명 |
-|--------|------|
-| `npm install` | 의존성 설치 |
-| `npm run build` | TypeScript 컴파일 |
-| `npm run install:global` | 전역 설치 (macOS/Linux는 sudo 필요) |
-| `npm run uninstall:global` | 전역 제거 (macOS/Linux는 sudo 필요) |
+| Command | Description |
+|---------|-------------|
+| `npm install` | Install dependencies |
+| `npm run build` | Compile TypeScript |
+| `npm test` | Run tests (vitest) |
+| `npm run test:watch` | Run tests in watch mode |
+| `npm run install:global` | Install globally (sudo on macOS/Linux) |
+| `npm run uninstall:global` | Uninstall globally (sudo on macOS/Linux) |
 
-## 코드 스타일
+## Code Style
 
-- TypeScript ES2022 타겟
-- 간결하고 최소한의 코드 유지
-- 프로젝트별 컨테이너 + 경로 해시 기반 이름
-- 락 파일로 세션 추적 및 크래시 복구
+- TypeScript ES2022 target
+- Keep code concise and minimal
+- Per-project containers with path-hash naming
+- Lock files for session tracking and crash recovery
 
-## 주요 컴포넌트
+## Key Components
 
-### 컨테이너 관리
+### Container Management
 
-- `startProjectContainer()`: 프로젝트 컨테이너 생성/시작
-- `stopProjectContainer()`: 컨테이너 중지
-- `removeProjectContainer()`: 컨테이너 삭제
-- `ensureImage()`: 이미지 존재 확인 (없으면 install.js 안내)
+- `startProjectContainer()`: Create/start project container
+- `stopProjectContainer()`: Stop container
+- `removeProjectContainer()`: Remove container
+- `ensureImage()`: Check image exists (directs to install.js if missing)
 
-### 세션 관리
+### Session Management
 
-- `createSessionLock()`: 세션 락 파일 생성
-- `removeSessionLock()`: 락 파일 삭제
-- `hasOtherActiveSessions()`: 다른 활성 세션 확인
-- `cleanupSession()`: 세션 정리 (락 삭제 + 컨테이너 중지 판단)
-- `setupSignalHandlers()`: 시그널 핸들러 등록
+- `createSessionLock()`: Create session lock file
+- `removeSessionLock()`: Delete lock file
+- `hasOtherActiveSessions()`: Check for other active sessions
+- `cleanupSession()`: Cleanup session (delete lock + decide container stop)
+- `setupSignalHandlers()`: Register signal handlers
 
-### mise 통합
+### mise Integration
 
-- `ensureMiseConfig()`: `.mise.toml` 존재 확인, 없으면 생성 제안
-- `detectProjectToolsAndWriteMiseConfig()`: Claude로 프로젝트 분석하여 mise.toml 생성
+- `ensureMiseConfig()`: Check for `.mise.toml`, offer to create if missing
+- `detectProjectToolsAndWriteMiseConfig()`: Analyze project with Claude to generate mise.toml
 
-## 테스트
+### Localhost Proxy
+
+- `tryConnect()`: Attempt TCP connection with timeout
+- `proxyConnection()`: Try local first, fallback to host.docker.internal
+- `startProxy()` / `stopProxy()`: Proxy server lifecycle
+- `setupLocalhostProxy()`: Set up iptables + proxy daemon in container (macOS/Windows only)
+
+## Testing
 
 ```bash
-# 프로젝트에서 Claude 실행 (컨테이너 자동 생성)
+# Run all tests
+npm test
+
+# Run specific test file
+npm test -- src/__tests__/localhost-proxy.test.ts
+
+# Run Claude in a project (container auto-created)
 cd /path/to/project
 ccc
 
-# 상태 확인
+# Check status
 ccc status
 
-# 쉘 접속
+# Open shell
 ccc shell
 
-# 정리
+# Cleanup
 ccc rm
 ```
 
-## 배포
+## Deployment
 
-### npm 배포
+### npm Release
 
-`main` 브랜치에 태그 푸시 시 자동 배포:
+Auto-deployed on tag push to `main` branch:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-## 문제 해결
+## Troubleshooting
 
-### `ccc` 명령어를 찾을 수 없음
+### `ccc` command not found
 
 ```bash
-# 전역 설치 재실행
+# Re-run global install
 sudo npm run install:global   # macOS/Linux
 npm run install:global        # Windows
 
-# 설치 확인
+# Verify installation
 which ccc    # macOS/Linux
 where ccc    # Windows
 ```
 
-### 빌드 에러
+### Build Errors
 
 ```bash
-# node_modules 재설치
+# Reinstall node_modules
 rm -rf node_modules dist
 npm install
 npm run build
 ```
 
-### 컨테이너 문제
+### Container Issues
 
 ```bash
-# 컨테이너 상태 확인
+# Check container status
 ccc status
 docker ps -a | grep ccc-
 
-# 컨테이너 로그 확인
+# Check container logs
 docker logs ccc-<project>-<hash>
 
-# 컨테이너 삭제 후 재시작
+# Remove and restart container
 ccc rm
 ccc
 ```
 
-### 이미지 재빌드
+### Image Rebuild
 
 ```bash
-sudo node scripts/install.js  # 컨테이너 정지 + 이미지 재빌드
+sudo node scripts/install.js  # Stops containers + rebuilds image
 ```
 
-### 스테일 세션 수동 정리
+### Manual Stale Session Cleanup
 
 ```bash
-# 락 파일 확인
+# Check lock files
 ls -la ~/.ccc/locks/
 
-# 수동 정리 (필요시)
+# Manual cleanup (if needed)
 rm ~/.ccc/locks/*.lock
 ```

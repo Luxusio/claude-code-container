@@ -53,6 +53,7 @@ import {
 import {
     getContainerName,
     isDockerRunning,
+    isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
@@ -79,6 +80,7 @@ import {
     setSession,
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
+import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -240,6 +242,8 @@ async function exec(
         Promise.resolve(syncClipboardShims(containerName, __dirname)),
         // 3. Build MCP config (no container dependency, but grouped for clarity)
         Promise.resolve(buildMcpConfig()),
+        // 4. Start localhost proxy for macOS/Windows (--network host doesn't work on VM-based Docker)
+        Promise.resolve(setupLocalhostProxy(containerName)),
     ]);
 
     if (forwardedMcp.length > 0) {
@@ -299,7 +303,7 @@ async function exec(
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
-        const clipboardHost = process.platform === "linux" ? "127.0.0.1" : "host.docker.internal";
+        const clipboardHost = (process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal";
         execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
         // Read token from port file for container auth
         try {

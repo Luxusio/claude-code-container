@@ -43,6 +43,8 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         "host",
         "--security-opt",
         "seccomp=unconfined",
+        "--cap-add",
+        "NET_ADMIN",
         "-v",
         `${opts.fullPath}:${opts.projectMountPath}`,
         "-v",
@@ -98,6 +100,47 @@ export function getContainerName(projectPath: string): string {
 }
 
 // === Docker Status Checks ===
+
+let _isDockerDesktopCached: boolean | null = null;
+
+/**
+ * Detect if Docker is running as Docker Desktop (macOS, Windows, or WSL2).
+ * On Docker Desktop, --network host uses a VM and doesn't truly share the host network.
+ * Cached for the lifetime of the process (Docker engine type doesn't change mid-session).
+ */
+export function isDockerDesktop(): boolean {
+    if (_isDockerDesktopCached !== null) return _isDockerDesktopCached;
+
+    // macOS/Windows are always Docker Desktop
+    if (process.platform !== "linux") {
+        _isDockerDesktopCached = true;
+        return true;
+    }
+
+    // On Linux, check docker info for Docker Desktop (covers WSL2)
+    try {
+        const result = spawnSync(
+            "docker",
+            ["info", "--format", "{{.OperatingSystem}}"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if ((result.stdout ?? "").toLowerCase().includes("docker desktop")) {
+            _isDockerDesktopCached = true;
+            return true;
+        }
+    } catch {
+        // Fall through to secondary check
+    }
+
+    // Fallback: detect WSL2 environment (Docker Desktop for Windows with WSL2 backend)
+    if (process.env.WSL_DISTRO_NAME) {
+        _isDockerDesktopCached = true;
+        return true;
+    }
+
+    _isDockerDesktopCached = false;
+    return false;
+}
 
 export function isDockerRunning(): boolean {
     const result = spawnSync("docker", ["info"], {
