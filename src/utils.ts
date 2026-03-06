@@ -52,7 +52,6 @@ export const EXCLUDE_ENV_KEYS = new Set([
     "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
     "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",
     "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
-    "LC_ALL", "LC_CTYPE", "LANG",
     // Claude
     "CLAUDE_CONFIG_DIR",
     // Windows system (paths are meaningless inside Linux container)

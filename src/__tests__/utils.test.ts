@@ -180,10 +180,10 @@ describe('EXCLUDE_ENV_KEYS', () => {
         expect(EXCLUDE_ENV_KEYS.has('CLAUDE_CONFIG_DIR')).toBe(true);
     });
 
-    it('excludes locale vars', () => {
-        expect(EXCLUDE_ENV_KEYS.has('LC_ALL')).toBe(true);
-        expect(EXCLUDE_ENV_KEYS.has('LC_CTYPE')).toBe(true);
-        expect(EXCLUDE_ENV_KEYS.has('LANG')).toBe(true);
+    it('forwards locale vars (not excluded) for host locale matching', () => {
+        expect(EXCLUDE_ENV_KEYS.has('LC_ALL')).toBe(false);
+        expect(EXCLUDE_ENV_KEYS.has('LC_CTYPE')).toBe(false);
+        expect(EXCLUDE_ENV_KEYS.has('LANG')).toBe(false);
     });
 
     it('excludes macOS-specific vars', () => {

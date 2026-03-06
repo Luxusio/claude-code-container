@@ -277,6 +277,19 @@ async function exec(
         execArgs.push("-e", `${key}=${value}`);
     }
 
+    // Locale: forward host LANG/LC_* (no longer excluded).
+    // If host has no LANG set, inject en_US.UTF-8 as fallback.
+    if (!process.env.LANG) {
+        execArgs.push("-e", "LANG=en_US.UTF-8");
+    }
+
+    // Timezone: detect host timezone and forward to container.
+    // Priority: TZ env var → Intl API detection → UTC fallback.
+    const hostTz = process.env.TZ
+        || Intl.DateTimeFormat().resolvedOptions().timeZone
+        || "UTC";
+    execArgs.push("-e", `TZ=${hostTz}`);
+
     // Per-session --env options (override/supplement)
     if (options.env) {
         for (const [key, value] of Object.entries(options.env)) {

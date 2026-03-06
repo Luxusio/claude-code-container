@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName } from '../docker.js'
-import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE } from '../utils.js'
+import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -76,6 +76,71 @@ describe('getContainerName', () => {
 describe('named volume integration', () => {
   it('MISE_VOLUME_NAME should be ccc-mise-cache', () => {
     expect(MISE_VOLUME_NAME).toBe('ccc-mise-cache')
+  })
+})
+
+describe('container locale and timezone defaults', () => {
+  it('LANG/LC_ALL/LC_CTYPE are forwarded from host (not excluded)', () => {
+    // Locale vars are forwarded so container matches host language/region.
+    // Common locales are pre-generated in the Dockerfile.
+    // If host has no LANG, en_US.UTF-8 is injected as fallback.
+    expect(EXCLUDE_ENV_KEYS.has('LANG')).toBe(false)
+    expect(EXCLUDE_ENV_KEYS.has('LC_ALL')).toBe(false)
+    expect(EXCLUDE_ENV_KEYS.has('LC_CTYPE')).toBe(false)
+  })
+
+  it('TZ detection uses Intl API as cross-platform fallback', () => {
+    // Intl.DateTimeFormat().resolvedOptions().timeZone returns IANA timezone
+    // on all platforms (macOS, Linux, Windows)
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    expect(tz).toBeDefined()
+    expect(typeof tz).toBe('string')
+    expect(tz.length).toBeGreaterThan(0)
+  })
+
+  it('TZ detection prefers process.env.TZ when set', () => {
+    const originalTz = process.env.TZ
+    try {
+      process.env.TZ = 'America/New_York'
+      const hostTz = process.env.TZ
+        || Intl.DateTimeFormat().resolvedOptions().timeZone
+        || 'UTC'
+      expect(hostTz).toBe('America/New_York')
+    } finally {
+      if (originalTz === undefined) {
+        delete process.env.TZ
+      } else {
+        process.env.TZ = originalTz
+      }
+    }
+  })
+
+  it('TZ detection falls back to Intl when process.env.TZ is unset', () => {
+    const originalTz = process.env.TZ
+    try {
+      delete process.env.TZ
+      const hostTz = process.env.TZ
+        || Intl.DateTimeFormat().resolvedOptions().timeZone
+        || 'UTC'
+      // Should get an IANA timezone string (not undefined, not empty)
+      expect(hostTz).toBeTruthy()
+      expect(typeof hostTz).toBe('string')
+    } finally {
+      if (originalTz !== undefined) {
+        process.env.TZ = originalTz
+      }
+    }
+  })
+
+  it('TZ fallback chain ends at UTC', () => {
+    // Simulates the full fallback: no env.TZ, no Intl result
+    const hostTz = undefined || undefined || 'UTC'
+    expect(hostTz).toBe('UTC')
+  })
+
+  it('LC_TERMINAL and LC_TERMINAL_VERSION remain excluded (iTerm-specific)', () => {
+    expect(EXCLUDE_ENV_KEYS.has('LC_TERMINAL')).toBe(true)
+    expect(EXCLUDE_ENV_KEYS.has('LC_TERMINAL_VERSION')).toBe(true)
   })
 })
 

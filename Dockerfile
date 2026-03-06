@@ -46,11 +46,13 @@ RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /
 # ============================================================
 # LAYER 4: Chromium dependencies + dev tools (거의 안 바뀜)
 # ============================================================
-RUN apt-get update && apt-get install -y \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     git \
     sudo \
     unzip \
     wget \
+    locales \
+    tzdata \
     libnss3 \
     libatk-bridge2.0-0 \
     libdrm2 \
@@ -65,7 +67,16 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libpango-1.0-0 \
     xvfb \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8 \
+    && locale-gen ko_KR.UTF-8 \
+    && locale-gen ja_JP.UTF-8 \
+    && locale-gen zh_CN.UTF-8 \
+    && locale-gen de_DE.UTF-8 \
+    && locale-gen fr_FR.UTF-8 \
+    && locale-gen es_ES.UTF-8 \
+    && locale-gen pt_BR.UTF-8 \
+    && update-locale LANG=en_US.UTF-8
 
 # ============================================================
 # LAYER 5: User setup (절대 안 바뀜)
@@ -134,6 +145,8 @@ ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
 ENV DISPLAY=":99"
 ENV CHROME_PATH="/usr/bin/chromium"
 ENV CHROMIUM_PATH="/usr/bin/chromium"
+ENV LANG=en_US.UTF-8
+ENV TZ=UTC
 
 WORKDIR /project
 CMD ["tail", "-f", "/dev/null"]
