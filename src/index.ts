@@ -164,6 +164,11 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
         return;
     }
 
+    const versionFiles = scanVersionFiles(projectPath);
+    if (versionFiles.size === 0) {
+        return;
+    }
+
     console.log(`\nNo mise.toml found in project.`);
     const answer = await prompt(
         "Create mise.toml? (auto-detect tools) [Y/n]: ",
