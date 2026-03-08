@@ -209,8 +209,11 @@ async function exec(
     setSession(sessionLockFile, fullPath);
     setupSignalHandlers();
 
-    // Start clipboard server early (async, independent of container/Docker).
-    const clipboardPromise = ensureClipboardServer().catch(() => null);
+    // Start clipboard server early — must complete before container creation so
+    // the port file exists and can be bind-mounted (file mount requires the file
+    // to already exist at docker run time).
+    const clipboardPort = await ensureClipboardServer().catch(() => null);
+    const clipboardPortFile = join(DATA_DIR, "clipboard.port");
 
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
@@ -245,6 +248,7 @@ async function exec(
         fullPath,
         ensureDirs,
         worktreeMounts.length > 0 ? worktreeMounts : undefined,
+        clipboardPortFile,
     );
 
     // Ensure claude binary is available (cached in volume or fresh install).
@@ -289,9 +293,6 @@ async function exec(
         console.log("Container was stopped during setup, restarting...");
         startProjectContainer(fullPath, ensureDirs);
     }
-
-    // Await clipboard server (started before container, should be ready by now)
-    const clipboardPort = await clipboardPromise;
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;

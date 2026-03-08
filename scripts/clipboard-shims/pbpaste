@@ -7,6 +7,11 @@ if [ -z "$CCC_CLIPBOARD_URL" ]; then
     exit 1
 fi
 
+# Refresh token from mounted port file (handles clipboard server restarts mid-session)
+if [ -f /run/ccc/clipboard.port ]; then
+    CCC_CLIPBOARD_TOKEN=$(cut -d: -f2- /run/ccc/clipboard.port)
+fi
+
 _data=$(curl -sf -H "Authorization: Bearer $CCC_CLIPBOARD_TOKEN" "$CCC_CLIPBOARD_URL/clipboard/text" 2>/dev/null) || { echo "pbpaste: clipboard server error" >&2; exit 1; }
 [ -n "$_data" ] || { echo "pbpaste: clipboard is empty" >&2; exit 1; }
 printf '%s' "$_data"

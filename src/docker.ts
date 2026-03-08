@@ -33,6 +33,7 @@ export interface DockerRunArgsOptions {
     hostSshDir: string | null;
     sshAgentSocket: string | null;
     extraMounts?: Array<{ hostPath: string; containerPath: string }>;
+    clipboardPortFile?: string;
 }
 
 // Docker Compose-compatible labels for Docker Desktop grouping.
@@ -104,6 +105,11 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         for (const mount of opts.extraMounts) {
             args.push("-v", `${mount.hostPath}:${mount.containerPath}`);
         }
+    }
+
+    // Mount clipboard port file so shims can read the latest token even after server restarts
+    if (opts.clipboardPortFile && existsSync(opts.clipboardPortFile)) {
+        args.push("-v", `${opts.clipboardPortFile}:/run/ccc/clipboard.port:ro`);
     }
 
     args.push(...getComposeLabels(opts.containerName, opts.fullPath));
@@ -370,6 +376,7 @@ export function startProjectContainer(
     projectPath: string,
     ensureDirs: () => void,
     extraMounts?: Array<{ hostPath: string; containerPath: string }>,
+    clipboardPortFile?: string,
 ): string {
     ensureDirs();
     ensureImage();
@@ -429,6 +436,7 @@ export function startProjectContainer(
         hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
         sshAgentSocket,
         extraMounts,
+        clipboardPortFile,
     });
 
     const result = spawnSync("docker", args, { stdio: "inherit" });

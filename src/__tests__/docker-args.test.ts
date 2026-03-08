@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdirSync, writeFileSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import {
     buildDockerRunArgs,
     type DockerRunArgsOptions,
@@ -513,7 +516,96 @@ describe("buildDockerRunArgs — edge cases", () => {
 });
 
 // ===========================================================================
-// 6. Container labels (Docker Compose grouping)
+// 6. Clipboard port file mount
+// ===========================================================================
+describe("buildDockerRunArgs — clipboard port file", () => {
+    let tmpDir: string;
+    let portFile: string;
+
+    // Create a real temp file (existsSync must return true for mount to appear)
+    function setup(): void {
+        tmpDir = join(tmpdir(), `ccc-test-${Date.now()}`);
+        mkdirSync(tmpDir, { recursive: true });
+        portFile = join(tmpDir, "clipboard.port");
+        writeFileSync(portFile, "12345:supersecrettoken");
+    }
+
+    function teardown(): void {
+        try { rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+    }
+
+    it("mounts clipboard port file when file exists", () => {
+        setup();
+        try {
+            const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
+            const mounts = extractVolumeMounts(args);
+            expect(mounts).toContain(`${portFile}:/run/ccc/clipboard.port:ro`);
+        } finally { teardown(); }
+    });
+
+    it("mounts clipboard port file read-only", () => {
+        setup();
+        try {
+            const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
+            const mounts = extractVolumeMounts(args);
+            const clipMount = mounts.find((m) => m.includes("clipboard.port"));
+            expect(clipMount).toBeDefined();
+            expect(clipMount!.endsWith(":ro")).toBe(true);
+        } finally { teardown(); }
+    });
+
+    it("mounts clipboard port file to /run/ccc/clipboard.port in container", () => {
+        setup();
+        try {
+            const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
+            const mounts = extractVolumeMounts(args);
+            const clipMount = mounts.find((m) => m.includes("clipboard.port"));
+            // mount format: hostPath:/run/ccc/clipboard.port:ro
+            const parts = clipMount!.split(":");
+            expect(parts[1]).toBe("/run/ccc/clipboard.port");
+        } finally { teardown(); }
+    });
+
+    it("omits clipboard mount when clipboardPortFile is undefined", () => {
+        const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: undefined }));
+        const mounts = extractVolumeMounts(args);
+        const clipMount = mounts.find((m) => m.includes("clipboard.port"));
+        expect(clipMount).toBeUndefined();
+    });
+
+    it("omits clipboard mount when file does not exist on disk", () => {
+        const nonExistent = join(tmpdir(), "ccc-no-such-file.port");
+        const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: nonExistent }));
+        const mounts = extractVolumeMounts(args);
+        const clipMount = mounts.find((m) => m.includes("clipboard.port"));
+        expect(clipMount).toBeUndefined();
+    });
+
+    it("adds exactly 1 extra mount when clipboard port file exists", () => {
+        setup();
+        try {
+            const without = buildDockerRunArgs(makeOpts());
+            const with_ = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
+            expect(extractVolumeMounts(with_).length).toBe(
+                extractVolumeMounts(without).length + 1,
+            );
+        } finally { teardown(); }
+    });
+
+    it("clipboard mount appears before image name", () => {
+        setup();
+        try {
+            const args = buildDockerRunArgs(makeOpts({ clipboardPortFile: portFile }));
+            const mountIdx = args.indexOf(`${portFile}:/run/ccc/clipboard.port:ro`);
+            const imageIdx = args.lastIndexOf("ccc");
+            expect(mountIdx).toBeGreaterThan(0);
+            expect(mountIdx).toBeLessThan(imageIdx);
+        } finally { teardown(); }
+    });
+});
+
+// ===========================================================================
+// 7. Container labels (Docker Compose grouping)
 // ===========================================================================
 describe("buildDockerRunArgs — container labels", () => {
     it("includes Docker Compose grouping labels", () => {

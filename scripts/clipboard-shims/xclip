@@ -12,6 +12,11 @@ if [ -z "$CCC_CLIPBOARD_URL" ]; then
     exit 1
 fi
 
+# Refresh token from mounted port file (handles clipboard server restarts mid-session)
+if [ -f /run/ccc/clipboard.port ]; then
+    CCC_CLIPBOARD_TOKEN=$(cut -d: -f2- /run/ccc/clipboard.port)
+fi
+
 # Parse arguments
 SELECTION=""
 TARGET=""
