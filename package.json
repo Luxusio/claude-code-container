@@ -34,6 +34,7 @@
     "url": "git+https://github.com/Luxusio/claude-code-container.git"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "tsx": "^4.21.0",

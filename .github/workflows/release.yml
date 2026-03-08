@@ -69,3 +69,31 @@ jobs:
 
       - name: Publish
         run: npm publish --access public --provenance
+
+  docker-test:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run integration tests inside ccc container
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ secrets.DOCKERHUB_USERNAME }}/claude-code-container:${{ steps.version.outputs.version }} \
+            bash -c "npm run build && npx vitest run src/__tests__/chrome-devtools-integration.test.ts"
