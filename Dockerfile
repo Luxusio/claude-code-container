@@ -159,6 +159,7 @@ ENV MISE_SHIMS_DIR="/home/ccc/.local/share/mise/shims"
 ENV DISPLAY=":99"
 ENV CHROME_PATH="/usr/bin/chromium"
 ENV CHROMIUM_PATH="/usr/bin/chromium"
+ENV CHROME_BIN="/usr/bin/chromium"
 ENV LANG=en_US.UTF-8
 ENV TZ=UTC
 

@@ -6,7 +6,7 @@ Development guide for claude-code-container (ccc).
 
 ### Requirements
 
-- Node.js 14.14+
+- Node.js 22+
 - Docker
 - npm
 
@@ -212,7 +212,7 @@ Releases are automated via a single GitHub Actions workflow (`.github/workflows/
    ```
 3. GitHub Actions runs:
    - **docker-build**: Verifies tag matches package.json version, builds multi-arch image (amd64 + arm64), pushes to Docker Hub with `cli.version` label
-   - **npm-publish**: Runs only if docker-build succeeds, publishes to npm with Node 22
+   - **npm-publish**: Runs only if docker-build succeeds, publishes to npm with Node 24
 
 ### Version Coherence
 
@@ -232,7 +232,8 @@ Images are published to [`luxusio/claude-code-container`](https://hub.docker.com
 |--------|-------------|
 | `DOCKERHUB_USERNAME` | Docker Hub username |
 | `DOCKERHUB_TOKEN` | Docker Hub access token |
-| `NPM_TOKEN` | npm publish token |
+
+npm publishing uses OIDC Trusted Publishing (no token required). Configure it at [npmjs.com → package → Settings → Trusted Publishers](https://www.npmjs.com/settings) with the GitHub repository.
 
 ## Troubleshooting
 
