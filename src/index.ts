@@ -160,7 +160,7 @@ ${defaultContent}`;
 async function ensureMiseConfig(projectPath: string): Promise<void> {
     const miseConfigPath = join(projectPath, "mise.toml");
 
-    if (existsSync(miseConfigPath)) {
+    if (existsSync(miseConfigPath) || existsSync(join(projectPath, ".mise.toml"))) {
         return;
     }
 

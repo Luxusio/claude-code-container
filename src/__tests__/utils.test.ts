@@ -272,4 +272,23 @@ describe('prompt', () => {
         const result = await prompt('Enter value: ');
         expect(result).toBe('');
     });
+
+    it('resolves with user answer even when rl.close() triggers close event synchronously', async () => {
+        // Regression test: rl.close() inside question callback fires 'close' event synchronously.
+        // resolve() must be called with the answer BEFORE rl.close(), or the close handler
+        // would win the race and return "" instead of the actual answer.
+        let closeHandler: (() => void) | undefined;
+        mockOn.mockImplementation((event: string, cb: () => void) => {
+            if (event === 'close') closeHandler = cb;
+        });
+        mockQuestion.mockImplementation((_q: string, cb: (answer: string) => void) => {
+            cb('n');
+        });
+        mockClose.mockImplementation(() => {
+            closeHandler?.(); // simulate synchronous close event on rl.close()
+        });
+
+        const result = await prompt('Enter value: ', true);
+        expect(result).toBe('n');
+    });
 });

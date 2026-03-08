@@ -127,8 +127,8 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 
 ### mise Integration
 
-- Projects use `.mise.toml` for tool version management
-- On first `ccc` run, prompts to auto-detect and create `.mise.toml`
+- Projects use `mise.toml` for tool version management
+- On first `ccc` run, prompts to auto-detect and create `mise.toml`
 - `mise install` runs automatically before `claude` command
 - mise cache stored in Docker named volume (`ccc-mise-cache`) for better macOS/Windows performance
 

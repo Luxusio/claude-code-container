@@ -20,7 +20,7 @@ No custom Dockerfile, docker-compose, port mapping, or volume configuration need
 - Per-project isolated containers (path-hash based naming)
 - Auto-forwarding of host env vars, locale (`LANG`/`LC_*`), and timezone (`TZ`)
 - Auto-cleanup on session exit (stops container when last session ends)
-- mise-based tool version management (auto-detect and create `.mise.toml`)
+- mise-based tool version management (auto-detect and create `mise.toml`)
 - Built-in Chromium (headless testing support)
 - `--network host` for direct port access
 - macOS/Windows: transparent localhost proxy (iptables + fallback to `host.docker.internal`)
@@ -228,79 +228,17 @@ cd ~/projects/my-project && ccc @feature --continue
 cd ~/projects/my-project && ccc @bugfix --continue
 ```
 
-## Remote Development
-
-Run ccc on a powerful remote machine from a lightweight laptop.
-
-### Requirements
-
-- [Tailscale](https://tailscale.com/) - Network connectivity (optional, recommended for remote access)
-- [Mutagen](https://mutagen.io/) - Real-time file sync
-- SSH-accessible remote host
-
-### Usage
-
-```bash
-# From MacBook - first time (config saved)
-ccc remote my-desktop
-# Remote user [user]: john
-# Remote path [/Users/me/myproject]: /home/john/myproject
-# Config saved.
-# Creating sync session...
-# Waiting for initial sync... done
-# Connecting to my-desktop...
-# [Claude now running on desktop]
-
-# Subsequent runs
-ccc remote
-
-# Pass claude options
-ccc remote --continue
-ccc remote --resume
-```
-
-### Architecture
-
-Mutagen syncs directly to the Docker container (no filesystem middleman). This bypasses slow volume mounts on Windows/macOS for better performance.
-
-```
-MacBook (laptop)                        Desktop (remote)
-┌─────────────────────┐                ┌─────────────────────────┐
-│  Source code (local) │                │  Docker Container       │
-│                     │────Mutagen────►│  /project/<id> (direct) │
-│                     │                │                         │
-│  ccc remote         │──────SSH──────►│  docker exec claude     │
-│  terminal I/O       │◄───────────────│                         │
-└─────────────────────┘                └─────────────────────────┘
-```
-
-### Commands
-
-```bash
-ccc remote <host>       # Connect to host (first run: prompts for config)
-ccc remote              # Connect using saved config
-ccc remote setup        # Setup guide
-ccc remote check        # Check connectivity and sync status
-ccc remote terminate    # Stop sync session
-```
-
-### Requirements
-
-1. **ccc installed on remote host**: The remote machine must also have ccc installed
-2. **SSH key authentication**: Passwordless SSH access recommended
-3. **Docker running**: Docker must be running on the remote host
-
 ## Tool Management (mise) — Zero-Config Project Setup
 
 ccc uses [mise](https://mise.jdx.dev/) to automatically manage per-project tool versions.
 
 ### Auto-Detection
 
-When running `ccc` for the first time in a project without `.mise.toml`:
+When running `ccc` for the first time in a project without `mise.toml`:
 
 1. Scans project files (`package.json`, `.nvmrc`, `pom.xml`, `build.gradle`, `go.mod`, etc.)
 2. Auto-detects tools and versions in use
-3. Prompts to create `.mise.toml` → press `Y` to auto-generate
+3. Prompts to create `mise.toml` → press `Y` to auto-generate
 
 ```
 $ ccc
@@ -329,7 +267,7 @@ _.file = [".env", "{% if env.container is defined %}.env.ccc{% else %}/dev/null{
 
 | Category | Tools |
 |----------|-------|
-| **Per-project** (`.mise.toml`) | node, java, python, go, rust, ruby, php, deno, bun, terraform, kotlin, elixir, zig, dotnet |
+| **Per-project** (`mise.toml`) | node, java, python, go, rust, ruby, php, deno, bun, terraform, kotlin, elixir, zig, dotnet |
 | **Global** (built into image) | maven, gradle, yarn, pnpm |
 
 ### Container/Desktop Environment Separation

@@ -81,9 +81,9 @@ export async function prompt(question: string, lowercase: boolean = false): Prom
     return new Promise((resolve) => {
         rl.on("close", () => resolve(""));
         rl.question(question, (answer) => {
-            rl.close();
             const result = answer.trim();
             resolve(lowercase ? result.toLowerCase() : result);
+            rl.close();
         });
     });
 }
