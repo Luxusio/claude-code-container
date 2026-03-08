@@ -41,6 +41,8 @@ const {
     removeProjectContainer,
 } = await import("../docker.js");
 
+const { CLI_VERSION } = await import("../utils.js");
+
 function makeResult(
     status: number,
     stdout = "",
@@ -327,10 +329,9 @@ describe("docker.ts module exports", () => {
         });
 
         it("uses local image when cli.version matches CLI_VERSION", () => {
-            // CLI_VERSION is "1.0.0" from package.json
             spawnSyncMock
-                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))  // isImageExists -> true
-                .mockReturnValueOnce(makeResult(0, "1.0.0\n"));     // getImageLabel -> matches CLI_VERSION
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))          // isImageExists -> true
+                .mockReturnValueOnce(makeResult(0, `${CLI_VERSION}\n`));     // getImageLabel -> matches CLI_VERSION
 
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");

@@ -12,7 +12,7 @@ function isDockerAvailable(): boolean {
 
 // Run ccc command from the project root
 function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
-    const cccPath = join(__dirname, '../../index.ts')
+    const cccPath = join(__dirname, '../index.ts')
     const result = spawnSync('npx', ['tsx', cccPath, ...args], {
         encoding: 'utf-8',
         cwd: options.cwd ?? process.cwd(),
@@ -51,7 +51,7 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
     describe('Docker Image', () => {
         it('builds image successfully', { timeout: 300000 }, async () => {
             // Build should succeed (or image already exists)
-            const result = spawnSync('docker', ['build', '-t', 'ccc', '-f', join(__dirname, '../../..', 'Dockerfile'), join(__dirname, '../../..')], {
+            const result = spawnSync('docker', ['build', '-t', 'ccc', '-f', join(__dirname, '../..', 'Dockerfile'), join(__dirname, '../..')], {
                 encoding: 'utf-8',
                 timeout: 300000
             })

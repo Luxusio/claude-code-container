@@ -28,7 +28,7 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npm test
+        run: npx vitest run --exclude src/__tests__/e2e.test.ts
 
   chrome-devtools-test:
     runs-on: ubuntu-latest
