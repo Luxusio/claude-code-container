@@ -57,6 +57,7 @@ import {
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
+    isContainerImageOutdated,
     isImageExists,
     ensureImage,
     startProjectContainer,
@@ -206,6 +207,31 @@ async function exec(
 
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
+
+    // Auto-upgrade container if image has been rebuilt
+    const targetContainer = getContainerName(fullPath);
+    if (isContainerExists(targetContainer) && isContainerImageOutdated(targetContainer)) {
+        const activeSessions = getActiveSessionsForProject(projectId);
+        if (activeSessions.length <= 1) {
+            // Capture old image ID before removing container
+            const oldImageResult = spawnSync(
+                "docker", ["inspect", targetContainer, "--format", "{{.Image}}"],
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            const oldImageId = (oldImageResult.stdout ?? "").trim();
+
+            console.log("Upgrading container to new image...");
+            spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
+            spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
+
+            // Remove old image (now dangling). Silently fails if still in use by other containers.
+            if (oldImageId) {
+                spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+            }
+        } else {
+            console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
+        }
+    }
 
     // Start or get container (with extra mounts for worktree workspaces)
     const containerName = startProjectContainer(

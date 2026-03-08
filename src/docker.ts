@@ -183,6 +183,38 @@ export function isImageExists(): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
+/**
+ * Check if a container's image is outdated compared to the current IMAGE_NAME image.
+ * Compares the image SHA the container was created from against the current image SHA.
+ * Returns false on any error (fail-open: never block startup due to inspect failure).
+ */
+export function isContainerImageOutdated(containerName: string): boolean {
+    try {
+        const containerResult = spawnSync(
+            "docker",
+            ["inspect", containerName, "--format", "{{.Image}}"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (containerResult.status !== 0) return false;
+
+        const imageResult = spawnSync(
+            "docker",
+            ["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (imageResult.status !== 0) return false;
+
+        const containerImageSha = (containerResult.stdout ?? "").trim();
+        const currentImageSha = (imageResult.stdout ?? "").trim();
+
+        if (!containerImageSha || !currentImageSha) return false;
+
+        return containerImageSha !== currentImageSha;
+    } catch {
+        return false;
+    }
+}
+
 export function ensureImage(): void {
     if (!isImageExists()) {
         console.error(

@@ -28,6 +28,7 @@ const {
     isDockerDesktop,
     isContainerRunning,
     isContainerExists,
+    isContainerImageOutdated,
     isImageExists,
     syncClipboardShims,
     ensureDockerRunning,
@@ -150,6 +151,42 @@ describe("docker.ts module exports", () => {
         it("returns false when image not found", () => {
             spawnSyncMock.mockReturnValue(makeResult(0, ""));
             expect(isImageExists()).toBe(false);
+        });
+    });
+
+    describe("isContainerImageOutdated", () => {
+        it("returns true when container image SHA differs from current image SHA", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:oldimage111\n"))  // container inspect
+                .mockReturnValueOnce(makeResult(0, "sha256:newimage222\n")); // image inspect
+            expect(isContainerImageOutdated("my-container")).toBe(true);
+        });
+
+        it("returns false when container image SHA matches current image SHA", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:sameimage\n"))  // container inspect
+                .mockReturnValueOnce(makeResult(0, "sha256:sameimage\n")); // image inspect
+            expect(isContainerImageOutdated("my-container")).toBe(false);
+        });
+
+        it("returns false when container inspect fails (fail-open)", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(1, ""));  // container inspect fails
+            expect(isContainerImageOutdated("my-container")).toBe(false);
+        });
+
+        it("returns false when image inspect fails (fail-open)", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:oldimage\n"))  // container inspect ok
+                .mockReturnValueOnce(makeResult(1, ""));                   // image inspect fails
+            expect(isContainerImageOutdated("my-container")).toBe(false);
+        });
+
+        it("returns false when container inspect returns empty stdout", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, ""))                    // container inspect empty
+                .mockReturnValueOnce(makeResult(0, "sha256:newimage\n")); // image inspect
+            expect(isContainerImageOutdated("my-container")).toBe(false);
         });
     });
 
