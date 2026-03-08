@@ -99,6 +99,25 @@ RUN useradd -r -s /usr/sbin/nologin ccc-proxy && \
 # Localhost proxy binary (transparent proxy for Docker Desktop)
 COPY --from=proxy-builder /build/ccc-proxy /usr/local/bin/ccc-proxy
 
+# ============================================================
+# LAYER 8: Fonts (root로 실행)
+# ============================================================
+RUN apt-get update && apt-get install -y \
+    fonts-liberation \
+    fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# LAYER 9: Clipboard shims (host clipboard bridge for image paste)
+# ============================================================
+COPY --chmod=755 scripts/clipboard-shims/xclip /usr/local/bin/xclip
+COPY --chmod=755 scripts/clipboard-shims/xsel /usr/local/bin/xsel
+COPY --chmod=755 scripts/clipboard-shims/wl-paste /usr/local/bin/wl-paste
+COPY --chmod=755 scripts/clipboard-shims/wl-copy /usr/local/bin/wl-copy
+COPY --chmod=755 scripts/clipboard-shims/pbpaste /usr/local/bin/pbpaste
+# Strip Windows CRLF line endings (git on Windows may convert LF→CRLF)
+RUN sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste
+
 USER ccc
 WORKDIR /home/ccc
 
@@ -125,25 +144,6 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
     ~/.local/bin/mise use -g gradle@8 && \
     ~/.local/bin/mise use -g yarn@4 && \
     ~/.local/bin/mise use -g pnpm@9
-
-# ============================================================
-# LAYER 8: Fonts
-# ============================================================
-RUN sudo apt-get update && sudo apt-get install -y \
-    fonts-liberation \
-    fonts-noto-cjk \
-    && sudo rm -rf /var/lib/apt/lists/*
-
-# ============================================================
-# LAYER 9: Clipboard shims (host clipboard bridge for image paste)
-# ============================================================
-COPY --chmod=755 scripts/clipboard-shims/xclip /usr/local/bin/xclip
-COPY --chmod=755 scripts/clipboard-shims/xsel /usr/local/bin/xsel
-COPY --chmod=755 scripts/clipboard-shims/wl-paste /usr/local/bin/wl-paste
-COPY --chmod=755 scripts/clipboard-shims/wl-copy /usr/local/bin/wl-copy
-COPY --chmod=755 scripts/clipboard-shims/pbpaste /usr/local/bin/pbpaste
-# Strip Windows CRLF line endings (git on Windows may convert LF→CRLF)
-RUN sudo sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste
 
 # ============================================================
 # claude-code is installed at runtime and cached in mise volume.
