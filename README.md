@@ -2,23 +2,13 @@
 
 Single command. Isolated environment. No setup required.
 
-## Philosophy: Zero-Config
-
-ccc is designed to **just work** out of the box. Run `ccc` in your project directory and everything is handled automatically:
-
-- Container creation and project mounting
-- Host environment variables, locale, and timezone forwarding
-- SSH keys and agent mounting
-- Project tool detection and installation via mise (node, java, python, etc.)
-- Transparent localhost proxy on macOS/Windows (auto-connects host and container servers)
-- Automatic container cleanup on session exit
-
-No custom Dockerfile, docker-compose, port mapping, or volume configuration needed.
-
 ## Features
+
+Run `ccc` in your project directory — no Dockerfile, docker-compose, port mapping, or volume config needed.
 
 - Per-project isolated containers (path-hash based naming)
 - Auto-forwarding of host env vars, locale (`LANG`/`LC_*`), and timezone (`TZ`)
+- SSH keys and agent auto-mounted
 - Auto-cleanup on session exit (stops container when last session ends)
 - mise-based tool version management (auto-detect and create `mise.toml`)
 - Built-in Chromium (headless testing support)
@@ -287,16 +277,12 @@ Based on Ubuntu 24.04, includes:
 - Chromium (for headless testing, `CHROME_BIN` configured)
 - maven, gradle, yarn, pnpm
 - Pre-generated locales (en_US, ko_KR, ja_JP, zh_CN, de_DE, fr_FR, es_ES, pt_BR)
+- No memory/CPU/PID limits (shares host resources)
 
 The image is available on [Docker Hub](https://hub.docker.com/r/luxusio/claude-code-container):
 ```bash
 docker pull luxusio/claude-code-container:latest
 ```
-
-## Resource Limits
-
-- **Memory/CPU**: No limits (shares host resources)
-- **PIDs**: Unlimited (same as host)
 
 ## Contributing
 
