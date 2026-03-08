@@ -35,6 +35,21 @@ export interface DockerRunArgsOptions {
     extraMounts?: Array<{ hostPath: string; containerPath: string }>;
 }
 
+// Docker Compose-compatible labels for Docker Desktop grouping.
+// com.docker.compose.* labels are undocumented internals but stable since Compose V2.
+function getComposeLabels(containerName: string, fullPath: string): string[] {
+    return [
+        "--label", "com.docker.compose.project=ccc",
+        "--label", `com.docker.compose.service=${containerName}`,
+        "--label", "com.docker.compose.oneoff=False",
+        "--label", "com.docker.compose.version=2",
+        "--label", "com.docker.compose.container-number=1",
+        "--label", "ccc.managed=true",
+        "--label", `ccc.project.path=${fullPath}`,
+        "--label", `ccc.cli.version=${CLI_VERSION}`,
+    ];
+}
+
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     const args = [
         "run",
@@ -91,6 +106,7 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         }
     }
 
+    args.push(...getComposeLabels(opts.containerName, opts.fullPath));
     args.push(opts.imageName);
     return args;
 }

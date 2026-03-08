@@ -57,6 +57,23 @@ function extractEnvVars(args: string[]): Record<string, string> {
     return envs;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: extract all container labels from args
+// docker run ... --label <KEY=VALUE> ... → collects every value after "--label"
+// ---------------------------------------------------------------------------
+function extractLabels(args: string[]): Record<string, string> {
+    const labels: Record<string, string> = {};
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--label" && i + 1 < args.length) {
+            const eqIdx = args[i + 1].indexOf("=");
+            if (eqIdx > 0) {
+                labels[args[i + 1].slice(0, eqIdx)] = args[i + 1].slice(eqIdx + 1);
+            }
+        }
+    }
+    return labels;
+}
+
 // ===========================================================================
 // 1. SSH mount — core feature tests
 // ===========================================================================
@@ -492,5 +509,45 @@ describe("buildDockerRunArgs — edge cases", () => {
         expect(extractVolumeMounts(withMounts).length).toBe(
             extractVolumeMounts(withoutMounts).length + 1,
         );
+    });
+});
+
+// ===========================================================================
+// 6. Container labels (Docker Compose grouping)
+// ===========================================================================
+describe("buildDockerRunArgs — container labels", () => {
+    it("includes Docker Compose grouping labels", () => {
+        const args = buildDockerRunArgs(makeOpts());
+        const labels = extractLabels(args);
+        expect(labels["com.docker.compose.project"]).toBe("ccc");
+        expect(labels["com.docker.compose.service"]).toBe("ccc-myproject-abc123");
+        expect(labels["com.docker.compose.oneoff"]).toBe("False");
+        expect(labels["com.docker.compose.version"]).toBe("2");
+        expect(labels["com.docker.compose.container-number"]).toBe("1");
+    });
+
+    it("includes ccc metadata labels", () => {
+        const args = buildDockerRunArgs(makeOpts());
+        const labels = extractLabels(args);
+        expect(labels["ccc.managed"]).toBe("true");
+        expect(labels["ccc.project.path"]).toBe("/home/user/myproject");
+        expect(labels["ccc.cli.version"]).toBeDefined();
+    });
+
+    it("sets com.docker.compose.service to the container name", () => {
+        const args = buildDockerRunArgs(makeOpts({ containerName: "ccc-other-xyz999" }));
+        const labels = extractLabels(args);
+        expect(labels["com.docker.compose.service"]).toBe("ccc-other-xyz999");
+    });
+
+    it("sets ccc.project.path to fullPath", () => {
+        const args = buildDockerRunArgs(makeOpts({ fullPath: "/custom/path/project" }));
+        const labels = extractLabels(args);
+        expect(labels["ccc.project.path"]).toBe("/custom/path/project");
+    });
+
+    it("image name is still the last argument after labels", () => {
+        const args = buildDockerRunArgs(makeOpts({ imageName: "ccc" }));
+        expect(args[args.length - 1]).toBe("ccc");
     });
 });
