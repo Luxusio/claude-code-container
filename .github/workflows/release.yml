@@ -67,8 +67,19 @@ jobs:
           npm ci
           npm run build
 
+      - name: Determine npm tag
+        id: npm-tag
+        run: |
+          LATEST=$(npm view claude-code-container version 2>/dev/null || echo "0.0.0")
+          NEW=${{ steps.version.outputs.version }}
+          IS_LATEST=$(node -e "
+            const cmp = (a, b) => { const [am,an,ap]=a.split('.').map(Number); const [bm,bn,bp]=b.split('.').map(Number); return am!==bm?am-bm:an!==bn?an-bn:ap-bp; };
+            process.stdout.write(cmp('$NEW','$LATEST') >= 0 ? 'true' : 'false');
+          ")
+          echo "tag=$([ '$IS_LATEST' = 'true' ] && echo 'latest' || echo 'old')" >> $GITHUB_OUTPUT
+
       - name: Publish
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag ${{ steps.npm-tag.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ""
 
@@ -95,6 +106,7 @@ jobs:
       - name: Run integration tests inside ccc container
         run: |
           docker run --rm \
+            -e MISE_TRUSTED_CONFIG_PATHS=/workspace \
             -v ${{ github.workspace }}:/workspace \
             -w /workspace \
             ${{ secrets.DOCKERHUB_USERNAME }}/claude-code-container:${{ steps.version.outputs.version }} \
