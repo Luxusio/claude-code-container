@@ -23,12 +23,14 @@ vi.mock("fs", async (importOriginal) => {
 // Mock docker.js
 const mockIsDockerRunning = vi.fn().mockReturnValue(true);
 const mockIsImageExists = vi.fn().mockReturnValue(true);
+const mockGetImageLabel = vi.fn<() => string | null>().mockReturnValue(null);
 const mockIsContainerRunning = vi.fn().mockReturnValue(true);
 const mockIsContainerExists = vi.fn().mockReturnValue(true);
 const mockGetContainerName = vi.fn().mockReturnValue("ccc-myproject-abc123");
 vi.mock("../docker.js", () => ({
     isDockerRunning: () => mockIsDockerRunning(),
     isImageExists: () => mockIsImageExists(),
+    getImageLabel: (...args: unknown[]) => mockGetImageLabel(...args),
     isContainerRunning: (...args: unknown[]) => mockIsContainerRunning(...args),
     isContainerExists: (...args: unknown[]) => mockIsContainerExists(...args),
     getContainerName: (...args: unknown[]) => mockGetContainerName(...args),
@@ -46,6 +48,7 @@ vi.mock("../utils.js", () => ({
     getProjectId: vi.fn().mockReturnValue("myproject-abc123"),
     DATA_DIR: "/home/testuser/.ccc",
     MISE_VOLUME_NAME: "ccc-mise-cache",
+    CLI_VERSION: "1.0.0",
 }));
 
 // Import AFTER mocks
@@ -65,6 +68,7 @@ describe("runDoctor", () => {
         mockReaddirSync.mockReset().mockReturnValue([]);
         mockIsDockerRunning.mockReturnValue(true);
         mockIsImageExists.mockReturnValue(true);
+        mockGetImageLabel.mockReturnValue(null);
         mockIsContainerRunning.mockReturnValue(true);
         mockIsContainerExists.mockReturnValue(true);
         mockGetContainerName.mockReturnValue("ccc-myproject-abc123");
@@ -216,6 +220,66 @@ describe("runDoctor", () => {
             .map((c) => c[0] as string)
             .join("\n");
         expect(logCalls).toContain("Not installed in container");
+    });
+
+    it("shows 'Built locally (dev)' when image has no cli.version label", () => {
+        mockGetImageLabel.mockReturnValue(null); // dev build
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude binary
+
+        runDoctor("/project/myproject");
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string).join("\n");
+        expect(logCalls).toContain("Built locally (dev)");
+    });
+
+    it("shows 'Registry (v...)' when cli.version matches CLI_VERSION", () => {
+        mockGetImageLabel.mockReturnValue("1.0.0"); // matches CLI_VERSION mock
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude binary
+
+        runDoctor("/project/myproject");
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string).join("\n");
+        expect(logCalls).toContain("Registry (v1.0.0)");
+    });
+
+    it("shows version mismatch warning when cli.version differs from CLI_VERSION", () => {
+        mockGetImageLabel.mockReturnValue("0.9.0"); // old version
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude binary
+
+        runDoctor("/project/myproject");
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string).join("\n");
+        expect(logCalls).toContain("v0.9.0");
+        expect(logCalls).toContain("v1.0.0");
+        expect(logCalls).toContain("update");
+    });
+
+    it("shows 'Not found' with build instructions when no image exists", () => {
+        mockIsImageExists.mockReturnValue(false);
+        mockIsContainerRunning.mockReturnValue(false);
+        mockIsContainerExists.mockReturnValue(false);
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(1, "")); // Volume missing
+
+        runDoctor("/project/myproject");
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string).join("\n");
+        expect(logCalls).toContain("Not found");
+        expect(logCalls).toContain("docker build");
     });
 
     it("shows active session count when sessions exist", () => {

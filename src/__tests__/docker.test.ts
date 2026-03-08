@@ -30,6 +30,9 @@ const {
     isContainerExists,
     isContainerImageOutdated,
     isImageExists,
+    getImageLabel,
+    pullImage,
+    tagImage,
     syncClipboardShims,
     ensureDockerRunning,
     ensureImage,
@@ -263,18 +266,142 @@ describe("docker.ts module exports", () => {
         });
     });
 
-    describe("ensureImage", () => {
-        it("does not exit when image exists", () => {
-            spawnSyncMock.mockReturnValue(makeResult(0, "sha256:abc\n"));
+    describe("getImageLabel", () => {
+        it("returns label value when present", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, "1.0.0\n"));
+            expect(getImageLabel("ccc", "cli.version")).toBe("1.0.0");
+        });
+
+        it("returns null when label is missing (<no value>)", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, "<no value>\n"));
+            expect(getImageLabel("ccc", "cli.version")).toBeNull();
+        });
+
+        it("returns null when inspect fails (image not found)", () => {
+            spawnSyncMock.mockReturnValue(makeResult(1, ""));
+            expect(getImageLabel("ccc", "cli.version")).toBeNull();
+        });
+    });
+
+    describe("pullImage", () => {
+        it("returns true on successful pull", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0));
+            expect(pullImage("repo/ccc:1.0.0")).toBe(true);
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "docker", ["pull", "repo/ccc:1.0.0"], { stdio: "inherit" },
+            );
+        });
+
+        it("returns false on failed pull", () => {
+            spawnSyncMock.mockReturnValue(makeResult(1));
+            expect(pullImage("repo/ccc:1.0.0")).toBe(false);
+        });
+    });
+
+    describe("tagImage", () => {
+        it("runs docker tag", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0));
+            tagImage("repo/ccc:1.0.0", "ccc");
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "docker", ["tag", "repo/ccc:1.0.0", "ccc"], { stdio: "ignore" },
+            );
+        });
+    });
+
+    describe("ensureImage (label-based)", () => {
+        it("uses local dev build (no cli.version label) without pulling", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))       // isImageExists -> true
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"));      // getImageLabel -> null (dev build)
+
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");
             });
             expect(() => ensureImage()).not.toThrow();
+            // No pull call should have been made
+            const pullCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "pull"
+            );
+            expect(pullCall).toBeUndefined();
             mockExit.mockRestore();
         });
 
-        it("calls process.exit(1) when image not found", () => {
-            spawnSyncMock.mockReturnValue(makeResult(0, ""));
+        it("uses local image when cli.version matches CLI_VERSION", () => {
+            // CLI_VERSION is "1.0.0" from package.json
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))  // isImageExists -> true
+                .mockReturnValueOnce(makeResult(0, "1.0.0\n"));     // getImageLabel -> matches CLI_VERSION
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+                throw new Error("process.exit");
+            });
+            expect(() => ensureImage()).not.toThrow();
+            const pullCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "pull"
+            );
+            expect(pullCall).toBeUndefined();
+            mockExit.mockRestore();
+        });
+
+        it("pulls and re-tags when cli.version mismatches CLI_VERSION", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))   // isImageExists -> true
+                .mockReturnValueOnce(makeResult(0, "0.9.0\n"))       // getImageLabel -> old version
+                .mockReturnValueOnce(makeResult(0))                    // pullImage -> success
+                .mockReturnValueOnce(makeResult(0));                   // tagImage
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+                throw new Error("process.exit");
+            });
+            expect(() => ensureImage()).not.toThrow();
+            const pullCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "pull"
+            );
+            expect(pullCall).toBeDefined();
+            const tagCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "tag"
+            );
+            expect(tagCall).toBeDefined();
+            mockExit.mockRestore();
+        });
+
+        it("pulls when no local ccc image exists", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, ""))    // isImageExists -> false
+                .mockReturnValueOnce(makeResult(0))        // pullImage -> success
+                .mockReturnValueOnce(makeResult(0));       // tagImage
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+                throw new Error("process.exit");
+            });
+            expect(() => ensureImage()).not.toThrow();
+            const pullCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "pull"
+            );
+            expect(pullCall).toBeDefined();
+            mockExit.mockRestore();
+        });
+
+        it("warns but continues when pull fails with stale image", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))   // isImageExists -> true
+                .mockReturnValueOnce(makeResult(0, "0.9.0\n"))       // getImageLabel -> old version
+                .mockReturnValueOnce(makeResult(1));                   // pullImage -> fail
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+                throw new Error("process.exit");
+            });
+            const warnSpy = vi.spyOn(console, "warn");
+            expect(() => ensureImage()).not.toThrow();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Failed to pull"));
+            mockExit.mockRestore();
+        });
+
+        it("exits with error when pull fails with no image", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, ""))    // isImageExists -> false
+                .mockReturnValueOnce(makeResult(1));       // pullImage -> fail
+
             const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
                 throw new Error("process.exit");
             });
@@ -295,10 +422,11 @@ describe("docker.ts module exports", () => {
 
         it("returns container name when container is already running", () => {
             // Call sequence (no extraMounts):
-            // #1 isImageExists, #2 isContainerExists (extraMounts guard - falsy short-circuit after 1st operand),
-            // #3 isContainerRunning -> true (returns early)
+            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (extraMounts guard),
+            // #4 isContainerRunning -> true (returns early)
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard)
                 .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> running
 
@@ -308,10 +436,11 @@ describe("docker.ts module exports", () => {
         });
 
         it("starts a stopped container and returns its name", () => {
-            // #1 isImageExists, #2 isContainerExists (extraMounts guard), #3 isContainerRunning->false,
-            // #4 isContainerExists->true, #5 docker start
+            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (extraMounts guard),
+            // #4 isContainerRunning->false, #5 isContainerExists->true, #6 docker start
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists but no extraMounts
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> true
@@ -329,10 +458,11 @@ describe("docker.ts module exports", () => {
         it("creates a new container when none exists", () => {
             mockExistsSync.mockReturnValue(false); // hostSshDir does not exist -> no SSH mount, no SSH fix
 
-            // #1 isImageExists, #2 isContainerExists (extraMounts guard)->false, #3 isContainerRunning->false,
-            // #4 isContainerExists->false, then docker run
+            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (extraMounts guard)->false,
+            // #4 isContainerRunning->false, #5 isContainerExists->false, then docker run
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -350,11 +480,11 @@ describe("docker.ts module exports", () => {
         it("fixes SSH key permissions after creating container when ssh dir exists", () => {
             mockExistsSync.mockReturnValue(true);
 
-            // #1 isImageExists, #2 isContainerExists (guard)->false (no extraMounts so guard short-circuits after check),
-            // actually isContainerExists IS called, returns "abc123" but extraMounts is undefined so no containerHasMounts
-            // #3 isContainerRunning->false, #4 isContainerExists->false, #5 docker run, #6 docker exec
+            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (guard)->false,
+            // #4 isContainerRunning->false, #5 isContainerExists->false, #6 docker run, #7 docker exec
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> false (no extraMounts)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -375,6 +505,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -395,6 +526,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -422,6 +554,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -448,6 +581,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, missingMountsJson)) // docker inspect (containerHasMounts)
                 .mockReturnValueOnce(makeResult(0))                  // docker stop
@@ -477,6 +611,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, mountsJson))     // docker inspect (containerHasMounts) -> all present
                 .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> true
@@ -500,6 +635,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, mountsJson))     // docker inspect -> Destination matches
                 .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> true
@@ -521,6 +657,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> not exists, skip inspect
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
@@ -537,6 +674,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(1, ""))             // docker inspect -> fails (containerHasMounts false)
                 .mockReturnValueOnce(makeResult(0))                  // docker stop
@@ -556,6 +694,7 @@ describe("docker.ts module exports", () => {
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, "not-json"))     // docker inspect -> bad JSON
                 .mockReturnValueOnce(makeResult(0))                  // docker stop

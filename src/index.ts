@@ -32,6 +32,7 @@ import {
     DATA_DIR,
     CLAUDE_DIR,
     CLAUDE_JSON_FILE,
+    CLI_VERSION,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
@@ -59,6 +60,7 @@ import {
     isContainerExists,
     isContainerImageOutdated,
     isImageExists,
+    getImageLabel,
     ensureImage,
     startProjectContainer,
     stopProjectContainer,
@@ -388,13 +390,20 @@ async function exec(
 
 function showStatus(): void {
     ensureDockerRunning();
-    console.log("\n=== CCC Status ===\n");
+    console.log(`\n=== CCC Status (CLI v${CLI_VERSION}) ===\n`);
 
     // Image status
     if (isImageExists()) {
-        console.log("Image: Built ✓");
+        const label = getImageLabel("ccc", "cli.version");
+        if (label === null) {
+            console.log("Image: Built locally (dev)");
+        } else if (label === CLI_VERSION) {
+            console.log(`Image: Registry (v${label})`);
+        } else {
+            console.log(`Image: Registry (v${label} -- update available: v${CLI_VERSION})`);
+        }
     } else {
-        console.log("Image: Not built");
+        console.log("Image: Not found (will auto-pull on first run)");
     }
 
     // List all ccc containers

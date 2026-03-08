@@ -24,23 +24,20 @@ No custom Dockerfile, docker-compose, port mapping, or volume configuration need
 - Built-in Chromium (headless testing support)
 - `--network host` for direct port access
 - macOS/Windows: transparent localhost proxy (iptables + fallback to `host.docker.internal`)
+- Auto-pull Docker image from Docker Hub on first run (no manual `docker build` needed)
+- Version-aware image management (auto-updates on `npm update`)
 
 ## Installation
 
-```bash
-git clone https://github.com/your-username/claude-code-container.git
-cd claude-code-container
-sudo node scripts/install.js   # Omit sudo on Windows
-```
-
-If you hit the GitHub API rate limit during image build, pass a token:
+### npm (Recommended)
 
 ```bash
-export GITHUB_TOKEN=github_pat_xxx
-sudo -E node scripts/install.js
+npm install -g claude-code-container
 ```
 
-**Uninstall:** `sudo node scripts/install.js --uninstall`
+On first `ccc` run, the Docker image (~2GB) is automatically pulled from Docker Hub. No manual build required.
+
+For development setup, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Quick Start
 
@@ -80,6 +77,23 @@ Docker Volume:
 
 Container names are fixed per project path hash, so `claude --continue` and `--resume` work correctly.
 
+### Image Management
+
+ccc uses Docker image labels to manage versions:
+
+| Scenario | Behavior |
+|----------|----------|
+| npm install (first run) | Auto-pulls matching version from Docker Hub |
+| npm update | Detects version mismatch, auto-pulls new image |
+| Local `docker build -t ccc .` | Uses local image, never auto-replaced |
+| Offline with stale image | Warns but continues with existing image |
+| Offline with no image | Error with instructions to build locally |
+
+Override the registry with `CCC_REGISTRY` env var:
+```bash
+export CCC_REGISTRY=myregistry/claude-code-container
+```
+
 ## Commands
 
 ```bash
@@ -89,7 +103,7 @@ ccc <command>              # Run arbitrary command
 ccc --env KEY=VALUE        # Set additional env var
 ccc stop                   # Stop current project's container
 ccc rm                     # Remove current project's container
-ccc status                 # Show all containers status
+ccc status                 # Show CLI version, image info, and containers
 ccc doctor                 # Health check and diagnostics
 ccc clean                  # Clean stopped containers and images
 ```
@@ -336,12 +350,9 @@ Based on Ubuntu 24.04, includes:
 - maven, gradle, yarn, pnpm
 - Pre-generated locales (en_US, ko_KR, ja_JP, zh_CN, de_DE, fr_FR, es_ES, pt_BR)
 
-Rebuild the image:
-
+The image is available on [Docker Hub](https://hub.docker.com/r/luxusio/claude-code-container):
 ```bash
-ccc rm
-docker rmi ccc
-ccc  # Automatically builds new image
+docker pull luxusio/claude-code-container:latest
 ```
 
 ## Resource Limits
@@ -349,30 +360,9 @@ ccc  # Automatically builds new image
 - **Memory/CPU**: No limits (shares host resources)
 - **PIDs**: Unlimited (same as host)
 
-## Development
+## Contributing
 
-### Build & Test
-
-```bash
-npm install      # Install dependencies
-npm run build    # Compile TypeScript
-npm test         # Run tests (vitest)
-npm run test:watch  # Run tests in watch mode
-```
-
-### Project Structure
-
-```
-src/
-├── index.ts              # CLI main entry point
-├── localhost-proxy.ts     # Transparent localhost proxy (macOS/Windows)
-├── localhost-proxy-setup.ts # Proxy + iptables setup in container
-├── remote.ts             # Remote development helpers
-├── scanner.ts            # Project tool detection for mise
-└── utils.ts              # Shared utilities
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed development guide.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, architecture, and release process.
 
 ## License
 

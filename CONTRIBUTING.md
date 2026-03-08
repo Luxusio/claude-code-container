@@ -6,23 +6,44 @@ Development guide for claude-code-container (ccc).
 
 ### Requirements
 
-- Node.js 22+
+- Node.js 14.14+
 - Docker
 - npm
 
-### Installation
+### From Source
 
 ```bash
-git clone https://github.com/your-username/claude-code-container.git
+git clone https://github.com/Luxusio/claude-code-container.git
 cd claude-code-container
-sudo node scripts/install.js   # Omit sudo on Windows
+npm install && npm run build
+docker build -t ccc .
 ```
 
-Handles npm install, build, and global installation automatically.
+Local builds (`docker build -t ccc .`) are never auto-replaced by the registry image. The CLI detects dev builds by the absence of a `cli.version` Docker label.
+
+### Build Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm install` | Install dependencies |
+| `npm run build` | Compile TypeScript |
+| `npm test` | Run tests (vitest) |
+| `npm run test:watch` | Run tests in watch mode |
+
+### Running Locally
+
+```bash
+# Run CLI directly from source
+node dist/index.js
+
+# Or link globally for development
+npm link
+ccc
+```
 
 ## Architecture
 
-### Directory Structure
+### Directory Layout
 
 ```
 ~/.ccc/
@@ -30,7 +51,10 @@ Handles npm install, build, and global installation automatically.
 ├── locks/              # Session lock files (per-session UUID)
 │   ├── my-project-a1b2c3d4e5f6-uuid1.lock
 │   └── my-project-a1b2c3d4e5f6-uuid2.lock
-└── mise/               # Shared mise cache
+└── remote/             # Remote development configs
+
+Docker Volume:
+└── ccc-mise-cache      # Shared mise cache (named volume)
 ```
 
 ### Container Structure
@@ -38,29 +62,21 @@ Handles npm install, build, and global installation automatically.
 ```
 Container (ccc-<project>-<hash>):
 ├── /project/<project>-<hash>   # Project path mount
-├── /claude                      # ~/.ccc/claude mount
-└── /home/ccc/.local/share/mise  # mise cache mount
+├── /home/ccc/.claude           # Claude config mount
+├── /home/ccc/.ssh              # SSH keys (read-only)
+├── /tmp/ssh-agent.sock         # SSH agent socket
+└── /home/ccc/.local/share/mise # mise cache (named volume)
 ```
 
-### Image Build
+### Image Resolution
 
-When running `sudo node scripts/install.js`:
-1. Stops all running `ccc-*` containers
-2. Deletes existing `ccc` image and rebuilds from Dockerfile
+The CLI uses Docker image labels (`cli.version`) to manage versions:
 
-When running `ccc`:
-1. If no `ccc` image exists, shows error (directs to install.js)
-2. Creates per-project container from the image
-
-Dockerfile includes:
-- Ubuntu 24.04 base
-- curl, git, ca-certificates, unzip
-- Chromium (for headless testing, `CHROME_BIN` env set)
-- locales and tzdata (pre-generated common locales)
-- iptables (for transparent localhost proxy on macOS/Windows)
-- mise installation and configuration
-- Global tools: maven, gradle, yarn, pnpm
-- claude-code native binary (independent of project node version)
+1. Local `ccc` with **no label** → dev build, use as-is (never auto-replaced)
+2. Local `ccc` with **matching label** → correct version, use as-is
+3. **Mismatch or missing** → pull `DOCKER_REGISTRY_IMAGE:CLI_VERSION`, tag as `ccc`
+4. Pull failure with stale image → warn, continue
+5. Pull failure with no image → error with manual build instructions
 
 ### Session Lifecycle
 
@@ -71,11 +87,16 @@ Dockerfile includes:
 
 Container names are fixed per path hash, so `claude --continue` and `--resume` work correctly.
 
+### Auto Container Upgrade
+
+When the ccc image is rebuilt (locally or via registry pull), the next `ccc` run detects the SHA mismatch and automatically recreates the container. If other sessions are active, it defers the upgrade with a message.
+
 ### Environment Variable Forwarding
 
-1. **Auto-forwarded from host**: All env vars except system ones (PATH, HOME, etc.) are forwarded
+1. **Auto-forwarded from host**: All env vars except system ones (PATH, HOME, etc.)
 2. **Locale/Timezone**: `LANG`, `LC_*`, `TZ` auto-forwarded; defaults to `en_US.UTF-8` and auto-detected timezone
 3. **Per-session**: `ccc --env KEY=VALUE`
+4. **Container marker**: `container=docker` auto-set inside container
 
 ### Transparent Localhost Proxy (macOS/Windows)
 
@@ -107,67 +128,35 @@ claude-code-container/
 │   ├── mcp-forward.ts         # MCP server forwarding
 │   ├── worktree.ts            # Git worktree workspace management
 │   ├── remote.ts              # Remote development helpers
-│   └── utils.ts               # Shared utilities
+│   ├── doctor.ts              # Health check and diagnostics
+│   ├── clean.ts               # Container/image cleanup
+│   └── utils.ts               # Shared utilities (CLI_VERSION, constants)
 ├── scripts/
-│   └── install.js             # Cross-platform global installer
+│   ├── install.js             # Legacy cross-platform global installer
+│   ├── clipboard-shims/       # Clipboard bridge shims (runtime)
+│   └── clipboard-helper-darwin.m  # macOS clipboard helper (compiled at runtime)
 ├── dist/                      # Compiled JavaScript (gitignored)
 ├── Dockerfile                 # Container image definition
 ├── package.json
 ├── tsconfig.json
+├── vitest.config.ts
 ├── CLAUDE.md                  # Claude Code instructions
 ├── CONTRIBUTING.md            # This file
 └── README.md                  # User documentation
 ```
 
-## Development Workflow
-
-```bash
-# Build after code changes
-npm run build
-
-# Test ccc command (symlinked, auto-reflects changes)
-ccc --help
-ccc status
-```
-
-### Uninstall Global
-
-```bash
-# macOS/Linux
-sudo npm run uninstall:global
-
-# Windows
-npm run uninstall:global
-```
-
-## Build Commands
-
-| Command | Description |
-|---------|-------------|
-| `npm install` | Install dependencies |
-| `npm run build` | Compile TypeScript |
-| `npm test` | Run tests (vitest) |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run install:global` | Install globally (sudo on macOS/Linux) |
-| `npm run uninstall:global` | Uninstall globally (sudo on macOS/Linux) |
-
-## Code Style
-
-- TypeScript ES2022 target
-- Keep code concise and minimal
-- Per-project containers with path-hash naming
-- Lock files for session tracking and crash recovery
-
 ## Key Components
 
-### Container Management
+### Container Management (`docker.ts`)
 
+- `ensureImage()`: Label-based version matching with auto-pull from Docker Hub
+- `getImageLabel()`: Read Docker image labels
+- `pullImage()` / `tagImage()`: Registry image operations
 - `startProjectContainer()`: Create/start project container
-- `stopProjectContainer()`: Stop container
-- `removeProjectContainer()`: Remove container
-- `ensureImage()`: Check image exists (directs to install.js if missing)
+- `stopProjectContainer()` / `removeProjectContainer()`: Container lifecycle
+- `isContainerImageOutdated()`: SHA-based container upgrade detection
 
-### Session Management
+### Session Management (`session.ts`)
 
 - `createSessionLock()`: Create session lock file
 - `removeSessionLock()`: Delete lock file
@@ -175,17 +164,24 @@ npm run uninstall:global
 - `cleanupSession()`: Cleanup session (delete lock + decide container stop)
 - `setupSignalHandlers()`: Register signal handlers
 
-### mise Integration
+### mise Integration (`scanner.ts`)
 
 - `ensureMiseConfig()`: Check for `.mise.toml`, offer to create if missing
 - `detectProjectToolsAndWriteMiseConfig()`: Analyze project with Claude to generate mise.toml
 
-### Localhost Proxy
+### Localhost Proxy (`localhost-proxy.ts`)
 
 - `tryConnect()`: Attempt TCP connection with timeout
 - `proxyConnection()`: Try local first, fallback to host.docker.internal
 - `startProxy()` / `stopProxy()`: Proxy server lifecycle
-- `setupLocalhostProxy()`: Set up iptables + proxy daemon in container (macOS/Windows only)
+- `setupLocalhostProxy()`: Set up iptables + proxy daemon in container
+
+### Utilities (`utils.ts`)
+
+- `CLI_VERSION`: Runtime version from package.json (via `createRequire`)
+- `DOCKER_REGISTRY_IMAGE`: Docker Hub registry path (overridable via `CCC_REGISTRY`)
+- `hashPath()` / `getProjectId()`: Path-based container naming
+- `EXCLUDE_ENV_KEYS`: Environment variables excluded from forwarding
 
 ## Testing
 
@@ -194,51 +190,61 @@ npm run uninstall:global
 npm test
 
 # Run specific test file
-npm test -- src/__tests__/localhost-proxy.test.ts
+npx vitest run src/__tests__/docker.test.ts
 
-# Run Claude in a project (container auto-created)
-cd /path/to/project
-ccc
-
-# Check status
-ccc status
-
-# Open shell
-ccc shell
-
-# Cleanup
-ccc rm
+# Run tests in watch mode
+npm run test:watch
 ```
 
-## Deployment
+## Release Process
 
-### npm Release
+Releases are automated via a single GitHub Actions workflow (`.github/workflows/release.yml`).
 
-Auto-deployed on tag push to `main` branch:
+### Steps
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
+1. Update `version` in `package.json`
+2. Commit and tag:
+   ```bash
+   git add package.json
+   git commit -m "release: v1.2.3"
+   git tag v1.2.3
+   git push && git push --tags
+   ```
+3. GitHub Actions runs:
+   - **docker-build**: Verifies tag matches package.json version, builds multi-arch image (amd64 + arm64), pushes to Docker Hub with `cli.version` label
+   - **npm-publish**: Runs only if docker-build succeeds, publishes to npm with Node 22
+
+### Version Coherence
+
+- npm package version and Docker Hub tag are always in lockstep
+- Docker image includes `cli.version` label matching the npm version
+- CLI detects version mismatches on startup and auto-pulls the correct image
+
+### Docker Hub
+
+Images are published to [`luxusio/claude-code-container`](https://hub.docker.com/r/luxusio/claude-code-container) with tags:
+- `luxusio/claude-code-container:<version>` (e.g., `1.0.0`)
+- `luxusio/claude-code-container:latest`
+
+### Secrets Required
+
+| Secret | Description |
+|--------|-------------|
+| `DOCKERHUB_USERNAME` | Docker Hub username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token |
+| `NPM_TOKEN` | npm publish token |
 
 ## Troubleshooting
 
-### `ccc` command not found
+### `ccc` command not found (npm install)
 
 ```bash
-# Re-run global install
-sudo npm run install:global   # macOS/Linux
-npm run install:global        # Windows
-
-# Verify installation
-which ccc    # macOS/Linux
-where ccc    # Windows
+npm install -g claude-code-container
 ```
 
 ### Build Errors
 
 ```bash
-# Reinstall node_modules
 rm -rf node_modules dist
 npm install
 npm run build
@@ -247,30 +253,32 @@ npm run build
 ### Container Issues
 
 ```bash
-# Check container status
-ccc status
-docker ps -a | grep ccc-
+ccc doctor              # Health check
+ccc status              # Show all containers
+docker logs ccc-<name>  # Check container logs
+ccc rm && ccc           # Recreate container
+```
 
-# Check container logs
-docker logs ccc-<project>-<hash>
+### Image Rebuild (Local Development)
 
-# Remove and restart container
+```bash
+docker rmi ccc
+docker build -t ccc .
 ccc rm
 ccc
 ```
 
-### Image Rebuild
+### Stale Session Cleanup
 
 ```bash
-sudo node scripts/install.js  # Stops containers + rebuilds image
-```
-
-### Manual Stale Session Cleanup
-
-```bash
-# Check lock files
 ls -la ~/.ccc/locks/
-
-# Manual cleanup (if needed)
-rm ~/.ccc/locks/*.lock
+rm ~/.ccc/locks/*.lock    # Manual cleanup if needed
 ```
+
+## Code Style
+
+- TypeScript with ES2022 target, ESM modules
+- Keep code concise and minimal
+- Per-project containers with path-hash naming
+- Lock files for session tracking and crash recovery
+- Fail-open pattern for non-critical operations (image inspect, etc.)

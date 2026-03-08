@@ -14,6 +14,8 @@ import {
     IMAGE_NAME,
     CONTAINER_PID_LIMIT,
     MISE_VOLUME_NAME,
+    CLI_VERSION,
+    DOCKER_REGISTRY_IMAGE,
 } from "./utils.js";
 
 // === Docker Args Builder ===
@@ -215,13 +217,81 @@ export function isContainerImageOutdated(containerName: string): boolean {
     }
 }
 
-export function ensureImage(): void {
-    if (!isImageExists()) {
-        console.error(
-            "ccc image not found. Go to claude-code-container directory and run 'sudo node scripts/install.js'",
+/**
+ * Get a Docker image label value.
+ * Returns null if the label is missing, the image doesn't exist, or the value is '<no value>'.
+ */
+export function getImageLabel(imageName: string, label: string): string | null {
+    try {
+        const result = spawnSync(
+            "docker",
+            ["inspect", imageName, "--format", `{{index .Config.Labels "${label}"}}`],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
-        process.exit(1);
+        if (result.status !== 0) return null;
+        const value = (result.stdout ?? "").trim();
+        if (!value || value === "<no value>") return null;
+        return value;
+    } catch {
+        return null;
     }
+}
+
+/**
+ * Pull a Docker image. Returns true on success, false on failure.
+ * Uses stdio:inherit so the user sees pull progress.
+ */
+export function pullImage(imageRef: string): boolean {
+    const result = spawnSync("docker", ["pull", imageRef], { stdio: "inherit" });
+    return result.status === 0;
+}
+
+/**
+ * Tag a Docker image.
+ */
+export function tagImage(source: string, target: string): void {
+    spawnSync("docker", ["tag", source, target], { stdio: "ignore" });
+}
+
+/**
+ * Ensure a usable ccc image exists, using label-based version matching:
+ * 1. Local ccc with no cli.version label = dev build, use as-is
+ * 2. Local ccc with matching cli.version = correct version, use as-is
+ * 3. Otherwise pull DOCKER_REGISTRY_IMAGE:CLI_VERSION from registry, tag as ccc
+ * 4. On pull failure with stale image: warn and continue
+ * 5. On pull failure with no image: exit with error
+ */
+export function ensureImage(): void {
+    const localExists = isImageExists();
+
+    if (localExists) {
+        const label = getImageLabel(IMAGE_NAME, "cli.version");
+        // No label = dev build (docker build -t ccc .), never auto-replace
+        if (label === null) return;
+        // Label matches CLI_VERSION = correct version
+        if (label === CLI_VERSION) return;
+        // Label mismatch = stale image after npm upgrade, fall through to pull
+        console.log(`Image version mismatch (have v${label}, need v${CLI_VERSION}). Pulling update...`);
+    } else {
+        console.log(`Pulling ccc image v${CLI_VERSION} from registry...`);
+    }
+
+    // Pull from registry
+    const remoteRef = `${DOCKER_REGISTRY_IMAGE}:${CLI_VERSION}`;
+    if (pullImage(remoteRef)) {
+        tagImage(remoteRef, IMAGE_NAME);
+        return;
+    }
+
+    // Pull failed
+    if (localExists) {
+        console.warn(`Warning: Failed to pull ${remoteRef}. Using existing image.`);
+        return;
+    }
+
+    console.error(`Error: Failed to pull ${remoteRef}.`);
+    console.error("You can build locally instead: docker build -t ccc .");
+    process.exit(1);
 }
 
 // === Clipboard Shim Sync ===

@@ -6,13 +6,17 @@
   "bin": {
     "ccc": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "scripts/clipboard-shims/",
+    "scripts/clipboard-helper-darwin.m",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build",
-    "install:global": "node scripts/install.js",
-    "uninstall:global": "node scripts/install.js --uninstall"
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=14.14.0"
@@ -27,7 +31,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/claude-code-container"
+    "url": "https://github.com/Luxusio/claude-code-container"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

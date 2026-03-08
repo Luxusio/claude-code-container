@@ -183,6 +183,33 @@ describe("cleanContainers", () => {
         expect(console.log).toHaveBeenCalledWith("Aborted.");
     });
 
+    it("listImages finds both ccc and registry images, deduplicates by ID", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") return makeResult(0, "");
+            if (argsArr[0] === "images") {
+                const repo = argsArr[argsArr.length - 1] as string;
+                if (repo === "ccc") {
+                    return makeResult(0, "ccc\tsha256aaa\t500MB");
+                }
+                // DOCKER_REGISTRY_IMAGE query: same ID (dedup) + unique one
+                return makeResult(0, "1uxus/claude-code-container\tsha256aaa\t500MB\n1uxus/claude-code-container\tsha256bbb\t500MB");
+            }
+            return makeResult(0, "");
+        });
+
+        await expect(cleanContainers({ yes: true })).rejects.toThrow("process.exit called");
+
+        // Should call rmi for 2 unique IDs (sha256aaa deduped, sha256bbb unique)
+        const rmiCalls = spawnSyncMock.mock.calls.filter(
+            (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rmi"
+        );
+        const rmiIds = rmiCalls.map((c: unknown[]) => (c[1] as string[])[1]);
+        expect(rmiIds).toContain("sha256aaa");
+        expect(rmiIds).toContain("sha256bbb");
+        expect(rmiIds).toHaveLength(2);
+    });
+
     it("exits with 0 after successful clean", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];

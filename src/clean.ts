@@ -2,7 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { ensureDockerRunning } from "./docker.js";
-import { prompt } from "./utils.js";
+import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
 
 export interface CleanOptions {
     volumes?: boolean;   // also remove volumes
@@ -37,21 +37,31 @@ function listContainers(): ContainerInfo[] {
 }
 
 function listImages(): ImageInfo[] {
-    const result = spawnSync(
-        "docker",
-        ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", "ccc"],
-        { encoding: "utf-8" },
-    );
-    const out = (result.stdout ?? "").trim();
-    if (!out) return [];
-    return out.split("\n").map((line) => {
-        const parts = line.split("\t");
-        return {
-            repository: (parts[0] ?? "").trim(),
-            id: (parts[1] ?? "").trim(),
-            size: (parts[2] ?? "").trim(),
-        };
-    });
+    const seen = new Set<string>();
+    const images: ImageInfo[] = [];
+
+    for (const repo of ["ccc", DOCKER_REGISTRY_IMAGE]) {
+        const result = spawnSync(
+            "docker",
+            ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repo],
+            { encoding: "utf-8" },
+        );
+        const out = (result.stdout ?? "").trim();
+        if (!out) continue;
+        for (const line of out.split("\n")) {
+            const parts = line.split("\t");
+            const id = (parts[1] ?? "").trim();
+            if (id && !seen.has(id)) {
+                seen.add(id);
+                images.push({
+                    repository: (parts[0] ?? "").trim(),
+                    id,
+                    size: (parts[2] ?? "").trim(),
+                });
+            }
+        }
+    }
+    return images;
 }
 
 function listVolumes(): string[] {

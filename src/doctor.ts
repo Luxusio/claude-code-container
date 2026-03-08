@@ -9,8 +9,9 @@ import {
     isContainerRunning,
     isContainerExists,
     isImageExists,
+    getImageLabel,
 } from "./docker.js";
-import { getProjectId, DATA_DIR, MISE_VOLUME_NAME } from "./utils.js";
+import { getProjectId, DATA_DIR, MISE_VOLUME_NAME, CLI_VERSION } from "./utils.js";
 import { getActiveSessionsForProject } from "./session.js";
 
 interface DoctorCheck {
@@ -79,12 +80,23 @@ export function runDoctor(projectPath: string): boolean {
 
     // 2. Image
     if (isImageExists()) {
-        checks.push({ name: "Image", status: "ok", message: "Built" });
+        const label = getImageLabel("ccc", "cli.version");
+        if (label === null) {
+            checks.push({ name: "Image", status: "ok", message: "Built locally (dev)" });
+        } else if (label === CLI_VERSION) {
+            checks.push({ name: "Image", status: "ok", message: `Registry (v${label})` });
+        } else {
+            checks.push({
+                name: "Image",
+                status: "warn",
+                message: `Registry (v${label} -- CLI expects v${CLI_VERSION}, run 'ccc' to update)`,
+            });
+        }
     } else {
         checks.push({
             name: "Image",
             status: "error",
-            message: "Not built - run 'sudo node scripts/install.js'",
+            message: "Not found -- run 'ccc' to auto-pull, or 'docker build -t ccc .' for local build",
         });
     }
 
