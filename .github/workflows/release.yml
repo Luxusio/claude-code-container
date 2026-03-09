@@ -71,12 +71,8 @@ jobs:
         id: npm-tag
         run: |
           LATEST=$(npm view claude-code-container version 2>/dev/null || echo "0.0.0")
-          NEW=${{ steps.version.outputs.version }}
-          IS_LATEST=$(node -e "
-            const cmp = (a, b) => { const [am,an,ap]=a.split('.').map(Number); const [bm,bn,bp]=b.split('.').map(Number); return am!==bm?am-bm:an!==bn?an-bn:ap-bp; };
-            process.stdout.write(cmp('$NEW','$LATEST') >= 0 ? 'true' : 'false');
-          ")
-          echo "tag=$([ '$IS_LATEST' = 'true' ] && echo 'latest' || echo 'old')" >> $GITHUB_OUTPUT
+          TAG=$(node scripts/determine-npm-tag.js "${{ steps.version.outputs.version }}" "$LATEST")
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Publish
         run: npm publish --access public --provenance --tag ${{ steps.npm-tag.outputs.tag }}
