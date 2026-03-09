@@ -202,7 +202,7 @@ describe("docker.ts module exports", () => {
     });
 
     describe("syncClipboardShims", () => {
-        it("should docker cp each shim file that exists", () => {
+        it("should docker cp each shim file that exists and chmod +x", () => {
             mockExistsSync.mockReturnValue(true);
             spawnSyncMock.mockReturnValue(makeResult(0));
 
@@ -216,6 +216,16 @@ describe("docker.ts module exports", () => {
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/xclip");
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/wl-paste");
             expect(shims).toContain("ccc-test-abc123:/usr/local/bin/pbpaste");
+
+            // Should also chmod +x all copied shims
+            const chmodCalls = spawnSyncMock.mock.calls.filter(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "exec" && (c[1] as string[]).includes("chmod")
+            );
+            expect(chmodCalls).toHaveLength(1);
+            const chmodArgs = chmodCalls[0][1] as string[];
+            expect(chmodArgs).toContain("+x");
+            expect(chmodArgs).toContain("/usr/local/bin/xclip");
+            expect(chmodArgs).toContain("/usr/local/bin/pbpaste");
         });
 
         it("should skip when shims directory does not exist", () => {

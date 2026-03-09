@@ -323,11 +323,16 @@ const CLIPBOARD_SHIMS = ["xclip", "xsel", "wl-paste", "wl-copy", "pbpaste"];
 export function syncClipboardShims(containerName: string, distDir: string): void {
     const shimsDir = join(distDir, "..", "scripts", "clipboard-shims");
     if (!existsSync(shimsDir)) return;
+    const copied: string[] = [];
     for (const shim of CLIPBOARD_SHIMS) {
         const src = join(shimsDir, shim);
         if (existsSync(src)) {
             spawnSync("docker", ["cp", src, `${containerName}:/usr/local/bin/${shim}`]);
+            copied.push(`/usr/local/bin/${shim}`);
         }
+    }
+    if (copied.length > 0) {
+        spawnSync("docker", ["exec", containerName, "chmod", "+x", ...copied]);
     }
 }
 
