@@ -74,7 +74,7 @@ describe("ensureTools (npm tools)", () => {
         expect(shCmd).toContain("mise exec node@22");
         expect(shCmd).toContain("@google/gemini-cli");
         expect(shCmd).toContain("@openai/codex");
-        expect(shCmd).toContain("opencode");
+        expect(shCmd).toContain("opencode-ai");
 
         // Verify wrapper creation
         const wrapperCall = spawnSyncMock.mock.calls[3];

@@ -53,6 +53,8 @@ const TOOLS: ToolDefinition[] = [
         defaultFlags: ["--ask-for-approval", "never", "--sandbox", "danger-full-access"],
         credentialMounts: [
             { hostDir: ".codex", containerDir: "/home/ccc/.codex" },
+            { hostDir: ".omx", containerDir: "/home/ccc/.omx" },
+            { hostDir: ".agents", containerDir: "/home/ccc/.agents" },
         ],
         needsNodeRuntime: false,
         updateCommand: ["codex", "update"],
@@ -69,7 +71,7 @@ const TOOLS: ToolDefinition[] = [
         ],
         needsNodeRuntime: false,
         updateCommand: ["opencode", "update"],
-        installCommand: "npm install -g opencode",
+        installCommand: "npm install -g opencode-ai",
     },
 ];
 

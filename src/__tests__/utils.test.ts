@@ -14,6 +14,9 @@ import {
     CONTAINER_ENV_KEY,
     CONTAINER_ENV_VALUE,
     prompt,
+    collectForwardedEnv,
+    DEFAULT_ENV_FORWARD_BYTE_LIMIT,
+    isValidEnvKey,
 } from '../utils.js';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -203,6 +206,63 @@ describe('EXCLUDE_ENV_KEYS', () => {
         expect(EXCLUDE_ENV_KEYS.has('NODE_ENV')).toBe(false);
         expect(EXCLUDE_ENV_KEYS.has('DATABASE_URL')).toBe(false);
         expect(EXCLUDE_ENV_KEYS.has('AWS_ACCESS_KEY_ID')).toBe(false);
+    });
+});
+
+describe('collectForwardedEnv', () => {
+    it('keeps smaller env vars first when byte budget is tight', () => {
+        const env = {
+            BIG_CUSTOM: 'x'.repeat(120),
+            SMALL_CUSTOM: 'ok',
+            MID_CUSTOM: 'hello',
+        };
+
+        const result = collectForwardedEnv(env, { byteLimit: 80 });
+        const forwardedKeys = result.forwarded.map(([key]) => key);
+
+        expect(forwardedKeys).toContain('SMALL_CUSTOM');
+        expect(forwardedKeys).toContain('MID_CUSTOM');
+        expect(result.skippedDueToLimit).toContain('BIG_CUSTOM');
+    });
+
+    it('skips Windows-path env values and noisy shell prefixes', () => {
+        const env = {
+            GOOD_KEY: 'value',
+            WIN_PATH: 'C:\\Users\\Luxus\\AppData\\Local',
+            __MISE_SESSION: 'huge-state',
+            'BASH_FUNC_test%%': '() {  echo hi',
+        };
+
+        const result = collectForwardedEnv(env);
+        const forwardedKeys = result.forwarded.map(([key]) => key);
+
+        expect(forwardedKeys).toContain('GOOD_KEY');
+        expect(forwardedKeys).not.toContain('WIN_PATH');
+        expect(forwardedKeys).not.toContain('__MISE_SESSION');
+        expect(forwardedKeys).not.toContain('BASH_FUNC_test%%');
+    });
+
+    it('uses the default byte limit when none is provided', () => {
+        const env = {
+            SMALL: '1',
+            LARGE: 'x'.repeat(DEFAULT_ENV_FORWARD_BYTE_LIMIT),
+        };
+
+        const result = collectForwardedEnv(env);
+
+        expect(result.forwarded.map(([key]) => key)).toContain('SMALL');
+        expect(result.skippedDueToLimit).toContain('LARGE');
+    });
+});
+
+describe('isValidEnvKey', () => {
+    it('accepts POSIX-compatible env keys', () => {
+        expect(isValidEnvKey('OPENAI_API_KEY')).toBe(true);
+    });
+
+    it('rejects malformed env keys', () => {
+        expect(isValidEnvKey('BASH_FUNC_test%%')).toBe(false);
+        expect(isValidEnvKey('1INVALID')).toBe(false);
     });
 });
 

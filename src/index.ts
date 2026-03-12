@@ -23,7 +23,6 @@ import {
 } from "./remote.js";
 import {
     getProjectId,
-    EXCLUDE_ENV_KEYS,
     CONTAINER_ENV_KEY,
     CONTAINER_ENV_VALUE,
     prompt,
@@ -31,9 +30,11 @@ import {
     CLI_VERSION,
     getClaudeDir,
     getClaudeJsonFile,
+    collectForwardedEnv,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
+import { maybeAttachCodexClipboardImage } from "./codex-clipboard-image.js";
 import {
     parseWorktreeArg,
     validateBranchName,
@@ -170,6 +171,36 @@ ${defaultContent}`;
     console.log(`Created: ${miseConfigPath}`);
 }
 
+export function resolveExecTools(
+    cmd: string[],
+    optionsTool?: ToolDefinition,
+): { setupTool: ToolDefinition; commandTool?: ToolDefinition } {
+    const commandTool = optionsTool ?? getToolByName(cmd[0]);
+    return {
+        setupTool: commandTool ?? getDefaultTool(),
+        commandTool,
+    };
+}
+
+export async function maybeAttachCodexClipboardImageForCommand(
+    projectPath: string,
+    cmd: string[],
+    commandTool?: ToolDefinition,
+    clipboard?: { url?: string; token?: string },
+    attachClipboardImage: typeof maybeAttachCodexClipboardImage = maybeAttachCodexClipboardImage,
+): Promise<string[]> {
+    if (commandTool?.name !== "codex") {
+        return [...cmd];
+    }
+
+    const attached = await attachClipboardImage(projectPath, [...cmd], {
+        enabled: true,
+        clipboardUrl: clipboard?.url,
+        clipboardToken: clipboard?.token,
+    });
+    return attached.args;
+}
+
 // Check if mise.toml exists and offer to create if not
 async function ensureMiseConfig(projectPath: string): Promise<void> {
     const miseConfigPath = join(projectPath, "mise.toml");
@@ -227,9 +258,9 @@ async function exec(
         console.error(`[ccc:debug] exec: mountPath=/project/${projectId}`);
         console.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
     }
-    const activeTool = options.tool ?? getDefaultTool();
+    const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
     const sessionLockFile = createSessionLock(projectId, profile);
-    setSession(sessionLockFile, fullPath, profile, activeTool.name);
+    setSession(sessionLockFile, fullPath, profile, (commandTool ?? setupTool).name);
     setupSignalHandlers();
 
     // Start clipboard server early — must complete before container creation so
@@ -296,7 +327,7 @@ async function exec(
                 startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
             }
             try {
-                ensureTools(containerName, activeTool);
+                ensureTools(containerName, setupTool);
                 break;
             } catch {
                 if (attempt === 1) {
@@ -334,23 +365,44 @@ async function exec(
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
+    const clipboardHost = clipboardPort
+        ? ((process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal")
+        : null;
+    let clipboardToken: string | null = null;
+    if (clipboardPort) {
+        try {
+            const portFileContent = readFileSync(join(DATA_DIR, "clipboard.port"), "utf-8").trim();
+            clipboardToken = portFileContent.split(":").slice(1).join(":") || null;
+        } catch {
+            clipboardToken = null;
+        }
+    }
 
-    // Forward host env vars to the container via -e flags (denylist approach).
-    // Excludes system/platform vars that are meaningless inside the container.
-    const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((k) => k.toUpperCase()));
+    let resolvedCmd = [...cmd];
+    resolvedCmd = await maybeAttachCodexClipboardImageForCommand(
+        fullPath,
+        resolvedCmd,
+        commandTool,
+        {
+            url: clipboardHost && clipboardPort ? `http://${clipboardHost}:${clipboardPort}` : undefined,
+            token: clipboardToken ?? undefined,
+        },
+    );
 
     const execArgs = ["exec", "-w", projectMountPath];
 
     // Container marker: enables per-project env separation via mise.toml [env] conditionals
     execArgs.push("-e", `${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`);
 
-    for (const [key, value] of Object.entries(process.env)) {
-        if (value === undefined) continue;
-        if (excludeUpper.has(key.toUpperCase())) continue;
-        // Skip env vars with Windows paths (useless in Linux container)
-        if (/^[A-Za-z]:[/\\]/.test(value)) continue;
-        if (/;[A-Za-z]:[/\\]/.test(value)) continue;
+    const forwardedEnvPlan = collectForwardedEnv(process.env);
+    for (const [key, value] of forwardedEnvPlan.forwarded) {
         execArgs.push("-e", `${key}=${value}`);
+    }
+
+    if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
+        console.error(
+            `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`,
+        );
     }
 
     // Locale: forward host LANG/LC_* (no longer excluded).
@@ -370,22 +422,16 @@ async function exec(
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
-        const clipboardHost = (process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal";
         execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
-        // Read token from port file for container auth
-        try {
-            const portFileContent = readFileSync(join(DATA_DIR, "clipboard.port"), "utf-8").trim();
-            const clipToken = portFileContent.split(":").slice(1).join(":");
-            if (clipToken) {
-                execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipToken}`);
-            }
-        } catch { /* token unavailable - clipboard will fail with 401 */ }
+        if (clipboardToken) {
+            execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
+        }
     }
 
     // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
     // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
     // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
-    if (activeTool.needsNodeRuntime) {
+    if (commandTool?.needsNodeRuntime) {
         execArgs.push("-e", "MISE_NODE_VERSION=22");
         execArgs.push("-e", "BASH_ENV=/home/ccc/.bashrc_hooks");
     }
@@ -400,7 +446,7 @@ async function exec(
     // mise install can be slow on first run (downloads tool binaries).
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
-    if (activeTool.name === "claude") {
+    if (commandTool?.name === "claude") {
         // Step 1: mise setup (trust, install, reshim) — only on first session startup.
         // Skipped when container was already running: a previous session already ran this.
         if (!wasAlreadyRunning) {
@@ -428,7 +474,7 @@ async function exec(
             "sh", "-c",
             `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
         ], { stdio: "inherit" });
-        execArgs.push(...cmd);
+        execArgs.push(...resolvedCmd);
     }
 
     const result = spawnSync("docker", execArgs, { stdio: "inherit" });
