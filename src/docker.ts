@@ -375,6 +375,35 @@ function containerHasMounts(
     }
 }
 
+function fixSshPermissions(containerName: string): void {
+    const hostSshDir = join(homedir(), ".ssh");
+
+    spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", "chmod 666 /tmp/ssh-agent.sock 2>/dev/null; true"],
+        { stdio: "ignore" },
+    );
+
+    if (existsSync(hostSshDir)) {
+        spawnSync(
+            "docker",
+            [
+                "exec",
+                containerName,
+                "sh",
+                "-c",
+                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
+                    "chmod 700 /tmp/.ssh-copy && " +
+                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
+                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
+                    "true",
+            ],
+            { stdio: "ignore" },
+        );
+    }
+}
+
 // === Container Lifecycle ===
 
 export function startProjectContainer(
@@ -405,6 +434,7 @@ export function startProjectContainer(
 
     if (isContainerExists(containerName)) {
         spawnSync("docker", ["start", containerName], { stdio: "inherit" });
+        fixSshPermissions(containerName);
         return containerName;
     }
 
@@ -450,25 +480,7 @@ export function startProjectContainer(
         process.exit(1);
     }
 
-    // Fix SSH key permissions
-    if (existsSync(hostSshDir)) {
-        spawnSync(
-            "docker",
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
-                    "chmod 700 /tmp/.ssh-copy && " +
-                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
-                    "true",
-            ],
-            { stdio: "ignore" },
-        );
-    }
+    fixSshPermissions(containerName);
 
     return containerName;
 }
