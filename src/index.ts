@@ -7,7 +7,6 @@ import {
     writeFileSync,
     readFileSync,
 } from "fs";
-import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -71,7 +70,7 @@ import {
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
-    ensureGlobalNpmTools,
+    ensureTools,
     saveClaudeBinaryToVolume,
     CLAUDE_BIN_PATH,
 } from "./container-setup.js";
@@ -84,13 +83,12 @@ import {
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
+import { getToolByName, getAllTools, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
+import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// === Configuration ===
-const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
 
 // === Helpers ===
 function ensureDirs(): void {
@@ -185,7 +183,7 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
 async function exec(
     projectPath: string,
     cmd: string[],
-    options: { interactive?: boolean; env?: Record<string, string> } = {},
+    options: { interactive?: boolean; env?: Record<string, string>; tool?: ToolDefinition } = {},
 ): Promise<void> {
     // Check Docker is running first
     ensureDockerRunning();
@@ -205,8 +203,16 @@ async function exec(
     //   Terminal A cleanup checks for other sessions → finds none → stops container
     //   Terminal B is still setting up but hasn't created its lock yet → container dies
     const projectId = getProjectId(fullPath);
+    if (process.env.DEBUG) {
+        console.error(`[ccc:debug] exec: projectPath=${projectPath}`);
+        console.error(`[ccc:debug] exec: fullPath=${fullPath}`);
+        console.error(`[ccc:debug] exec: projectId=${projectId}`);
+        console.error(`[ccc:debug] exec: mountPath=/project/${projectId}`);
+        console.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
+    }
+    const activeTool = options.tool ?? getDefaultTool();
     const sessionLockFile = createSessionLock(projectId);
-    setSession(sessionLockFile, fullPath);
+    setSession(sessionLockFile, fullPath, activeTool.name);
     setupSignalHandlers();
 
     // Start clipboard server early — must complete before container creation so
@@ -217,6 +223,12 @@ async function exec(
 
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
+    if (process.env.DEBUG && worktreeMounts.length > 0) {
+        console.error(`[ccc:debug] worktreeGitMounts (${worktreeMounts.length}):`);
+        for (const m of worktreeMounts) {
+            console.error(`[ccc:debug]   ${m.hostPath} -> ${m.containerPath}`);
+        }
+    }
 
     // Auto-upgrade container if image has been rebuilt
     const targetContainer = getContainerName(fullPath);
@@ -251,7 +263,7 @@ async function exec(
         clipboardPortFile,
     );
 
-    // Ensure claude binary is available (cached in volume or fresh install).
+    // Ensure tools are installed (claude via curl + npm tools from registry).
     // Retry once if a concurrent session stopped the container during setup.
     for (let attempt = 0; attempt < 2; attempt++) {
         if (!isContainerRunning(containerName)) {
@@ -259,27 +271,23 @@ async function exec(
             startProjectContainer(fullPath, ensureDirs);
         }
         try {
-            ensureClaudeInContainer(containerName);
+            ensureTools(containerName, activeTool);
             break;
         } catch {
             if (attempt === 1) {
-                console.error("Failed to install claude in container");
+                console.error("Failed to install tools in container");
                 process.exit(1);
             }
-            // Container may have been stopped mid-install; loop will restart it
         }
     }
 
-    // Run independent setup steps in parallel after claude is installed.
-    // These all need the container but are independent of each other.
-    const [, , forwardedMcp] = await Promise.all([
-        // 1. Install global npm tools (yarn, pnpm, etc.)
-        Promise.resolve(ensureGlobalNpmTools(containerName)),
-        // 2. Sync clipboard shims to container
+    // Run independent setup steps in parallel.
+    const [, forwardedMcp] = await Promise.all([
+        // 1. Sync clipboard shims to container
         Promise.resolve(syncClipboardShims(containerName, __dirname)),
-        // 3. Build MCP config (no container dependency, but grouped for clarity)
+        // 2. Build MCP config
         Promise.resolve(buildMcpConfig()),
-        // 4. Start localhost proxy for macOS/Windows (--network host doesn't work on VM-based Docker)
+        // 3. Start localhost proxy for macOS/Windows
         Promise.resolve(setupLocalhostProxy(containerName)),
     ]);
 
@@ -352,7 +360,7 @@ async function exec(
     // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
     // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
     // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
-    if (cmd[0] === "claude") {
+    if (activeTool.needsNodeRuntime) {
         execArgs.push("-e", "MISE_NODE_VERSION=22");
         execArgs.push("-e", "BASH_ENV=/home/ccc/.bashrc_hooks");
     }
@@ -366,7 +374,7 @@ async function exec(
     // For claude, run mise setup and claude as SEPARATE docker exec calls.
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
-    if (cmd[0] === "claude") {
+    if (activeTool.name === "claude") {
         // Step 1: mise setup (trust, install, reshim) — separate exec
         spawnSync(
             "docker",
@@ -384,10 +392,27 @@ async function exec(
         // Step 2: run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
     } else {
+        // mise setup only, then direct command
+        spawnSync("docker", [
+            "exec", "-w", projectMountPath, containerName,
+            "sh", "-c",
+            `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
+        ], { stdio: "inherit" });
         execArgs.push(...cmd);
     }
 
     const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+
+    if (process.env.DEBUG) {
+        // Check conversation directory state after Claude exits
+        const claudeProjectDir = `/home/ccc/.claude/projects/-project-${projectId}`;
+        const checkResult = spawnSync("docker", [
+            "exec", containerName, "sh", "-c",
+            `ls -1 "${claudeProjectDir}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${claudeProjectDir}"`,
+        ], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        const output = (checkResult.stdout ?? "").trim();
+        console.error(`[ccc:debug] post-exit conversation check: ${output}`);
+    }
 
     // Cleanup on normal exit
     cleanupSession();
@@ -648,14 +673,20 @@ function showHelp(): void {
 ccc - Claude Code Container
 
 USAGE:
-    ccc                     Run claude in current project
+    ccc                     Run default AI tool in current project
     ccc shell               Open bash shell in current project
-    ccc update              Update claude to latest version
+    ccc update              Update default tool to latest version
     ccc <command>           Run command in current project
 
+TOOLS:
+    ccc claude              Run Claude Code
+    ccc gemini              Run Gemini CLI
+    ccc codex               Run Codex
+    ccc opencode            Run OpenCode
+
 WORKTREES (multi-repo workspace):
-    ccc @<branch>           Create worktree workspace + run claude
-    ccc @<branch> --continue  Pass claude flags to worktree session
+    ccc @<branch>           Create worktree workspace + run default tool
+    ccc @<branch> --continue  Pass flags to worktree session
     ccc @                   List all workspaces
     ccc @<branch> rm        Remove workspace (container + worktrees)
     ccc @<branch> rm -f     Force remove dirty worktrees
@@ -679,15 +710,20 @@ REMOTE (run on remote host via Tailscale + Mutagen):
 
 OPTIONS:
     --env KEY=VALUE         Set environment variable
+    --default <tool>        Set default tool (claude/gemini/codex/opencode)
+    --default               Show current default tool
     -h, --help              Show this help
 
 EXAMPLES:
-    ccc                     # Run Claude in current project
-    ccc --continue          # Continue previous Claude session
+    ccc                     # Run default tool in current project
+    ccc claude              # Run Claude Code
+    ccc gemini              # Run Gemini CLI
+    ccc --continue          # Continue previous session (default tool)
     ccc shell               # Open shell in current project
     ccc npm install         # Run npm install in container
     ccc --env API_KEY=xxx   # Run with custom env var
-    ccc @feature            # Create workspace + run Claude
+    ccc --default gemini    # Set Gemini as default tool
+    ccc @feature            # Create workspace + run default tool
     ccc @feature/login      # Branch with / (dir name uses -)
     ccc @                   # List workspaces
     ccc @feature rm         # Remove workspace
@@ -713,6 +749,21 @@ async function main(): Promise<void> {
             const match = args[i].slice(6).match(/^([^=]+)=(.*)$/);
             if (match) {
                 customEnv[match[1]] = match[2];
+            }
+        } else if (args[i] === "--default") {
+            const nextArg = args[i + 1];
+            if (nextArg && !nextArg.startsWith("-")) {
+                const toolName = args[++i];
+                if (!getToolByName(toolName)) {
+                    console.error(`Unknown tool: ${toolName}. Available: ${getAllTools().map(t => t.name).join(", ")}`);
+                    process.exit(1);
+                }
+                setDefaultToolPreference(toolName);
+                console.log(`Default tool set to: ${toolName}`);
+                return;
+            } else {
+                console.log(`Default tool: ${getDefaultToolPreference() ?? "claude"}`);
+                return;
             }
         } else {
             filteredArgs.push(args[i]);
@@ -740,7 +791,13 @@ async function main(): Promise<void> {
             }
 
             // All other commands: prepare workspace, then fall through to standard switch
+            if (process.env.DEBUG) {
+                console.error(`[ccc:debug] worktree: originalCwd=${cwd} branch=${parsed.branch}`);
+            }
             cwd = await prepareWorktree(cwd, parsed.branch);
+            if (process.env.DEBUG) {
+                console.error(`[ccc:debug] worktree: workspaceCwd=${cwd}`);
+            }
             filteredArgs.shift(); // remove @branch
             command = filteredArgs[0]; // next arg becomes the command (shell, stop, etc. or undefined)
         }
@@ -806,28 +863,26 @@ async function main(): Promise<void> {
             await exec(cwd, ["bash"], { env: customEnv });
             break;
 
-        case "update":
-            await exec(cwd, ["claude", "update"], { env: customEnv });
+        case "update": {
+            const tool = resolveTool(process.env);
+            await exec(cwd, tool.updateCommand, { env: customEnv, tool });
             break;
+        }
 
-        case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {
-                env: customEnv,
-            });
+        case undefined: {
+            const tool = resolveTool(process.env);
+            await exec(cwd, [tool.binary, ...tool.defaultFlags], { env: customEnv, tool });
             break;
+        }
 
         default:
-            // Check if it's a claude flag (--continue, --resume, etc.)
-            if (command.startsWith("-")) {
-                await exec(
-                    cwd,
-                    [
-                        "claude",
-                        "--dangerously-skip-permissions",
-                        ...filteredArgs,
-                    ],
-                    { env: customEnv },
-                );
+            const tool = getToolByName(command);
+            if (tool) {
+                const toolArgs = filteredArgs.slice(1);
+                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...toolArgs], { env: customEnv, tool });
+            } else if (command.startsWith("-")) {
+                const tool = resolveTool(process.env);
+                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...filteredArgs], { env: customEnv, tool });
             } else {
                 await exec(cwd, filteredArgs, { env: customEnv });
             }

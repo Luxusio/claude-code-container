@@ -199,6 +199,84 @@ describe("docker.ts module exports", () => {
         it("should be a function exported from docker.ts", () => {
             expect(typeof buildDockerRunArgs).toBe("function");
         });
+
+        it("includes --hostname derived from container name", () => {
+            mockExistsSync.mockReturnValue(false);
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            const hostnameIdx = args.indexOf("--hostname");
+            expect(hostnameIdx).toBeGreaterThan(-1);
+            expect(args[hostnameIdx + 1]).toBe("ccc-my-project-abc123");
+        });
+
+        it("truncates hostname to 63 chars for long container names", () => {
+            mockExistsSync.mockReturnValue(false);
+            const longName = "ccc-" + "a".repeat(80);
+            const args = buildDockerRunArgs({
+                containerName: longName,
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            const hostnameIdx = args.indexOf("--hostname");
+            expect(hostnameIdx).toBeGreaterThan(-1);
+            expect(args[hostnameIdx + 1]).toHaveLength(63);
+        });
+
+        it("includes -v for each credentialMount entry", () => {
+            mockExistsSync.mockReturnValue(false);
+            const credentialMounts = [
+                { hostPath: "/home/user/.ccc/claude", containerPath: "/home/ccc/.claude" },
+                { hostPath: "/home/user/.claude/ide", containerPath: "/home/ccc/.claude/ide" },
+            ];
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts,
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            expect(args).toContain("/home/user/.ccc/claude:/home/ccc/.claude");
+            expect(args).toContain("/home/user/.claude/ide:/home/ccc/.claude/ide");
+        });
+
+        it("includes -v for claude.json mount independently of credentialMounts", () => {
+            mockExistsSync.mockReturnValue(false);
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            expect(args).toContain("/home/user/.ccc/claude.json:/home/ccc/.claude.json");
+        });
     });
 
     describe("syncClipboardShims", () => {
@@ -584,34 +662,39 @@ describe("docker.ts module exports", () => {
             else process.env.SSH_AUTH_SOCK = origSock;
         });
 
-        it("recreates container when extraMounts are missing (containerHasMounts returns false)", () => {
+        it("warns but does not recreate container when extraMounts are missing (containerHasMounts returns false)", () => {
             const extraMounts = [{ hostPath: "/host/repo/.git", containerPath: "/project/repo/.git" }];
             const missingMountsJson = JSON.stringify([]); // empty mounts -> missing required
 
             mockExistsSync.mockReturnValue(false);
+
+            const stderrSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, missingMountsJson)) // docker inspect (containerHasMounts)
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
-                .mockReturnValueOnce(makeResult(0))                  // docker rm
-                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
-                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                  // docker run
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerRunning -> true
+                ;
 
             const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
             expect(name).toMatch(/^ccc-/);
 
+            // Should NOT stop or rm the container
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             const rmCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
-            expect(stopCall).toBeDefined();
-            expect(rmCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
+            expect(rmCall).toBeUndefined();
+
+            // Should have printed a warning
+            expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("missing git mounts"));
+
+            stderrSpy.mockRestore();
         });
 
         it("reuses container when extraMounts are present and all mounts exist", () => {

@@ -12,19 +12,22 @@ const locksDir = join(DATA_DIR, "locks");
 // Module state - managed via getter/setter for testability
 let currentSessionLockFile: string | null = null;
 let currentProjectPath: string | null = null;
+let currentToolName: string | null = null;
 
-export function setSession(lockFile: string, projectPath: string): void {
+export function setSession(lockFile: string, projectPath: string, toolName?: string): void {
     currentSessionLockFile = lockFile;
     currentProjectPath = projectPath;
+    currentToolName = toolName ?? "claude";
 }
 
-export function getCurrentSession(): { lockFile: string | null; projectPath: string | null } {
-    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath };
+export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; toolName: string | null } {
+    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath, toolName: currentToolName };
 }
 
 export function clearSession(): void {
     currentSessionLockFile = null;
     currentProjectPath = null;
+    currentToolName = null;
     cleanedUp = false;
 }
 
@@ -110,7 +113,9 @@ export function cleanupSession(): void {
         const containerName = getContainerName(currentProjectPath);
         if (isContainerRunning(containerName)) {
             // Save claude binary to volume before stopping (handles `claude update`)
-            saveClaudeBinaryToVolume(containerName);
+            if (currentToolName === "claude") {
+                saveClaudeBinaryToVolume(containerName);
+            }
             spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
         }
     }

@@ -4,6 +4,7 @@
 // Contains: claude binary caching, npm tools installation, mise shim detection.
 
 import { spawnSync } from "child_process";
+import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
 
 // Claude binary persist path inside the mise volume
 export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
@@ -113,7 +114,7 @@ export function ensureClaudeInContainer(containerName: string): void {
             containerName,
             "sh",
             "-c",
-            `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
+            `${getToolByName("claude")!.installCommand} && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
         ],
         { stdio: "inherit" },
     );
@@ -123,13 +124,22 @@ export function ensureClaudeInContainer(containerName: string): void {
 }
 
 /**
- * Ensure global npm tools (gemini-cli, codex) are installed.
+ * Ensure all required tools are installed in the container.
+ * - Claude: curl install + volume caching (only when activeTool is claude)
+ * - npm tools (gemini, codex, opencode): npm install -g from registry
  */
-export function ensureGlobalNpmTools(containerName: string): void {
-    const tools = [
-        { cmd: "gemini", pkg: "@google/gemini-cli" },
-        { cmd: "codex", pkg: "@openai/codex" },
-    ];
+export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
+    if (activeTool.name === "claude") {
+        ensureClaudeInContainer(containerName);
+    }
+    ensureNpmTools(containerName);
+}
+
+/**
+ * Ensure npm-based tools from registry are installed.
+ */
+function ensureNpmTools(containerName: string): void {
+    const tools = getNpmTools();
 
     const missing = tools.filter((t) => {
         const check = spawnSync(
