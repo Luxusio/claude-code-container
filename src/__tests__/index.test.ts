@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
+import { resolveExecTools, maybeAttachCodexClipboardImageForCommand } from '../index.js'
+import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -198,6 +200,81 @@ describe('container environment marker', () => {
   it('formats correctly as shell-escaped remote env flag', () => {
     const flag = `-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`
     expect(flag).toBe("-e 'container=docker'")
+  })
+})
+
+describe('resolveExecTools', () => {
+  it('does not wrap shell commands with the default tool', () => {
+    const result = resolveExecTools(['bash'])
+    expect(result.commandTool).toBeUndefined()
+    expect(result.setupTool.name).toBe('claude')
+  })
+
+  it('uses the explicit tool for tool commands', () => {
+    const claude = getToolByName('claude')
+    expect(claude).toBeDefined()
+
+    const result = resolveExecTools([claude!.binary, '--help'], claude)
+    expect(result.commandTool?.name).toBe('claude')
+    expect(result.setupTool.name).toBe('claude')
+  })
+})
+
+describe('maybeAttachCodexClipboardImageForCommand', () => {
+  it('attaches clipboard image only for codex commands', async () => {
+    const codex = getToolByName('codex')
+    expect(codex).toBeDefined()
+    const attachClipboardImage = vi.fn(async (_projectPath: string, args: string[], options: { enabled: boolean; clipboardUrl?: string; clipboardToken?: string }) => {
+      expect(options).toEqual({
+        enabled: true,
+        clipboardUrl: 'http://127.0.0.1:4321',
+        clipboardToken: 'token',
+      })
+      return { args: [...args, '--image', '.omx/clipboard-images/clipboard-1.png'] }
+    })
+
+    const result = await maybeAttachCodexClipboardImageForCommand(
+      '/tmp/project',
+      ['codex', '--ask-for-approval', 'never'],
+      codex,
+      { url: 'http://127.0.0.1:4321', token: 'token' },
+      attachClipboardImage,
+    )
+
+    expect(attachClipboardImage).toHaveBeenCalledTimes(1)
+    expect(result).toEqual(['codex', '--ask-for-approval', 'never', '--image', '.omx/clipboard-images/clipboard-1.png'])
+  })
+
+  it('skips clipboard attachment for non-codex tools', async () => {
+    const claude = getToolByName('claude')
+    expect(claude).toBeDefined()
+    const attachClipboardImage = vi.fn()
+
+    const result = await maybeAttachCodexClipboardImageForCommand(
+      '/tmp/project',
+      ['claude', '--dangerously-skip-permissions'],
+      claude,
+      { url: 'http://127.0.0.1:4321', token: 'token' },
+      attachClipboardImage as never,
+    )
+
+    expect(attachClipboardImage).not.toHaveBeenCalled()
+    expect(result).toEqual(['claude', '--dangerously-skip-permissions'])
+  })
+
+  it('skips clipboard attachment when no command tool is resolved', async () => {
+    const attachClipboardImage = vi.fn()
+
+    const result = await maybeAttachCodexClipboardImageForCommand(
+      '/tmp/project',
+      ['bash'],
+      undefined,
+      { url: 'http://127.0.0.1:4321', token: 'token' },
+      attachClipboardImage as never,
+    )
+
+    expect(attachClipboardImage).not.toHaveBeenCalled()
+    expect(result).toEqual(['bash'])
   })
 })
 

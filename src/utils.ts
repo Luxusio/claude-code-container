@@ -19,6 +19,7 @@ export const IMAGE_NAME = "ccc";
 export const DOCKER_REGISTRY_IMAGE = process.env.CCC_REGISTRY || "luxusio/claude-code-container";
 export const CONTAINER_PID_LIMIT = "-1"; // -1 = unlimited (same as host)
 export const MISE_VOLUME_NAME = "ccc-mise-cache";
+export const DEFAULT_ENV_FORWARD_BYTE_LIMIT = 64 * 1024;
 export const COMMON_IGNORE_DIRS = [
     "node_modules", ".git", "dist", "build", "target",
     "__pycache__", ".next", ".nuxt", "vendor"
@@ -72,6 +73,82 @@ export const EXCLUDE_ENV_KEYS = new Set([
     // Windows package managers (contain Windows paths like C:\Users\...\AppData)
     "PNPM_HOME", "NPM_CONFIG_PREFIX", "NPM_CONFIG_CACHE",
 ]);
+
+const EXCLUDE_ENV_PREFIXES = [
+    "__MISE_",
+    "BASH_FUNC_",
+    "npm_config_",
+    "npm_package_",
+    "NPM_CONFIG_",
+];
+
+export interface ForwardedEnvPlan {
+    forwarded: Array<[string, string]>;
+    skippedDueToLimit: string[];
+    totalBytes: number;
+}
+
+export function isValidEnvKey(key: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+}
+
+function isWindowsPathLike(value: string): boolean {
+    return /^[A-Za-z]:[/\\]/.test(value) || /;[A-Za-z]:[/\\]/.test(value);
+}
+
+function shouldExcludeEnvKey(key: string, excludeUpper: Set<string>): boolean {
+    if (excludeUpper.has(key.toUpperCase())) {
+        return true;
+    }
+
+    return EXCLUDE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function estimateEnvEntryBytes(key: string, value: string): number {
+    return Buffer.byteLength(`${key}=${value}`) + 1;
+}
+
+export function collectForwardedEnv(
+    env: NodeJS.ProcessEnv,
+    options: { byteLimit?: number } = {},
+): ForwardedEnvPlan {
+    const byteLimit = options.byteLimit ?? DEFAULT_ENV_FORWARD_BYTE_LIMIT;
+    const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((key) => key.toUpperCase()));
+    const candidates: Array<{ key: string; value: string; bytes: number }> = [];
+
+    for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) continue;
+        if (!isValidEnvKey(key)) continue;
+        if (shouldExcludeEnvKey(key, excludeUpper)) continue;
+        if (isWindowsPathLike(value)) continue;
+
+        candidates.push({
+            key,
+            value,
+            bytes: estimateEnvEntryBytes(key, value),
+        });
+    }
+
+    candidates.sort((left, right) => (
+        left.bytes - right.bytes
+        || left.key.localeCompare(right.key)
+    ));
+
+    const forwarded: Array<[string, string]> = [];
+    const skippedDueToLimit: string[] = [];
+    let totalBytes = 0;
+
+    for (const candidate of candidates) {
+        if (totalBytes + candidate.bytes > byteLimit) {
+            skippedDueToLimit.push(candidate.key);
+            continue;
+        }
+        forwarded.push([candidate.key, candidate.value]);
+        totalBytes += candidate.bytes;
+    }
+
+    return { forwarded, skippedDueToLimit, totalBytes };
+}
 
 /**
  * Interactive prompt helper

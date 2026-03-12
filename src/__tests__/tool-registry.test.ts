@@ -107,6 +107,8 @@ describe("getAllCredentialMounts", () => {
         const mounts = getAllCredentialMounts();
         const containerDirs = mounts.map((m) => m.containerDir);
         expect(containerDirs).toContain("/home/ccc/.codex");
+        expect(containerDirs).toContain("/home/ccc/.omx");
+        expect(containerDirs).toContain("/home/ccc/.agents");
     });
 
     it("includes opencode credential mounts", () => {
@@ -187,12 +189,15 @@ describe("codex tool definition", () => {
         expect(tool.needsNodeRuntime).toBe(false);
     });
 
-    it("has 1 credentialMount", () => {
-        expect(tool.credentialMounts).toHaveLength(1);
+    it("has 3 credentialMounts", () => {
+        expect(tool.credentialMounts).toHaveLength(3);
     });
 
-    it("has containerDir /home/ccc/.codex", () => {
-        expect(tool.credentialMounts[0].containerDir).toBe("/home/ccc/.codex");
+    it("has containerDirs for codex config, omx agents, and user skills", () => {
+        const containerDirs = tool.credentialMounts.map((m) => m.containerDir);
+        expect(containerDirs).toContain("/home/ccc/.codex");
+        expect(containerDirs).toContain("/home/ccc/.omx");
+        expect(containerDirs).toContain("/home/ccc/.agents");
     });
 });
 
