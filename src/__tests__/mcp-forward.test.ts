@@ -131,7 +131,7 @@ describe("buildMcpConfig", () => {
     let existsSync: ReturnType<typeof vi.fn>;
     let readFileSync: ReturnType<typeof vi.fn>;
     let writeFileSync: ReturnType<typeof vi.fn>;
-    let buildMcpConfig: () => string[];
+    let buildMcpConfig: (profile?: string) => string[];
 
     function getWrittenConfig(): Record<string, unknown> {
         expect(writeFileSync).toHaveBeenCalled();
@@ -326,5 +326,43 @@ describe("buildMcpConfig", () => {
         const servers = config.mcpServers as Record<string, unknown>;
         const entry = servers["my-sse"] as { url: string };
         expect(entry.url).toBe("http://host.docker.internal:8080/sse");
+    });
+
+    it("buildMcpConfig() with no profile writes to default CLAUDE_JSON_FILE path", () => {
+        existsSync.mockReturnValue(false);
+        buildMcpConfig();
+        // Should write to ~/.ccc/claude.json (default path, not profiles dir)
+        const writePath = writeFileSync.mock.calls[writeFileSync.mock.calls.length - 1][0] as string;
+        expect(writePath).toContain(".ccc");
+        expect(writePath).not.toContain("profiles");
+        expect(writePath).toMatch(/claude\.json$/);
+    });
+
+    it("buildMcpConfig('work') writes to profile-specific path", () => {
+        existsSync.mockReturnValue(false);
+        buildMcpConfig("work");
+        // Should write to ~/.ccc/profiles/work/claude.json
+        const writePath = writeFileSync.mock.calls[writeFileSync.mock.calls.length - 1][0] as string;
+        expect(writePath).toContain("profiles");
+        expect(writePath).toContain("work");
+        expect(writePath).toMatch(/claude\.json$/);
+    });
+
+    it("buildMcpConfig('work') reads from profile-specific claude.json for existing config", () => {
+        existsSync.mockImplementation((p: string) => {
+            // profile claude.json exists
+            if (p.includes("profiles") && p.includes("work") && p.endsWith("claude.json")) return true;
+            return false;
+        });
+        readFileSync.mockImplementation((p: string) => {
+            if (p.includes("profiles") && p.includes("work")) {
+                return JSON.stringify({ existingConfig: "preserved" });
+            }
+            return "{}";
+        });
+        buildMcpConfig("work");
+        const config = getWrittenConfig();
+        // Non-MCP config from profile file should be preserved
+        expect(config["existingConfig"]).toBe("preserved");
     });
 });

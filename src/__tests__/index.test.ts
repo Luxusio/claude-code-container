@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
+import { parseArgs } from '../index.js'
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -198,6 +199,63 @@ describe('container environment marker', () => {
   it('formats correctly as shell-escaped remote env flag', () => {
     const flag = `-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`
     expect(flag).toBe("-e 'container=docker'")
+  })
+})
+
+describe('parseArgs', () => {
+  it('parses -p <name> as profile', () => {
+    const result = parseArgs(['-p', 'work'])
+    expect(result.profile).toBe('work')
+    expect(result.filteredArgs).toEqual([])
+    expect(result.worktreeArg).toBeUndefined()
+  })
+
+  it('parses --profile <name> as profile', () => {
+    const result = parseArgs(['--profile', 'work'])
+    expect(result.profile).toBe('work')
+    expect(result.filteredArgs).toEqual([])
+    expect(result.worktreeArg).toBeUndefined()
+  })
+
+  it('parses @branch as worktreeArg', () => {
+    const result = parseArgs(['@feature'])
+    expect(result.worktreeArg).toBe('@feature')
+    expect(result.profile).toBeUndefined()
+    expect(result.filteredArgs).toEqual([])
+  })
+
+  it('parses -p work @feature --continue correctly', () => {
+    const result = parseArgs(['-p', 'work', '@feature', '--continue'])
+    expect(result.profile).toBe('work')
+    expect(result.worktreeArg).toBe('@feature')
+    expect(result.filteredArgs).toEqual(['--continue'])
+  })
+
+  it('returns all undefined / empty filteredArgs for no args', () => {
+    const result = parseArgs([])
+    expect(result.profile).toBeUndefined()
+    expect(result.worktreeArg).toBeUndefined()
+    expect(result.filteredArgs).toEqual([])
+  })
+
+  it('passes through unrecognized args as filteredArgs', () => {
+    const result = parseArgs(['shell', '--continue'])
+    expect(result.filteredArgs).toEqual(['shell', '--continue'])
+    expect(result.profile).toBeUndefined()
+    expect(result.worktreeArg).toBeUndefined()
+  })
+
+  it('does not recognize --env (removed)', () => {
+    const result = parseArgs(['--env', 'KEY=VALUE'])
+    expect(result.filteredArgs).toEqual(['--env', 'KEY=VALUE'])
+    expect(result.profile).toBeUndefined()
+  })
+
+  it('-p with worktree and command: profile extracted, worktree extracted, command stays in filteredArgs', () => {
+    const result = parseArgs(['-p', 'prod', '@main', 'shell'])
+    expect(result.profile).toBe('prod')
+    expect(result.worktreeArg).toBe('@main')
+    expect(result.filteredArgs).toEqual(['shell'])
   })
 })
 

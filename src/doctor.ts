@@ -162,7 +162,9 @@ export function runDoctor(projectPath: string): boolean {
     let totalProjectLocks = 0;
     if (existsSync(locksDir)) {
         totalProjectLocks = readdirSync(locksDir).filter((f) =>
-            f.startsWith(`${projectId}-`) && f.endsWith(".lock"),
+            // New format: projectId--sessionId.lock or projectId--p--profile--sessionId.lock
+            // Old format (migration): projectId-sessionId.lock
+            (f.startsWith(`${projectId}--`) || f.startsWith(`${projectId}-`)) && f.endsWith(".lock"),
         ).length;
     }
     const staleLocks = totalProjectLocks - activeSessions.length;

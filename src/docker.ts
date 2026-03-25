@@ -9,8 +9,8 @@ import { homedir } from "os";
 import { join, resolve } from "path";
 import {
     getProjectId,
-    CLAUDE_DIR,
-    CLAUDE_JSON_FILE,
+    getClaudeDir,
+    getClaudeJsonFile,
     IMAGE_NAME,
     CONTAINER_PID_LIMIT,
     MISE_VOLUME_NAME,
@@ -119,8 +119,10 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
 
 // === Container Name ===
 
-export function getContainerName(projectPath: string): string {
-    return `ccc-${getProjectId(projectPath)}`;
+export function getContainerName(projectPath: string, profile?: string): string {
+    const base = `ccc-${getProjectId(projectPath)}`;
+    if (!profile) return base;
+    return `${base}--p--${profile}`;
 }
 
 // === Docker Status Checks ===
@@ -411,12 +413,13 @@ export function startProjectContainer(
     ensureDirs: () => void,
     extraMounts?: Array<{ hostPath: string; containerPath: string }>,
     clipboardPortFile?: string,
+    profile?: string,
 ): string {
     ensureDirs();
     ensureImage();
 
     const fullPath = resolve(projectPath);
-    const containerName = getContainerName(fullPath);
+    const containerName = getContainerName(fullPath, profile);
 
     // Check if existing container needs recreation (e.g., missing worktree git mounts)
     if (isContainerExists(containerName) && extraMounts && extraMounts.length > 0) {
@@ -462,8 +465,8 @@ export function startProjectContainer(
         containerName,
         fullPath,
         projectMountPath,
-        claudeDir: CLAUDE_DIR,
-        claudeJsonFile: CLAUDE_JSON_FILE,
+        claudeDir: getClaudeDir(profile),
+        claudeJsonFile: getClaudeJsonFile(profile),
         hostClaudeIdeDir,
         miseVolumeName: MISE_VOLUME_NAME,
         pidsLimit: CONTAINER_PID_LIMIT,
@@ -485,9 +488,9 @@ export function startProjectContainer(
     return containerName;
 }
 
-export function stopProjectContainer(projectPath: string): void {
+export function stopProjectContainer(projectPath: string, profile?: string): void {
     ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath));
+    const containerName = getContainerName(resolve(projectPath), profile);
 
     if (!isContainerExists(containerName)) {
         console.log("Container not found");
@@ -499,16 +502,16 @@ export function stopProjectContainer(projectPath: string): void {
     console.log("Container stopped");
 }
 
-export function removeProjectContainer(projectPath: string): void {
+export function removeProjectContainer(projectPath: string, profile?: string): void {
     ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath));
+    const containerName = getContainerName(resolve(projectPath), profile);
 
     if (!isContainerExists(containerName)) {
         console.log("Container not found");
         return;
     }
 
-    stopProjectContainer(projectPath);
+    stopProjectContainer(projectPath, profile);
     console.log("Removing container...");
     spawnSync("docker", ["rm", containerName], { stdio: "inherit" });
     console.log("Container removed");

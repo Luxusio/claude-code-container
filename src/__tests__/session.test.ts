@@ -67,6 +67,7 @@ const {
     createSessionLock,
     removeSessionLock,
     getActiveSessionsForProject,
+    getActiveSessionsForContainer,
     hasOtherActiveSessions,
     cleanupSession,
     setupSignalHandlers,
@@ -106,7 +107,7 @@ describe("session.ts", () => {
     // ── createSessionLock ────────────────────────────────────────────────────
 
     describe("createSessionLock", () => {
-        it("creates lock file in correct directory with projectId prefix", () => {
+        it("creates lock file with double-dash separator and projectId prefix (no profile)", () => {
             mockExistsSync.mockReturnValue(true);
             mockWriteFileSync.mockImplementation(() => {});
 
@@ -116,7 +117,22 @@ describe("session.ts", () => {
             expect(mockWriteFileSync).toHaveBeenCalledOnce();
             const [writtenPath] = mockWriteFileSync.mock.calls[0] as [string, ...unknown[]];
             expect(basename(writtenPath)).toMatch(
-                new RegExp(`^${projectId}-[a-f0-9]{32}\\.lock$`),
+                new RegExp(`^${projectId}--[a-f0-9]{32}\\.lock$`),
+            );
+            expect(result).toBe(writtenPath);
+        });
+
+        it("creates lock file with profile segment when profile provided", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockWriteFileSync.mockImplementation(() => {});
+
+            const projectId = "my-project-abc123";
+            const result = createSessionLock(projectId, "work");
+
+            expect(mockWriteFileSync).toHaveBeenCalledOnce();
+            const [writtenPath] = mockWriteFileSync.mock.calls[0] as [string, ...unknown[]];
+            expect(basename(writtenPath)).toMatch(
+                new RegExp(`^${projectId}--p--work--[a-f0-9]{32}\\.lock$`),
             );
             expect(result).toBe(writtenPath);
         });
@@ -148,7 +164,7 @@ describe("session.ts", () => {
 
     describe("removeSessionLock", () => {
         it("removes an existing lock file", () => {
-            const lockFile = "/fake/locks/proj-abc-sessionid.lock";
+            const lockFile = "/fake/locks/proj-abc--sessionid.lock";
             mockExistsSync.mockReturnValue(true);
             mockUnlinkSync.mockImplementation(() => {});
 
@@ -158,7 +174,7 @@ describe("session.ts", () => {
         });
 
         it("does not throw when lock file does not exist", () => {
-            const lockFile = "/fake/locks/proj-abc-nonexistent.lock";
+            const lockFile = "/fake/locks/proj-abc--nonexistent.lock";
             mockExistsSync.mockReturnValue(false);
 
             expect(() => removeSessionLock(lockFile)).not.toThrow();
@@ -166,38 +182,37 @@ describe("session.ts", () => {
         });
     });
 
-    // ── getActiveSessionsForProject ──────────────────────────────────────────
+    // ── getActiveSessionsForContainer ────────────────────────────────────────
 
-    describe("getActiveSessionsForProject", () => {
-        it("returns only matching lock files for the given projectId", () => {
+    describe("getActiveSessionsForContainer", () => {
+        it("returns only matching lock files for the given containerPrefix", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([
-                "my-project-abc-session1.lock",
-                "my-project-abc-session2.lock",
-                "other-project-xyz-session3.lock",
-                "my-project-abc-session3.lock",
+                "my-project-abc--session1aabbccdd11223344.lock",
+                "my-project-abc--session2aabbccdd11223344.lock",
+                "other-project-xyz--session3aabbccdd112233.lock",
+                "my-project-abc--session3aabbccdd11223344.lock",
             ]);
-            // All matching locks have the current process PID (alive)
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
-            const result = getActiveSessionsForProject("my-project-abc");
+            const result = getActiveSessionsForContainer("my-project-abc");
 
             expect(result).toHaveLength(3);
-            expect(result).toContain("my-project-abc-session1.lock");
-            expect(result).toContain("my-project-abc-session2.lock");
-            expect(result).toContain("my-project-abc-session3.lock");
-            expect(result).not.toContain("other-project-xyz-session3.lock");
+            expect(result).toContain("my-project-abc--session1aabbccdd11223344.lock");
+            expect(result).toContain("my-project-abc--session2aabbccdd11223344.lock");
+            expect(result).toContain("my-project-abc--session3aabbccdd11223344.lock");
+            expect(result).not.toContain("other-project-xyz--session3aabbccdd112233.lock");
         });
 
-        it("returns empty array when no lock files match the projectId", () => {
+        it("returns empty array when no lock files match the containerPrefix", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([
-                "other-project-xyz-session1.lock",
-                "another-proj-session2.lock",
+                "other-project-xyz--session1aabbccdd11.lock",
+                "another-proj--session2aabbccdd112233.lock",
             ]);
 
-            const result = getActiveSessionsForProject("my-project-abc");
+            const result = getActiveSessionsForContainer("my-project-abc");
 
             expect(result).toEqual([]);
         });
@@ -205,7 +220,7 @@ describe("session.ts", () => {
         it("returns empty array when the locks directory does not exist", () => {
             mockExistsSync.mockReturnValue(false);
 
-            const result = getActiveSessionsForProject("my-project-abc");
+            const result = getActiveSessionsForContainer("my-project-abc");
 
             expect(result).toEqual([]);
             expect(mockReaddirSync).not.toHaveBeenCalled();
@@ -214,8 +229,8 @@ describe("session.ts", () => {
         it("filters out lock files whose PID is not alive", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([
-                "proj-abc-alive.lock",
-                "proj-abc-dead.lock",
+                "proj-abc--alivesession1122334455667788.lock",
+                "proj-abc--deadsession1122334455667788.lock",
             ]);
             mockReadFileSync
                 .mockReturnValueOnce("12345")  // alive.lock PID
@@ -228,80 +243,92 @@ describe("session.ts", () => {
             });
             mockUnlinkSync.mockImplementation(() => {});
 
-            const result = getActiveSessionsForProject("proj-abc");
+            const result = getActiveSessionsForContainer("proj-abc");
 
-            expect(result).toEqual(["proj-abc-alive.lock"]);
-            expect(result).not.toContain("proj-abc-dead.lock");
+            expect(result).toEqual(["proj-abc--alivesession1122334455667788.lock"]);
         });
 
-        it("deletes stale lock files whose PID is not alive", () => {
+        it("non-profile prefix excludes files that have --p-- after the prefix", () => {
             mockExistsSync.mockReturnValue(true);
-            mockReaddirSync.mockReturnValue(["proj-abc-stale.lock"]);
-            mockReadFileSync.mockReturnValue("99999");
-            vi.spyOn(process, "kill").mockImplementation(() => {
-                const err = new Error("ESRCH") as NodeJS.ErrnoException;
-                err.code = "ESRCH";
-                throw err;
-            });
-            mockUnlinkSync.mockImplementation(() => {});
-
-            getActiveSessionsForProject("proj-abc");
-
-            // Should attempt to delete the stale lock file
-            expect(mockUnlinkSync).toHaveBeenCalledOnce();
-            const [calledPath] = mockUnlinkSync.mock.calls[0] as [string];
-            expect(calledPath).toContain("proj-abc-stale.lock");
-        });
-
-        it("keeps lock files with valid alive PIDs", () => {
-            mockExistsSync.mockReturnValue(true);
-            mockReaddirSync.mockReturnValue(["proj-abc-running.lock"]);
+            // This file belongs to a profile session, not the base project
+            mockReaddirSync.mockReturnValue([
+                "my-project-abc--session1aabbccdd11223344.lock",
+                "my-project-abc--p--work--sessaabbccdd112233.lock",
+            ]);
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
-            const result = getActiveSessionsForProject("proj-abc");
+            const result = getActiveSessionsForContainer("my-project-abc");
 
-            expect(result).toEqual(["proj-abc-running.lock"]);
-            expect(mockUnlinkSync).not.toHaveBeenCalled();
+            expect(result).toEqual(["my-project-abc--session1aabbccdd11223344.lock"]);
+            expect(result).not.toContain("my-project-abc--p--work--sessaabbccdd112233.lock");
         });
 
-        it("treats lock files with non-numeric content as stale and deletes them", () => {
+        it("profile prefix returns only matching profile sessions", () => {
             mockExistsSync.mockReturnValue(true);
-            mockReaddirSync.mockReturnValue(["proj-abc-corrupt.lock"]);
-            mockReadFileSync.mockReturnValue("not-a-pid");
-            mockUnlinkSync.mockImplementation(() => {});
+            mockReaddirSync.mockReturnValue([
+                "my-project-abc--session1aabbccdd11223344.lock",
+                "my-project-abc--p--work--sessaabbccdd112233.lock",
+                "my-project-abc--p--dev--sessaabbccdd112233.lock",
+            ]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
 
-            const result = getActiveSessionsForProject("proj-abc");
+            const result = getActiveSessionsForContainer("my-project-abc--p--work");
+
+            expect(result).toEqual(["my-project-abc--p--work--sessaabbccdd112233.lock"]);
+        });
+    });
+
+    // ── getActiveSessionsForProject (backward compat) ────────────────────────
+
+    describe("getActiveSessionsForProject", () => {
+        it("delegates to getActiveSessionsForContainer", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "my-project-abc--session1aabbccdd11223344.lock",
+            ]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+
+            const result = getActiveSessionsForProject("my-project-abc");
+
+            expect(result).toContain("my-project-abc--session1aabbccdd11223344.lock");
+        });
+
+        it("returns empty array when the locks directory does not exist", () => {
+            mockExistsSync.mockReturnValue(false);
+
+            const result = getActiveSessionsForProject("my-project-abc");
 
             expect(result).toEqual([]);
-            expect(mockUnlinkSync).toHaveBeenCalledOnce();
+            expect(mockReaddirSync).not.toHaveBeenCalled();
         });
     });
 
     // ── hasOtherActiveSessions ───────────────────────────────────────────────
 
     describe("hasOtherActiveSessions", () => {
-        it("returns true when other session lock files exist for the project", () => {
+        it("returns true when other session lock files exist for the container", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([
-                "proj-abc-session1.lock",
-                "proj-abc-session2.lock",
+                "proj-abc--session1aabbccdd11223344.lock",
+                "proj-abc--session2aabbccdd11223344.lock",
             ]);
-            // Stale lock detection: both PIDs are alive
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
-            const currentLockFile = "/locks/proj-abc-session1.lock";
+            const currentLockFile = "/locks/proj-abc--session1aabbccdd11223344.lock";
             const result = hasOtherActiveSessions("proj-abc", currentLockFile);
 
             expect(result).toBe(true);
         });
 
-        it("returns false when the current session is the only one for the project", () => {
+        it("returns false when the current session is the only one for the container", () => {
             mockExistsSync.mockReturnValue(true);
-            mockReaddirSync.mockReturnValue(["proj-abc-session1.lock"]);
+            mockReaddirSync.mockReturnValue(["proj-abc--session1aabbccdd11223344.lock"]);
 
-            const currentLockFile = "/locks/proj-abc-session1.lock";
+            const currentLockFile = "/locks/proj-abc--session1aabbccdd11223344.lock";
             const result = hasOtherActiveSessions("proj-abc", currentLockFile);
 
             expect(result).toBe(false);
@@ -319,7 +346,7 @@ describe("session.ts", () => {
         });
 
         it("setSession stores lockFile and projectPath, getCurrentSession retrieves them", () => {
-            const lockFile = "/locks/proj-abc-deadbeef.lock";
+            const lockFile = "/locks/proj-abc--deadbeefdeadbeef.lock";
             const projectPath = "/home/user/my-project";
 
             setSession(lockFile, projectPath);
@@ -327,6 +354,18 @@ describe("session.ts", () => {
 
             expect(session.lockFile).toBe(lockFile);
             expect(session.projectPath).toBe(projectPath);
+        });
+
+        it("setSession stores profile when provided", () => {
+            const lockFile = "/locks/proj-abc--p--work--deadbeef.lock";
+            const projectPath = "/home/user/my-project";
+
+            setSession(lockFile, projectPath, "work");
+            const session = getCurrentSession();
+
+            expect(session.lockFile).toBe(lockFile);
+            expect(session.projectPath).toBe(projectPath);
+            expect(session.profile).toBe("work");
         });
 
         it("clearSession resets lockFile and projectPath to null", () => {
@@ -337,13 +376,20 @@ describe("session.ts", () => {
             expect(session.lockFile).toBeNull();
             expect(session.projectPath).toBeNull();
         });
+
+        it("clearSession also clears profile", () => {
+            setSession("/locks/some--p--work--lock.lock", "/home/user/project", "work");
+            clearSession();
+            const session = getCurrentSession();
+
+            expect(session.profile).toBeUndefined();
+        });
     });
 
     // ── cleanupSession ───────────────────────────────────────────────────────
 
     describe("cleanupSession", () => {
         it("is a no-op when no session has been set", () => {
-            // Ensure session state is empty (afterEach calls clearSession, but we start fresh)
             cleanupSession();
 
             expect(mockGetProjectId).not.toHaveBeenCalled();
@@ -352,19 +398,16 @@ describe("session.ts", () => {
         });
 
         it("removes lock file and stops container when it is the last session", () => {
-            // Lock filename MUST start with projectId + "-" to pass the filter in
-            // getActiveSessionsForProject: f.startsWith(`${projectId}-`) && f.endsWith(".lock")
             const projectId = "my-project-abc123";
             const sessionId = "aabbccddeeff00112233445566778899";
-            const lockFileName = `${projectId}-${sessionId}.lock`;
+            const lockFileName = `${projectId}--${sessionId}.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
-            // Only current session exists → no other sessions
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists (getActiveSessionsForProject)
+                .mockReturnValueOnce(true)   // locksDir exists (getActiveSessionsForContainer)
                 .mockReturnValueOnce(true);   // lockFile exists (removeSessionLock)
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
@@ -383,20 +426,48 @@ describe("session.ts", () => {
             );
         });
 
-        it("removes lock file but does NOT stop container when other sessions are active", () => {
-            // Lock filenames MUST start with projectId + "-" to pass the filter
+        it("uses profile-aware container name when profile is set", () => {
             const projectId = "my-project-abc123";
-            const lockFileName1 = `${projectId}-session1aabbccdd.lock`;
-            const lockFileName2 = `${projectId}-session2eeff0011.lock`;
+            const sessionId = "aabbccddeeff00112233445566778899";
+            const lockFileName = `${projectId}--p--work--${sessionId}.lock`;
+            const lockFile = `/locks/${lockFileName}`;
+            const projectPath = "/home/user/my-project";
+            const containerName = "ccc-my-project-abc123--p--work";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
+            mockReaddirSync.mockReturnValue([lockFileName]);
+            mockUnlinkSync.mockImplementation(() => {});
+            mockGetContainerName.mockReturnValue(containerName);
+            mockIsContainerRunning.mockReturnValue(true);
+            mockSpawnSync.mockReturnValue({ status: 0 });
+
+            setSession(lockFile, projectPath, "work");
+            cleanupSession();
+
+            // getContainerName called with profile
+            expect(mockGetContainerName).toHaveBeenCalledWith(projectPath, "work");
+            expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
+            expect(mockSpawnSync).toHaveBeenCalledWith(
+                "docker",
+                ["stop", containerName],
+                expect.any(Object),
+            );
+        });
+
+        it("removes lock file but does NOT stop container when other sessions are active", () => {
+            const projectId = "my-project-abc123";
+            const lockFileName1 = `${projectId}--session1aabbccdd11223344.lock`;
+            const lockFileName2 = `${projectId}--session2eeff001122334455.lock`;
             const lockFile = `/locks/${lockFileName1}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
-            mockExistsSync.mockReturnValue(true); // locksDir and lockFile both exist
-            // Two sessions exist → hasOtherActiveSessions returns true
+            mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([lockFileName1, lockFileName2]);
             mockUnlinkSync.mockImplementation(() => {});
-            // Stale lock detection: both PIDs are alive
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
 
@@ -404,25 +475,50 @@ describe("session.ts", () => {
             cleanupSession();
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
-            // docker stop must NOT be called when other sessions are still active
             expect(mockSpawnSync).not.toHaveBeenCalled();
             expect(mockIsContainerRunning).not.toHaveBeenCalled();
         });
 
+        it("profile sessions do not interfere with base project session counting", () => {
+            const projectId = "my-project-abc123";
+            // Only one base session (current), but there is also a profile session
+            const baseLockFileName = `${projectId}--session1aabbccdd11223344.lock`;
+            const profileLockFileName = `${projectId}--p--work--sessaabbccdd112233.lock`;
+            const lockFile = `/locks/${baseLockFileName}`;
+            const projectPath = "/home/user/my-project";
+            const containerName = "ccc-my-project-abc123";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
+            // Both files in directory, but profile file should be excluded from base count
+            mockReaddirSync.mockReturnValue([baseLockFileName, profileLockFileName]);
+            mockUnlinkSync.mockImplementation(() => {});
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+            mockGetContainerName.mockReturnValue(containerName);
+            mockIsContainerRunning.mockReturnValue(false);
+
+            setSession(lockFile, projectPath);
+            cleanupSession();
+
+            // Container stop check should happen (no other BASE sessions)
+            expect(mockIsContainerRunning).toHaveBeenCalledWith(containerName);
+        });
+
         it("calls stopClipboardServerIfLast before removing the lock file", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists
-            // Only one session → no others → container path taken (isContainerRunning → false)
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
-            // Stale lock detection: PID is alive
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
@@ -446,15 +542,15 @@ describe("session.ts", () => {
 
         it("does NOT call docker stop or saveClaudeBinaryToVolume when container is not running", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists (getActiveSessionsForProject)
-                .mockReturnValueOnce(true);   // lockFile exists (removeSessionLock)
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
             mockGetContainerName.mockReturnValue(containerName);
@@ -470,15 +566,15 @@ describe("session.ts", () => {
 
         it("calls saveClaudeBinaryToVolume before docker stop when container is running", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
             mockGetContainerName.mockReturnValue(containerName);
@@ -507,21 +603,20 @@ describe("session.ts", () => {
 
         it("clears session state after cleanup so getCurrentSession returns nulls", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
             mockIsContainerRunning.mockReturnValue(false);
 
             setSession(lockFile, projectPath);
-            // Confirm state is set before cleanup
             expect(getCurrentSession().lockFile).toBe(lockFile);
             expect(getCurrentSession().projectPath).toBe(projectPath);
 
@@ -534,15 +629,15 @@ describe("session.ts", () => {
 
         it("continues without crashing when removeSessionLock (unlinkSync) throws an error", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
             const containerName = "ccc-my-project-abc123";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists (so unlinkSync is called)
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {
                 throw new Error("EACCES: permission denied");
@@ -553,20 +648,19 @@ describe("session.ts", () => {
 
             setSession(lockFile, projectPath);
 
-            // Should not throw even though unlinkSync throws
             expect(() => cleanupSession()).not.toThrow();
         });
 
         it("cleanupSession should be idempotent (second call is no-op)", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
@@ -575,13 +669,11 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            // Reset mocks to detect any calls from a second invocation
             mockGetProjectId.mockReset();
             mockUnlinkSync.mockReset();
             mockSpawnSync.mockReset();
             mockStopClipboardServerIfLast.mockReset();
 
-            // Second call must be a no-op
             expect(() => cleanupSession()).not.toThrow();
             expect(mockGetProjectId).not.toHaveBeenCalled();
             expect(mockUnlinkSync).not.toHaveBeenCalled();
@@ -591,14 +683,13 @@ describe("session.ts", () => {
 
         it("does NOT call saveClaudeBinaryToVolume when other sessions are active", () => {
             const projectId = "my-project-abc123";
-            const lockFileName1 = `${projectId}-session1aabbccdd.lock`;
-            const lockFileName2 = `${projectId}-session2eeff0011.lock`;
+            const lockFileName1 = `${projectId}--session1aabbccdd11223344.lock`;
+            const lockFileName2 = `${projectId}--session2eeff001122334455.lock`;
             const lockFile = `/locks/${lockFileName1}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
-            mockExistsSync.mockReturnValue(true); // locksDir and lockFile both exist
-            // Two sessions exist → hasOtherActiveSessions returns true
+            mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue([lockFileName1, lockFileName2]);
             mockUnlinkSync.mockImplementation(() => {});
 
@@ -625,7 +716,6 @@ describe("session.ts", () => {
             expect(process.listenerCount("SIGTERM")).toBeGreaterThan(listenersBefore.SIGTERM);
             expect(process.listenerCount("SIGHUP")).toBeGreaterThan(listenersBefore.SIGHUP);
 
-            // Clean up handlers to avoid polluting other tests
             process.removeAllListeners("SIGINT");
             process.removeAllListeners("SIGTERM");
             process.removeAllListeners("SIGHUP");
@@ -633,14 +723,14 @@ describe("session.ts", () => {
 
         it("cleanup callback calls cleanupSession and process.exit(0) when signal fires", () => {
             const projectId = "my-project-abc123";
-            const lockFileName = `${projectId}-aabbccddeeff0011.lock`;
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
             const projectPath = "/home/user/my-project";
 
             mockGetProjectId.mockReturnValue(projectId);
             mockExistsSync
-                .mockReturnValueOnce(true)   // locksDir exists
-                .mockReturnValueOnce(true);   // lockFile exists
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
             mockReaddirSync.mockReturnValue([lockFileName]);
             mockUnlinkSync.mockImplementation(() => {});
             mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
@@ -651,7 +741,6 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             setupSignalHandlers();
 
-            // Emit SIGINT to trigger the cleanup callback
             process.emit("SIGINT");
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);

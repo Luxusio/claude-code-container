@@ -15,6 +15,17 @@ export const DATA_DIR = join(homedir(), ".ccc");
 export const CLAUDE_DIR = join(DATA_DIR, "claude");
 export const CLAUDE_JSON_FILE = join(DATA_DIR, "claude.json"); // ~/.claude.json in container (onboarding state)
 export const REMOTE_CONFIG_DIR = join(DATA_DIR, "remote");
+export const PROFILES_DIR = join(DATA_DIR, "profiles");
+
+export function getClaudeDir(profile?: string): string {
+    if (!profile) return CLAUDE_DIR;
+    return join(PROFILES_DIR, profile, "claude");
+}
+
+export function getClaudeJsonFile(profile?: string): string {
+    if (!profile) return CLAUDE_JSON_FILE;
+    return join(PROFILES_DIR, profile, "claude.json");
+}
 export const IMAGE_NAME = "ccc";
 export const DOCKER_REGISTRY_IMAGE = process.env.CCC_REGISTRY || "luxusio/claude-code-container";
 export const CONTAINER_PID_LIMIT = "-1"; // -1 = unlimited (same as host)
