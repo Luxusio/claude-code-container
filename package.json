@@ -13,7 +13,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",

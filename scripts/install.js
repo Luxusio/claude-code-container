@@ -140,8 +140,9 @@ function install() {
             // Copy scripts directory (needed for Docker build context)
             cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });
 
-            // Copy package.json for ES module support
-            const pkgContent = JSON.stringify({ type: "module" }, null, 2);
+            // Copy package.json for ES module support + version
+            const srcPkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
+            const pkgContent = JSON.stringify({ type: "module", version: srcPkg.version }, null, 2);
             writeFileSync(join(targetDir, "package.json"), pkgContent);
 
             // Create executable wrapper script

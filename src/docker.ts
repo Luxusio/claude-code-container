@@ -432,7 +432,7 @@ export function startProjectContainer(
     }
 
     if (isContainerRunning(containerName)) {
-        return containerName;
+        return containerName; // Already running — caller can skip setup
     }
 
     if (isContainerExists(containerName)) {

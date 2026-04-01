@@ -2,13 +2,11 @@
 
 import {createHash} from "crypto";
 import {createInterface} from "readline";
-import {createRequire} from "module";
 import {homedir} from "os";
 import {basename, join, resolve} from "path";
 
-// === CLI Version (read from package.json at runtime) ===
-const require = createRequire(import.meta.url);
-export const CLI_VERSION: string = require("../package.json").version;
+// === CLI Version (injected at build time) ===
+export const CLI_VERSION: string = "__CLI_VERSION__";
 
 // === Shared Constants ===
 export const DATA_DIR = join(homedir(), ".ccc");

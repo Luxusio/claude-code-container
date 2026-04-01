@@ -203,37 +203,14 @@ describe('container environment marker', () => {
 })
 
 describe('parseArgs', () => {
-  it('parses -p <name> as profile', () => {
-    const result = parseArgs(['-p', 'work'])
-    expect(result.profile).toBe('work')
-    expect(result.filteredArgs).toEqual([])
-    expect(result.worktreeArg).toBeUndefined()
-  })
-
-  it('parses --profile <name> as profile', () => {
-    const result = parseArgs(['--profile', 'work'])
-    expect(result.profile).toBe('work')
-    expect(result.filteredArgs).toEqual([])
-    expect(result.worktreeArg).toBeUndefined()
-  })
-
   it('parses @branch as worktreeArg', () => {
     const result = parseArgs(['@feature'])
     expect(result.worktreeArg).toBe('@feature')
-    expect(result.profile).toBeUndefined()
     expect(result.filteredArgs).toEqual([])
   })
 
-  it('parses -p work @feature --continue correctly', () => {
-    const result = parseArgs(['-p', 'work', '@feature', '--continue'])
-    expect(result.profile).toBe('work')
-    expect(result.worktreeArg).toBe('@feature')
-    expect(result.filteredArgs).toEqual(['--continue'])
-  })
-
-  it('returns all undefined / empty filteredArgs for no args', () => {
+  it('returns undefined worktreeArg and empty filteredArgs for no args', () => {
     const result = parseArgs([])
-    expect(result.profile).toBeUndefined()
     expect(result.worktreeArg).toBeUndefined()
     expect(result.filteredArgs).toEqual([])
   })
@@ -241,19 +218,11 @@ describe('parseArgs', () => {
   it('passes through unrecognized args as filteredArgs', () => {
     const result = parseArgs(['shell', '--continue'])
     expect(result.filteredArgs).toEqual(['shell', '--continue'])
-    expect(result.profile).toBeUndefined()
     expect(result.worktreeArg).toBeUndefined()
   })
 
-  it('does not recognize --env (removed)', () => {
-    const result = parseArgs(['--env', 'KEY=VALUE'])
-    expect(result.filteredArgs).toEqual(['--env', 'KEY=VALUE'])
-    expect(result.profile).toBeUndefined()
-  })
-
-  it('-p with worktree and command: profile extracted, worktree extracted, command stays in filteredArgs', () => {
-    const result = parseArgs(['-p', 'prod', '@main', 'shell'])
-    expect(result.profile).toBe('prod')
+  it('@branch with command: worktree extracted, command stays in filteredArgs', () => {
+    const result = parseArgs(['@main', 'shell'])
     expect(result.worktreeArg).toBe('@main')
     expect(result.filteredArgs).toEqual(['shell'])
   })
