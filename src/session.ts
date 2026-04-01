@@ -73,15 +73,25 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
     }
     const isProfilePrefix = containerPrefix.includes("--p--");
     const locks = readdirSync(locksDir).filter((f) => {
-        if (!f.startsWith(`${containerPrefix}--`) || !f.endsWith(".lock")) return false;
-        // For non-profile prefix, exclude files that belong to profile sessions.
-        // Profile lock files look like: projectId--p--<profile>--<sessionId>.lock
-        // After stripping containerPrefix + "--", they start with "p--".
-        if (!isProfilePrefix) {
-            const afterPrefix = f.slice(containerPrefix.length + 2); // skip "--"
-            if (afterPrefix.startsWith("p--")) return false;
+        if (!f.endsWith(".lock")) return false;
+
+        // New format: prefix--sessionId.lock
+        if (f.startsWith(`${containerPrefix}--`)) {
+            if (!isProfilePrefix) {
+                const afterPrefix = f.slice(containerPrefix.length + 2);
+                if (afterPrefix.startsWith("p--")) return false;
+            }
+            return true;
         }
-        return true;
+
+        // Legacy fallback: prefix-sessionId.lock (single dash, non-profile only)
+        if (!isProfilePrefix && f.startsWith(`${containerPrefix}-`)) {
+            // Make sure it's not actually a new-format file with --
+            const afterPrefix = f.slice(containerPrefix.length + 1);
+            if (!afterPrefix.startsWith("-")) return true;
+        }
+
+        return false;
     });
     return locks.filter((f) => {
         const lockPath = join(locksDir, f);
