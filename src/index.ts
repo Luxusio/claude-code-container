@@ -56,7 +56,6 @@ import {
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
-    isContainerImageOutdated,
     isImageExists,
     getImageLabel,
     ensureImage,
@@ -64,6 +63,8 @@ import {
     stopProjectContainer,
     removeProjectContainer,
     syncClipboardShims,
+    getContainerStatus,
+    getCurrentImageId,
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
@@ -90,6 +91,11 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Progress indicator for startup steps (dim text on stderr)
+function progress(msg: string): void {
+    process.stderr.write(`\x1b[2m▸ ${msg}\x1b[0m\n`);
+}
 
 // === Configuration ===
 const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
@@ -223,35 +229,36 @@ async function exec(
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
 
-    // Fast path: if container is already running, skip heavy setup
+    // Single docker inspect to get container status (replaces 3-4 separate docker commands)
     const targetContainer = getContainerName(fullPath, profile);
-    const wasAlreadyRunning = isContainerRunning(targetContainer);
+    progress("Checking container...");
+    const containerStatus = getContainerStatus(targetContainer);
+    const wasAlreadyRunning = containerStatus.running;
 
     // Auto-upgrade container if image has been rebuilt
-    if (isContainerExists(targetContainer) && isContainerImageOutdated(targetContainer)) {
-        const activeSessions = getActiveSessionsForProject(projectId);
-        if (activeSessions.length <= 1) {
-            // Capture old image ID before removing container
-            const oldImageResult = spawnSync(
-                "docker", ["inspect", targetContainer, "--format", "{{.Image}}"],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-            );
-            const oldImageId = (oldImageResult.stdout ?? "").trim();
+    if (containerStatus.exists) {
+        const currentImageId = getCurrentImageId();
+        if (currentImageId && containerStatus.imageId && containerStatus.imageId !== currentImageId) {
+            const activeSessions = getActiveSessionsForProject(projectId);
+            if (activeSessions.length <= 1) {
+                const oldImageId = containerStatus.imageId;
 
-            console.log("Upgrading container to new image...");
-            spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
-            spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
+                progress("Upgrading container to new image...");
+                spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
+                spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
 
-            // Remove old image (now dangling). Silently fails if still in use by other containers.
-            if (oldImageId) {
-                spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                // Remove old image (now dangling). Silently fails if still in use by other containers.
+                if (oldImageId) {
+                    spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                }
+            } else {
+                console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
             }
-        } else {
-            console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
         }
     }
 
     // Start or get container (with extra mounts for worktree workspaces)
+    if (!wasAlreadyRunning) progress("Starting container...");
     const containerName = startProjectContainer(
         fullPath,
         () => ensureDirs(profile),
@@ -264,6 +271,7 @@ async function exec(
     if (!wasAlreadyRunning) {
         // Ensure claude binary is available (cached in volume or fresh install).
         // Retry once if a concurrent session stopped the container during setup.
+        progress("Checking claude binary...");
         for (let attempt = 0; attempt < 2; attempt++) {
             if (!isContainerRunning(containerName)) {
                 console.log("Container stopped during setup (concurrent session), restarting...");
@@ -281,6 +289,7 @@ async function exec(
         }
 
         // Run independent setup steps in parallel after claude is installed.
+        progress("Configuring environment...");
         const [, , forwardedMcp] = await Promise.all([
             Promise.resolve(ensureGlobalNpmTools(containerName)),
             Promise.resolve(syncClipboardShims(containerName, __dirname)),
@@ -370,10 +379,12 @@ async function exec(
     execArgs.push(containerName);
 
     // For claude, run mise setup and claude as SEPARATE docker exec calls.
+    // mise install can be slow on first run (downloads tool binaries).
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
     if (cmd[0] === "claude") {
         // Step 1: mise setup (trust, install, reshim) — separate exec
+        progress("Installing project tools (mise)...");
         spawnSync(
             "docker",
             [

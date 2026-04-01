@@ -241,6 +241,50 @@ export function isContainerImageOutdated(containerName: string): boolean {
     }
 }
 
+// === Combined Status (single docker inspect) ===
+
+export interface ContainerStatus {
+    exists: boolean;
+    running: boolean;
+    imageId: string | null;
+}
+
+/**
+ * Get container existence, running state, and image ID in a single docker inspect.
+ * Replaces separate isContainerRunning + isContainerExists + isContainerImageOutdated calls.
+ */
+export function getContainerStatus(containerName: string): ContainerStatus {
+    const result = spawnSync(
+        "docker",
+        ["inspect", containerName, "--format", "{{.State.Running}}|{{.Image}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) {
+        return { exists: false, running: false, imageId: null };
+    }
+    const output = (result.stdout ?? "").trim();
+    const sep = output.indexOf("|");
+    return {
+        exists: true,
+        running: output.substring(0, sep) === "true",
+        imageId: sep >= 0 ? output.substring(sep + 1) : null,
+    };
+}
+
+/**
+ * Get the current image ID for IMAGE_NAME. Used with getContainerStatus()
+ * to detect outdated containers without extra docker commands.
+ */
+export function getCurrentImageId(): string | null {
+    const result = spawnSync(
+        "docker",
+        ["inspect", IMAGE_NAME, "--format", "{{.Id}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) return null;
+    return (result.stdout ?? "").trim() || null;
+}
+
 /**
  * Get a Docker image label value.
  * Returns null if the label is missing, the image doesn't exist, or the value is '<no value>'.
