@@ -21,6 +21,9 @@ const {
     profileExists,
     createProfile,
     removeProfile,
+    BUILTIN_PROFILES,
+    isBuiltinProfile,
+    ensureProfile,
 } = await import("../profile.js");
 
 describe("validateProfileName", () => {
@@ -132,5 +135,75 @@ describe("listProfiles / profileExists / createProfile / removeProfile", () => {
         const profiles = listProfiles();
         expect(profiles).toContain("keep");
         expect(profiles).not.toContain("remove");
+    });
+});
+
+describe("BUILTIN_PROFILES", () => {
+    it("contains local-llm entry", () => {
+        expect(BUILTIN_PROFILES["local-llm"]).toBeDefined();
+    });
+
+    it("local-llm has CLAUDE_CODE_ATTRIBUTION_HEADER=0 in env", () => {
+        expect(BUILTIN_PROFILES["local-llm"].settings?.env?.CLAUDE_CODE_ATTRIBUTION_HEADER).toBe("0");
+    });
+});
+
+describe("isBuiltinProfile", () => {
+    it("returns true for local-llm", () => {
+        expect(isBuiltinProfile("local-llm")).toBe(true);
+    });
+
+    it("returns false for custom profile name", () => {
+        expect(isBuiltinProfile("my-custom-profile")).toBe(false);
+    });
+});
+
+describe("createProfile with settings", () => {
+    beforeEach(() => {
+        try {
+            const entries = require("fs").readdirSync(mockProfilesDir) as string[];
+            for (const e of entries) rmSync(join(mockProfilesDir, e), { recursive: true, force: true });
+        } catch { /* empty */ }
+    });
+
+    it("writes settings.json when settings provided", () => {
+        createProfile("withsettings", { env: { FOO: "bar" } });
+        const settingsPath = join(mockProfilesDir, "withsettings", "claude", "settings.json");
+        expect(existsSync(settingsPath)).toBe(true);
+        const content = JSON.parse(require("fs").readFileSync(settingsPath, "utf-8"));
+        expect(content.env?.FOO).toBe("bar");
+    });
+
+    it("does NOT write settings.json when no settings provided", () => {
+        createProfile("nosettings");
+        const settingsPath = join(mockProfilesDir, "nosettings", "claude", "settings.json");
+        expect(existsSync(settingsPath)).toBe(false);
+    });
+});
+
+describe("ensureProfile", () => {
+    beforeEach(() => {
+        try {
+            const entries = require("fs").readdirSync(mockProfilesDir) as string[];
+            for (const e of entries) rmSync(join(mockProfilesDir, e), { recursive: true, force: true });
+        } catch { /* empty */ }
+    });
+
+    it("creates built-in profile and returns true when not existing", () => {
+        const created = ensureProfile("local-llm");
+        expect(created).toBe(true);
+        expect(profileExists("local-llm")).toBe(true);
+        const settingsPath = join(mockProfilesDir, "local-llm", "claude", "settings.json");
+        expect(existsSync(settingsPath)).toBe(true);
+    });
+
+    it("returns false when profile already exists", () => {
+        createProfile("local-llm");
+        const created = ensureProfile("local-llm");
+        expect(created).toBe(false);
+    });
+
+    it("throws for unknown non-builtin profile", () => {
+        expect(() => ensureProfile("nonexistent-profile")).toThrow();
     });
 });

@@ -87,6 +87,9 @@ import {
     profileExists,
     createProfile,
     removeProfile,
+    BUILTIN_PROFILES,
+    isBuiltinProfile,
+    ensureProfile,
 } from "./profile.js";
 
 
@@ -762,8 +765,13 @@ async function main(): Promise<void> {
             process.exit(1);
         }
         if (!profileExists(profile)) {
-            console.error(`Error: Profile "${profile}" does not exist. Create it with: ccc profile add ${profile}`);
-            process.exit(1);
+            if (isBuiltinProfile(profile)) {
+                ensureProfile(profile);
+                console.log(`Auto-created built-in profile "${profile}".`);
+            } else {
+                console.error(`Error: Profile "${profile}" does not exist. Create it with: ccc profile add ${profile}`);
+                process.exit(1);
+            }
         }
     }
 
@@ -859,7 +867,8 @@ async function main(): Promise<void> {
                     } else {
                         console.log("\n=== Profiles ===\n");
                         for (const p of profiles) {
-                            console.log(`  ${p}`);
+                            const tag = isBuiltinProfile(p) ? "  [built-in]" : "";
+                            console.log(`  ${p}${tag}`);
                         }
                         console.log("");
                     }
@@ -878,7 +887,7 @@ async function main(): Promise<void> {
                         console.error(`Error: Profile "${name}" already exists.`);
                         process.exit(1);
                     }
-                    createProfile(name);
+                    createProfile(name, BUILTIN_PROFILES[name]?.settings);
                     console.log(`Profile "${name}" created.`);
                     console.log(`Use with: CCC_PROFILE=${name} ccc`);
                     break;
