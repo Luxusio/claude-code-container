@@ -193,3 +193,25 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
         { stdio: "ignore" },
     );
 }
+
+/**
+ * Ensure uv is available globally in the container via mise.
+ * uv is used by hooks (e.g. ~/.claude/hooks/langfuse-claudecode) which run
+ * without bash profile activation — they rely on the global mise shim.
+ */
+export function ensureUvAvailable(containerName: string): void {
+    const checkResult = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c",
+         "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
+        { encoding: "utf-8" },
+    );
+    if (checkResult.status === 0) return;
+
+    spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c",
+         "~/.local/bin/mise use -g uv@latest"],
+        { stdio: "inherit" },
+    );
+}

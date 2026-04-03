@@ -69,6 +69,7 @@ import {
 import {
     ensureClaudeInContainer,
     ensureGlobalNpmTools,
+    ensureUvAvailable,
     CLAUDE_BIN_PATH,
 } from "./container-setup.js";
 import {
@@ -290,8 +291,9 @@ async function exec(
 
         // Run independent setup steps in parallel after claude is installed.
         progress("Configuring environment...");
-        const [, , forwardedMcp] = await Promise.all([
+        const [, , , forwardedMcp] = await Promise.all([
             Promise.resolve(ensureGlobalNpmTools(containerName)),
+            Promise.resolve(ensureUvAvailable(containerName)),
             Promise.resolve(syncClipboardShims(containerName, __dirname)),
             Promise.resolve(buildMcpConfig(profile)),
             Promise.resolve(setupLocalhostProxy(containerName)),
@@ -383,20 +385,23 @@ async function exec(
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
     if (cmd[0] === "claude") {
-        // Step 1: mise setup (trust, install, reshim) — separate exec
-        progress("Installing project tools (mise)...");
-        spawnSync(
-            "docker",
-            [
-                "exec", "-w", projectMountPath, containerName,
-                "sh", "-c",
-                `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
-            ],
-            { stdio: "inherit" },
-        );
+        // Step 1: mise setup (trust, install, reshim) — only on first session startup.
+        // Skipped when container was already running: a previous session already ran this.
+        if (!wasAlreadyRunning) {
+            progress("Installing project tools (mise)...");
+            spawnSync(
+                "docker",
+                [
+                    "exec", "-w", projectMountPath, containerName,
+                    "sh", "-c",
+                    `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
+                ],
+                { stdio: "inherit" },
+            );
 
-        // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
-        ensureClaudeInContainer(containerName);
+            // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
+            ensureClaudeInContainer(containerName);
+        }
 
         // Step 2: run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
