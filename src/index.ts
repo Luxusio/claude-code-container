@@ -23,16 +23,15 @@ import {
     remoteTerminate,
 } from "./remote.js";
 import {
-    hashPath,
     getProjectId,
     EXCLUDE_ENV_KEYS,
     CONTAINER_ENV_KEY,
     CONTAINER_ENV_VALUE,
     prompt,
     DATA_DIR,
-    CLAUDE_DIR,
-    CLAUDE_JSON_FILE,
     CLI_VERSION,
+    getClaudeDir,
+    getClaudeJsonFile,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
@@ -53,26 +52,24 @@ import {
 } from "./worktree.js";
 import {
     getContainerName,
-    isDockerRunning,
     isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
-    isContainerImageOutdated,
     isImageExists,
     getImageLabel,
     ensureImage,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
-    buildDockerRunArgs,
     syncClipboardShims,
-    type DockerRunArgsOptions,
+    getContainerStatus,
+    getCurrentImageId,
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
     ensureGlobalNpmTools,
-    saveClaudeBinaryToVolume,
+    ensureUvAvailable,
     CLAUDE_BIN_PATH,
 } from "./container-setup.js";
 import {
@@ -84,21 +81,38 @@ import {
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
+import {
+    validateProfileName,
+    listProfiles,
+    profileExists,
+    createProfile,
+    removeProfile,
+    BUILTIN_PROFILES,
+    isBuiltinProfile,
+    ensureProfile,
+} from "./profile.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Progress indicator for startup steps (dim text on stderr)
+function progress(msg: string): void {
+    process.stderr.write(`\x1b[2m▸ ${msg}\x1b[0m\n`);
+}
+
 // === Configuration ===
 const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
 
 // === Helpers ===
-function ensureDirs(): void {
+function ensureDirs(profile?: string): void {
     mkdirSync(DATA_DIR, { recursive: true });
-    mkdirSync(CLAUDE_DIR, { recursive: true });
+    const claudeDir = getClaudeDir(profile);
+    mkdirSync(claudeDir, { recursive: true });
     // Ensure claude.json exists for file mount (onboarding state)
-    if (!existsSync(CLAUDE_JSON_FILE)) {
-        writeFileSync(CLAUDE_JSON_FILE, "{}", { mode: 0o600 });
+    const claudeJsonFile = getClaudeJsonFile(profile);
+    if (!existsSync(claudeJsonFile)) {
+        writeFileSync(claudeJsonFile, "{}", { mode: 0o600 });
     }
 }
 
@@ -185,7 +199,8 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
 async function exec(
     projectPath: string,
     cmd: string[],
-    options: { interactive?: boolean; env?: Record<string, string> } = {},
+    options: { interactive?: boolean } = {},
+    profile?: string,
 ): Promise<void> {
     // Check Docker is running first
     ensureDockerRunning();
@@ -193,7 +208,7 @@ async function exec(
     const fullPath = resolve(projectPath);
 
     // Ensure directories exist before syncing credentials
-    ensureDirs();
+    ensureDirs(profile);
 
 
     // Check for mise.toml and offer to create if not exists
@@ -205,8 +220,8 @@ async function exec(
     //   Terminal A cleanup checks for other sessions → finds none → stops container
     //   Terminal B is still setting up but hasn't created its lock yet → container dies
     const projectId = getProjectId(fullPath);
-    const sessionLockFile = createSessionLock(projectId);
-    setSession(sessionLockFile, fullPath);
+    const sessionLockFile = createSessionLock(projectId, profile);
+    setSession(sessionLockFile, fullPath, profile);
     setupSignalHandlers();
 
     // Start clipboard server early — must complete before container creation so
@@ -218,80 +233,90 @@ async function exec(
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
 
+    // Single docker inspect to get container status (replaces 3-4 separate docker commands)
+    const targetContainer = getContainerName(fullPath, profile);
+    progress("Checking container...");
+    const containerStatus = getContainerStatus(targetContainer);
+    const wasAlreadyRunning = containerStatus.running;
+
     // Auto-upgrade container if image has been rebuilt
-    const targetContainer = getContainerName(fullPath);
-    if (isContainerExists(targetContainer) && isContainerImageOutdated(targetContainer)) {
-        const activeSessions = getActiveSessionsForProject(projectId);
-        if (activeSessions.length <= 1) {
-            // Capture old image ID before removing container
-            const oldImageResult = spawnSync(
-                "docker", ["inspect", targetContainer, "--format", "{{.Image}}"],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-            );
-            const oldImageId = (oldImageResult.stdout ?? "").trim();
+    if (containerStatus.exists) {
+        const currentImageId = getCurrentImageId();
+        if (currentImageId && containerStatus.imageId && containerStatus.imageId !== currentImageId) {
+            const activeSessions = getActiveSessionsForProject(projectId);
+            if (activeSessions.length <= 1) {
+                const oldImageId = containerStatus.imageId;
 
-            console.log("Upgrading container to new image...");
-            spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
-            spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
+                progress("Upgrading container to new image...");
+                spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
+                spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
 
-            // Remove old image (now dangling). Silently fails if still in use by other containers.
-            if (oldImageId) {
-                spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                // Remove old image (now dangling). Silently fails if still in use by other containers.
+                if (oldImageId) {
+                    spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                }
+            } else {
+                console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
             }
-        } else {
-            console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
         }
     }
 
     // Start or get container (with extra mounts for worktree workspaces)
+    if (!wasAlreadyRunning) progress("Starting container...");
     const containerName = startProjectContainer(
         fullPath,
-        ensureDirs,
+        () => ensureDirs(profile),
         worktreeMounts.length > 0 ? worktreeMounts : undefined,
         clipboardPortFile,
+        profile,
     );
 
-    // Ensure claude binary is available (cached in volume or fresh install).
-    // Retry once if a concurrent session stopped the container during setup.
-    for (let attempt = 0; attempt < 2; attempt++) {
-        if (!isContainerRunning(containerName)) {
-            console.log("Container stopped during setup (concurrent session), restarting...");
-            startProjectContainer(fullPath, ensureDirs);
-        }
-        try {
-            ensureClaudeInContainer(containerName);
-            break;
-        } catch {
-            if (attempt === 1) {
-                console.error("Failed to install claude in container");
-                process.exit(1);
+    // Skip heavy setup if container was already running (another session set it up)
+    if (!wasAlreadyRunning) {
+        // Ensure claude binary is available (cached in volume or fresh install).
+        // Retry once if a concurrent session stopped the container during setup.
+        progress("Checking claude binary...");
+        for (let attempt = 0; attempt < 2; attempt++) {
+            if (!isContainerRunning(containerName)) {
+                console.log("Container stopped during setup (concurrent session), restarting...");
+                startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
             }
-            // Container may have been stopped mid-install; loop will restart it
+            try {
+                ensureClaudeInContainer(containerName);
+                break;
+            } catch {
+                if (attempt === 1) {
+                    console.error("Failed to install claude in container");
+                    process.exit(1);
+                }
+            }
         }
-    }
 
-    // Run independent setup steps in parallel after claude is installed.
-    // These all need the container but are independent of each other.
-    const [, , forwardedMcp] = await Promise.all([
-        // 1. Install global npm tools (yarn, pnpm, etc.)
-        Promise.resolve(ensureGlobalNpmTools(containerName)),
-        // 2. Sync clipboard shims to container
-        Promise.resolve(syncClipboardShims(containerName, __dirname)),
-        // 3. Build MCP config (no container dependency, but grouped for clarity)
-        Promise.resolve(buildMcpConfig()),
-        // 4. Start localhost proxy for macOS/Windows (--network host doesn't work on VM-based Docker)
-        Promise.resolve(setupLocalhostProxy(containerName)),
-    ]);
+        // Run independent setup steps in parallel after claude is installed.
+        progress("Configuring environment...");
+        const [, , , forwardedMcp] = await Promise.all([
+            Promise.resolve(ensureGlobalNpmTools(containerName)),
+            Promise.resolve(ensureUvAvailable(containerName)),
+            Promise.resolve(syncClipboardShims(containerName, __dirname)),
+            Promise.resolve(buildMcpConfig(profile)),
+            Promise.resolve(setupLocalhostProxy(containerName)),
+        ]);
 
-    if (forwardedMcp.length > 0) {
-        console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
-    }
+        if (forwardedMcp.length > 0) {
+            console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+        }
 
-    // Verify container is still running before exec.
-    // Another session's cleanup could have stopped it between our setup steps.
-    if (!isContainerRunning(containerName)) {
-        console.log("Container was stopped during setup, restarting...");
-        startProjectContainer(fullPath, ensureDirs);
+        // Verify container is still running before exec.
+        if (!isContainerRunning(containerName)) {
+            console.log("Container was stopped during setup, restarting...");
+            startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
+        }
+    } else {
+        // Container already running — only rebuild MCP config (lightweight, may have changed)
+        const forwardedMcp = await buildMcpConfig(profile);
+        if (forwardedMcp.length > 0) {
+            console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+        }
     }
 
     // Build docker exec command
@@ -328,12 +353,7 @@ async function exec(
         || "UTC";
     execArgs.push("-e", `TZ=${hostTz}`);
 
-    // Per-session --env options (override/supplement)
-    if (options.env) {
-        for (const [key, value] of Object.entries(options.env)) {
-            execArgs.push("-e", `${key}=${value}`);
-        }
-    }
+    // Profile: env vars handled by mise.toml [env], not by ccc
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
@@ -364,22 +384,27 @@ async function exec(
     execArgs.push(containerName);
 
     // For claude, run mise setup and claude as SEPARATE docker exec calls.
+    // mise install can be slow on first run (downloads tool binaries).
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
     if (cmd[0] === "claude") {
-        // Step 1: mise setup (trust, install, reshim) — separate exec
-        spawnSync(
-            "docker",
-            [
-                "exec", "-w", projectMountPath, containerName,
-                "sh", "-c",
-                `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
-            ],
-            { stdio: "inherit" },
-        );
+        // Step 1: mise setup (trust, install, reshim) — only on first session startup.
+        // Skipped when container was already running: a previous session already ran this.
+        if (!wasAlreadyRunning) {
+            progress("Installing project tools (mise)...");
+            spawnSync(
+                "docker",
+                [
+                    "exec", "-w", projectMountPath, containerName,
+                    "sh", "-c",
+                    `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
+                ],
+                { stdio: "inherit" },
+            );
 
-        // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
-        ensureClaudeInContainer(containerName);
+            // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
+            ensureClaudeInContainer(containerName);
+        }
 
         // Step 2: run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
@@ -432,8 +457,14 @@ function showStatus(): void {
         console.log("  (none)");
     } else {
         containers.forEach((c) => {
-            const [name, ...status] = c.split("\t");
-            console.log(`  - ${name}: ${status.join("\t")}`);
+            const [name, ...statusParts] = c.split("\t");
+            const statusStr = statusParts.join("\t");
+            // Parse profile from container name: ccc-{projectId}--p--{profile}
+            const profileMatch = name.match(/--p--(.+)$/);
+            const profileSuffix = profileMatch ? `  (profile: ${profileMatch[1]})` : "";
+            // Determine running/stopped label
+            const runningLabel = statusStr.toLowerCase().startsWith("up") ? "running" : "stopped";
+            console.log(`  ${name}  ${runningLabel}${profileSuffix}`);
         });
     }
 
@@ -653,6 +684,12 @@ USAGE:
     ccc update              Update claude to latest version
     ccc <command>           Run command in current project
 
+PROFILES (separate claude credential directories):
+    CCC_PROFILE=<name> ccc      Run with profile
+    ccc profile list            List all profiles
+    ccc profile add <name>      Create profile
+    ccc profile rm <name>       Remove profile
+
 WORKTREES (multi-repo workspace):
     ccc @<branch>           Create worktree workspace + run claude
     ccc @<branch> --continue  Pass claude flags to worktree session
@@ -678,7 +715,7 @@ REMOTE (run on remote host via Tailscale + Mutagen):
     ccc remote terminate    Stop sync session for this project
 
 OPTIONS:
-    --env KEY=VALUE         Set environment variable
+    -p, --profile <name>    Use named profile
     -h, --help              Show this help
 
 EXAMPLES:
@@ -686,7 +723,7 @@ EXAMPLES:
     ccc --continue          # Continue previous Claude session
     ccc shell               # Open shell in current project
     ccc npm install         # Run npm install in container
-    ccc --env API_KEY=xxx   # Run with custom env var
+    CCC_PROFILE=work ccc    # Run with 'work' profile
     ccc @feature            # Create workspace + run Claude
     ccc @feature/login      # Branch with / (dir name uses -)
     ccc @                   # List workspaces
@@ -694,28 +731,47 @@ EXAMPLES:
 `);
 }
 
+// === Arg Parsing ===
+export function parseArgs(args: string[]): {
+    worktreeArg?: string;
+    filteredArgs: string[];
+} {
+    const filteredArgs: string[] = [];
+    let worktreeArg: string | undefined;
+
+    for (let i = 0; i < args.length; i++) {
+        if (args[i].startsWith("@")) {
+            worktreeArg = args[i];
+        } else {
+            filteredArgs.push(args[i]);
+        }
+    }
+
+    return { worktreeArg, filteredArgs };
+}
+
 // === Main ===
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
-    // Parse --env flags
-    const customEnv: Record<string, string> = {};
-    const filteredArgs: string[] = [];
+    // Unified parsing: @branch and remaining args
+    const { worktreeArg, filteredArgs } = parseArgs(args);
 
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === "--env" && args[i + 1]) {
-            const match = args[i + 1].match(/^([^=]+)=(.*)$/);
-            if (match) {
-                customEnv[match[1]] = match[2];
+    // Profile from CCC_PROFILE env var
+    const profile = process.env.CCC_PROFILE || undefined;
+    if (profile !== undefined) {
+        if (!validateProfileName(profile)) {
+            console.error(`Error: Invalid CCC_PROFILE="${profile}". Use lowercase letters, digits, ., _, - only.`);
+            process.exit(1);
+        }
+        if (!profileExists(profile)) {
+            if (isBuiltinProfile(profile)) {
+                ensureProfile(profile);
+                console.log(`Auto-created built-in profile "${profile}".`);
+            } else {
+                console.error(`Error: Profile "${profile}" does not exist. Create it with: ccc profile add ${profile}`);
+                process.exit(1);
             }
-            i++;
-        } else if (args[i].startsWith("--env=")) {
-            const match = args[i].slice(6).match(/^([^=]+)=(.*)$/);
-            if (match) {
-                customEnv[match[1]] = match[2];
-            }
-        } else {
-            filteredArgs.push(args[i]);
         }
     }
 
@@ -723,8 +779,8 @@ async function main(): Promise<void> {
     let cwd = process.cwd();
 
     // @ prefix → worktree workspace
-    if (command && command.startsWith("@")) {
-        const parsed = parseWorktreeArg(command);
+    if (worktreeArg) {
+        const parsed = parseWorktreeArg(worktreeArg);
         if (parsed) {
             if (parsed.branch === null) {
                 handleWorktreeList(cwd);
@@ -732,8 +788,7 @@ async function main(): Promise<void> {
             }
 
             // ccc @branch rm [-f] — worktree-specific command
-            const subCommand = filteredArgs[1];
-            if (subCommand === "rm") {
+            if (command === "rm") {
                 const force = filteredArgs.includes("-f") || filteredArgs.includes("--force");
                 handleWorktreeRemove(cwd, parsed.branch, force);
                 return;
@@ -741,8 +796,7 @@ async function main(): Promise<void> {
 
             // All other commands: prepare workspace, then fall through to standard switch
             cwd = await prepareWorktree(cwd, parsed.branch);
-            filteredArgs.shift(); // remove @branch
-            command = filteredArgs[0]; // next arg becomes the command (shell, stop, etc. or undefined)
+            // command stays as filteredArgs[0]
         }
     }
 
@@ -754,11 +808,11 @@ async function main(): Promise<void> {
             break;
 
         case "stop":
-            stopProjectContainer(cwd);
+            stopProjectContainer(cwd, profile);
             break;
 
         case "rm":
-            removeProjectContainer(cwd);
+            removeProjectContainer(cwd, profile);
             break;
 
         case "status":
@@ -802,18 +856,72 @@ async function main(): Promise<void> {
             break;
         }
 
+        case "profile": {
+            const sub = filteredArgs[1];
+            const name = filteredArgs[2];
+            switch (sub) {
+                case "list": {
+                    const profiles = listProfiles();
+                    if (profiles.length === 0) {
+                        console.log("No profiles found. Create one with: ccc profile add <name>");
+                    } else {
+                        console.log("\n=== Profiles ===\n");
+                        for (const p of profiles) {
+                            const tag = isBuiltinProfile(p) ? "  [built-in]" : "";
+                            console.log(`  ${p}${tag}`);
+                        }
+                        console.log("");
+                    }
+                    break;
+                }
+                case "add": {
+                    if (!name) {
+                        console.error("Usage: ccc profile add <name>");
+                        process.exit(1);
+                    }
+                    if (!validateProfileName(name)) {
+                        console.error(`Error: Invalid profile name "${name}".`);
+                        process.exit(1);
+                    }
+                    if (profileExists(name)) {
+                        console.error(`Error: Profile "${name}" already exists.`);
+                        process.exit(1);
+                    }
+                    createProfile(name, BUILTIN_PROFILES[name]?.settings);
+                    console.log(`Profile "${name}" created.`);
+                    console.log(`Use with: CCC_PROFILE=${name} ccc`);
+                    break;
+                }
+                case "rm": {
+                    if (!name) {
+                        console.error("Usage: ccc profile rm <name>");
+                        process.exit(1);
+                    }
+                    if (!profileExists(name)) {
+                        console.error(`Error: Profile "${name}" does not exist.`);
+                        process.exit(1);
+                    }
+                    removeProfile(name);
+                    console.log(`Profile "${name}" removed.`);
+                    break;
+                }
+                default:
+                    console.error("Usage: ccc profile <list|add|rm> [name]");
+                    process.exit(1);
+            }
+            break;
+        }
+
         case "shell":
-            await exec(cwd, ["bash"], { env: customEnv });
+            await exec(cwd, ["bash"], {}, profile);
             break;
 
         case "update":
-            await exec(cwd, ["claude", "update"], { env: customEnv });
+            await exec(cwd, ["claude", "update"], {}, profile);
             break;
 
         case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {
-                env: customEnv,
-            });
+            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {}, profile);
             break;
 
         default:
@@ -826,10 +934,11 @@ async function main(): Promise<void> {
                         "--dangerously-skip-permissions",
                         ...filteredArgs,
                     ],
-                    { env: customEnv },
+                    {},
+                    profile,
                 );
             } else {
-                await exec(cwd, filteredArgs, { env: customEnv });
+                await exec(cwd, filteredArgs, {}, profile);
             }
             break;
     }

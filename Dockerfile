@@ -143,7 +143,8 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
     ~/.local/bin/mise use -g maven@3 && \
     ~/.local/bin/mise use -g gradle@8 && \
     ~/.local/bin/mise use -g yarn@4 && \
-    ~/.local/bin/mise use -g pnpm@9
+    ~/.local/bin/mise use -g pnpm@9 && \
+    ~/.local/bin/mise use -g uv@latest
 
 # ============================================================
 # claude-code is installed at runtime and cached in mise volume.

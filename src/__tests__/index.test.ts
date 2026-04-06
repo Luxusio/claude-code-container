@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
+import { parseArgs } from '../index.js'
 
 vi.mock('fs', async () => {
     const actual = await vi.importActual<typeof import('fs')>('fs')
@@ -198,6 +199,32 @@ describe('container environment marker', () => {
   it('formats correctly as shell-escaped remote env flag', () => {
     const flag = `-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`
     expect(flag).toBe("-e 'container=docker'")
+  })
+})
+
+describe('parseArgs', () => {
+  it('parses @branch as worktreeArg', () => {
+    const result = parseArgs(['@feature'])
+    expect(result.worktreeArg).toBe('@feature')
+    expect(result.filteredArgs).toEqual([])
+  })
+
+  it('returns undefined worktreeArg and empty filteredArgs for no args', () => {
+    const result = parseArgs([])
+    expect(result.worktreeArg).toBeUndefined()
+    expect(result.filteredArgs).toEqual([])
+  })
+
+  it('passes through unrecognized args as filteredArgs', () => {
+    const result = parseArgs(['shell', '--continue'])
+    expect(result.filteredArgs).toEqual(['shell', '--continue'])
+    expect(result.worktreeArg).toBeUndefined()
+  })
+
+  it('@branch with command: worktree extracted, command stays in filteredArgs', () => {
+    const result = parseArgs(['@main', 'shell'])
+    expect(result.worktreeArg).toBe('@main')
+    expect(result.filteredArgs).toEqual(['shell'])
   })
 })
 

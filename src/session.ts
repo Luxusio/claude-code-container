@@ -12,26 +12,30 @@ const locksDir = join(DATA_DIR, "locks");
 // Module state - managed via getter/setter for testability
 let currentSessionLockFile: string | null = null;
 let currentProjectPath: string | null = null;
+let currentProfile: string | undefined = undefined;
 
-export function setSession(lockFile: string, projectPath: string): void {
+export function setSession(lockFile: string, projectPath: string, profile?: string): void {
     currentSessionLockFile = lockFile;
     currentProjectPath = projectPath;
+    currentProfile = profile;
 }
 
-export function getCurrentSession(): { lockFile: string | null; projectPath: string | null } {
-    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath };
+export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string } {
+    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath, profile: currentProfile };
 }
 
 export function clearSession(): void {
     currentSessionLockFile = null;
     currentProjectPath = null;
+    currentProfile = undefined;
     cleanedUp = false;
 }
 
-export function createSessionLock(projectId: string): string {
+export function createSessionLock(projectId: string, profile?: string): string {
     mkdirSync(locksDir, { recursive: true });
     const sessionId = randomBytes(16).toString("hex");
-    const lockFile = join(locksDir, `${projectId}-${sessionId}.lock`);
+    const prefix = profile ? `${projectId}--p--${profile}` : projectId;
+    const lockFile = join(locksDir, `${prefix}--${sessionId}.lock`);
     writeFileSync(lockFile, String(process.pid), { mode: 0o600 });
     return lockFile;
 }
@@ -55,13 +59,40 @@ function isPidAlive(pid: number): boolean {
     }
 }
 
-export function getActiveSessionsForProject(projectId: string): string[] {
+/**
+ * Get active sessions for a container prefix.
+ * containerPrefix is the full container name without trailing "--".
+ * For non-profile containers (e.g. "projectId"), only returns files that match
+ * `${containerPrefix}--<sessionId>.lock` and do NOT contain "--p--" after the prefix.
+ * For profile containers (e.g. "projectId--p--work"), returns files that match
+ * `${containerPrefix}--<sessionId>.lock`.
+ */
+export function getActiveSessionsForContainer(containerPrefix: string): string[] {
     if (!existsSync(locksDir)) {
         return [];
     }
-    const locks = readdirSync(locksDir).filter(
-        (f) => f.startsWith(`${projectId}-`) && f.endsWith(".lock"),
-    );
+    const isProfilePrefix = containerPrefix.includes("--p--");
+    const locks = readdirSync(locksDir).filter((f) => {
+        if (!f.endsWith(".lock")) return false;
+
+        // New format: prefix--sessionId.lock
+        if (f.startsWith(`${containerPrefix}--`)) {
+            if (!isProfilePrefix) {
+                const afterPrefix = f.slice(containerPrefix.length + 2);
+                if (afterPrefix.startsWith("p--")) return false;
+            }
+            return true;
+        }
+
+        // Legacy fallback: prefix-sessionId.lock (single dash, non-profile only)
+        if (!isProfilePrefix && f.startsWith(`${containerPrefix}-`)) {
+            // Make sure it's not actually a new-format file with --
+            const afterPrefix = f.slice(containerPrefix.length + 1);
+            if (!afterPrefix.startsWith("-")) return true;
+        }
+
+        return false;
+    });
     return locks.filter((f) => {
         const lockPath = join(locksDir, f);
         try {
@@ -79,11 +110,19 @@ export function getActiveSessionsForProject(projectId: string): string[] {
     });
 }
 
+/**
+ * @deprecated Use getActiveSessionsForContainer instead.
+ * Kept for backwards compatibility: recognizes old single-dash format.
+ */
+export function getActiveSessionsForProject(projectId: string): string[] {
+    return getActiveSessionsForContainer(projectId);
+}
+
 export function hasOtherActiveSessions(
-    projectId: string,
+    containerPrefix: string,
     currentLockFile: string,
 ): boolean {
-    const sessions = getActiveSessionsForProject(projectId);
+    const sessions = getActiveSessionsForContainer(containerPrefix);
     const currentLockName = basename(currentLockFile);
     return sessions.some((s) => s !== currentLockName);
 }
@@ -97,7 +136,8 @@ export function cleanupSession(): void {
     cleanedUp = true;
 
     const projectId = getProjectId(currentProjectPath);
-    const hasOthers = hasOtherActiveSessions(projectId, currentSessionLockFile);
+    const containerPrefix = currentProfile ? `${projectId}--p--${currentProfile}` : projectId;
+    const hasOthers = hasOtherActiveSessions(containerPrefix, currentSessionLockFile);
 
     // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
     stopClipboardServerIfLast(currentSessionLockFile);
@@ -107,7 +147,7 @@ export function cleanupSession(): void {
 
     // Stop container if no other sessions are using this project
     if (!hasOthers) {
-        const containerName = getContainerName(currentProjectPath);
+        const containerName = getContainerName(currentProjectPath, currentProfile);
         if (isContainerRunning(containerName)) {
             // Save claude binary to volume before stopping (handles `claude update`)
             saveClaudeBinaryToVolume(containerName);
@@ -117,6 +157,7 @@ export function cleanupSession(): void {
 
     currentSessionLockFile = null;
     currentProjectPath = null;
+    currentProfile = undefined;
 }
 
 // Setup signal handlers for cleanup

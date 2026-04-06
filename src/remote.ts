@@ -3,7 +3,8 @@
 import {spawn, spawnSync} from "child_process";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
-import {hashPath, getProjectId, EXCLUDE_ENV_KEYS, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
+import {hashPath, getProjectId, getClaudeDir, EXCLUDE_ENV_KEYS, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
+import {getContainerName} from "./docker.js";
 
 // === Types ===
 
@@ -105,13 +106,15 @@ async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
  * Start container on remote host without project volume mount.
  * Returns container name.
  */
-async function startRemoteContainer(config: RemoteConfig, projectId: string): Promise<string> {
-    const containerName = `ccc-${projectId}`;
+async function startRemoteContainer(config: RemoteConfig, projectPath: string, profile?: string): Promise<string> {
+    const projectId = getProjectId(projectPath);
+    const containerName = getContainerName(projectPath, profile);
+    const claudeDir = getClaudeDir(profile);
 
     // Build docker run command (no project volume, just credentials and mise cache)
     const dockerCmd = `docker run -d --name ${containerName} \
         --network host \
-        -v ~/.ccc/claude:/home/ccc/.claude \
+        -v ${claudeDir}:/home/ccc/.claude \
         -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -w /project/${projectId} \
@@ -337,7 +340,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
         // 2. Start container on remote (without project volume mount)
         console.log("Starting remote container...");
-        const containerName = await startRemoteContainer(config, projectId);
+        const containerName = await startRemoteContainer(config, fullPath);
 
         // 3. Create project directory in container
         await createContainerProjectDir(config, containerName, projectId);
@@ -500,7 +503,7 @@ export async function remoteCheck(projectPath: string): Promise<void> {
     if (config) {
         console.log(`  Host: ${config.host}`);
         console.log(`  User: ${config.user}`);
-        console.log(`  Container: ccc-${getProjectId(projectPath)}`);
+        console.log(`  Container: ${getContainerName(projectPath)}`);
 
         // Check host reachability
         const reachable = isHostReachable(config.host);

@@ -47,10 +47,14 @@ ccc
 
 ```
 ~/.ccc/
-├── claude/             # Claude credentials (mounted to container)
+├── claude/             # Default credentials (mounted to container)
 ├── locks/              # Session lock files (per-session UUID)
-│   ├── my-project-a1b2c3d4e5f6-uuid1.lock
-│   └── my-project-a1b2c3d4e5f6-uuid2.lock
+│   ├── myproject-a1b2--<sessionId>.lock           # No profile
+│   └── myproject-a1b2--p--work--<sessionId>.lock  # Profile "work"
+├── profiles/           # Named profiles (credential isolation)
+│   └── work/
+│       ├── claude/     # Profile credentials (mounted to separate container)
+│       └── claude.json
 └── remote/             # Remote development configs
 
 Docker Volume:
@@ -60,13 +64,38 @@ Docker Volume:
 ### Container Structure
 
 ```
-Container (ccc-<project>-<hash>):
+Container (ccc-<project>-<hash>):            # No profile
+Container (ccc-<project>-<hash>--p--work):   # Profile "work"
+
 ├── /project/<project>-<hash>   # Project path mount
-├── /home/ccc/.claude           # Claude config mount
+├── /home/ccc/.claude           # Claude config mount (profile-specific)
 ├── /home/ccc/.ssh              # SSH keys (read-only)
 ├── /tmp/ssh-agent.sock         # SSH agent socket
 └── /home/ccc/.local/share/mise # mise cache (named volume)
 ```
+
+### Profile System
+
+Profiles provide credential directory isolation. Each profile gets a separate `~/.ccc/profiles/<name>/claude/` directory mounted to its own container.
+
+- `CCC_PROFILE` env var selects the profile at runtime
+- No profile → uses `~/.ccc/claude/` (backward compatible)
+- Container naming: `ccc-{projectId}--p--{profile}`
+- Session locks use `--` separator: `{projectId}--p--{profile}--{sessionId}.lock`
+- `getClaudeDir(profile?)` and `getClaudeJsonFile(profile?)` in `utils.ts` resolve paths
+- Environment variables (API keys, backends) are NOT managed by profiles — use `mise.toml` `[env]`
+
+### Image Management
+
+| Scenario | Behavior |
+|----------|----------|
+| npm install (first run) | Auto-pulls matching version from Docker Hub |
+| npm update | Detects version mismatch, auto-pulls new image |
+| Local `docker build -t ccc .` | Uses local image, never auto-replaced |
+| Offline with stale image | Warns but continues with existing image |
+| Offline with no image | Error with instructions to build locally |
+
+Override the registry: `export CCC_REGISTRY=myregistry/claude-code-container`
 
 ### Image Resolution
 
@@ -130,6 +159,7 @@ claude-code-container/
 │   ├── remote.ts              # Remote development helpers
 │   ├── doctor.ts              # Health check and diagnostics
 │   ├── clean.ts               # Container/image cleanup
+│   ├── profile.ts             # Profile management (credential isolation)
 │   └── utils.ts               # Shared utilities (CLI_VERSION, constants)
 ├── scripts/
 │   ├── install.js             # Legacy cross-platform global installer
@@ -178,7 +208,7 @@ claude-code-container/
 
 ### Utilities (`utils.ts`)
 
-- `CLI_VERSION`: Runtime version from package.json (via `createRequire`)
+- `CLI_VERSION`: Build-time injected version from package.json
 - `DOCKER_REGISTRY_IMAGE`: Docker Hub registry path (overridable via `CCC_REGISTRY`)
 - `hashPath()` / `getProjectId()`: Path-based container naming
 - `EXCLUDE_ENV_KEYS`: Environment variables excluded from forwarding

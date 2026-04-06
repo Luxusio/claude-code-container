@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "agent": "harness:harness",
+  "permissions": {
+    "allow": [
+      "Skill(harness:plan)",
+      "Skill(harness:plan *)",
+      "Skill(harness:maintain)",
+      "Skill(harness:maintain *)",
+      "mcp__plugin_harness_harness__*"
+    ]
+  }
+}

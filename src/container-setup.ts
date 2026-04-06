@@ -41,67 +41,50 @@ export function isValidClaudeBinary(containerName: string, path: string): boolea
  * 2. If volume has a valid cached copy → symlink it
  * 3. Otherwise → fresh install and cache to volume
  *
- * Detects and purges stale mise shims that can masquerade as the binary.
+ * Uses a single docker exec to probe both paths, reducing round-trips
+ * from 3-5 to 1 for the common happy path.
  */
 export function ensureClaudeInContainer(containerName: string): void {
-    const check = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_BIN_PATH}`],
-        { encoding: "utf-8" },
-    );
-    if (check.status === 0) {
-        if (!isMiseShim(containerName, CLAUDE_BIN_PATH)) {
-            if (isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
-                return;
-            }
-            console.log("Binary at claude path is not valid claude, removing...");
-        } else {
-            console.log("Detected stale mise shim at claude path, removing...");
-        }
-        spawnSync(
-            "docker",
-            ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_BIN_PATH}`],
-            { stdio: "ignore" },
-        );
-    }
+    // Single docker exec: check main path, fall through to cache, handle cleanup
+    const probeScript = `
+BIN="${CLAUDE_BIN_PATH}"
+CACHE="${CLAUDE_PERSIST_DIR}/claude"
+is_shim() { head -c 500 "$1" 2>/dev/null | grep -q mise; }
+is_claude() { "$1" --version 2>&1 | grep -qi claude; }
 
-    // Check if volume has cached claude binary
-    const volumeCheck = spawnSync(
-        "docker",
-        ["exec", containerName, "sh", "-c", `test -x ${CLAUDE_PERSIST_DIR}/claude`],
-        { encoding: "utf-8" },
-    );
+if [ -x "$BIN" ]; then
+  if is_shim "$BIN"; then
+    rm -f "$BIN"
+  elif is_claude "$BIN"; then
+    echo VALID; exit 0
+  else
+    rm -f "$BIN"
+  fi
+fi
+if [ -x "$CACHE" ]; then
+  if is_shim "$CACHE"; then
+    rm -f "$CACHE"
+  elif is_claude "$CACHE"; then
+    mkdir -p "$(dirname "$BIN")" && ln -sf "$CACHE" "$BIN"
+    echo RESTORED; exit 0
+  else
+    rm -f "$CACHE"
+  fi
+fi
+echo INSTALL`.trim();
 
-    if (volumeCheck.status === 0) {
-        if (isMiseShim(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
-            console.log("Cached claude is a mise shim, purging cache...");
-            spawnSync(
-                "docker",
-                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
-                { stdio: "ignore" },
-            );
-        } else if (!isValidClaudeBinary(containerName, `${CLAUDE_PERSIST_DIR}/claude`)) {
-            console.log("Cached binary is not valid claude, purging cache...");
-            spawnSync(
-                "docker",
-                ["exec", containerName, "sh", "-c", `rm -f ${CLAUDE_PERSIST_DIR}/claude`],
-                { stdio: "ignore" },
-            );
-        } else {
-            console.log("Restoring claude from cache...");
-            spawnSync(
-                "docker",
-                [
-                    "exec",
-                    containerName,
-                    "sh",
-                    "-c",
-                    `mkdir -p $(dirname ${CLAUDE_BIN_PATH}) && ln -sf ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
-                ],
-                { stdio: "inherit" },
-            );
-            return;
-        }
+    const result = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", probeScript],
+        { encoding: "utf-8", timeout: 15000 },
+    );
+    const status = (result.stdout ?? "").trim();
+
+    if (status === "VALID") return;
+
+    if (status === "RESTORED") {
+        console.log("Restored claude from cache.");
+        return;
     }
 
     // Fresh install and save to volume
@@ -131,14 +114,15 @@ export function ensureGlobalNpmTools(containerName: string): void {
         { cmd: "codex", pkg: "@openai/codex" },
     ];
 
-    const missing = tools.filter((t) => {
-        const check = spawnSync(
-            "docker",
-            ["exec", containerName, "sh", "-c", `test -x /home/ccc/.local/bin/${t.cmd}`],
-            { encoding: "utf-8" },
-        );
-        return check.status !== 0;
-    });
+    // Single docker exec to check all tools at once (instead of one per tool)
+    const checkResult = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c",
+         tools.map((t) => `[ -x /home/ccc/.local/bin/${t.cmd} ] || echo ${t.cmd}`).join("; ")],
+        { encoding: "utf-8" },
+    );
+    const missingCmds = new Set((checkResult.stdout ?? "").trim().split("\n").filter(Boolean));
+    const missing = tools.filter((t) => missingCmds.has(t.cmd));
 
     if (missing.length === 0) {
         return;
@@ -207,5 +191,27 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
             `mkdir -p ${CLAUDE_PERSIST_DIR} && [ -x ${CLAUDE_BIN_PATH} ] && cp -L ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude || true`,
         ],
         { stdio: "ignore" },
+    );
+}
+
+/**
+ * Ensure uv is available globally in the container via mise.
+ * uv is used by hooks (e.g. ~/.claude/hooks/langfuse-claudecode) which run
+ * without bash profile activation — they rely on the global mise shim.
+ */
+export function ensureUvAvailable(containerName: string): void {
+    const checkResult = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c",
+         "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
+        { encoding: "utf-8" },
+    );
+    if (checkResult.status === 0) return;
+
+    spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c",
+         "~/.local/bin/mise use -g uv@latest"],
+        { stdio: "inherit" },
     );
 }

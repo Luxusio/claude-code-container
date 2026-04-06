@@ -309,4 +309,68 @@ describe("runDoctor", () => {
             .join("\n");
         expect(logCalls).toContain("2 active session(s)");
     });
+
+    it("recognizes new -- separator lock file format", () => {
+        // 2 lock files with new format (--), 1 active → 1 stale
+        mockGetActiveSessionsForProject.mockReturnValue(["myproject-abc123--session1.lock"]);
+        mockExistsSync.mockReturnValue(true);
+        mockReaddirSync.mockReturnValue([
+            "myproject-abc123--session1.lock",
+            "myproject-abc123--session2.lock",
+        ]);
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude
+
+        const result = runDoctor("/project/myproject");
+        expect(result).toBe(true);
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string)
+            .join("\n");
+        expect(logCalls).toContain("1 stale lock file(s)");
+    });
+
+    it("recognizes profile lock file format (projectId--p--profile--sessionId.lock)", () => {
+        // 1 profile lock file, 0 active → 1 stale
+        mockGetActiveSessionsForProject.mockReturnValue([]);
+        mockExistsSync.mockReturnValue(true);
+        mockReaddirSync.mockReturnValue([
+            "myproject-abc123--p--work--session1.lock",
+        ]);
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude
+
+        const result = runDoctor("/project/myproject");
+        expect(result).toBe(true);
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string)
+            .join("\n");
+        expect(logCalls).toContain("1 stale lock file(s)");
+    });
+
+    it("does not count lock files from different projects", () => {
+        mockGetActiveSessionsForProject.mockReturnValue([]);
+        mockExistsSync.mockReturnValue(true);
+        mockReaddirSync.mockReturnValue([
+            "otherproject-xyz789--session1.lock",  // different project
+            "myproject-abc123--session1.lock",      // this project (stale)
+        ]);
+
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n")); // Docker version
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/some/path\n")); // Volume
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "claude 1.2.3\n")); // Claude
+
+        runDoctor("/project/myproject");
+
+        const logCalls = (console.log as ReturnType<typeof vi.fn>).mock.calls
+            .map((c) => c[0] as string)
+            .join("\n");
+        // Only 1 stale (this project), not 2
+        expect(logCalls).toContain("1 stale lock file(s)");
+    });
 });

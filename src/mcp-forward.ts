@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-import { CLAUDE_JSON_FILE } from "./utils.js";
+import { getClaudeJsonFile } from "./utils.js";
 
 interface McpServerConfig {
     command?: string;
@@ -63,17 +63,18 @@ export function processServerForContainer(name: string, server: McpServerConfig)
 }
 
 /**
- * Build merged MCP config and write to CLAUDE_JSON_FILE
+ * Build merged MCP config and write to the profile-specific claude.json file
  * Called on each exec() to ensure per-project isolation (no stale config from previous project)
  */
-export function buildMcpConfig(): string[] {
+export function buildMcpConfig(profile?: string): string[] {
+    const claudeJsonFile = getClaudeJsonFile(profile);
     const forwarded: string[] = [];
 
-    // Start with existing non-MCP config from CLAUDE_JSON_FILE
+    // Start with existing non-MCP config from claudeJsonFile
     let config: Record<string, unknown> = {};
-    if (existsSync(CLAUDE_JSON_FILE)) {
+    if (existsSync(claudeJsonFile)) {
         try {
-            config = JSON.parse(readFileSync(CLAUDE_JSON_FILE, "utf-8"));
+            config = JSON.parse(readFileSync(claudeJsonFile, "utf-8"));
         } catch {
             config = {};
         }
@@ -98,7 +99,7 @@ export function buildMcpConfig(): string[] {
     }
 
     config.mcpServers = mcpServers;
-    writeFileSync(CLAUDE_JSON_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    writeFileSync(claudeJsonFile, JSON.stringify(config, null, 2), { mode: 0o600 });
 
     return forwarded;
 }

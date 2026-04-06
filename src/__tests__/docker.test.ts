@@ -78,6 +78,22 @@ describe("docker.ts module exports", () => {
                 /^ccc-my-project-[a-f0-9]{12}$/,
             );
         });
+
+        it("returns base name when profile is undefined (regression)", () => {
+            const name = getContainerName("/home/user/my-project", undefined);
+            expect(name).toMatch(/^ccc-my-project-[a-f0-9]{12}$/);
+        });
+
+        it("appends --p--<profile> suffix when profile is provided", () => {
+            const name = getContainerName("/home/user/my-project", "work");
+            expect(name).toMatch(/^ccc-my-project-[a-f0-9]{12}--p--work$/);
+        });
+
+        it("base name and profiled name differ for same path", () => {
+            const base = getContainerName("/home/user/my-project");
+            const profiled = getContainerName("/home/user/my-project", "work");
+            expect(profiled).toBe(`${base}--p--work`);
+        });
     });
 
     describe("isDockerRunning", () => {
