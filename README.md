@@ -53,7 +53,7 @@ ccc profile rm work        # Remove profile
 CCC_PROFILE=work ccc       # Run with profile
 ```
 
-Profiles are for **credential directory isolation** only. For environment variables (API keys, backend URLs), use [mise environments](docs/mise-environments.md):
+Profiles are for **credential directory isolation** only. For environment variables (API keys, backend URLs), use [mise environments](doc/mise-environments.md):
 
 ```toml
 # mise.toml
@@ -87,7 +87,9 @@ ccc rm && ccc               # Recreate container
 
 Host env vars are auto-forwarded (except system vars like `PATH`, `HOME`).
 
-For per-project env configuration (API keys, LLM backends), see [mise environments guide](docs/mise-environments.md).
+For per-project env configuration (API keys, LLM backends), see [mise environments guide](doc/mise-environments.md).
+
+For running a local LLM (llama.cpp) with ccc, see [local LLM guide](doc/llamacpp.md).
 
 ## Contributing
 
