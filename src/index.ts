@@ -6,6 +6,7 @@ import {
     mkdirSync,
     writeFileSync,
     readFileSync,
+    unlinkSync,
 } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -31,6 +32,7 @@ import {
     getClaudeDir,
     getClaudeJsonFile,
     collectForwardedEnv,
+    writeEnvFile,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
@@ -391,24 +393,26 @@ async function exec(
 
     const execArgs = ["exec", "-w", projectMountPath];
 
-    // Container marker: enables per-project env separation via mise.toml [env] conditionals
-    execArgs.push("-e", `${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`);
-
+    // Collect all env vars into a temp file and pass --env-file to docker exec.
+    // This avoids the OS ARG_MAX limit ("Argument list too long") that occurs when
+    // forwarding many environment variables as repeated -e KEY=VALUE flags.
     const forwardedEnvPlan = collectForwardedEnv(process.env);
-    for (const [key, value] of forwardedEnvPlan.forwarded) {
-        execArgs.push("-e", `${key}=${value}`);
-    }
-
     if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
         console.error(
             `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`,
         );
     }
 
+    const envEntries: Array<[string, string]> = [
+        // Container marker: enables per-project env separation via mise.toml [env]
+        [CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE],
+        ...forwardedEnvPlan.forwarded,
+    ];
+
     // Locale: forward host LANG/LC_* (no longer excluded).
     // If host has no LANG set, inject en_US.UTF-8 as fallback.
     if (!process.env.LANG) {
-        execArgs.push("-e", "LANG=en_US.UTF-8");
+        envEntries.push(["LANG", "en_US.UTF-8"]);
     }
 
     // Timezone: detect host timezone and forward to container.
@@ -416,15 +420,15 @@ async function exec(
     const hostTz = process.env.TZ
         || Intl.DateTimeFormat().resolvedOptions().timeZone
         || "UTC";
-    execArgs.push("-e", `TZ=${hostTz}`);
+    envEntries.push(["TZ", hostTz]);
 
     // Profile: env vars handled by mise.toml [env], not by ccc
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
-        execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
+        envEntries.push(["CCC_CLIPBOARD_URL", `http://${clipboardHost}:${clipboardPort}`]);
         if (clipboardToken) {
-            execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
+            envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboardToken]);
         }
     }
 
@@ -432,9 +436,19 @@ async function exec(
     // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
     // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
     if (commandTool?.needsNodeRuntime) {
-        execArgs.push("-e", "MISE_NODE_VERSION=22");
-        execArgs.push("-e", "BASH_ENV=/home/ccc/.bashrc_hooks");
+        envEntries.push(["MISE_NODE_VERSION", "22"]);
+        envEntries.push(["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
     }
+
+    // options.env: per-session overrides from --env KEY=VALUE CLI flag (applied last)
+    if (options.env) {
+        for (const [key, value] of Object.entries(options.env)) {
+            envEntries.push([key, value]);
+        }
+    }
+
+    const envFile = writeEnvFile(envEntries);
+    execArgs.push("--env-file", envFile);
 
     if (options.interactive !== false) {
         execArgs.push("-it");
@@ -478,6 +492,7 @@ async function exec(
     }
 
     const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+    try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
 
     if (process.env.DEBUG) {
         // Check conversation directory state after Claude exits
@@ -882,7 +897,23 @@ async function main(): Promise<void> {
         }
     }
 
-    let command = filteredArgs[0];
+    // Parse --env KEY=VALUE flags before dispatching so they are removed from
+    // the command args and forwarded to exec() as options.env overrides.
+    const extraEnv: Record<string, string> = {};
+    const cmdArgs: string[] = [];
+    for (let i = 0; i < filteredArgs.length; i++) {
+        if (filteredArgs[i] === "--env" && i + 1 < filteredArgs.length) {
+            const kv = filteredArgs[i + 1];
+            const eqIdx = kv.indexOf("=");
+            if (eqIdx > 0) extraEnv[kv.slice(0, eqIdx)] = kv.slice(eqIdx + 1);
+            i++; // consume the value arg
+        } else {
+            cmdArgs.push(filteredArgs[i]);
+        }
+    }
+    const envOpt = Object.keys(extraEnv).length > 0 ? { env: extraEnv } : {};
+
+    let command = cmdArgs[0];
     let cwd = process.cwd();
 
     // @ prefix → worktree workspace
@@ -896,7 +927,7 @@ async function main(): Promise<void> {
 
             // ccc @branch rm [-f] — worktree-specific command
             if (command === "rm") {
-                const force = filteredArgs.includes("-f") || filteredArgs.includes("--force");
+                const force = cmdArgs.includes("-f") || cmdArgs.includes("--force");
                 handleWorktreeRemove(cwd, parsed.branch, force);
                 return;
             }
@@ -1023,31 +1054,31 @@ async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], {}, profile);
+            await exec(cwd, ["bash"], { ...envOpt }, profile);
             break;
 
         case "update": {
             const tool = resolveTool(process.env);
-            await exec(cwd, tool.updateCommand, { tool }, profile);
+            await exec(cwd, tool.updateCommand, { tool, ...envOpt }, profile);
             break;
         }
 
         case undefined: {
             const tool = resolveTool(process.env);
-            await exec(cwd, [tool.binary, ...tool.defaultFlags], { tool }, profile);
+            await exec(cwd, [tool.binary, ...tool.defaultFlags], { tool, ...envOpt }, profile);
             break;
         }
 
         default:
             const tool = getToolByName(command);
             if (tool) {
-                const toolArgs = filteredArgs.slice(1);
-                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...toolArgs], { tool }, profile);
+                const toolArgs = cmdArgs.slice(1);
+                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...toolArgs], { tool, ...envOpt }, profile);
             } else if (command.startsWith("-")) {
                 const defTool = resolveTool(process.env);
-                await exec(cwd, [defTool.binary, ...defTool.defaultFlags, ...filteredArgs], { tool: defTool }, profile);
+                await exec(cwd, [defTool.binary, ...defTool.defaultFlags, ...cmdArgs], { tool: defTool, ...envOpt }, profile);
             } else {
-                await exec(cwd, filteredArgs, {}, profile);
+                await exec(cwd, cmdArgs, { ...envOpt }, profile);
             }
             break;
     }

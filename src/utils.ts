@@ -1,8 +1,9 @@
 // src/utils.ts - Shared utilities for ccc
 
-import {createHash} from "crypto";
+import {createHash, randomBytes} from "crypto";
 import {createInterface} from "readline";
-import {homedir} from "os";
+import {writeFileSync} from "fs";
+import {homedir, tmpdir} from "os";
 import {basename, join, resolve} from "path";
 
 // === CLI Version (injected at build time) ===
@@ -157,6 +158,32 @@ export function collectForwardedEnv(
     }
 
     return { forwarded, skippedDueToLimit, totalBytes };
+}
+
+/**
+ * Write environment variable entries to a host-side temp file for use with
+ * `docker exec --env-file <path>`.
+ *
+ * Passing many env vars as repeated `-e KEY=VALUE` flags on the docker exec
+ * command line can exceed the OS ARG_MAX limit ("Argument list too long").
+ * Writing them to a file and passing a single `--env-file` argument avoids
+ * that limit regardless of how many variables are forwarded.
+ *
+ * Entries whose values contain embedded newlines, carriage returns, or null
+ * bytes are silently skipped: the Docker env-file format (one KEY=VALUE per
+ * line) cannot represent multi-line values.
+ *
+ * The caller is responsible for deleting the returned path after use.
+ */
+export function writeEnvFile(entries: Array<[string, string]>): string {
+    const tmpFile = join(tmpdir(), `ccc-env-${randomBytes(6).toString("hex")}`);
+    const lines: string[] = [];
+    for (const [key, value] of entries) {
+        if (value.includes("\n") || value.includes("\r") || value.includes("\0")) continue;
+        lines.push(`${key}=${value}`);
+    }
+    writeFileSync(tmpFile, lines.join("\n") + "\n", { mode: 0o600 });
+    return tmpFile;
 }
 
 /**
