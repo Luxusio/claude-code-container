@@ -26,6 +26,7 @@ import {
     isContainerHostRemote,
     getRuntimeInfo,
 } from "./container-runtime.js";
+import { getAllCredentialMounts } from "./tool-registry.js";
 
 // === Docker Args Builder ===
 
@@ -33,9 +34,8 @@ export interface DockerRunArgsOptions {
     containerName: string;
     fullPath: string;
     projectMountPath: string;
-    claudeDir: string;
+    credentialMounts: Array<{ hostPath: string; containerPath: string }>;
     claudeJsonFile: string;
-    hostClaudeIdeDir: string;
     miseVolumeName: string;
     pidsLimit: string;
     imageName: string;
@@ -62,11 +62,18 @@ function getComposeLabels(containerName: string, fullPath: string): string[] {
 }
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
+    // Stable hostname: derived from container name, truncated to 63 chars (RFC 1123).
+    // Ensures Claude Code's --resume can find conversations after container recreation,
+    // since conversations are keyed by hostname internally.
+    const hostname = opts.containerName.slice(0, 63);
+
     const args: string[] = [
         "run",
         "-d",
         "--name",
         opts.containerName,
+        "--hostname",
+        hostname,
         "--network",
         "host",
         "--security-opt",
@@ -77,9 +84,10 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
 
     // Bind mounts (runtime-aware: adds :Z on SELinux podman)
     args.push(...bindMountArgs(opts.fullPath, opts.projectMountPath));
-    args.push(...bindMountArgs(opts.claudeDir, "/home/ccc/.claude"));
+    for (const mount of opts.credentialMounts) {
+        args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
+    }
     args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
-    args.push(...bindMountArgs(opts.hostClaudeIdeDir, "/home/ccc/.claude/ide"));
     // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
     args.push(...bindMountArgs(opts.miseVolumeName, "/home/ccc/.local/share/mise"));
     // Container-manager socket: Docker uses /var/run/docker.sock,
@@ -380,8 +388,8 @@ function containerHasMounts(
         for (const req of requiredMounts) {
             if (!destinations.has(req.containerPath)) {
                 if (process.env.DEBUG) {
-                    console.error(`[ccc] Missing mount: ${req.containerPath}`);
-                    console.error(`[ccc] Container has: ${[...destinations].join(", ")}`);
+                    console.error(`[ccc:debug] containerHasMounts: missing ${req.containerPath}`);
+                    console.error(`[ccc:debug] containerHasMounts: container destinations: ${[...destinations].join(", ")}`);
                 }
                 return false;
             }
@@ -438,12 +446,26 @@ export function startProjectContainer(
     const containerName = getContainerName(fullPath, profile);
     const cli = runtimeCli();
 
-    // Check if existing container needs recreation (e.g., missing worktree git mounts)
+    const debug = !!process.env.DEBUG;
+
+    // Check if existing container is missing worktree git mounts.
+    // Instead of destroying and recreating (which changes hostname and breaks
+    // Claude Code's --resume conversation listing), warn the user.
+    // Critical mounts (project dir, ~/.claude volume) never change — only
+    // git mounts for newly-added nested repos can be missing.
     if (isContainerExists(containerName) && extraMounts && extraMounts.length > 0) {
         if (!containerHasMounts(containerName, extraMounts)) {
+            if (debug) {
+                console.error(`[ccc:debug] Container ${containerName} missing git mounts:`);
+                for (const m of extraMounts) {
+                    console.error(`[ccc:debug]   required: ${m.hostPath} -> ${m.containerPath}`);
+                }
+            }
             console.log("Recreating container (missing git mounts for worktree)...");
             spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
             spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
+        } else if (debug) {
+            console.error(`[ccc:debug] Container ${containerName} has all required mounts`);
         }
     }
 
@@ -452,18 +474,26 @@ export function startProjectContainer(
     }
 
     if (isContainerExists(containerName)) {
+        if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
         spawnSync(cli, ["start", containerName], { stdio: "inherit" });
         fixSshPermissions(containerName);
         return containerName;
     }
 
+    if (debug) console.error(`[ccc:debug] Container ${containerName} not found, creating`);
     console.log("Creating container...");
 
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
 
-    const hostClaudeIdeDir = join(homedir(), ".claude", "ide");
-    mkdirSync(hostClaudeIdeDir, { recursive: true });
+    const credentialMounts = getAllCredentialMounts().map(m => {
+        // Profile override: claude credentials use profile-specific directory
+        const hostPath = (profile && m.containerDir === "/home/ccc/.claude")
+            ? getClaudeDir(profile)
+            : join(homedir(), m.hostDir);
+        mkdirSync(hostPath, { recursive: true });
+        return { hostPath, containerPath: m.containerDir };
+    });
 
     const hostSshDir = join(homedir(), ".ssh");
 
@@ -481,9 +511,8 @@ export function startProjectContainer(
         containerName,
         fullPath,
         projectMountPath,
-        claudeDir: getClaudeDir(profile),
+        credentialMounts,
         claudeJsonFile: getClaudeJsonFile(profile),
-        hostClaudeIdeDir,
         miseVolumeName: MISE_VOLUME_NAME,
         pidsLimit: CONTAINER_PID_LIMIT,
         imageName: IMAGE_NAME,

@@ -4,7 +4,6 @@ import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
 import { getContainerName, isContainerRunning } from "./docker.js";
-import { runtimeCli } from "./container-runtime.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 
@@ -14,21 +13,24 @@ const locksDir = join(DATA_DIR, "locks");
 let currentSessionLockFile: string | null = null;
 let currentProjectPath: string | null = null;
 let currentProfile: string | undefined = undefined;
+let currentToolName: string | null = null;
 
-export function setSession(lockFile: string, projectPath: string, profile?: string): void {
+export function setSession(lockFile: string, projectPath: string, profile?: string, toolName?: string): void {
     currentSessionLockFile = lockFile;
     currentProjectPath = projectPath;
     currentProfile = profile;
+    currentToolName = toolName ?? "claude";
 }
 
-export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string } {
-    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath, profile: currentProfile };
+export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } {
+    return { lockFile: currentSessionLockFile, projectPath: currentProjectPath, profile: currentProfile, toolName: currentToolName };
 }
 
 export function clearSession(): void {
     currentSessionLockFile = null;
     currentProjectPath = null;
     currentProfile = undefined;
+    currentToolName = null;
     cleanedUp = false;
 }
 
@@ -151,8 +153,10 @@ export function cleanupSession(): void {
         const containerName = getContainerName(currentProjectPath, currentProfile);
         if (isContainerRunning(containerName)) {
             // Save claude binary to volume before stopping (handles `claude update`)
-            saveClaudeBinaryToVolume(containerName);
-            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
+            if (currentToolName === "claude") {
+                saveClaudeBinaryToVolume(containerName);
+            }
+            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
         }
     }
 

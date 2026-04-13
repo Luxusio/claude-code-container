@@ -15,9 +15,11 @@ function makeOpts(
         containerName: "ccc-myproject-abc123",
         fullPath: "/home/user/myproject",
         projectMountPath: "/project/myproject-abc123",
-        claudeDir: "/home/user/.ccc/claude",
+        credentialMounts: [
+            { hostPath: "/home/user/.ccc/claude", containerPath: "/home/ccc/.claude" },
+            { hostPath: "/home/user/.claude/ide", containerPath: "/home/ccc/.claude/ide" },
+        ],
         claudeJsonFile: "/home/user/.ccc/claude.json",
-        hostClaudeIdeDir: "/home/user/.claude/ide",
         miseVolumeName: "ccc-mise-cache",
         pidsLimit: "-1",
         imageName: "ccc",

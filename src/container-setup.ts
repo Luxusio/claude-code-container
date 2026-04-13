@@ -4,7 +4,7 @@
 // Contains: claude binary caching, npm tools installation, mise shim detection.
 
 import { spawnSync } from "child_process";
-import { runtimeCli } from "./container-runtime.js";
+import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
 
 // Claude binary persist path inside the mise volume
 export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
@@ -16,7 +16,7 @@ export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
  */
 export function isMiseShim(containerName: string, path: string): boolean {
     const result = spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c", `head -c 500 '${path.replace(/'/g, "'\\''")}' 2>/dev/null | grep -q mise`],
         { encoding: "utf-8" },
     );
@@ -29,7 +29,7 @@ export function isMiseShim(containerName: string, path: string): boolean {
  */
 export function isValidClaudeBinary(containerName: string, path: string): boolean {
     const result = spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c", `'${path.replace(/'/g, "'\\''")}' --version 2>&1 | grep -qi claude`],
         { encoding: "utf-8", timeout: 10000 },
     );
@@ -75,7 +75,7 @@ fi
 echo INSTALL`.trim();
 
     const result = spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c", probeScript],
         { encoding: "utf-8", timeout: 15000 },
     );
@@ -91,13 +91,13 @@ echo INSTALL`.trim();
     // Fresh install and save to volume
     console.log("Installing claude (first run)...");
     const installResult = spawnSync(
-        runtimeCli(),
+        "docker",
         [
             "exec",
             containerName,
             "sh",
             "-c",
-            `curl -fsSL https://claude.ai/install.sh | bash && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
+            `${getToolByName("claude")!.installCommand} && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
         ],
         { stdio: "inherit" },
     );
@@ -107,17 +107,26 @@ echo INSTALL`.trim();
 }
 
 /**
- * Ensure global npm tools (gemini-cli, codex) are installed.
+ * Ensure all required tools are installed in the container.
+ * - Claude: curl install + volume caching (only when activeTool is claude)
+ * - npm tools (gemini, codex, opencode): npm install -g from registry
  */
-export function ensureGlobalNpmTools(containerName: string): void {
-    const tools = [
-        { cmd: "gemini", pkg: "@google/gemini-cli" },
-        { cmd: "codex", pkg: "@openai/codex" },
-    ];
+export function ensureTools(containerName: string, activeTool: ToolDefinition): void {
+    if (activeTool.name === "claude") {
+        ensureClaudeInContainer(containerName);
+    }
+    ensureNpmTools(containerName);
+}
+
+/**
+ * Ensure npm-based tools from registry are installed.
+ */
+function ensureNpmTools(containerName: string): void {
+    const tools = getNpmTools();
 
     // Single docker exec to check all tools at once (instead of one per tool)
     const checkResult = spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c",
          tools.map((t) => `[ -x /home/ccc/.local/bin/${t.cmd} ] || echo ${t.cmd}`).join("; ")],
         { encoding: "utf-8" },
@@ -139,7 +148,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
     }).join(" ");
 
     spawnSync(
-        runtimeCli(),
+        "docker",
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
@@ -148,7 +157,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
     );
 
     const installResult = spawnSync(
-        runtimeCli(),
+        "docker",
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
@@ -162,7 +171,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
 
     for (const t of missing) {
         spawnSync(
-            runtimeCli(),
+            "docker",
             [
                 "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                 `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
@@ -183,7 +192,7 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
         return;
     }
     spawnSync(
-        runtimeCli(),
+        "docker",
         [
             "exec",
             containerName,
@@ -202,7 +211,7 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
  */
 export function ensureUvAvailable(containerName: string): void {
     const checkResult = spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c",
          "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
         { encoding: "utf-8" },
@@ -210,7 +219,7 @@ export function ensureUvAvailable(containerName: string): void {
     if (checkResult.status === 0) return;
 
     spawnSync(
-        runtimeCli(),
+        "docker",
         ["exec", containerName, "sh", "-c",
          "~/.local/bin/mise use -g uv@latest"],
         { stdio: "inherit" },

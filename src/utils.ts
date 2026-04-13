@@ -69,6 +69,8 @@ export const EXCLUDE_ENV_KEYS = new Set([
     "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
     // Claude
     "CLAUDE_CONFIG_DIR",
+    // CCC internal
+    "CCC_TOOL",
     // Windows system (paths are meaningless inside Linux container)
     "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
     "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
