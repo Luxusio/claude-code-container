@@ -9,7 +9,7 @@
 
 import { spawnSync } from "child_process";
 import { PROXY_PORT } from "./localhost-proxy.js";
-import { isDockerDesktop } from "./docker.js";
+import { runtimeCli, isContainerHostRemote } from "./container-runtime.js";
 
 // UID for ccc-proxy user (created in Dockerfile with useradd -r)
 // We detect it at runtime via `id -u ccc-proxy` inside the container.
@@ -19,7 +19,7 @@ import { isDockerDesktop } from "./docker.js";
  */
 function isProxyRunning(containerName: string): boolean {
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c", `ss -tlnp 2>/dev/null | grep -q ':${PROXY_PORT}'`],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -32,10 +32,11 @@ function isProxyRunning(containerName: string): boolean {
  * Errors are logged but never block container exec.
  */
 export function setupLocalhostProxy(containerName: string): void {
-    // Skip on native Linux Docker — --network host works natively.
-    // On Docker Desktop (macOS, Windows, WSL2), --network host uses a VM,
-    // so the proxy is needed to forward localhost traffic to host.docker.internal.
-    if (process.platform === "linux" && !isDockerDesktop()) {
+    // Skip on native Linux — --network host works natively.
+    // On VM-backed runtimes (Docker Desktop, podman machine, WSL2), --network host
+    // actually shares the VM's network, not the host's — the proxy forwards
+    // localhost traffic to host.docker.internal.
+    if (process.platform === "linux" && !isContainerHostRemote()) {
         return;
     }
 
@@ -44,10 +45,12 @@ export function setupLocalhostProxy(containerName: string): void {
         return;
     }
 
+    const cli = runtimeCli();
+
     try {
         // Get ccc-proxy UID
         const uidResult = spawnSync(
-            "docker",
+            cli,
             ["exec", containerName, "id", "-u", "ccc-proxy"],
             { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
@@ -64,7 +67,7 @@ export function setupLocalhostProxy(containerName: string): void {
         // EXCEPT traffic from ccc-proxy user (to avoid infinite loop).
         // -C checks if the rule already exists; if not, -A adds it.
         const checkResult = spawnSync(
-            "docker",
+            cli,
             [
                 "exec", containerName,
                 "sudo", "iptables", "-t", "nat", "-C", "OUTPUT",
@@ -78,7 +81,7 @@ export function setupLocalhostProxy(containerName: string): void {
         if (checkResult.status !== 0) {
             // Rule doesn't exist, add it
             const addResult = spawnSync(
-                "docker",
+                cli,
                 [
                     "exec", containerName,
                     "sudo", "iptables", "-t", "nat", "-A", "OUTPUT",
@@ -100,7 +103,7 @@ export function setupLocalhostProxy(containerName: string): void {
         // Start proxy daemon as ccc-proxy user in background
         // Uses the pre-compiled Go binary (no runtime dependencies)
         spawnSync(
-            "docker",
+            cli,
             [
                 "exec", "-d",
                 "-u", proxyUid,

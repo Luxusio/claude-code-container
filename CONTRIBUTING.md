@@ -7,7 +7,7 @@ Development guide for claude-code-container (ccc).
 ### Requirements
 
 - Node.js 22+
-- Docker
+- Either **Docker** or **Podman** (Podman is preferred when both are installed)
 - npm
 
 ### From Source
@@ -16,10 +16,22 @@ Development guide for claude-code-container (ccc).
 git clone https://github.com/Luxusio/claude-code-container.git
 cd claude-code-container
 npm install && npm run build
-docker build -t ccc .
+
+# Build the container image with whichever runtime you have:
+docker build -t ccc .     # or
+podman build -t ccc .     # reads Containerfile automatically
 ```
 
-Local builds (`docker build -t ccc .`) are never auto-replaced by the registry image. The CLI detects dev builds by the absence of a `cli.version` Docker label.
+Local builds are never auto-replaced by the registry image. The CLI detects
+dev builds by the absence of a `cli.version` image label.
+
+To force a specific runtime during development:
+
+```bash
+CCC_RUNTIME=podman node dist/index.js runtime
+# or
+node dist/index.js --runtime docker status
+```
 
 ### Build Commands
 
@@ -177,10 +189,22 @@ claude-code-container/
 
 ## Key Components
 
+### Container Runtime (`container-runtime.ts`)
+
+- `runtimeCli()`: Returns `"docker"` or `"podman"` — the string to pass as the first arg of `spawnSync` anywhere a container CLI is invoked. **Never hardcode `"docker"`** in source outside this file.
+- `getRuntimeInfo()`: Cached detection result (runtime, flavor, version, socket path, rootless, remote).
+- `setRuntimeOverride(name)`: Apply `--runtime` flag at CLI entry.
+- `bindMountArgs(host, container, {readonly})`: Emits `-v <host>:<container>[:ro][:Z]` with SELinux relabel applied on rootless Podman.
+- `runtimeExtraRunArgs()`: Returns `["--userns=keep-id"]` on rootless Podman; empty otherwise.
+- `isContainerHostRemote()`: True for Docker Desktop or podman machine (use instead of `isDockerDesktop()` in new code).
+
 ### Container Management (`docker.ts`)
 
-- `ensureImage()`: Label-based version matching with auto-pull from Docker Hub
-- `getImageLabel()`: Read Docker image labels
+Despite the filename, this module is runtime-agnostic — every `spawnSync`
+call goes through `runtimeCli()`.
+
+- `ensureImage()`: Label-based version matching with auto-pull from registry
+- `getImageLabel()`: Read image labels
 - `pullImage()` / `tagImage()`: Registry image operations
 - `startProjectContainer()`: Create/start project container
 - `stopProjectContainer()` / `removeProjectContainer()`: Container lifecycle
@@ -293,10 +317,32 @@ ccc rm && ccc           # Recreate container
 ### Image Rebuild (Local Development)
 
 ```bash
+# Docker
 docker rmi ccc
 docker build -t ccc .
+
+# Podman (Containerfile is auto-detected)
+podman rmi ccc
+podman build -t ccc .
+
 ccc rm
 ccc
+```
+
+### Podman-specific troubleshooting
+
+```bash
+# Start rootless Podman socket on Linux
+systemctl --user start podman.socket
+
+# Confirm ccc sees Podman correctly
+ccc runtime
+
+# Force Docker when both are installed
+CCC_RUNTIME=docker ccc
+
+# Disable SELinux :Z relabel temporarily
+CCC_SELINUX_RELABEL=off ccc
 ```
 
 ### Stale Session Cleanup

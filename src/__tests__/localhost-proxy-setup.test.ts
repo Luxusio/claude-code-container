@@ -5,9 +5,10 @@ vi.mock('child_process', () => ({
     spawnSync: vi.fn(),
 }))
 
-const mockIsDockerDesktop = vi.fn<() => boolean>().mockReturnValue(false)
-vi.mock('../docker.js', () => ({
-    isDockerDesktop: (...args: unknown[]) => mockIsDockerDesktop(...(args as [])),
+const mockIsContainerHostRemote = vi.fn<() => boolean>().mockReturnValue(false)
+vi.mock('../container-runtime.js', () => ({
+    runtimeCli: () => 'docker',
+    isContainerHostRemote: (...args: unknown[]) => mockIsContainerHostRemote(...(args as [])),
 }))
 
 const mockSpawnSync = vi.mocked(spawnSync)
@@ -21,7 +22,7 @@ describe('localhost-proxy-setup', () => {
 
     beforeEach(() => {
         vi.resetAllMocks()
-        mockIsDockerDesktop.mockReturnValue(false)
+        mockIsContainerHostRemote.mockReturnValue(false)
     })
 
     afterEach(() => {
@@ -31,7 +32,7 @@ describe('localhost-proxy-setup', () => {
 
     it('skips proxy setup on native Linux Docker (--network host works natively)', async () => {
         Object.defineProperty(process, 'platform', { value: 'linux' })
-        mockIsDockerDesktop.mockReturnValue(false)
+        mockIsContainerHostRemote.mockReturnValue(false)
         const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
 
         setupLocalhostProxy('test-container')
@@ -40,7 +41,7 @@ describe('localhost-proxy-setup', () => {
 
     it('runs proxy setup on Linux with Docker Desktop (WSL2)', async () => {
         Object.defineProperty(process, 'platform', { value: 'linux' })
-        mockIsDockerDesktop.mockReturnValue(true)
+        mockIsContainerHostRemote.mockReturnValue(true)
 
         mockSpawnSync
             .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running

@@ -52,7 +52,6 @@ import {
 } from "./worktree.js";
 import {
     getContainerName,
-    isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
@@ -81,6 +80,13 @@ import {
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
+import {
+    runtimeCli,
+    setRuntimeOverride,
+    getRuntimeInfo,
+    formatRuntimeSummary,
+    isContainerHostRemote,
+} from "./container-runtime.js";
 import {
     validateProfileName,
     listProfiles,
@@ -248,12 +254,13 @@ async function exec(
                 const oldImageId = containerStatus.imageId;
 
                 progress("Upgrading container to new image...");
-                spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
-                spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
+                const cli = runtimeCli();
+                spawnSync(cli, ["stop", targetContainer], { stdio: "ignore" });
+                spawnSync(cli, ["rm", targetContainer], { stdio: "ignore" });
 
                 // Remove old image (now dangling). Silently fails if still in use by other containers.
                 if (oldImageId) {
-                    spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                    spawnSync(cli, ["rmi", oldImageId], { stdio: "ignore" });
                 }
             } else {
                 console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
@@ -357,7 +364,7 @@ async function exec(
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
-        const clipboardHost = (process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal";
+        const clipboardHost = (process.platform === "linux" && !isContainerHostRemote()) ? "127.0.0.1" : "host.docker.internal";
         execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
         // Read token from port file for container auth
         try {
@@ -393,7 +400,7 @@ async function exec(
         if (!wasAlreadyRunning) {
             progress("Installing project tools (mise)...");
             spawnSync(
-                "docker",
+                runtimeCli(),
                 [
                     "exec", "-w", projectMountPath, containerName,
                     "sh", "-c",
@@ -412,7 +419,7 @@ async function exec(
         execArgs.push(...cmd);
     }
 
-    const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+    const result = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
 
     // Cleanup on normal exit
     cleanupSession();
@@ -439,7 +446,7 @@ function showStatus(): void {
 
     // List all ccc containers
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "ps",
             "-a",
@@ -644,8 +651,9 @@ function handleWorktreeRemove(
         const containerName = getContainerName(wsPath);
         if (isContainerExists(containerName)) {
             console.log(`Stopping container ${containerName}...`);
-            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
-            spawnSync("docker", ["rm", containerName], { stdio: "ignore" });
+            const cli = runtimeCli();
+            spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
+            spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
         }
     } catch {
         // Docker not running, skip container cleanup
@@ -702,6 +710,7 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
     ccc doctor              Health check and diagnostics
+    ccc runtime             Print detected container runtime + flavor
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
     ccc clean --all         Remove everything (including running)
@@ -716,7 +725,14 @@ REMOTE (run on remote host via Tailscale + Mutagen):
 
 OPTIONS:
     -p, --profile <name>    Use named profile
+    --runtime <name>        Force container runtime: docker or podman
+                            (overrides auto-detect and CCC_RUNTIME env)
     -h, --help              Show this help
+
+ENVIRONMENT:
+    CCC_RUNTIME             docker | podman (default: auto-detect, podman preferred)
+    CCC_RUNTIME_SOCKET      override detected runtime socket path (advanced)
+    CCC_SELINUX_RELABEL     auto | force | off (default: auto)
 
 EXAMPLES:
     ccc                     # Run Claude in current project
@@ -735,19 +751,30 @@ EXAMPLES:
 export function parseArgs(args: string[]): {
     worktreeArg?: string;
     filteredArgs: string[];
+    runtime?: string;
 } {
     const filteredArgs: string[] = [];
     let worktreeArg: string | undefined;
+    let runtime: string | undefined;
 
     for (let i = 0; i < args.length; i++) {
-        if (args[i].startsWith("@")) {
-            worktreeArg = args[i];
-        } else {
-            filteredArgs.push(args[i]);
+        const a = args[i];
+        if (a.startsWith("@")) {
+            worktreeArg = a;
+            continue;
         }
+        if (a === "--runtime") {
+            runtime = args[++i];
+            continue;
+        }
+        if (a.startsWith("--runtime=")) {
+            runtime = a.slice("--runtime=".length);
+            continue;
+        }
+        filteredArgs.push(a);
     }
 
-    return { worktreeArg, filteredArgs };
+    return { worktreeArg, filteredArgs, runtime };
 }
 
 // === Main ===
@@ -755,7 +782,17 @@ async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
     // Unified parsing: @branch and remaining args
-    const { worktreeArg, filteredArgs } = parseArgs(args);
+    const { worktreeArg, filteredArgs, runtime } = parseArgs(args);
+
+    // --runtime override takes effect before any container CLI spawn.
+    if (runtime !== undefined) {
+        try {
+            setRuntimeOverride(runtime);
+        } catch (e) {
+            console.error((e as Error).message);
+            process.exit(1);
+        }
+    }
 
     // Profile from CCC_PROFILE env var
     const profile = process.env.CCC_PROFILE || undefined;
@@ -823,6 +860,18 @@ async function main(): Promise<void> {
             const { runDoctor } = await import("./doctor.js");
             const healthy = runDoctor(cwd);
             process.exit(healthy ? 0 : 1);
+            break;
+        }
+
+        case "runtime": {
+            try {
+                const info = getRuntimeInfo();
+                console.log(formatRuntimeSummary(info));
+                process.exit(0);
+            } catch (e) {
+                console.error((e as Error).message);
+                process.exit(1);
+            }
             break;
         }
 

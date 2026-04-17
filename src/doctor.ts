@@ -13,6 +13,7 @@ import {
 } from "./docker.js";
 import { getProjectId, DATA_DIR, MISE_VOLUME_NAME, CLI_VERSION } from "./utils.js";
 import { getActiveSessionsForProject } from "./session.js";
+import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
 
 interface DoctorCheck {
     name: string;
@@ -55,24 +56,26 @@ export function runDoctor(projectPath: string): boolean {
 
     console.log("\n=== CCC Doctor ===\n");
 
-    // 1. Docker daemon
+    // 1. Container runtime daemon
+    const runtimeInfo = getRuntimeInfo();
+    const runtimeLabel = runtimeInfo.runtime === "podman" ? "Podman" : "Docker";
     if (isDockerRunning()) {
         const vResult = spawnSync(
-            "docker",
+            runtimeCli(),
             ["version", "--format", "{{.Server.Version}}"],
             { encoding: "utf-8" },
         );
-        const version = (vResult.stdout ?? "").trim();
+        const version = (vResult.stdout ?? "").trim() || runtimeInfo.version || "unknown";
         checks.push({
-            name: "Docker",
+            name: "Runtime",
             status: "ok",
-            message: `Running (v${version})`,
+            message: `${runtimeLabel} running (v${version}, ${runtimeInfo.flavor})`,
         });
     } else {
         checks.push({
-            name: "Docker",
+            name: "Runtime",
             status: "error",
-            message: "Not running",
+            message: `${runtimeLabel} not running`,
         });
         printResults(checks);
         return false;
@@ -96,7 +99,7 @@ export function runDoctor(projectPath: string): boolean {
         checks.push({
             name: "Image",
             status: "error",
-            message: "Not found -- run 'ccc' to auto-pull, or 'docker build -t ccc .' for local build",
+            message: `Not found -- run 'ccc' to auto-pull, or '${runtimeCli()} build -t ccc .' for local build`,
         });
     }
 
@@ -123,7 +126,7 @@ export function runDoctor(projectPath: string): boolean {
 
     // 4. Volume (mise cache)
     const volResult = spawnSync(
-        "docker",
+        runtimeCli(),
         ["volume", "inspect", MISE_VOLUME_NAME, "--format", "{{.Mountpoint}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
@@ -179,7 +182,7 @@ export function runDoctor(projectPath: string): boolean {
     // 7. Claude binary (only if container is running)
     if (isContainerRunning(containerName)) {
         const claudeCheck = spawnSync(
-            "docker",
+            runtimeCli(),
             [
                 "exec",
                 containerName,

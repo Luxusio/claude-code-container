@@ -22,10 +22,12 @@ evidence: repo scan during harness setup
 - npm (no lockfile alternatives detected)
 
 ## Source Structure
-- `src/` — 12 TypeScript source files (index, docker, session, scanner, container-setup, localhost-proxy, localhost-proxy-setup, clipboard-server, mcp-forward, worktree, remote, utils)
-- `src/__tests__/` — 14 test files
-- `scripts/` — installer, clipboard shims, localhost proxy (Go)
+- `src/` — 13+ TypeScript source files (index, container-runtime, docker, session, scanner, container-setup, localhost-proxy, localhost-proxy-setup, clipboard-server, mcp-forward, worktree, remote, doctor, clean, profile, utils)
+- `src/container-runtime.ts` — runtime selection (docker | podman), SELinux/rootless/machine quirks (added 2026-04-17)
+- `src/__tests__/` — 15+ test files including `container-runtime.test.ts`
+- `scripts/` — installer (detects podman/docker), clipboard shims, localhost proxy (Go)
 - `Dockerfile` — multi-stage build (chromium, go proxy, ubuntu 24.04)
+- `Containerfile` — identical copy of `Dockerfile`; lets `podman build` run without `-f` flag (added 2026-04-17)
 
 ## Build & Test
 - Build: `npm run build` (tsc + version injection)

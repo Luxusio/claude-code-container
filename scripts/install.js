@@ -37,11 +37,24 @@ function getContentHash() {
     return hash.digest("hex").substring(0, 12);
 }
 
-function getImageHash() {
+// Detect available container runtime. Mirrors src/container-runtime.ts:
+// prefer Podman, fall back to Docker. Honours CCC_RUNTIME override.
+function detectRuntime() {
+    const env = process.env.CCC_RUNTIME;
+    if (env === "docker" || env === "podman") return env;
+    for (const name of ["podman", "docker"]) {
+        const r = spawnSync(name, ["--version"], { encoding: "utf-8" });
+        if (r.status === 0) return name;
+    }
+    return null;
+}
+
+function getImageHash(runtime) {
+    if (!runtime) return null;
     try {
         // Try new label first, fall back to old label for backward compat
         for (const label of ["content.hash", "dockerfile.hash"]) {
-            const result = spawnSync("docker", [
+            const result = spawnSync(runtime, [
                 "inspect", "ccc",
                 "--format", `{{index .Config.Labels "${label}"}}`
             ], { encoding: "utf-8" });
@@ -64,39 +77,51 @@ function install() {
     console.log("Building...");
     execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
 
-    // Check if image rebuild is needed
-    const currentHash = getContentHash();
-    const imageHash = getImageHash();
-    const needsRebuild = currentHash !== imageHash;
-
-    if (needsRebuild) {
-        console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
-
-        // No need to stop containers or remove old image.
-        // `docker build -t ccc` overwrites the tag; old image becomes <none>.
-        // Running containers keep using their original image layers.
-        console.log("Rebuilding Docker image...");
-        try {
-            const buildArgs = [
-                "build", "-t", "ccc",
-                "--label", `content.hash=${currentHash}`,
-            ];
-            // Pass GITHUB_TOKEN as Docker secret to avoid GitHub API rate limits during mise install
-            if (process.env.GITHUB_TOKEN) {
-                buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
-            }
-            buildArgs.push(".");
-            const buildResult = spawnSync("docker", buildArgs, { cwd: projectRoot, stdio: "inherit" });
-
-            if (buildResult.status !== 0) {
-                throw new Error(`Docker build exited with code ${buildResult.status}`);
-            }
-            console.log("Docker image built.");
-        } catch (e) {
-            console.error("Failed to build Docker image:", e.message);
-        }
+    // Detect container runtime (prefers podman, falls back to docker)
+    const runtime = detectRuntime();
+    if (!runtime) {
+        console.log("No container runtime (podman or docker) detected. Skipping image build.");
+        console.log("Install podman or docker, then run 'ccc' to auto-pull/build.");
     } else {
-        console.log(`Docker image up to date (hash: ${currentHash})`);
+        console.log(`Using container runtime: ${runtime}`);
+
+        // Check if image rebuild is needed
+        const currentHash = getContentHash();
+        const imageHash = getImageHash(runtime);
+        const needsRebuild = currentHash !== imageHash;
+
+        if (needsRebuild) {
+            console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
+
+            // No need to stop containers or remove old image.
+            // `<runtime> build -t ccc` overwrites the tag; old image becomes <none>.
+            console.log(`Rebuilding container image with ${runtime}...`);
+            try {
+                const buildArgs = [
+                    "build", "-t", "ccc",
+                    "--label", `content.hash=${currentHash}`,
+                ];
+                // Pass GITHUB_TOKEN as build secret when set.
+                //   - docker: BuildKit >= 18.09 supports `--secret id=X,env=VAR`
+                //   - podman: buildah >= 1.29 / podman >= 4.3 supports the same form
+                // Older podman/buildah will reject `env=` — users on pre-4.3 podman
+                // should unset GITHUB_TOKEN before install (the secret is optional).
+                if (process.env.GITHUB_TOKEN) {
+                    buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
+                }
+                buildArgs.push(".");
+                const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit" });
+
+                if (buildResult.status !== 0) {
+                    throw new Error(`${runtime} build exited with code ${buildResult.status}`);
+                }
+                console.log("Container image built.");
+            } catch (e) {
+                console.error(`Failed to build image with ${runtime}:`, e.message);
+            }
+        } else {
+            console.log(`Container image up to date (hash: ${currentHash})`);
+        }
     }
 
     const installDir = getInstallDir();
@@ -134,8 +159,10 @@ function install() {
             }
             cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
 
-            // Copy Dockerfile (needed for building the container image)
+            // Copy Dockerfile + Containerfile (either works; podman build prefers
+            // Containerfile, docker build prefers Dockerfile; both are identical).
             cpSync(join(projectRoot, "Dockerfile"), join(targetDir, "Dockerfile"));
+            cpSync(join(projectRoot, "Containerfile"), join(targetDir, "Containerfile"));
 
             // Copy scripts directory (needed for Docker build context)
             cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });

@@ -4,6 +4,7 @@ import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
 import { getContainerName, isContainerRunning } from "./docker.js";
+import { runtimeCli } from "./container-runtime.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 
@@ -151,7 +152,7 @@ export function cleanupSession(): void {
         if (isContainerRunning(containerName)) {
             // Save claude binary to volume before stopping (handles `claude update`)
             saveClaudeBinaryToVolume(containerName);
-            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
+            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
         }
     }
 

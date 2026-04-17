@@ -1,0 +1,3 @@
+{"skill":"setup","event":"started","branch":"feature/podman","session":"1183-1776357302","ts":"2026-04-16T16:35:02Z"}
+{"skill":"setup","event":"completed","branch":"feature/podman","outcome":"success","mode":"repair","duration_s":"76","session":"1183-1776357302","ts":"2026-04-16T16:36:18Z"}
+{"skill":"setup","event":"started","branch":"feature/podman","session":"2174-1776431744","ts":"2026-04-17T13:15:44Z"}

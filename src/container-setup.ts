@@ -4,6 +4,7 @@
 // Contains: claude binary caching, npm tools installation, mise shim detection.
 
 import { spawnSync } from "child_process";
+import { runtimeCli } from "./container-runtime.js";
 
 // Claude binary persist path inside the mise volume
 export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
@@ -15,7 +16,7 @@ export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
  */
 export function isMiseShim(containerName: string, path: string): boolean {
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c", `head -c 500 '${path.replace(/'/g, "'\\''")}' 2>/dev/null | grep -q mise`],
         { encoding: "utf-8" },
     );
@@ -28,7 +29,7 @@ export function isMiseShim(containerName: string, path: string): boolean {
  */
 export function isValidClaudeBinary(containerName: string, path: string): boolean {
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c", `'${path.replace(/'/g, "'\\''")}' --version 2>&1 | grep -qi claude`],
         { encoding: "utf-8", timeout: 10000 },
     );
@@ -74,7 +75,7 @@ fi
 echo INSTALL`.trim();
 
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c", probeScript],
         { encoding: "utf-8", timeout: 15000 },
     );
@@ -90,7 +91,7 @@ echo INSTALL`.trim();
     // Fresh install and save to volume
     console.log("Installing claude (first run)...");
     const installResult = spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec",
             containerName,
@@ -116,7 +117,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
 
     // Single docker exec to check all tools at once (instead of one per tool)
     const checkResult = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c",
          tools.map((t) => `[ -x /home/ccc/.local/bin/${t.cmd} ] || echo ${t.cmd}`).join("; ")],
         { encoding: "utf-8" },
@@ -138,7 +139,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
     }).join(" ");
 
     spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `gdir=$(~/.local/bin/mise exec node@22 -- npm root -g 2>/dev/null) && rm -rf ${cleanupPatterns} 2>/dev/null; true`,
@@ -147,7 +148,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
     );
 
     const installResult = spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
@@ -161,7 +162,7 @@ export function ensureGlobalNpmTools(containerName: string): void {
 
     for (const t of missing) {
         spawnSync(
-            "docker",
+            runtimeCli(),
             [
                 "exec", "-w", "/home/ccc", containerName, "sh", "-c",
                 `cat > /home/ccc/.local/bin/${t.cmd} << 'WRAPPER'\n#!/bin/sh\nexec ~/.local/bin/mise exec node@22 -- ${t.cmd} "$@"\nWRAPPER\nchmod +x /home/ccc/.local/bin/${t.cmd}`,
@@ -182,7 +183,7 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
         return;
     }
     spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec",
             containerName,
@@ -201,7 +202,7 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
  */
 export function ensureUvAvailable(containerName: string): void {
     const checkResult = spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c",
          "~/.local/bin/mise ls --global 2>/dev/null | grep -q '^uv '"],
         { encoding: "utf-8" },
@@ -209,7 +210,7 @@ export function ensureUvAvailable(containerName: string): void {
     if (checkResult.status === 0) return;
 
     spawnSync(
-        "docker",
+        runtimeCli(),
         ["exec", containerName, "sh", "-c",
          "~/.local/bin/mise use -g uv@latest"],
         { stdio: "inherit" },

@@ -1,0 +1,1 @@
+{"ts":"2026-04-16T17:07:37Z","type":"qa-signal","agent":"qa-cli","source":"qa-cli","key":"podman_baseline_3_failures","insight":"3 pre-existing test failures on feature/podman baseline (and master): determine-npm-tag SyntaxError, localhost-proxy ECONNREFUSED x2. Verified via git stash + npm test. These do not block PASS."}
