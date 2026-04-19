@@ -37,6 +37,8 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/claude-code-container:${{ steps.version.outputs.version }}
           labels: |
             cli.version=${{ steps.version.outputs.version }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
