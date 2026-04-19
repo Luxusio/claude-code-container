@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { spawnSync, execFileSync } from 'child_process'
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -19,16 +19,24 @@ function isPodmanAvailable(): boolean {
 // Run ccc with CCC_RUNTIME=podman forced, so the runtime override is exercised
 // even on hosts where docker is also installed.
 //
-// Uses the project's local `tsx` binary directly. Going through `npx` from a
-// temp cwd is unreliable in CI: npx searches node_modules upward from cwd, so
-// from `/tmp/ccc-podman-test-xxx/` it can't see the project's tsx and tries to
-// download a fresh copy on every spawn — which silently times out and yields
-// empty stdout/stderr.
-const TSX_BIN = join(__dirname, '../../node_modules/.bin/tsx')
-const CCC_PATH = join(__dirname, '../index.ts')
+// Spawns the compiled `dist/index.js` directly with the same node binary
+// vitest is using. Earlier attempts went through `npx tsx` and then through
+// `node_modules/.bin/tsx` — both produced empty stdout in CI (tsx + Node 24
+// loader hooks misbehaved). Using the prod artifact is what real users hit,
+// it has no loader dependency, and `npm run build` runs before this suite.
+const CCC_PATH = join(__dirname, '../../dist/index.js')
+
+function ensureBuilt(): void {
+    if (existsSync(CCC_PATH)) return
+    // Local convenience: build on demand if dist is missing.
+    execFileSync('npm', ['run', 'build'], {
+        cwd: join(__dirname, '../..'),
+        stdio: 'inherit',
+    })
+}
 
 function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
-    const result = spawnSync(TSX_BIN, [CCC_PATH, ...args], {
+    const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',
         cwd: options.cwd ?? process.cwd(),
         timeout: options.timeout ?? 60000,
@@ -46,6 +54,7 @@ let testProjectDir: string
 describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
 
     beforeAll(() => {
+        ensureBuilt()
         testProjectDir = mkdtempSync(join(tmpdir(), 'ccc-podman-test-'))
         writeFileSync(join(testProjectDir, 'package.json'), JSON.stringify({ name: 'test-project' }))
     })
