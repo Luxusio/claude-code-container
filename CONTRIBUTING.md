@@ -136,8 +136,7 @@ When the ccc image is rebuilt (locally or via registry pull), the next `ccc` run
 
 1. **Auto-forwarded from host**: All env vars except system ones (PATH, HOME, etc.)
 2. **Locale/Timezone**: `LANG`, `LC_*`, `TZ` auto-forwarded; defaults to `en_US.UTF-8` and auto-detected timezone
-3. **Per-session**: `ccc --env KEY=VALUE`
-4. **Container marker**: `container=docker` auto-set inside container
+3. **Container marker**: `container=docker` auto-set inside container
 
 ### Transparent Localhost Proxy (macOS/Windows)
 

@@ -168,11 +168,5 @@ describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
         })
     })
 
-    describe('Environment Variables (podman)', () => {
-        it('passes --env to container', { timeout: 60000 }, () => {
-            const result = runCcc(['--env', 'TEST_VAR=podman-pass', 'printenv', 'TEST_VAR'], { cwd: testProjectDir, timeout: 60000 })
-            expect(result.stdout).toContain('podman-pass')
-        })
-    })
 })
 

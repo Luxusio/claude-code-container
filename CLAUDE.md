@@ -100,7 +100,6 @@ npm run uninstall:global # Uninstall globally (sudo on macOS/Linux)
 - `ccc` - Run Claude in current project
 - `ccc shell` - Open bash shell in current project
 - `ccc <command>` - Run arbitrary command in current project
-- `ccc --env KEY=VALUE` - Set additional environment variable for session
 
 ### Remote Development
 - `ccc remote <host>` - Connect to remote host (first time saves config)
@@ -123,8 +122,6 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 **Auto-forwarded from host**: All host env vars except system ones (PATH, HOME, USER, SHELL, etc.)
 
 **Locale/Timezone**: `LANG`, `LC_ALL`, `LC_CTYPE` forwarded from host (common locales pre-generated in image). `TZ` auto-detected via `Intl.DateTimeFormat`. Defaults: `LANG=en_US.UTF-8`, `TZ=UTC`.
-
-**Per-session**: `ccc --env KEY=VALUE`
 
 **Container marker**: `container=docker` is auto-set inside the container (systemd convention). Use in mise.toml `[env]` for per-project container/desktop env separation.
 

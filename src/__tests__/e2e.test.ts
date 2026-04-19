@@ -112,12 +112,6 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
         })
     })
 
-    describe('Environment Variables', () => {
-        it('passes --env to container', { timeout: 60000 }, () => {
-            const result = runCcc(['--env', 'TEST_VAR=hello123', 'printenv', 'TEST_VAR'], { cwd: testProjectDir, timeout: 60000 })
-            expect(result.stdout).toContain('hello123')
-        })
-    })
 })
 
 describe('E2E: Docker Not Available', () => {
