@@ -5,11 +5,12 @@ Single command. Isolated environment. No setup required.
 ## Features
 
 - Per-project isolated containers
+- Runs on **Docker or Podman** — auto-detect, Podman preferred when both are installed
 - Host env vars, SSH keys, locale, timezone auto-forwarded
 - Auto-cleanup on session exit
 - [mise](https://mise.jdx.dev/) tool version management (auto-detect `mise.toml`)
 - Built-in Chromium for headless testing
-- Auto-pull Docker image on first run
+- Auto-pull container image on first run
 
 ## Installation
 
@@ -39,7 +40,41 @@ ccc rm                     # Remove container
 ccc status                 # Show all containers
 ccc doctor                 # Health check
 ccc clean                  # Clean stopped containers/images
+ccc runtime                # Print detected container runtime + flavor
 ```
+
+## Container Runtime (Docker or Podman)
+
+`ccc` works with either Docker or Podman. At startup it detects which
+runtime is available and picks it automatically.
+
+```bash
+ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=linux-rootless socket=...
+```
+
+**Selection order (first hit wins):**
+
+1. `--runtime <docker|podman>` CLI flag
+2. `CCC_RUNTIME=docker|podman` environment variable
+3. `podman` on PATH → Podman
+4. `docker` on PATH → Docker
+
+**Podman specifics handled automatically:**
+
+- **Rootless Podman on Linux**: `--userns=keep-id` is added so host UID maps
+  to the container `ccc` user. No manual UID remapping needed.
+- **SELinux**: bind mounts get the `:Z` relabel suffix when SELinux is
+  enforcing. Gate via `CCC_SELINUX_RELABEL=auto|force|off` (default `auto`).
+- **podman machine (macOS/Windows)**: treated like Docker Desktop —
+  `host.docker.internal` rewriting and the localhost proxy both apply.
+- **Podman socket**: `$XDG_RUNTIME_DIR/podman/podman.sock` (rootless) or
+  `/run/podman/podman.sock` (rootful) is substituted for `/var/run/docker.sock`
+  on the host side; containers still see `/var/run/docker.sock`. Start it
+  with `systemctl --user start podman.socket` if tools inside the container
+  need to talk to the runtime. Override the path with
+  `CCC_RUNTIME_SOCKET=/custom/socket` when needed.
+
+If neither runtime is installed, `ccc` exits with a clear error.
 
 ## Profiles
 

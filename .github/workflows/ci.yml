@@ -28,7 +28,7 @@ jobs:
         run: npm run lint
 
       - name: Test
-        run: npx vitest run --exclude src/__tests__/e2e.test.ts
+        run: npx vitest run --exclude src/__tests__/e2e.test.ts --exclude src/__tests__/e2e-podman.test.ts
 
   chrome-devtools-test:
     runs-on: ubuntu-latest
@@ -54,3 +54,78 @@ jobs:
         run: npx vitest run src/__tests__/chrome-devtools-integration.test.ts
         env:
           CI: true
+
+  test-podman-linux:
+    # Verifies the Podman runtime path: build + tests on a host where podman
+    # is the only runtime available. Uses CCC_RUNTIME=podman to force selection
+    # even if docker ends up on PATH on the runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman --version
+
+      - name: Verify Containerfile exists and matches Dockerfile
+        run: |
+          test -f Containerfile
+          diff Dockerfile Containerfile
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Test (podman-forced runtime)
+        run: npx vitest run --exclude src/__tests__/e2e.test.ts --exclude src/__tests__/e2e-podman.test.ts
+        env:
+          CCC_RUNTIME: podman
+
+      - name: Smoke — ccc runtime subcommand
+        run: |
+          node dist/index.js runtime
+        env:
+          CCC_RUNTIME: podman
+
+  e2e-podman:
+    # Real end-to-end Podman tests: builds the image with `podman build`,
+    # runs ccc lifecycle (status, doctor, exec, stop, rm) against a live
+    # rootless Podman daemon. Mirrors the docker e2e suite.
+    # Skipped automatically by the suite if `podman info` fails on the runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Podman + rootless deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap slirp4netns fuse-overlayfs
+          podman --version
+          podman info >/dev/null
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: E2E — podman lifecycle
+        run: npx vitest run src/__tests__/e2e-podman.test.ts
+        env:
+          CCC_RUNTIME: podman

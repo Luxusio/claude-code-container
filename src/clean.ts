@@ -2,6 +2,7 @@
 
 import { spawnSync } from "child_process";
 import { ensureDockerRunning } from "./docker.js";
+import { runtimeCli } from "./container-runtime.js";
 import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
 
 export interface CleanOptions {
@@ -24,7 +25,7 @@ interface ImageInfo {
 
 function listContainers(): ContainerInfo[] {
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.Names}}\t{{.Status}}"],
         { encoding: "utf-8" },
     );
@@ -42,7 +43,7 @@ function listImages(): ImageInfo[] {
 
     for (const repo of ["ccc", DOCKER_REGISTRY_IMAGE]) {
         const result = spawnSync(
-            "docker",
+            runtimeCli(),
             ["images", "--format", "{{.Repository}}\t{{.ID}}\t{{.Size}}", repo],
             { encoding: "utf-8" },
         );
@@ -66,7 +67,7 @@ function listImages(): ImageInfo[] {
 
 function listVolumes(): string[] {
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         ["volume", "ls", "--filter", "name=^ccc-", "--format", "{{.Name}}"],
         { encoding: "utf-8" },
     );
@@ -151,30 +152,32 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
 
     let removed = 0;
 
+    const cli = runtimeCli();
+
     // Stop running containers first
     for (const c of containersToStop) {
         console.log(`Stopping ${c.name}...`);
-        spawnSync("docker", ["stop", c.name], { stdio: "inherit" });
+        spawnSync(cli, ["stop", c.name], { stdio: "inherit" });
     }
 
     // Remove containers
     for (const c of containersToRemove) {
         console.log(`Removing container ${c.name}...`);
-        const r = spawnSync("docker", ["rm", c.name], { stdio: "inherit" });
+        const r = spawnSync(cli, ["rm", c.name], { stdio: "inherit" });
         if (r.status === 0) removed++;
     }
 
     // Remove images
     for (const img of images) {
         console.log(`Removing image ${img.repository} (${img.id})...`);
-        const r = spawnSync("docker", ["rmi", img.id], { stdio: "inherit" });
+        const r = spawnSync(cli, ["rmi", img.id], { stdio: "inherit" });
         if (r.status === 0) removed++;
     }
 
     // Remove volumes
     for (const v of volumes) {
         console.log(`Removing volume ${v}...`);
-        const r = spawnSync("docker", ["volume", "rm", v], { stdio: "inherit" });
+        const r = spawnSync(cli, ["volume", "rm", v], { stdio: "inherit" });
         if (r.status === 0) removed++;
     }
 
