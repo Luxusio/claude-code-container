@@ -18,9 +18,17 @@ function isPodmanAvailable(): boolean {
 
 // Run ccc with CCC_RUNTIME=podman forced, so the runtime override is exercised
 // even on hosts where docker is also installed.
+//
+// Uses the project's local `tsx` binary directly. Going through `npx` from a
+// temp cwd is unreliable in CI: npx searches node_modules upward from cwd, so
+// from `/tmp/ccc-podman-test-xxx/` it can't see the project's tsx and tries to
+// download a fresh copy on every spawn — which silently times out and yields
+// empty stdout/stderr.
+const TSX_BIN = join(__dirname, '../../node_modules/.bin/tsx')
+const CCC_PATH = join(__dirname, '../index.ts')
+
 function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
-    const cccPath = join(__dirname, '../index.ts')
-    const result = spawnSync('npx', ['tsx', cccPath, ...args], {
+    const result = spawnSync(TSX_BIN, [CCC_PATH, ...args], {
         encoding: 'utf-8',
         cwd: options.cwd ?? process.cwd(),
         timeout: options.timeout ?? 60000,

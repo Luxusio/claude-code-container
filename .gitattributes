@@ -2,3 +2,6 @@
 scripts/clipboard-shims/* text eol=lf
 *.sh text eol=lf
 Dockerfile text eol=lf
+# Node script files with shebangs: esbuild's shebang strip only matches LF,
+# so CRLF + shebang in an imported .js breaks vitest with "Invalid or unexpected token".
+scripts/*.js text eol=lf
