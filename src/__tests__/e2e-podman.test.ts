@@ -36,11 +36,23 @@ function ensureBuilt(): void {
 }
 
 function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
+    // Strip VITEST from the child env: src/index.ts gates main() behind
+    // `if (!process.env.VITEST)`, so an inherited VITEST=true makes the CLI
+    // exit silently with status 0 and empty stdout/stderr.
+    const childEnv: Record<string, string> = {}
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v === undefined) continue
+        if (k === 'VITEST' || k.startsWith('VITEST_')) continue
+        childEnv[k] = v
+    }
+    childEnv.NODE_ENV = 'test'
+    childEnv.CCC_RUNTIME = 'podman'
+
     const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',
         cwd: options.cwd ?? process.cwd(),
         timeout: options.timeout ?? 60000,
-        env: { ...process.env, NODE_ENV: 'test', CCC_RUNTIME: 'podman' }
+        env: childEnv,
     })
     return {
         stdout: result.stdout ?? '',
