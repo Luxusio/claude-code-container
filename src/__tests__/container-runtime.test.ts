@@ -173,9 +173,9 @@ describe("container-runtime", () => {
             expect(runtimeExtraRunArgs()).toEqual([]);
         });
 
-        it("adds --userns=keep-id on rootless podman", () => {
+        it("adds --userns=keep-id:uid=1000,gid=1000 on rootless podman", () => {
             _setRuntimeInfoForTest({ runtime: "podman", rootless: true });
-            expect(runtimeExtraRunArgs()).toEqual(["--userns=keep-id"]);
+            expect(runtimeExtraRunArgs()).toEqual(["--userns=keep-id:uid=1000,gid=1000"]);
         });
     });
 

@@ -139,7 +139,7 @@ Runtime is resolved once per process by `src/container-runtime.ts`. Selection or
 
 Podman-specific behaviour applied automatically:
 - Linux SELinux enforcing: bind mounts get `:Z`. Override via `CCC_SELINUX_RELABEL`.
-- Rootless Podman: `--userns=keep-id` added to `podman run`.
+- Rootless Podman: `--userns=keep-id:uid=1000,gid=1000` added to `podman run` (maps host user to the image's `ccc` UID so bind mounts + the mise volume are writable regardless of host UID). Requires Podman 4.3+.
 - `podman machine` (macOS/Windows): treated as a VM-backed host, same code path as Docker Desktop for `host.docker.internal` and the localhost proxy.
 - Podman host socket (`$XDG_RUNTIME_DIR/podman/podman.sock` rootless, `/run/podman/podman.sock` rootful) is bind-mounted into the container as `/var/run/docker.sock` so docker CLI shims inside the container continue to work against Podman's Docker-compatible REST API.
 

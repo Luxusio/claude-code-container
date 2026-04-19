@@ -61,8 +61,9 @@ ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=linux-root
 
 **Podman specifics handled automatically:**
 
-- **Rootless Podman on Linux**: `--userns=keep-id` is added so host UID maps
-  to the container `ccc` user. No manual UID remapping needed.
+- **Rootless Podman on Linux**: `--userns=keep-id:uid=1000,gid=1000` is added
+  so the host user maps to the container `ccc` user (UID 1000), regardless of
+  the host UID. Requires Podman 4.3+.
 - **SELinux**: bind mounts get the `:Z` relabel suffix when SELinux is
   enforcing. Gate via `CCC_SELINUX_RELABEL=auto|force|off` (default `auto`).
 - **podman machine (macOS/Windows)**: treated like Docker Desktop —

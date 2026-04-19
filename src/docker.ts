@@ -89,7 +89,7 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
 
     args.push("-w", opts.projectMountPath, "--pids-limit", opts.pidsLimit);
 
-    // Runtime-specific: --userns=keep-id on rootless podman
+    // Runtime-specific: --userns=keep-id:uid=1000,gid=1000 on rootless podman
     args.push(...runtimeExtraRunArgs());
 
     // Mount host SSH keys (read-only) for git SSH access

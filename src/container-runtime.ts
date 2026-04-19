@@ -14,7 +14,8 @@
 //
 // Runtime-specific behaviours centralised here:
 //   - bind-mount `:Z` suffix on Linux Podman with SELinux enforcing
-//   - `--userns=keep-id` on rootless Podman
+//   - `--userns=keep-id:uid=1000,gid=1000` on rootless Podman
+//     (maps host user to container ccc UID, not the host UID)
 //   - `host.docker.internal` vs `host.containers.internal` alias
 //   - docker.sock host path substitution (Podman ships Docker-compatible socket)
 //   - `isContainerHostRemote()` unifies docker-desktop + podman-machine
@@ -387,14 +388,21 @@ export function bindMountArgs(
 }
 
 /**
- * Extra `run` args that are runtime-specific. At the moment this is
- * `--userns=keep-id` on rootless podman. Returned as a flat argv array.
+ * Extra `run` args that are runtime-specific. On rootless podman we remap the
+ * host user to UID/GID 1000 inside the container — the UID of the image's
+ * `ccc` user. Plain `--userns=keep-id` preserves the host UID, which breaks
+ * when host UID ≠ 1000: the bind-mounted `~/.ccc/claude` and the mise named
+ * volume are both owned by UID 1000 inside the image, and a process running
+ * as the host UID can't chmod/write those paths ("Operation not permitted"
+ * when `claude.ai/install.sh` tries to chmod the downloaded binary).
+ *
+ * Requires Podman 4.3+ for the `:uid=,gid=` syntax (released Nov 2022).
  */
 export function runtimeExtraRunArgs(): string[] {
     const info = getRuntimeInfo();
     const extras: string[] = [];
     if (info.runtime === "podman" && info.rootless) {
-        extras.push("--userns=keep-id");
+        extras.push("--userns=keep-id:uid=1000,gid=1000");
     }
     return extras;
 }

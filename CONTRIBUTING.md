@@ -194,7 +194,7 @@ claude-code-container/
 - `getRuntimeInfo()`: Cached detection result (runtime, flavor, version, socket path, rootless, remote).
 - `setRuntimeOverride(name)`: Apply `--runtime` flag at CLI entry.
 - `bindMountArgs(host, container, {readonly})`: Emits `-v <host>:<container>[:ro][:Z]` with SELinux relabel applied on rootless Podman.
-- `runtimeExtraRunArgs()`: Returns `["--userns=keep-id"]` on rootless Podman; empty otherwise.
+- `runtimeExtraRunArgs()`: Returns `["--userns=keep-id:uid=1000,gid=1000"]` on rootless Podman (maps host user to container `ccc` UID 1000); empty otherwise.
 - `isContainerHostRemote()`: True for Docker Desktop or podman machine (use instead of `isDockerDesktop()` in new code).
 
 ### Container Management (`docker.ts`)
