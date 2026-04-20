@@ -8,6 +8,7 @@ import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry
 
 // Claude binary persist path inside the mise volume
 export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
+export const CLAUDE_EXECUTABLE = "claude";
 export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
 
 /**
@@ -39,8 +40,9 @@ export function isValidClaudeBinary(containerName: string, path: string): boolea
 /**
  * Ensure claude binary is available in the container.
  * 1. If real claude binary exists at known path → do nothing
- * 2. If volume has a valid cached copy → symlink it
- * 3. Otherwise → fresh install and cache to volume
+ * 2. If claude exists elsewhere on PATH → copy it into the fixed path + cache
+ * 3. If volume has a valid cached copy → restore it to the fixed path
+ * 4. Otherwise → fresh install, then copy into fixed path + cache
  *
  * Uses a single docker exec to probe both paths, reducing round-trips
  * from 3-5 to 1 for the common happy path.
@@ -50,6 +52,7 @@ export function ensureClaudeInContainer(containerName: string): void {
     const probeScript = `
 BIN="${CLAUDE_BIN_PATH}"
 CACHE="${CLAUDE_PERSIST_DIR}/claude"
+FOUND="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)"
 is_shim() { head -c 500 "$1" 2>/dev/null | grep -q mise; }
 is_claude() { "$1" --version 2>&1 | grep -qi claude; }
 
@@ -62,11 +65,19 @@ if [ -x "$BIN" ]; then
     rm -f "$BIN"
   fi
 fi
+if [ -n "$FOUND" ] && [ -x "$FOUND" ]; then
+  if is_shim "$FOUND"; then
+    :
+  elif is_claude "$FOUND"; then
+    mkdir -p "$(dirname "$BIN")" "$(dirname "$CACHE")" && cp -L "$FOUND" "$CACHE" && cp -L "$CACHE" "$BIN"
+    echo VALID; exit 0
+  fi
+fi
 if [ -x "$CACHE" ]; then
   if is_shim "$CACHE"; then
     rm -f "$CACHE"
   elif is_claude "$CACHE"; then
-    mkdir -p "$(dirname "$BIN")" && ln -sf "$CACHE" "$BIN"
+    mkdir -p "$(dirname "$BIN")" && cp -L "$CACHE" "$BIN"
     echo RESTORED; exit 0
   else
     rm -f "$CACHE"
@@ -97,7 +108,7 @@ echo INSTALL`.trim();
             containerName,
             "sh",
             "-c",
-            `${getToolByName("claude")!.installCommand} && mkdir -p ${CLAUDE_PERSIST_DIR} && cp ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude`,
+            `${getToolByName("claude")!.installCommand} && ACTUAL="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" && [ -n "$ACTUAL" ] && [ -x "$ACTUAL" ] && mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && cp -L "$ACTUAL" ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
         ],
         { stdio: "inherit" },
     );
@@ -182,13 +193,20 @@ function ensureNpmTools(containerName: string): void {
 }
 
 /**
- * Save claude binary back to volume (in case `claude update` replaced the symlink).
+ * Save claude binary back to volume and refresh the fixed install path.
  */
 export function saveClaudeBinaryToVolume(containerName: string): void {
-    if (isMiseShim(containerName, CLAUDE_BIN_PATH)) {
+    const resolveResult = spawnSync(
+        "docker",
+        ["exec", containerName, "sh", "-c", `command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true`],
+        { encoding: "utf-8", timeout: 10000 },
+    );
+    const actualPath = (resolveResult.stdout ?? "").trim() || CLAUDE_BIN_PATH;
+
+    if (isMiseShim(containerName, actualPath)) {
         return;
     }
-    if (!isValidClaudeBinary(containerName, CLAUDE_BIN_PATH)) {
+    if (!isValidClaudeBinary(containerName, actualPath)) {
         return;
     }
     spawnSync(
@@ -198,7 +216,7 @@ export function saveClaudeBinaryToVolume(containerName: string): void {
             containerName,
             "sh",
             "-c",
-            `mkdir -p ${CLAUDE_PERSIST_DIR} && [ -x ${CLAUDE_BIN_PATH} ] && cp -L ${CLAUDE_BIN_PATH} ${CLAUDE_PERSIST_DIR}/claude || true`,
+            `mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && [ -x '${actualPath.replace(/'/g, "'\\''")}' ] && cp -L '${actualPath.replace(/'/g, "'\\''")}' ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH} || true`,
         ],
         { stdio: "ignore" },
     );

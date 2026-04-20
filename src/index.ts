@@ -477,6 +477,11 @@ async function exec(
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
     if (commandTool?.name === "claude") {
+        // Always refresh the fixed claude path before exec.
+        // Existing running containers may predate the current install policy.
+        progress("Checking claude install...");
+        ensureClaudeInContainer(containerName);
+
         // Step 1: mise setup (trust, install, reshim) — only on first session startup.
         // Skipped when container was already running: a previous session already ran this.
         if (!wasAlreadyRunning) {

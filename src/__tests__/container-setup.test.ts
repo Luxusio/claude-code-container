@@ -11,6 +11,7 @@ vi.mock("child_process", async (importOriginal) => {
 // Import AFTER mocks
 const {
     CLAUDE_PERSIST_DIR,
+    CLAUDE_EXECUTABLE,
     CLAUDE_BIN_PATH,
     isMiseShim,
     isValidClaudeBinary,
@@ -43,6 +44,10 @@ describe("container-setup.ts module", () => {
             expect(CLAUDE_PERSIST_DIR).toBe(
                 "/home/ccc/.local/share/mise/.claude-bin",
             );
+        });
+
+        it("exports CLAUDE_EXECUTABLE", () => {
+            expect(CLAUDE_EXECUTABLE).toBe("claude");
         });
 
         it("exports CLAUDE_BIN_PATH", () => {
@@ -94,24 +99,30 @@ describe("container-setup.ts module", () => {
 
     describe("saveClaudeBinaryToVolume", () => {
         it("skips saving if binary is a mise shim", () => {
+            // command -v claude resolves
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "/home/ccc/.claude/local/claude\n"));
             // isMiseShim returns true (status 0)
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             saveClaudeBinaryToVolume(container);
-            // Only 1 call (isMiseShim check), no copy
-            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+            // resolve + isMiseShim, no copy
+            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
         });
 
         it("skips saving if binary is not valid claude", () => {
+            // command -v claude resolves
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "/home/ccc/.claude/local/claude\n"));
             // isMiseShim returns false (status 1)
             spawnSyncMock.mockReturnValueOnce(makeResult(1));
             // isValidClaudeBinary returns false (status 1)
             spawnSyncMock.mockReturnValueOnce(makeResult(1));
             saveClaudeBinaryToVolume(container);
-            // 2 calls: isMiseShim + isValidClaudeBinary, no copy
-            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+            // 3 calls: resolve + isMiseShim + isValidClaudeBinary, no copy
+            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
         });
 
         it("copies binary when valid and not a shim", () => {
+            // command -v claude resolves
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "/home/ccc/.claude/local/claude\n"));
             // isMiseShim returns false
             spawnSyncMock.mockReturnValueOnce(makeResult(1));
             // isValidClaudeBinary returns true
@@ -119,14 +130,15 @@ describe("container-setup.ts module", () => {
             // cp command
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             saveClaudeBinaryToVolume(container);
-            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(4);
             // Verify the copy command
-            const cpCall = spawnSyncMock.mock.calls[2];
+            const cpCall = spawnSyncMock.mock.calls[3];
             expect(cpCall[0]).toBe("docker");
             const args = cpCall[1] as string[];
             expect(args).toContain("exec");
             const shCmd = args[args.length - 1];
             expect(shCmd).toContain("cp -L");
+            expect(shCmd).toContain("/home/ccc/.claude/local/claude");
             expect(shCmd).toContain(CLAUDE_BIN_PATH);
         });
     });
@@ -144,7 +156,7 @@ describe("container-setup.ts module", () => {
         });
 
         it("restores from cache when volume has valid claude binary", () => {
-            // Single probe script returns RESTORED (cache found and symlinked)
+            // Single probe script returns RESTORED (cache found and copied back)
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED\n"));
             ensureClaudeInContainer(container);
             expect(console.log).toHaveBeenCalledWith(
@@ -194,6 +206,7 @@ describe("container-setup.ts module", () => {
             const shCmd = (probeCall[1] as string[]).at(-1) as string;
             expect(shCmd).toContain(CLAUDE_BIN_PATH);
             expect(shCmd).toContain(CLAUDE_PERSIST_DIR);
+            expect(shCmd).toContain("command -v claude");
             expect(shCmd).toContain("is_shim");
             expect(shCmd).toContain("is_claude");
         });
@@ -205,7 +218,9 @@ describe("container-setup.ts module", () => {
             const installCall = spawnSyncMock.mock.calls[1];
             const shCmd = (installCall[1] as string[]).at(-1) as string;
             expect(shCmd).toContain("curl -fsSL");
+            expect(shCmd).toContain("command -v claude");
             expect(shCmd).toContain(CLAUDE_PERSIST_DIR);
+            expect(shCmd).toContain(`cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`);
         });
     });
 
