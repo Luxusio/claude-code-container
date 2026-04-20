@@ -22,6 +22,18 @@ verify_commands:
   - "npm run build"
   - "npm test"
 
+# --- Health scoring components (0-10 composite) ---
+health_components:
+  - name: typecheck
+    command: "npx tsc --noEmit"
+    weight: 0.25
+  - name: lint
+    command: "npm run lint"
+    weight: 0.20
+  - name: test
+    command: "npm test"
+    weight: 0.30
+
 # --- QA section (is_browser_first_project reads qa.browser_qa_supported) ---
 qa:
   default_mode: cli

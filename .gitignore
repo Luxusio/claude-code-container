@@ -7,3 +7,17 @@ coverage/
 .omc
 doc/harness/tasks/
 .omx
+
+# harness — operational artifacts (ephemeral, not durable knowledge)
+doc/harness/learnings.jsonl
+doc/harness/timeline.jsonl
+doc/harness/checkpoints/
+doc/harness/health-history.jsonl
+doc/harness/benchmark/
+doc/harness/audits/
+doc/harness/visual-baselines/
+doc/harness/local.yaml
+doc/harness/.markers/
+doc/harness/.interview-answers.json
+doc/harness/retros/
+doc/harness/quality-trend.jsonl
