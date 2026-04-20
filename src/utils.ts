@@ -65,6 +65,11 @@ export const EXCLUDE_ENV_KEYS = new Set([
     "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
     "TMPDIR", "TEMP", "TMP", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
     "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+    // Host display servers — forwarding makes clipboard libs (arboard used by
+    // codex) try to reach the host's X11/Wayland socket from inside the
+    // container and hang/time out. Clipboard bridges via the CCC HTTP server.
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE",
+    "XDG_RUNTIME_DIR", "XDG_SESSION_ID", "XDG_SESSION_CLASS",
     // macOS
     "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
     "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",

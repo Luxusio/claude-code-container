@@ -380,16 +380,32 @@ async function exec(
         }
     }
 
+    const clipboardUrl = clipboardHost && clipboardPort
+        ? `http://${clipboardHost}:${clipboardPort}`
+        : undefined;
+
     let resolvedCmd = [...cmd];
     resolvedCmd = await maybeAttachCodexClipboardImageForCommand(
         fullPath,
         resolvedCmd,
         commandTool,
-        {
-            url: clipboardHost && clipboardPort ? `http://${clipboardHost}:${clipboardPort}` : undefined,
-            token: clipboardToken ?? undefined,
-        },
+        { url: clipboardUrl, token: clipboardToken ?? undefined },
     );
+
+    // Spin up the in-container X11 clipboard bridge (Xvfb :99 + sync daemon)
+    // on every session. Idle Xvfb is ~15-30MB RAM so running it always is
+    // cheaper than branching per-tool and lets GUI MCPs / Electron apps work
+    // out of the box even if no clipboard server is up (sync loop just idles).
+    // Script is idempotent; reuses an existing bridge.
+    {
+        const bridgeEnv: string[] = [];
+        if (clipboardUrl) bridgeEnv.push("-e", `CCC_CLIPBOARD_URL=${clipboardUrl}`);
+        if (clipboardToken) bridgeEnv.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
+        spawnSync("docker", [
+            "exec", "-d", ...bridgeEnv, containerName,
+            "/usr/local/bin/ccc-x11-bridge",
+        ], { stdio: "ignore" });
+    }
 
     const execArgs = ["exec", "-w", projectMountPath];
 
