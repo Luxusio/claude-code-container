@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -24,6 +24,10 @@ function getInstallDir() {
 function getContentHash() {
     const files = [
         "Dockerfile",
+        "Containerfile",
+        "package.json",
+        "package-lock.json",
+        "tsconfig.json",
         "scripts/clipboard-shims/xclip",
         "scripts/clipboard-shims/xsel",
         "scripts/clipboard-shims/wl-paste",
@@ -34,7 +38,24 @@ function getContentHash() {
     for (const f of files) {
         hash.update(readFileSync(join(projectRoot, f)));
     }
+    for (const dir of ["src", "scripts"]) {
+        hashDirectory(hash, join(projectRoot, dir));
+    }
     return hash.digest("hex").substring(0, 12);
+}
+
+function hashDirectory(hash, dir) {
+    const entries = readdirSync(dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+        const fullPath = join(dir, entry.name);
+        hash.update(fullPath);
+        if (entry.isDirectory()) {
+            hashDirectory(hash, fullPath);
+        } else if (entry.isFile()) {
+            hash.update(readFileSync(fullPath));
+        }
+    }
 }
 
 // Detect available container runtime. Mirrors src/container-runtime.ts:

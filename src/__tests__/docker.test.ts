@@ -215,6 +215,84 @@ describe("docker.ts module exports", () => {
         it("should be a function exported from docker.ts", () => {
             expect(typeof buildDockerRunArgs).toBe("function");
         });
+
+        it("includes --hostname derived from container name", () => {
+            mockExistsSync.mockReturnValue(false);
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            const hostnameIdx = args.indexOf("--hostname");
+            expect(hostnameIdx).toBeGreaterThan(-1);
+            expect(args[hostnameIdx + 1]).toBe("ccc-my-project-abc123");
+        });
+
+        it("truncates hostname to 63 chars for long container names", () => {
+            mockExistsSync.mockReturnValue(false);
+            const longName = "ccc-" + "a".repeat(80);
+            const args = buildDockerRunArgs({
+                containerName: longName,
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            const hostnameIdx = args.indexOf("--hostname");
+            expect(hostnameIdx).toBeGreaterThan(-1);
+            expect(args[hostnameIdx + 1]).toHaveLength(63);
+        });
+
+        it("includes -v for each credentialMount entry", () => {
+            mockExistsSync.mockReturnValue(false);
+            const credentialMounts = [
+                { hostPath: "/home/user/.ccc/claude", containerPath: "/home/ccc/.claude" },
+                { hostPath: "/home/user/.claude/ide", containerPath: "/home/ccc/.claude/ide" },
+            ];
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts,
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            expect(args).toContain("/home/user/.ccc/claude:/home/ccc/.claude");
+            expect(args).toContain("/home/user/.claude/ide:/home/ccc/.claude/ide");
+        });
+
+        it("includes -v for claude.json mount independently of credentialMounts", () => {
+            mockExistsSync.mockReturnValue(false);
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+            });
+            expect(args).toContain("/home/user/.ccc/claude.json:/home/ccc/.claude.json");
+        });
     });
 
     describe("syncClipboardShims", () => {

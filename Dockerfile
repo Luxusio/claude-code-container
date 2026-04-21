@@ -75,6 +75,7 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     libcairo2 \
     libpango-1.0-0 \
     xvfb \
+    xclip \
     iptables \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8 \
@@ -115,8 +116,9 @@ COPY --chmod=755 scripts/clipboard-shims/xsel /usr/local/bin/xsel
 COPY --chmod=755 scripts/clipboard-shims/wl-paste /usr/local/bin/wl-paste
 COPY --chmod=755 scripts/clipboard-shims/wl-copy /usr/local/bin/wl-copy
 COPY --chmod=755 scripts/clipboard-shims/pbpaste /usr/local/bin/pbpaste
+COPY --chmod=755 scripts/ccc-x11-bridge /usr/local/bin/ccc-x11-bridge
 # Strip Windows CRLF line endings (git on Windows may convert LF→CRLF)
-RUN sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste
+RUN sed -i 's/\r$//' /usr/local/bin/xclip /usr/local/bin/xsel /usr/local/bin/wl-paste /usr/local/bin/wl-copy /usr/local/bin/pbpaste /usr/local/bin/ccc-x11-bridge
 
 USER ccc
 WORKDIR /home/ccc

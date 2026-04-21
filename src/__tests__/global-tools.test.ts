@@ -12,7 +12,8 @@ vi.mock("child_process", async (importOriginal) => {
 });
 
 // Must import AFTER vi.mock so the mock is in effect
-const { ensureGlobalNpmTools } = await import("../container-setup.js");
+const { ensureTools } = await import("../container-setup.js");
+const { getToolByName } = await import("../tool-registry.js");
 
 function makeResult(status: number, stdout = ""): SpawnSyncReturns<string> {
     return {
@@ -25,7 +26,7 @@ function makeResult(status: number, stdout = ""): SpawnSyncReturns<string> {
     };
 }
 
-describe("ensureGlobalNpmTools", () => {
+describe("ensureTools (npm tools)", () => {
     const container = "test-container";
 
     beforeEach(() => {
@@ -42,7 +43,7 @@ describe("ensureGlobalNpmTools", () => {
         // Single combined check returns empty stdout (all present)
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
 
-        ensureGlobalNpmTools(container);
+        ensureTools(container, getToolByName("gemini")!);
 
         // Only 1 combined check call, no install
         expect(spawnSyncMock).toHaveBeenCalledTimes(1);
@@ -50,17 +51,18 @@ describe("ensureGlobalNpmTools", () => {
     });
 
     it("installs missing tools and creates wrappers", () => {
-        // Combined check returns both missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
+        // Combined check returns all 3 missing
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper gemini
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper opencode
 
-        ensureGlobalNpmTools(container);
+        ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 1 cleanup + 1 install + 2 wrappers = 5 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(5);
+        // 1 check + 1 cleanup + 1 install + 3 wrappers = 6 calls
+        expect(spawnSyncMock).toHaveBeenCalledTimes(6);
 
         // Verify install command uses mise exec node@22 (index 2 after cleanup)
         const installCall = spawnSyncMock.mock.calls[2];
@@ -72,6 +74,7 @@ describe("ensureGlobalNpmTools", () => {
         expect(shCmd).toContain("mise exec node@22");
         expect(shCmd).toContain("@google/gemini-cli");
         expect(shCmd).toContain("@openai/codex");
+        expect(shCmd).toContain("opencode-ai");
 
         // Verify wrapper creation
         const wrapperCall = spawnSyncMock.mock.calls[3];
@@ -80,7 +83,7 @@ describe("ensureGlobalNpmTools", () => {
         expect(wrapperCmd).toContain("mise exec node@22 -- gemini");
         expect(wrapperCmd).toContain("chmod +x");
 
-        expect(console.log).toHaveBeenCalledWith("Installing gemini, codex...");
+        expect(console.log).toHaveBeenCalledWith("Installing gemini, codex, opencode...");
     });
 
     it("installs only missing tools (partial)", () => {
@@ -90,7 +93,7 @@ describe("ensureGlobalNpmTools", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
 
-        ensureGlobalNpmTools(container);
+        ensureTools(container, getToolByName("gemini")!);
 
         // 1 check + 1 cleanup + 1 install + 1 wrapper = 4 calls
         expect(spawnSyncMock).toHaveBeenCalledTimes(4);
@@ -107,12 +110,12 @@ describe("ensureGlobalNpmTools", () => {
     });
 
     it("warns and skips wrappers on install failure", () => {
-        // Combined check returns both missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
+        // Combined check returns all 3 missing
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
 
-        ensureGlobalNpmTools(container);
+        ensureTools(container, getToolByName("gemini")!);
 
         // 1 check + 1 cleanup + 1 install = 3 calls (no wrapper calls)
         expect(spawnSyncMock).toHaveBeenCalledTimes(3);
@@ -124,7 +127,7 @@ describe("ensureGlobalNpmTools", () => {
     it("checks all tools in single docker exec", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
 
-        ensureGlobalNpmTools(container);
+        ensureTools(container, getToolByName("gemini")!);
 
         // Verify the combined check command
         const checkCall = spawnSyncMock.mock.calls[0];

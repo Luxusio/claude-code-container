@@ -1,0 +1,98 @@
+#!/bin/bash
+# ccc-x11-bridge — runs Xvfb :99 + syncs host clipboard → X11 CLIPBOARD selection.
+#
+# Why this exists: Rust clipboard libraries (e.g. arboard used by codex TUI)
+# talk to an X server directly rather than shelling out to xclip, so the
+# /usr/local/bin/xclip shim does not help them. We run a real X server
+# (Xvfb :99) inside the container and push host clipboard contents into it
+# via the real /usr/bin/xclip so arboard can read them like a normal X app.
+#
+# Idempotent: safe to invoke on every `ccc` exec — skips if already running.
+
+set -u
+
+DISPLAY_N=:99
+LOCK_DIR=/run/ccc-x11-bridge
+LOCK_FILE="$LOCK_DIR/running"
+REAL_XCLIP=/usr/bin/xclip
+
+mkdir -p "$LOCK_DIR" 2>/dev/null || true
+
+# Bail out quietly if already running.
+if [ -f "$LOCK_FILE" ]; then
+    pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        exit 0
+    fi
+fi
+echo $$ > "$LOCK_FILE" 2>/dev/null || true
+
+# Start Xvfb :99 if nothing is listening.
+if ! pgrep -f "Xvfb $DISPLAY_N" >/dev/null 2>&1; then
+    Xvfb "$DISPLAY_N" -screen 0 1024x768x24 -nolisten tcp >/dev/null 2>&1 &
+    # Wait for the server to accept connections (up to ~2s).
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        if DISPLAY="$DISPLAY_N" "$REAL_XCLIP" -selection clipboard -o >/dev/null 2>&1; then break; fi
+        sleep 0.2
+    done
+fi
+
+export DISPLAY="$DISPLAY_N"
+
+# Sync loop: poll host clipboard every ~400ms; when content changes, take
+# CLIPBOARD selection ownership with the real xclip so X clients see it.
+sync_loop() {
+    last_sig=""
+    img_tmp=/tmp/.ccc-clip-new.png
+    img_current=/tmp/.ccc-clip.png
+    xclip_pid=""
+
+    while :; do
+        url="${CCC_CLIPBOARD_URL:-}"
+        token="${CCC_CLIPBOARD_TOKEN:-}"
+        if [ -z "$url" ]; then
+            sleep 1
+            continue
+        fi
+
+        sig=""
+        mode=""
+
+        # Prefer image when the host clipboard holds one.
+        if curl -sf --max-time 2 \
+                -H "Authorization: Bearer $token" \
+                -o "$img_tmp" \
+                "$url/clipboard/image/png" 2>/dev/null \
+            && [ -s "$img_tmp" ]; then
+            sig="img:$(md5sum < "$img_tmp" | cut -d' ' -f1)"
+            mode=img
+        else
+            text=$(curl -sf --max-time 2 \
+                -H "Authorization: Bearer $token" \
+                "$url/clipboard/text" 2>/dev/null || printf '')
+            if [ -n "$text" ]; then
+                sig="txt:$(printf '%s' "$text" | md5sum | cut -d' ' -f1)"
+                mode=txt
+            fi
+        fi
+
+        if [ -n "$sig" ] && [ "$sig" != "$last_sig" ]; then
+            # Drop previous owner, if any.
+            if [ -n "$xclip_pid" ] && kill -0 "$xclip_pid" 2>/dev/null; then
+                kill "$xclip_pid" 2>/dev/null || true
+            fi
+            if [ "$mode" = img ]; then
+                mv -f "$img_tmp" "$img_current"
+                "$REAL_XCLIP" -selection clipboard -t image/png -i "$img_current" >/dev/null 2>&1 &
+            else
+                printf '%s' "$text" | "$REAL_XCLIP" -selection clipboard -i >/dev/null 2>&1 &
+            fi
+            xclip_pid=$!
+            last_sig=$sig
+        fi
+
+        sleep 0.4
+    done
+}
+
+sync_loop

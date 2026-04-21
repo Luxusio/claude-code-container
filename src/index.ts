@@ -6,8 +6,8 @@ import {
     mkdirSync,
     writeFileSync,
     readFileSync,
+    unlinkSync,
 } from "fs";
-import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
@@ -24,7 +24,6 @@ import {
 } from "./remote.js";
 import {
     getProjectId,
-    EXCLUDE_ENV_KEYS,
     CONTAINER_ENV_KEY,
     CONTAINER_ENV_VALUE,
     prompt,
@@ -32,9 +31,12 @@ import {
     CLI_VERSION,
     getClaudeDir,
     getClaudeJsonFile,
+    collectForwardedEnv,
+    writeEnvFile,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
+import { maybeAttachCodexClipboardImage } from "./codex-clipboard-image.js";
 import {
     parseWorktreeArg,
     validateBranchName,
@@ -52,6 +54,7 @@ import {
 } from "./worktree.js";
 import {
     getContainerName,
+    isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
     isContainerExists,
@@ -67,8 +70,9 @@ import {
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
-    ensureGlobalNpmTools,
+    ensureTools,
     ensureUvAvailable,
+    saveClaudeBinaryToVolume,
     CLAUDE_BIN_PATH,
 } from "./container-setup.js";
 import {
@@ -81,13 +85,6 @@ import {
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 import {
-    runtimeCli,
-    setRuntimeOverride,
-    getRuntimeInfo,
-    formatRuntimeSummary,
-    isContainerHostRemote,
-} from "./container-runtime.js";
-import {
     validateProfileName,
     listProfiles,
     profileExists,
@@ -97,6 +94,8 @@ import {
     isBuiltinProfile,
     ensureProfile,
 } from "./profile.js";
+import { getToolByName, getAllTools, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
+import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -107,8 +106,6 @@ function progress(msg: string): void {
     process.stderr.write(`\x1b[2m▸ ${msg}\x1b[0m\n`);
 }
 
-// === Configuration ===
-const hostClaudeIdeDir = join(homedir(), ".claude", "ide"); // Host IDE lock files
 
 // === Helpers ===
 function ensureDirs(profile?: string): void {
@@ -176,6 +173,36 @@ ${defaultContent}`;
     console.log(`Created: ${miseConfigPath}`);
 }
 
+export function resolveExecTools(
+    cmd: string[],
+    optionsTool?: ToolDefinition,
+): { setupTool: ToolDefinition; commandTool?: ToolDefinition } {
+    const commandTool = optionsTool ?? getToolByName(cmd[0]);
+    return {
+        setupTool: commandTool ?? getDefaultTool(),
+        commandTool,
+    };
+}
+
+export async function maybeAttachCodexClipboardImageForCommand(
+    projectPath: string,
+    cmd: string[],
+    commandTool?: ToolDefinition,
+    clipboard?: { url?: string; token?: string },
+    attachClipboardImage: typeof maybeAttachCodexClipboardImage = maybeAttachCodexClipboardImage,
+): Promise<string[]> {
+    if (commandTool?.name !== "codex") {
+        return [...cmd];
+    }
+
+    const attached = await attachClipboardImage(projectPath, [...cmd], {
+        enabled: true,
+        clipboardUrl: clipboard?.url,
+        clipboardToken: clipboard?.token,
+    });
+    return attached.args;
+}
+
 // Check if mise.toml exists and offer to create if not
 async function ensureMiseConfig(projectPath: string): Promise<void> {
     const miseConfigPath = join(projectPath, "mise.toml");
@@ -205,7 +232,7 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
 async function exec(
     projectPath: string,
     cmd: string[],
-    options: { interactive?: boolean } = {},
+    options: { interactive?: boolean; env?: Record<string, string>; tool?: ToolDefinition } = {},
     profile?: string,
 ): Promise<void> {
     // Check Docker is running first
@@ -226,8 +253,16 @@ async function exec(
     //   Terminal A cleanup checks for other sessions → finds none → stops container
     //   Terminal B is still setting up but hasn't created its lock yet → container dies
     const projectId = getProjectId(fullPath);
+    if (process.env.DEBUG) {
+        console.error(`[ccc:debug] exec: projectPath=${projectPath}`);
+        console.error(`[ccc:debug] exec: fullPath=${fullPath}`);
+        console.error(`[ccc:debug] exec: projectId=${projectId}`);
+        console.error(`[ccc:debug] exec: mountPath=/project/${projectId}`);
+        console.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
+    }
+    const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
     const sessionLockFile = createSessionLock(projectId, profile);
-    setSession(sessionLockFile, fullPath, profile);
+    setSession(sessionLockFile, fullPath, profile, (commandTool ?? setupTool).name);
     setupSignalHandlers();
 
     // Start clipboard server early — must complete before container creation so
@@ -238,6 +273,12 @@ async function exec(
 
     // Detect worktree mounts (source .git directories needed for git operations)
     const worktreeMounts = getWorktreeGitMounts(fullPath);
+    if (process.env.DEBUG && worktreeMounts.length > 0) {
+        console.error(`[ccc:debug] worktreeGitMounts (${worktreeMounts.length}):`);
+        for (const m of worktreeMounts) {
+            console.error(`[ccc:debug]   ${m.hostPath} -> ${m.containerPath}`);
+        }
+    }
 
     // Single docker inspect to get container status (replaces 3-4 separate docker commands)
     const targetContainer = getContainerName(fullPath, profile);
@@ -254,13 +295,12 @@ async function exec(
                 const oldImageId = containerStatus.imageId;
 
                 progress("Upgrading container to new image...");
-                const cli = runtimeCli();
-                spawnSync(cli, ["stop", targetContainer], { stdio: "ignore" });
-                spawnSync(cli, ["rm", targetContainer], { stdio: "ignore" });
+                spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
+                spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
 
                 // Remove old image (now dangling). Silently fails if still in use by other containers.
                 if (oldImageId) {
-                    spawnSync(cli, ["rmi", oldImageId], { stdio: "ignore" });
+                    spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
                 }
             } else {
                 console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
@@ -280,29 +320,28 @@ async function exec(
 
     // Skip heavy setup if container was already running (another session set it up)
     if (!wasAlreadyRunning) {
-        // Ensure claude binary is available (cached in volume or fresh install).
+        // Ensure tools are installed (claude via curl + npm tools from registry).
         // Retry once if a concurrent session stopped the container during setup.
-        progress("Checking claude binary...");
+        progress("Checking tools...");
         for (let attempt = 0; attempt < 2; attempt++) {
             if (!isContainerRunning(containerName)) {
                 console.log("Container stopped during setup (concurrent session), restarting...");
                 startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
             }
             try {
-                ensureClaudeInContainer(containerName);
+                ensureTools(containerName, setupTool);
                 break;
             } catch {
                 if (attempt === 1) {
-                    console.error("Failed to install claude in container");
+                    console.error("Failed to install tools in container");
                     process.exit(1);
                 }
             }
         }
 
-        // Run independent setup steps in parallel after claude is installed.
+        // Run independent setup steps in parallel after tools are installed.
         progress("Configuring environment...");
-        const [, , , forwardedMcp] = await Promise.all([
-            Promise.resolve(ensureGlobalNpmTools(containerName)),
+        const [, , forwardedMcp] = await Promise.all([
             Promise.resolve(ensureUvAvailable(containerName)),
             Promise.resolve(syncClipboardShims(containerName, __dirname)),
             Promise.resolve(buildMcpConfig(profile)),
@@ -328,29 +367,68 @@ async function exec(
 
     // Build docker exec command
     const projectMountPath = `/project/${projectId}`;
+    const clipboardHost = clipboardPort
+        ? ((process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal")
+        : null;
+    let clipboardToken: string | null = null;
+    if (clipboardPort) {
+        try {
+            const portFileContent = readFileSync(join(DATA_DIR, "clipboard.port"), "utf-8").trim();
+            clipboardToken = portFileContent.split(":").slice(1).join(":") || null;
+        } catch {
+            clipboardToken = null;
+        }
+    }
 
-    // Forward host env vars to the container via -e flags (denylist approach).
-    // Excludes system/platform vars that are meaningless inside the container.
-    const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((k) => k.toUpperCase()));
+    const clipboardUrl = clipboardHost && clipboardPort
+        ? `http://${clipboardHost}:${clipboardPort}`
+        : undefined;
+
+    let resolvedCmd = [...cmd];
+    resolvedCmd = await maybeAttachCodexClipboardImageForCommand(
+        fullPath,
+        resolvedCmd,
+        commandTool,
+        { url: clipboardUrl, token: clipboardToken ?? undefined },
+    );
+
+    // Spin up the in-container X11 clipboard bridge (Xvfb :99 + sync daemon)
+    // on every session. Idle Xvfb is ~15-30MB RAM so running it always is
+    // cheaper than branching per-tool and lets GUI MCPs / Electron apps work
+    // out of the box even if no clipboard server is up (sync loop just idles).
+    // Script is idempotent; reuses an existing bridge.
+    {
+        const bridgeEnv: string[] = [];
+        if (clipboardUrl) bridgeEnv.push("-e", `CCC_CLIPBOARD_URL=${clipboardUrl}`);
+        if (clipboardToken) bridgeEnv.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
+        spawnSync("docker", [
+            "exec", "-d", ...bridgeEnv, containerName,
+            "/usr/local/bin/ccc-x11-bridge",
+        ], { stdio: "ignore" });
+    }
 
     const execArgs = ["exec", "-w", projectMountPath];
 
-    // Container marker: enables per-project env separation via mise.toml [env] conditionals
-    execArgs.push("-e", `${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`);
-
-    for (const [key, value] of Object.entries(process.env)) {
-        if (value === undefined) continue;
-        if (excludeUpper.has(key.toUpperCase())) continue;
-        // Skip env vars with Windows paths (useless in Linux container)
-        if (/^[A-Za-z]:[/\\]/.test(value)) continue;
-        if (/;[A-Za-z]:[/\\]/.test(value)) continue;
-        execArgs.push("-e", `${key}=${value}`);
+    // Collect all env vars into a temp file and pass --env-file to docker exec.
+    // This avoids the OS ARG_MAX limit ("Argument list too long") that occurs when
+    // forwarding many environment variables as repeated -e KEY=VALUE flags.
+    const forwardedEnvPlan = collectForwardedEnv(process.env);
+    if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
+        console.error(
+            `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep exec size bounded; use --env KEY=VALUE for required overrides.`,
+        );
     }
+
+    const envEntries: Array<[string, string]> = [
+        // Container marker: enables per-project env separation via mise.toml [env]
+        [CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE],
+        ...forwardedEnvPlan.forwarded,
+    ];
 
     // Locale: forward host LANG/LC_* (no longer excluded).
     // If host has no LANG set, inject en_US.UTF-8 as fallback.
     if (!process.env.LANG) {
-        execArgs.push("-e", "LANG=en_US.UTF-8");
+        envEntries.push(["LANG", "en_US.UTF-8"]);
     }
 
     // Timezone: detect host timezone and forward to container.
@@ -358,31 +436,35 @@ async function exec(
     const hostTz = process.env.TZ
         || Intl.DateTimeFormat().resolvedOptions().timeZone
         || "UTC";
-    execArgs.push("-e", `TZ=${hostTz}`);
+    envEntries.push(["TZ", hostTz]);
 
     // Profile: env vars handled by mise.toml [env], not by ccc
 
     // Clipboard bridge: pass URL + auth token to container so shim scripts can reach host clipboard server
     if (clipboardPort) {
-        const clipboardHost = (process.platform === "linux" && !isContainerHostRemote()) ? "127.0.0.1" : "host.docker.internal";
-        execArgs.push("-e", `CCC_CLIPBOARD_URL=http://${clipboardHost}:${clipboardPort}`);
-        // Read token from port file for container auth
-        try {
-            const portFileContent = readFileSync(join(DATA_DIR, "clipboard.port"), "utf-8").trim();
-            const clipToken = portFileContent.split(":").slice(1).join(":");
-            if (clipToken) {
-                execArgs.push("-e", `CCC_CLIPBOARD_TOKEN=${clipToken}`);
-            }
-        } catch { /* token unavailable - clipboard will fail with 401 */ }
+        envEntries.push(["CCC_CLIPBOARD_URL", `http://${clipboardHost}:${clipboardPort}`]);
+        if (clipboardToken) {
+            envEntries.push(["CCC_CLIPBOARD_TOKEN", clipboardToken]);
+        }
     }
 
     // Node compat: ensure OMC hooks/MCP servers get Node 22 via mise override.
     // BASH_ENV resets it for Claude's Bash tool so project code uses project node.
     // Must be AFTER host env forwarding (to override any host MISE_NODE_VERSION).
-    if (cmd[0] === "claude") {
-        execArgs.push("-e", "MISE_NODE_VERSION=22");
-        execArgs.push("-e", "BASH_ENV=/home/ccc/.bashrc_hooks");
+    if (commandTool?.needsNodeRuntime) {
+        envEntries.push(["MISE_NODE_VERSION", "22"]);
+        envEntries.push(["BASH_ENV", "/home/ccc/.bashrc_hooks"]);
     }
+
+    // options.env: per-session overrides from --env KEY=VALUE CLI flag (applied last)
+    if (options.env) {
+        for (const [key, value] of Object.entries(options.env)) {
+            envEntries.push([key, value]);
+        }
+    }
+
+    const envFile = writeEnvFile(envEntries);
+    execArgs.push("--env-file", envFile);
 
     if (options.interactive !== false) {
         execArgs.push("-it");
@@ -394,13 +476,18 @@ async function exec(
     // mise install can be slow on first run (downloads tool binaries).
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
-    if (cmd[0] === "claude") {
+    if (commandTool?.name === "claude") {
+        // Always refresh the fixed claude path before exec.
+        // Existing running containers may predate the current install policy.
+        progress("Checking claude install...");
+        ensureClaudeInContainer(containerName);
+
         // Step 1: mise setup (trust, install, reshim) — only on first session startup.
         // Skipped when container was already running: a previous session already ran this.
         if (!wasAlreadyRunning) {
             progress("Installing project tools (mise)...");
             spawnSync(
-                runtimeCli(),
+                "docker",
                 [
                     "exec", "-w", projectMountPath, containerName,
                     "sh", "-c",
@@ -416,10 +503,28 @@ async function exec(
         // Step 2: run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
     } else {
-        execArgs.push(...cmd);
+        // mise setup only, then direct command
+        spawnSync("docker", [
+            "exec", "-w", projectMountPath, containerName,
+            "sh", "-c",
+            `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
+        ], { stdio: "inherit" });
+        execArgs.push(...resolvedCmd);
     }
 
-    const result = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
+    const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+    try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
+
+    if (process.env.DEBUG) {
+        // Check conversation directory state after Claude exits
+        const claudeProjectDir = `/home/ccc/.claude/projects/-project-${projectId}`;
+        const checkResult = spawnSync("docker", [
+            "exec", containerName, "sh", "-c",
+            `ls -1 "${claudeProjectDir}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${claudeProjectDir}"`,
+        ], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+        const output = (checkResult.stdout ?? "").trim();
+        console.error(`[ccc:debug] post-exit conversation check: ${output}`);
+    }
 
     // Cleanup on normal exit
     cleanupSession();
@@ -446,7 +551,7 @@ function showStatus(): void {
 
     // List all ccc containers
     const result = spawnSync(
-        runtimeCli(),
+        "docker",
         [
             "ps",
             "-a",
@@ -651,9 +756,8 @@ function handleWorktreeRemove(
         const containerName = getContainerName(wsPath);
         if (isContainerExists(containerName)) {
             console.log(`Stopping container ${containerName}...`);
-            const cli = runtimeCli();
-            spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
-            spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
+            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
+            spawnSync("docker", ["rm", containerName], { stdio: "ignore" });
         }
     } catch {
         // Docker not running, skip container cleanup
@@ -687,10 +791,16 @@ function showHelp(): void {
 ccc - Claude Code Container
 
 USAGE:
-    ccc                     Run claude in current project
+    ccc                     Run default AI tool in current project
     ccc shell               Open bash shell in current project
-    ccc update              Update claude to latest version
+    ccc update              Update default tool to latest version
     ccc <command>           Run command in current project
+
+TOOLS:
+    ccc claude              Run Claude Code
+    ccc gemini              Run Gemini CLI
+    ccc codex               Run Codex
+    ccc opencode            Run OpenCode
 
 PROFILES (separate claude credential directories):
     CCC_PROFILE=<name> ccc      Run with profile
@@ -699,8 +809,8 @@ PROFILES (separate claude credential directories):
     ccc profile rm <name>       Remove profile
 
 WORKTREES (multi-repo workspace):
-    ccc @<branch>           Create worktree workspace + run claude
-    ccc @<branch> --continue  Pass claude flags to worktree session
+    ccc @<branch>           Create worktree workspace + run default tool
+    ccc @<branch> --continue  Pass flags to worktree session
     ccc @                   List all workspaces
     ccc @<branch> rm        Remove workspace (container + worktrees)
     ccc @<branch> rm -f     Force remove dirty worktrees
@@ -710,7 +820,6 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
     ccc doctor              Health check and diagnostics
-    ccc runtime             Print detected container runtime + flavor
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
     ccc clean --all         Remove everything (including running)
@@ -724,23 +833,22 @@ REMOTE (run on remote host via Tailscale + Mutagen):
     ccc remote terminate    Stop sync session for this project
 
 OPTIONS:
-    -p, --profile <name>    Use named profile
-    --runtime <name>        Force container runtime: docker or podman
-                            (overrides auto-detect and CCC_RUNTIME env)
+    --env KEY=VALUE         Set environment variable
+    --default <tool>        Set default tool (claude/gemini/codex/opencode)
+    --default               Show current default tool
     -h, --help              Show this help
 
-ENVIRONMENT:
-    CCC_RUNTIME             docker | podman (default: auto-detect, podman preferred)
-    CCC_RUNTIME_SOCKET      override detected runtime socket path (advanced)
-    CCC_SELINUX_RELABEL     auto | force | off (default: auto)
-
 EXAMPLES:
-    ccc                     # Run Claude in current project
-    ccc --continue          # Continue previous Claude session
+    ccc                     # Run default tool in current project
+    ccc claude              # Run Claude Code
+    ccc gemini              # Run Gemini CLI
+    ccc --continue          # Continue previous session (default tool)
     ccc shell               # Open shell in current project
     ccc npm install         # Run npm install in container
     CCC_PROFILE=work ccc    # Run with 'work' profile
-    ccc @feature            # Create workspace + run Claude
+    ccc --env API_KEY=xxx   # Run with custom env var
+    ccc --default gemini    # Set Gemini as default tool
+    ccc @feature            # Create workspace + run default tool
     ccc @feature/login      # Branch with / (dir name uses -)
     ccc @                   # List workspaces
     ccc @feature rm         # Remove workspace
@@ -751,30 +859,19 @@ EXAMPLES:
 export function parseArgs(args: string[]): {
     worktreeArg?: string;
     filteredArgs: string[];
-    runtime?: string;
 } {
     const filteredArgs: string[] = [];
     let worktreeArg: string | undefined;
-    let runtime: string | undefined;
 
     for (let i = 0; i < args.length; i++) {
-        const a = args[i];
-        if (a.startsWith("@")) {
-            worktreeArg = a;
-            continue;
+        if (args[i].startsWith("@")) {
+            worktreeArg = args[i];
+        } else {
+            filteredArgs.push(args[i]);
         }
-        if (a === "--runtime") {
-            runtime = args[++i];
-            continue;
-        }
-        if (a.startsWith("--runtime=")) {
-            runtime = a.slice("--runtime=".length);
-            continue;
-        }
-        filteredArgs.push(a);
     }
 
-    return { worktreeArg, filteredArgs, runtime };
+    return { worktreeArg, filteredArgs };
 }
 
 // === Main ===
@@ -782,17 +879,7 @@ async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
     // Unified parsing: @branch and remaining args
-    const { worktreeArg, filteredArgs, runtime } = parseArgs(args);
-
-    // --runtime override takes effect before any container CLI spawn.
-    if (runtime !== undefined) {
-        try {
-            setRuntimeOverride(runtime);
-        } catch (e) {
-            console.error((e as Error).message);
-            process.exit(1);
-        }
-    }
+    const { worktreeArg, filteredArgs } = parseArgs(args);
 
     // Profile from CCC_PROFILE env var
     const profile = process.env.CCC_PROFILE || undefined;
@@ -809,10 +896,45 @@ async function main(): Promise<void> {
                 console.error(`Error: Profile "${profile}" does not exist. Create it with: ccc profile add ${profile}`);
                 process.exit(1);
             }
+
         }
     }
 
-    let command = filteredArgs[0];
+    // Handle --default flag
+    const defaultIdx = filteredArgs.indexOf("--default");
+    if (defaultIdx !== -1) {
+        const nextArg = filteredArgs[defaultIdx + 1];
+        if (nextArg && !nextArg.startsWith("-")) {
+            if (!getToolByName(nextArg)) {
+                console.error(`Unknown tool: ${nextArg}. Available: ${getAllTools().map(t => t.name).join(", ")}`);
+                process.exit(1);
+            }
+            setDefaultToolPreference(nextArg);
+            console.log(`Default tool set to: ${nextArg}`);
+            return;
+        } else {
+            console.log(`Default tool: ${getDefaultToolPreference() ?? "claude"}`);
+            return;
+        }
+    }
+
+    // Parse --env KEY=VALUE flags before dispatching so they are removed from
+    // the command args and forwarded to exec() as options.env overrides.
+    const extraEnv: Record<string, string> = {};
+    const cmdArgs: string[] = [];
+    for (let i = 0; i < filteredArgs.length; i++) {
+        if (filteredArgs[i] === "--env" && i + 1 < filteredArgs.length) {
+            const kv = filteredArgs[i + 1];
+            const eqIdx = kv.indexOf("=");
+            if (eqIdx > 0) extraEnv[kv.slice(0, eqIdx)] = kv.slice(eqIdx + 1);
+            i++; // consume the value arg
+        } else {
+            cmdArgs.push(filteredArgs[i]);
+        }
+    }
+    const envOpt = Object.keys(extraEnv).length > 0 ? { env: extraEnv } : {};
+
+    let command = cmdArgs[0];
     let cwd = process.cwd();
 
     // @ prefix → worktree workspace
@@ -826,14 +948,17 @@ async function main(): Promise<void> {
 
             // ccc @branch rm [-f] — worktree-specific command
             if (command === "rm") {
-                const force = filteredArgs.includes("-f") || filteredArgs.includes("--force");
+                const force = cmdArgs.includes("-f") || cmdArgs.includes("--force");
                 handleWorktreeRemove(cwd, parsed.branch, force);
                 return;
             }
 
             // All other commands: prepare workspace, then fall through to standard switch
+            if (process.env.DEBUG) {
+                console.error(`[ccc:debug] worktree: originalCwd=${cwd} branch=${parsed.branch}`);
+            }
             cwd = await prepareWorktree(cwd, parsed.branch);
-            // command stays as filteredArgs[0]
+            // command stays as filteredArgs[0] (parseArgs already separated @branch)
         }
     }
 
@@ -860,18 +985,6 @@ async function main(): Promise<void> {
             const { runDoctor } = await import("./doctor.js");
             const healthy = runDoctor(cwd);
             process.exit(healthy ? 0 : 1);
-            break;
-        }
-
-        case "runtime": {
-            try {
-                const info = getRuntimeInfo();
-                console.log(formatRuntimeSummary(info));
-                process.exit(0);
-            } catch (e) {
-                console.error((e as Error).message);
-                process.exit(1);
-            }
             break;
         }
 
@@ -962,32 +1075,31 @@ async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], {}, profile);
+            await exec(cwd, ["bash"], { ...envOpt }, profile);
             break;
 
-        case "update":
-            await exec(cwd, ["claude", "update"], {}, profile);
+        case "update": {
+            const tool = resolveTool(process.env);
+            await exec(cwd, tool.updateCommand, { tool, ...envOpt }, profile);
             break;
+        }
 
-        case undefined:
-            await exec(cwd, ["claude", "--dangerously-skip-permissions"], {}, profile);
+        case undefined: {
+            const tool = resolveTool(process.env);
+            await exec(cwd, [tool.binary, ...tool.defaultFlags], { tool, ...envOpt }, profile);
             break;
+        }
 
         default:
-            // Check if it's a claude flag (--continue, --resume, etc.)
-            if (command.startsWith("-")) {
-                await exec(
-                    cwd,
-                    [
-                        "claude",
-                        "--dangerously-skip-permissions",
-                        ...filteredArgs,
-                    ],
-                    {},
-                    profile,
-                );
+            const tool = getToolByName(command);
+            if (tool) {
+                const toolArgs = cmdArgs.slice(1);
+                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...toolArgs], { tool, ...envOpt }, profile);
+            } else if (command.startsWith("-")) {
+                const defTool = resolveTool(process.env);
+                await exec(cwd, [defTool.binary, ...defTool.defaultFlags, ...cmdArgs], { tool: defTool, ...envOpt }, profile);
             } else {
-                await exec(cwd, filteredArgs, {}, profile);
+                await exec(cwd, cmdArgs, { ...envOpt }, profile);
             }
             break;
     }

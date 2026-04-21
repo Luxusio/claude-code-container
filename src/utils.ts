@@ -1,8 +1,9 @@
 // src/utils.ts - Shared utilities for ccc
 
-import {createHash} from "crypto";
+import {createHash, randomBytes} from "crypto";
 import {createInterface} from "readline";
-import {homedir} from "os";
+import {writeFileSync} from "fs";
+import {homedir, tmpdir} from "os";
 import {basename, join, resolve} from "path";
 
 // === CLI Version (injected at build time) ===
@@ -28,6 +29,7 @@ export const IMAGE_NAME = "ccc";
 export const DOCKER_REGISTRY_IMAGE = process.env.CCC_REGISTRY || "luxusio/claude-code-container";
 export const CONTAINER_PID_LIMIT = "-1"; // -1 = unlimited (same as host)
 export const MISE_VOLUME_NAME = "ccc-mise-cache";
+export const DEFAULT_ENV_FORWARD_BYTE_LIMIT = 64 * 1024;
 export const COMMON_IGNORE_DIRS = [
     "node_modules", ".git", "dist", "build", "target",
     "__pycache__", ".next", ".nuxt", "vendor"
@@ -63,12 +65,19 @@ export const EXCLUDE_ENV_KEYS = new Set([
     "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
     "TMPDIR", "TEMP", "TMP", "XPC_SERVICE_NAME", "XPC_FLAGS", "SHLVL", "_",
     "LaunchInstanceID", "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+    // Host display servers — forwarding makes clipboard libs (arboard used by
+    // codex) try to reach the host's X11/Wayland socket from inside the
+    // container and hang/time out. Clipboard bridges via the CCC HTTP server.
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE",
+    "XDG_RUNTIME_DIR", "XDG_SESSION_ID", "XDG_SESSION_CLASS",
     // macOS
     "Apple_PubSub_Socket_Render", "COMMAND_MODE", "COLORTERM",
     "TERM", "ITERM_SESSION_ID", "ITERM_PROFILE", "COLORFGBG",
     "LC_TERMINAL", "LC_TERMINAL_VERSION", "__CF_USER_TEXT_ENCODING",
     // Claude
     "CLAUDE_CONFIG_DIR",
+    // CCC internal
+    "CCC_TOOL",
     // Windows system (paths are meaningless inside Linux container)
     "APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
     "ProgramFiles", "ProgramFiles(x86)", "ProgramData",
@@ -79,6 +88,108 @@ export const EXCLUDE_ENV_KEYS = new Set([
     // Windows package managers (contain Windows paths like C:\Users\...\AppData)
     "PNPM_HOME", "NPM_CONFIG_PREFIX", "NPM_CONFIG_CACHE",
 ]);
+
+const EXCLUDE_ENV_PREFIXES = [
+    "__MISE_",
+    "BASH_FUNC_",
+    "npm_config_",
+    "npm_package_",
+    "NPM_CONFIG_",
+];
+
+export interface ForwardedEnvPlan {
+    forwarded: Array<[string, string]>;
+    skippedDueToLimit: string[];
+    totalBytes: number;
+}
+
+export function isValidEnvKey(key: string): boolean {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+}
+
+function isWindowsPathLike(value: string): boolean {
+    return /^[A-Za-z]:[/\\]/.test(value) || /;[A-Za-z]:[/\\]/.test(value);
+}
+
+function shouldExcludeEnvKey(key: string, excludeUpper: Set<string>): boolean {
+    if (excludeUpper.has(key.toUpperCase())) {
+        return true;
+    }
+
+    return EXCLUDE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+function estimateEnvEntryBytes(key: string, value: string): number {
+    return Buffer.byteLength(`${key}=${value}`) + 1;
+}
+
+export function collectForwardedEnv(
+    env: NodeJS.ProcessEnv,
+    options: { byteLimit?: number } = {},
+): ForwardedEnvPlan {
+    const byteLimit = options.byteLimit ?? DEFAULT_ENV_FORWARD_BYTE_LIMIT;
+    const excludeUpper = new Set([...EXCLUDE_ENV_KEYS].map((key) => key.toUpperCase()));
+    const candidates: Array<{ key: string; value: string; bytes: number }> = [];
+
+    for (const [key, value] of Object.entries(env)) {
+        if (value === undefined) continue;
+        if (!isValidEnvKey(key)) continue;
+        if (shouldExcludeEnvKey(key, excludeUpper)) continue;
+        if (isWindowsPathLike(value)) continue;
+
+        candidates.push({
+            key,
+            value,
+            bytes: estimateEnvEntryBytes(key, value),
+        });
+    }
+
+    candidates.sort((left, right) => (
+        left.bytes - right.bytes
+        || left.key.localeCompare(right.key)
+    ));
+
+    const forwarded: Array<[string, string]> = [];
+    const skippedDueToLimit: string[] = [];
+    let totalBytes = 0;
+
+    for (const candidate of candidates) {
+        if (totalBytes + candidate.bytes > byteLimit) {
+            skippedDueToLimit.push(candidate.key);
+            continue;
+        }
+        forwarded.push([candidate.key, candidate.value]);
+        totalBytes += candidate.bytes;
+    }
+
+    return { forwarded, skippedDueToLimit, totalBytes };
+}
+
+/**
+ * Write environment variable entries to a host-side temp file for use with
+ * `docker exec --env-file <path>`.
+ *
+ * Passing many env vars as repeated `-e KEY=VALUE` flags on the docker exec
+ * command line can exceed the OS ARG_MAX limit ("Argument list too long").
+ * Writing them to a file and passing a single `--env-file` argument avoids
+ * that limit regardless of how many variables are forwarded.
+ *
+ * Entries whose values contain embedded newlines, carriage returns, or null
+ * bytes are silently skipped: the Docker env-file format (one KEY=VALUE per
+ * line) cannot represent multi-line values.
+ *
+ * The caller is responsible for deleting the returned path after use.
+ */
+export function writeEnvFile(entries: Array<[string, string]>): string {
+    const tmpFile = join(tmpdir(), `ccc-env-${randomBytes(6).toString("hex")}`);
+    const lines: string[] = [];
+    for (const [key, value] of entries) {
+        if (value.includes("\n") || value.includes("\r") || value.includes("\0")) continue;
+        lines.push(`${key}=${value}`);
+    }
+    writeFileSync(tmpFile, lines.join("\n") + "\n", { mode: 0o600 });
+    return tmpFile;
+}
 
 /**
  * Interactive prompt helper

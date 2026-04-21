@@ -3,7 +3,7 @@
 import {spawn, spawnSync} from "child_process";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
-import {hashPath, getProjectId, getClaudeDir, EXCLUDE_ENV_KEYS, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME} from "./utils.js";
+import {hashPath, getProjectId, getClaudeDir, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME, collectForwardedEnv, isValidEnvKey} from "./utils.js";
 import {getContainerName} from "./docker.js";
 
 // === Types ===
@@ -55,13 +55,7 @@ export function isValidHostOrUser(value: string): boolean {
     return /^[a-zA-Z0-9._-]+$/.test(value) && value.length > 0 && value.length <= 253;
 }
 
-/**
- * Validate that an env key matches POSIX naming rules.
- * Prevents shell injection via maliciously-named environment variable keys.
- */
-export function isValidEnvKey(key: string): boolean {
-    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
-}
+export { isValidEnvKey };
 
 /**
  * Escape a single argument for safe interpolation inside a shell command.
@@ -356,16 +350,19 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
         const claudeArgs = args.length > 0 ? args.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
 
-        // Collect environment variables to forward (exclude system vars)
+        // Collect environment variables to forward without blowing up the remote docker exec environment.
         const envFlags: string[] = [];
         // Container marker: enables per-project env separation via mise.toml [env] conditionals
         envFlags.push(`-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`);
-        for (const [key, value] of Object.entries(process.env)) {
-            if (value !== undefined && !EXCLUDE_ENV_KEYS.has(key) && isValidEnvKey(key)) {
-                // Escape single quotes in value for shell safety
-                const escapedValue = value.replace(/'/g, "'\\''");
-                envFlags.push(`-e '${key}=${escapedValue}'`);
-            }
+        const forwardedEnvPlan = collectForwardedEnv(process.env);
+        for (const [key, value] of forwardedEnvPlan.forwarded) {
+            const escapedValue = value.replace(/'/g, "'\\''");
+            envFlags.push(`-e '${key}=${escapedValue}'`);
+        }
+        if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
+            console.error(
+                `Skipped ${forwardedEnvPlan.skippedDueToLimit.length} host env var(s) to keep remote exec size bounded; use --env KEY=VALUE for required overrides.`,
+            );
         }
         const envString = envFlags.join(" ");
 
