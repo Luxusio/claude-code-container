@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useProjectStore, type Project } from "../store/projects";
 import { useSessionStore } from "../store/sessions";
 import { useTabStore } from "../store/tabs";
 import { SessionHistory } from "./SessionHistory";
+import { ContainerPanel } from "./ContainerPanel";
 
 interface ProjectExplorerProps {
   onCloseProjectSessions: (projectPath: string) => Promise<void>;
@@ -13,6 +15,7 @@ export function ProjectExplorer({ onCloseProjectSessions }: ProjectExplorerProps
     useProjectStore();
   const { addSession, setActiveSession } = useSessionStore();
   const { openTab } = useTabStore();
+  const [showContainers, setShowContainers] = useState(false);
 
   const handleAddProject = async () => {
     try {
@@ -52,14 +55,27 @@ export function ProjectExplorer({ onCloseProjectSessions }: ProjectExplorerProps
     <div className="sidebar project-explorer">
       <div className="project-explorer__header">
         <span>Projects</span>
-        <button
-          className="sidebar-new-session-btn"
-          onClick={handleAddProject}
-          title="Add project"
-        >
-          +
-        </button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            className="sidebar-new-session-btn"
+            onClick={() => setShowContainers((v) => !v)}
+            title={showContainers ? "Hide containers" : "Show containers"}
+            aria-label="Toggle containers"
+            aria-pressed={showContainers}
+          >
+            ⬢
+          </button>
+          <button
+            className="sidebar-new-session-btn"
+            onClick={handleAddProject}
+            title="Add project"
+          >
+            +
+          </button>
+        </div>
       </div>
+
+      {showContainers && <ContainerPanel />}
 
       <div className="project-explorer__list">
         {projects.length === 0 && (
