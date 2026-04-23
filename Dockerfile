@@ -89,6 +89,21 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     && update-locale LANG=en_US.UTF-8
 
 # ============================================================
+# LAYER 4b: Tauri build/runtime dependencies
+# ============================================================
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
+    libwebkit2gtk-4.1-dev \
+    libssl-dev \
+    libgtk-3-dev \
+    libayatana-appindicator3-dev \
+    librsvg2-dev \
+    libjavascriptcoregtk-4.1-dev \
+    patchelf \
+    xdotool \
+    scrot \
+    && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
 # LAYER 5: User setup (절대 안 바뀜)
 # ============================================================
 RUN useradd -r -s /usr/sbin/nologin ccc-proxy && \
