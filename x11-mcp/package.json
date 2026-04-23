@@ -1,0 +1,10 @@
+{
+  "name": "@ccc/x11-mcp",
+  "version": "1.0.0",
+  "description": "X11 display MCP server for CCC containers",
+  "type": "module",
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

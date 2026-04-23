@@ -73,7 +73,6 @@ function detectRuntime() {
 function getImageHash(runtime) {
     if (!runtime) return null;
     try {
-        // Try new label first, fall back to old label for backward compat
         for (const label of ["content.hash", "dockerfile.hash"]) {
             const result = spawnSync(runtime, [
                 "inspect", "ccc",
@@ -85,66 +84,49 @@ function getImageHash(runtime) {
         }
         return null;
     } catch (e) {
-        return null; // Image doesn't exist
+        return null;
     }
 }
 
-function install() {
-    // Always run npm install (dependencies may have updated)
-    console.log("Installing dependencies...");
-    execSync("npm install", { cwd: projectRoot, stdio: "inherit" });
-
-    // Always build (source may have updated)
+function build() {
     console.log("Building...");
     execSync("npm run build", { cwd: projectRoot, stdio: "inherit" });
+}
 
-    // Detect container runtime (prefers podman, falls back to docker)
+function buildImage() {
     const runtime = detectRuntime();
     if (!runtime) {
         console.log("No container runtime (podman or docker) detected. Skipping image build.");
         console.log("Install podman or docker, then run 'ccc' to auto-pull/build.");
-    } else {
-        console.log(`Using container runtime: ${runtime}`);
-
-        // Check if image rebuild is needed
-        const currentHash = getContentHash();
-        const imageHash = getImageHash(runtime);
-        const needsRebuild = currentHash !== imageHash;
-
-        if (needsRebuild) {
-            console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
-
-            // No need to stop containers or remove old image.
-            // `<runtime> build -t ccc` overwrites the tag; old image becomes <none>.
-            console.log(`Rebuilding container image with ${runtime}...`);
-            try {
-                const buildArgs = [
-                    "build", "-t", "ccc",
-                    "--label", `content.hash=${currentHash}`,
-                ];
-                // Pass GITHUB_TOKEN as build secret when set.
-                //   - docker: BuildKit >= 18.09 supports `--secret id=X,env=VAR`
-                //   - podman: buildah >= 1.29 / podman >= 4.3 supports the same form
-                // Older podman/buildah will reject `env=` — users on pre-4.3 podman
-                // should unset GITHUB_TOKEN before install (the secret is optional).
-                if (process.env.GITHUB_TOKEN) {
-                    buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
-                }
-                buildArgs.push(".");
-                const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit" });
-
-                if (buildResult.status !== 0) {
-                    throw new Error(`${runtime} build exited with code ${buildResult.status}`);
-                }
-                console.log("Container image built.");
-            } catch (e) {
-                console.error(`Failed to build image with ${runtime}:`, e.message);
-            }
-        } else {
-            console.log(`Container image up to date (hash: ${currentHash})`);
-        }
+        return;
     }
+    console.log(`Using container runtime: ${runtime}`);
 
+    const currentHash = getContentHash();
+    const imageHash = getImageHash(runtime);
+    if (currentHash === imageHash) {
+        console.log(`Container image up to date (hash: ${currentHash})`);
+        return;
+    }
+    console.log(`Content changed (${imageHash || "none"} -> ${currentHash})`);
+    console.log(`Rebuilding container image with ${runtime}...`);
+    try {
+        const buildArgs = ["build", "-t", "ccc", "--label", `content.hash=${currentHash}`];
+        if (process.env.GITHUB_TOKEN) {
+            buildArgs.push("--secret", `id=github_token,env=GITHUB_TOKEN`);
+        }
+        buildArgs.push(".");
+        const buildResult = spawnSync(runtime, buildArgs, { cwd: projectRoot, stdio: "inherit" });
+        if (buildResult.status !== 0) {
+            throw new Error(`${runtime} build exited with code ${buildResult.status}`);
+        }
+        console.log("Container image built.");
+    } catch (e) {
+        console.error(`Failed to build image with ${runtime}:`, e.message);
+    }
+}
+
+function linkBinary() {
     const installDir = getInstallDir();
 
     if (isWindows) {
@@ -154,63 +136,73 @@ function install() {
         writeFileSync(cmdPath, cmdContent);
         console.log(`Installed: ${cmdPath}`);
 
-        // Check PATH
         const pathDirs = (process.env.PATH || "").split(";");
         if (!pathDirs.some(p => p.toLowerCase() === installDir.toLowerCase())) {
             console.log(`\nAdd to PATH (run in PowerShell as Admin):`);
             console.log(`  [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${installDir}", "User")`);
         }
-    } else {
-        const targetDir = join(installDir, "ccc-dist");
-        const targetBin = join(installDir, "ccc");
-        try {
-            // Remove old symlink if exists
-            try {
-                const stat = lstatSync(targetBin);
-                if (stat.isSymbolicLink()) {
-                    unlinkSync(targetBin);
-                }
-            } catch (e) {
-                if (e.code !== "ENOENT") throw e;
-            }
-
-            // Remove old dist directory and copy fresh
-            if (existsSync(targetDir)) {
-                rmSync(targetDir, { recursive: true });
-            }
-            cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
-
-            // Copy Dockerfile + Containerfile (either works; podman build prefers
-            // Containerfile, docker build prefers Dockerfile; both are identical).
-            cpSync(join(projectRoot, "Dockerfile"), join(targetDir, "Dockerfile"));
-            cpSync(join(projectRoot, "Containerfile"), join(targetDir, "Containerfile"));
-
-            // Copy scripts directory (needed for Docker build context)
-            cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });
-
-            // Copy package.json for ES module support + version
-            const srcPkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
-            const pkgContent = JSON.stringify({ type: "module", version: srcPkg.version }, null, 2);
-            writeFileSync(join(targetDir, "package.json"), pkgContent);
-
-            // Create executable wrapper script
-            const wrapperContent = `#!/usr/bin/env node
-import("${targetDir}/index.js");
-`;
-            writeFileSync(targetBin, wrapperContent);
-            chmodSync(targetBin, 0o755);
-            console.log(`Installed: ${targetBin}`);
-        } catch (e) {
-            if (e.code === "EACCES") {
-                console.error("Permission denied. Run with sudo:");
-                console.error("  sudo npm run install:global");
-                process.exit(1);
-            }
-            throw e;
-        }
+        return;
     }
 
+    const targetDir = join(installDir, "ccc-dist");
+    const targetBin = join(installDir, "ccc");
+    try {
+        try {
+            const stat = lstatSync(targetBin);
+            if (stat.isSymbolicLink()) unlinkSync(targetBin);
+        } catch (e) {
+            if (e.code !== "ENOENT") throw e;
+        }
+
+        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true });
+        cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
+        cpSync(join(projectRoot, "Dockerfile"), join(targetDir, "Dockerfile"));
+        cpSync(join(projectRoot, "Containerfile"), join(targetDir, "Containerfile"));
+        cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });
+
+        const srcPkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
+        const pkgContent = JSON.stringify({ type: "module", version: srcPkg.version }, null, 2);
+        writeFileSync(join(targetDir, "package.json"), pkgContent);
+
+        const wrapperContent = `#!/usr/bin/env node
+import("${targetDir}/index.js");
+`;
+        writeFileSync(targetBin, wrapperContent);
+        chmodSync(targetBin, 0o755);
+        console.log(`Installed: ${targetBin}`);
+    } catch (e) {
+        if (e.code === "EACCES") {
+            console.error("Permission denied. Run with sudo:");
+            console.error("  sudo npm run install:global");
+            process.exit(1);
+        }
+        throw e;
+    }
+}
+
+function install() {
+    build();
+    buildImage();
+    linkBinary();
     console.log("\nDone! Run 'ccc --help' to verify.");
+}
+
+function postinstall() {
+    // npm runs this after `npm install`. Do NOT recurse into `npm install` here.
+    // In the source repo, dev will run `npm run install:global` for /usr/local/bin.
+    // When installed as a global package, npm already wires the `bin` field.
+    // We only build dist/ so the package is usable out of the box.
+    const inNodeModules = projectRoot.includes(`${"node_modules"}${isWindows ? "\\" : "/"}`);
+    if (inNodeModules) {
+        // Global/local npm install: dist/ is shipped in the tarball, skip build.
+        return;
+    }
+    // Source repo after plain `npm install`: ensure dist/ is fresh.
+    try {
+        build();
+    } catch (e) {
+        console.warn("Build skipped:", e.message);
+    }
 }
 
 function uninstall() {
@@ -224,39 +216,39 @@ function uninstall() {
         } else {
             console.log("Not installed.");
         }
-    } else {
-        const targetDir = join(installDir, "ccc-dist");
-        const targetBin = join(installDir, "ccc");
-        try {
-            let removed = false;
-            if (existsSync(targetBin)) {
-                unlinkSync(targetBin);
-                console.log(`Removed: ${targetBin}`);
-                removed = true;
-            }
-            if (existsSync(targetDir)) {
-                rmSync(targetDir, { recursive: true });
-                console.log(`Removed: ${targetDir}`);
-                removed = true;
-            }
-            if (!removed) {
-                console.log("Not installed.");
-            }
-        } catch (e) {
-            if (e.code === "EACCES") {
-                console.error("Permission denied. Run with sudo:");
-                console.error("  sudo npm run uninstall:global");
-                process.exit(1);
-            }
-            throw e;
+        return;
+    }
+
+    const targetDir = join(installDir, "ccc-dist");
+    const targetBin = join(installDir, "ccc");
+    try {
+        let removed = false;
+        if (existsSync(targetBin)) {
+            unlinkSync(targetBin);
+            console.log(`Removed: ${targetBin}`);
+            removed = true;
         }
+        if (existsSync(targetDir)) {
+            rmSync(targetDir, { recursive: true });
+            console.log(`Removed: ${targetDir}`);
+            removed = true;
+        }
+        if (!removed) console.log("Not installed.");
+    } catch (e) {
+        if (e.code === "EACCES") {
+            console.error("Permission denied. Run with sudo:");
+            console.error("  sudo npm run uninstall:global");
+            process.exit(1);
+        }
+        throw e;
     }
 }
 
-// Main
 const args = process.argv.slice(2);
 if (args.includes("--uninstall") || args.includes("-u")) {
     uninstall();
+} else if (args.includes("--postinstall")) {
+    postinstall();
 } else {
     install();
 }

@@ -13,11 +13,15 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\"",
+    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp",
+    "build:x11-mcp": "node node_modules/esbuild-wasm/bin/esbuild x11-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/x11-mcp/server.mjs --banner:js=\"// x11-mcp-version: 2\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
-    "prepublishOnly": "npm run build"
+    "install:global": "node scripts/install.js",
+    "uninstall:global": "node scripts/install.js --uninstall",
+    "prepublishOnly": "npm run build",
+    "postinstall": "node scripts/install.js --postinstall"
   },
   "engines": {
     "node": ">=14.14.0"
@@ -38,6 +42,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^4.1.2",
+    "esbuild-wasm": "^0.28.0",
     "eslint": "^9.0.0",
     "eslint-plugin-n": "^17.0.0",
     "tsx": "^4.21.0",
