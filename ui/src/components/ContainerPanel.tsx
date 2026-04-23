@@ -19,7 +19,7 @@ interface SidecarResponse<T> {
 export type SidecarCaller = (req: { cmd: string; name?: string }) => Promise<SidecarResponse<unknown>>;
 
 const defaultCaller: SidecarCaller = async (req) =>
-  invoke<SidecarResponse<unknown>>("cmd_sidecar_cmd", { req });
+  invoke<SidecarResponse<unknown>>("cmd_sidecar_cmd", { request: req });
 
 interface Props {
   caller?: SidecarCaller;
