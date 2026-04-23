@@ -162,6 +162,16 @@ describe("buildMcpConfig", () => {
         expect(entry.args).toContain("--executablePath=/usr/bin/chromium");
     });
 
+    it("always includes x11-display with the expected direct-spawn shape", () => {
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        expect(servers["x11-display"]).toEqual({
+            command: "mise",
+            args: ["exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
+        });
+    });
+
     it("forwards host MCP servers (stdio)", () => {
         // CLAUDE_JSON_FILE does not exist, but host ~/.claude.json does
         existsSync.mockImplementation((p: string) => {

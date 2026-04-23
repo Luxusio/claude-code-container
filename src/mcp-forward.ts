@@ -24,6 +24,12 @@ const CHROME_DEVTOOLS_CONFIG: McpServerConfig = {
     ],
 };
 
+// X11 Display MCP config (always included, managed by ccc)
+const X11_DISPLAY_CONFIG: McpServerConfig = {
+    command: "mise",
+    args: ["exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
+};
+
 /**
  * Read MCP servers from host's ~/.claude.json
  */
@@ -86,11 +92,15 @@ export function buildMcpConfig(profile?: string): string[] {
     // 1. Always include chrome-devtools (ccc-managed)
     mcpServers["chrome-devtools"] = CHROME_DEVTOOLS_CONFIG;
 
-    // 2. Forward host MCP servers
+    // 2. Always include x11-display (ccc-managed)
+    mcpServers["x11-display"] = X11_DISPLAY_CONFIG;
+
+    // 3. Forward host MCP servers
     const hostServers = readHostMcpServers();
     for (const [name, server] of Object.entries(hostServers)) {
-        // Skip chrome-devtools (ccc manages its own)
+        // Skip ccc-managed servers
         if (name === "chrome-devtools") continue;
+        if (name === "x11-display") continue;
         // Skip playwright (legacy, removed)
         if (name === "playwright") continue;
 
