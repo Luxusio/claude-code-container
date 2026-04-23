@@ -14,9 +14,30 @@ Single command. Isolated environment. No setup required.
 
 ## Installation
 
+### From npm (end users)
+
 ```bash
 npm install -g claude-code-container
 ```
+
+The postinstall hook builds the desktop UI binary automatically. Timing:
+
+- First install: ~3 min (requires `cargo` and, on Linux, `libwebkit2gtk-4.1`)
+- Incremental rebuilds: ~30 sec (cargo incremental compilation)
+- If the UI build fails (e.g. missing cargo), the CLI still installs successfully and prints a warning with manual recovery steps
+- The UI uses a debug binary to keep install time reasonable
+
+### From source (developers)
+
+```bash
+git clone <repo>
+cd claude-code-container
+npm install
+npm run install:global          # prompts for sudo when writing /usr/local/bin
+```
+
+Do NOT use `sudo npm run install:global` — cargo/rustup refuse to run under sudo. The install
+script invokes sudo internally only for the `/usr/local/bin` writes. To uninstall: `npm run uninstall:global`.
 
 For development setup, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -41,6 +62,7 @@ ccc status                 # Show all containers
 ccc doctor                 # Health check
 ccc clean                  # Clean stopped containers/images
 ccc runtime                # Print detected container runtime + flavor
+ccc ui                     # Launch the desktop app (Tauri 2). Set CCC_DEV=1 for live reload.
 ```
 
 ## Container Runtime (Docker or Podman)
@@ -61,9 +83,8 @@ ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=linux-root
 
 **Podman specifics handled automatically:**
 
-- **Rootless Podman on Linux**: `--userns=keep-id:uid=1000,gid=1000` is added
-  so the host user maps to the container `ccc` user (UID 1000), regardless of
-  the host UID. Requires Podman 4.3+.
+- **Rootless Podman on Linux**: `--userns=keep-id` is added so host UID maps
+  to the container `ccc` user. No manual UID remapping needed.
 - **SELinux**: bind mounts get the `:Z` relabel suffix when SELinux is
   enforcing. Gate via `CCC_SELINUX_RELABEL=auto|force|off` (default `auto`).
 - **podman machine (macOS/Windows)**: treated like Docker Desktop —
