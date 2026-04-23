@@ -90,9 +90,15 @@ export function ContainerPanel({ caller = defaultCaller }: Props) {
       <ul className="container-panel__list">
         {containers.map((c) => (
           <li key={c.id || c.name} className="container-panel__item" data-testid="container-row">
-            <div className="container-panel__info">
+            <div className="container-panel__info" title={`${c.name}\n${c.status}`}>
               <span className="container-panel__name">{c.name}</span>
-              <span className="container-panel__status-text">{c.status}</span>
+              <span
+                className={`container-panel__status-text container-panel__status-text--${
+                  c.status.startsWith("Up") ? "up" : "down"
+                }`}
+              >
+                {c.status}
+              </span>
             </div>
             <div className="container-panel__actions">
               <button
