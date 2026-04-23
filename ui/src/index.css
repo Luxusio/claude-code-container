@@ -1364,3 +1364,129 @@ body {
 .diff-viewer__status-msg--error {
   color: #f44336;
 }
+
+/* =========================================================
+   Container Panel
+   ========================================================= */
+
+.container-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1, #111);
+  font-size: 12px;
+}
+
+.container-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  font-weight: 600;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+}
+
+.container-panel__status {
+  padding: 8px 10px;
+  color: var(--text-2);
+}
+
+.container-panel__status--error {
+  color: #f44336;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.container-panel__empty {
+  padding: 10px;
+  color: var(--text-3, var(--text-2));
+  font-style: italic;
+}
+
+.container-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.container-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.container-panel__item:last-child {
+  border-bottom: none;
+}
+
+.container-panel__item:hover {
+  background: var(--bg-2, rgba(255,255,255,0.04));
+}
+
+.container-panel__info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.container-panel__name {
+  color: var(--text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.container-panel__status-text {
+  color: var(--text-2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.container-panel__status-text--up {
+  color: #4caf50;
+}
+
+.container-panel__status-text--down {
+  color: var(--text-3, #888);
+}
+
+.container-panel__actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.container-panel__actions button {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.container-panel__actions button:hover {
+  background: var(--bg-2, rgba(255,255,255,0.06));
+  color: var(--text-1);
+  border-color: var(--border);
+}
+
+.container-panel__actions button.project-node__action--danger:hover {
+  color: #f44336;
+  border-color: #f44336;
+}
