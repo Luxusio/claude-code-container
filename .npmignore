@@ -1,0 +1,24 @@
+# Defense-in-depth against accidentally shipping build artifacts
+# even if `files` whitelist is correct.
+ui/**/target/
+ui/**/node_modules/
+ui/dist/
+ui/src-tauri/gen/
+
+# Task-local harness artifacts
+doc/harness/tasks/
+
+# Test and coverage outputs
+coverage/
+src/__tests__/
+*.test.ts
+*.test.js
+vitest.config.ts
+
+# Editor/IDE
+.idea/
+.vscode/
+
+# Local env
+.env
+.env.local

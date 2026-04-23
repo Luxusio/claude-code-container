@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**claude-code-container** (ccc) is a CLI tool that runs Claude Code in an isolated Docker container. It provides:
+**claude-code-container** (ccc) is a CLI tool that runs Claude Code in an isolated container. It provides:
 
 - Per-project isolated containers (path-hash based naming)
+- Runs on Docker or Podman (auto-detect, Podman preferred)
 - Host environment variables auto-forwarding
 - Session-based auto-cleanup (stops container when last session exits)
 - mise-based tool version management per project
@@ -48,30 +49,32 @@ Container name is fixed per project path hash, ensuring `claude --continue` and 
 
 - **Runtime**: Node.js 22+
 - **Language**: TypeScript (ES2022 target)
-- **Container**: Docker (per-project containers)
-- **Base Image**: ubuntu:24.04
+- **Container**: Docker or Podman (per-project containers) — runtime selection via `src/container-runtime.ts`
+- **Base Image**: ubuntu:24.04 (build works under both `docker build` and `podman build` via `Containerfile`)
 
 ## Project Structure
 
 ```
 claude-code-container/
 ├── src/
-│   ├── index.ts               # Main CLI entry point
-│   ├── docker.ts              # Docker container lifecycle management
+│   ├── index.ts               # Main CLI entry point, --runtime flag, ccc runtime subcommand
+│   ├── container-runtime.ts   # Runtime selection (docker | podman), SELinux/rootless quirks
+│   ├── docker.ts              # Container lifecycle (runtime-agnostic despite filename)
 │   ├── session.ts             # Session lock file management
 │   ├── scanner.ts             # Project tool detection for mise
 │   ├── container-setup.ts     # Claude binary installation in container
-│   ├── localhost-proxy.ts     # Transparent localhost proxy (macOS/Windows)
+│   ├── localhost-proxy.ts     # Transparent localhost proxy (macOS/Windows, podman machine)
 │   ├── localhost-proxy-setup.ts # Proxy + iptables setup in container
 │   ├── clipboard-server.ts    # Host clipboard bridge
 │   ├── mcp-forward.ts         # MCP server forwarding
 │   ├── worktree.ts            # Git worktree workspace management
-│   ├── remote.ts              # Remote development helpers (Tailscale + Mutagen)
+│   ├── remote.ts              # Remote development helpers (Docker-only on the remote side)
 │   └── utils.ts               # Shared utilities
 ├── scripts/
-│   └── install.js             # Cross-platform global installer
+│   └── install.js             # Cross-platform global installer (detects podman/docker)
 ├── dist/                      # Compiled output
-├── Dockerfile                 # Container image definition
+├── Dockerfile                 # Container image definition (canonical)
+├── Containerfile              # Identical copy of Dockerfile so `podman build` works without -f
 ├── package.json
 ├── tsconfig.json
 └── README.md
@@ -84,8 +87,8 @@ npm install              # Install dependencies
 npm run build            # Compile TypeScript
 npm test                 # Run tests (vitest)
 npm run test:watch       # Run tests in watch mode
-npm run install:global   # Install globally (sudo on macOS/Linux)
-npm run uninstall:global # Uninstall globally (sudo on macOS/Linux)
+npm run install:global   # Install globally (prompts for sudo when needed)
+npm run uninstall:global # Uninstall globally (prompts for sudo when needed)
 ```
 
 ## CLI Commands
@@ -99,7 +102,6 @@ npm run uninstall:global # Uninstall globally (sudo on macOS/Linux)
 - `ccc` - Run Claude in current project
 - `ccc shell` - Open bash shell in current project
 - `ccc <command>` - Run arbitrary command in current project
-- `ccc --env KEY=VALUE` - Set additional environment variable for session
 
 ### Remote Development
 - `ccc remote <host>` - Connect to remote host (first time saves config)
@@ -123,8 +125,6 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 
 **Locale/Timezone**: `LANG`, `LC_ALL`, `LC_CTYPE` forwarded from host (common locales pre-generated in image). `TZ` auto-detected via `Intl.DateTimeFormat`. Defaults: `LANG=en_US.UTF-8`, `TZ=UTC`.
 
-**Per-session**: `ccc --env KEY=VALUE`
-
 **Container marker**: `container=docker` is auto-set inside the container (systemd convention). Use in mise.toml `[env]` for per-project container/desktop env separation.
 
 ### mise Integration
@@ -134,9 +134,22 @@ Each project gets its own container named `ccc-<project>-<path-hash>`:
 - `mise install` runs automatically before `claude` command
 - mise cache stored in Docker named volume (`ccc-mise-cache`) for better macOS/Windows performance
 
+### Container Runtime
+
+Runtime is resolved once per process by `src/container-runtime.ts`. Selection order:
+`--runtime` flag → `CCC_RUNTIME` env → podman on PATH → docker on PATH.
+
+Podman-specific behaviour applied automatically:
+- Linux SELinux enforcing: bind mounts get `:Z`. Override via `CCC_SELINUX_RELABEL`.
+- Rootless Podman: `--userns=keep-id` added to `podman run`.
+- `podman machine` (macOS/Windows): treated as a VM-backed host, same code path as Docker Desktop for `host.docker.internal` and the localhost proxy.
+- Podman host socket (`$XDG_RUNTIME_DIR/podman/podman.sock` rootless, `/run/podman/podman.sock` rootful) is bind-mounted into the container as `/var/run/docker.sock` so docker CLI shims inside the container continue to work against Podman's Docker-compatible REST API.
+
+`ccc runtime` prints `runtime=<name> version=<x.y.z> flavor=<linux-rootless|...> socket=<path>`.
+
 ### Container Image
 
-Built from Dockerfile on first run. Includes:
+Built from Dockerfile (or Containerfile, identical content) on first run. Includes:
 - Base: `ubuntu:24.04`
 - Dependencies: curl, git, ca-certificates, unzip
 - Chromium browser (`CHROME_BIN` env set)
@@ -174,14 +187,6 @@ Run ccc on a remote desktop from your MacBook:
 - Lock files for session tracking and crash recovery
 - Auto-forward host environment variables
 - Auto-stop container when last session exits
-
-## Operating Mode
-
-- `doc/harness/manifest.yaml` is the initialization marker.
-- Every repo-mutating task follows: plan -> critic-plan PASS -> implement -> runtime QA -> writer/DOC_SYNC -> critic-document (when needed) -> close.
-- The only hard gate is at task completion: critic verdicts must PASS. Stale PASS (after file changes) does not count.
-- DOC_SYNC.md is mandatory for all repo-mutating tasks.
-- Work in plain language. The harness routes requests and gates completion.
 
 ## Harness routing
 <!-- harness:routing-injected -->
