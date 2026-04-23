@@ -139,3 +139,45 @@ fn main() {
 
     println!("{}", response);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch_json;
+    use serde_json::Value;
+
+    fn parse(s: &str) -> Value {
+        serde_json::from_str(s).expect("dispatch_json must return JSON")
+    }
+
+    #[test]
+    fn unknown_command_returns_error() {
+        let out = dispatch_json(r#"{"cmd":"frobnicate"}"#);
+        let v = parse(&out);
+        assert_eq!(v["ok"], Value::Bool(false));
+        assert!(
+            v["error"].as_str().unwrap_or("").contains("Unknown command"),
+            "expected Unknown command error, got {}",
+            out
+        );
+    }
+
+    #[test]
+    fn malformed_json_returns_parse_error() {
+        let out = dispatch_json("not-json");
+        let v = parse(&out);
+        assert_eq!(v["ok"], Value::Bool(false));
+        assert!(
+            v["error"].as_str().unwrap_or("").contains("parse error"),
+            "expected parse error, got {}",
+            out
+        );
+    }
+
+    #[test]
+    fn missing_cmd_field_is_unknown_command() {
+        let out = dispatch_json(r#"{"name":"foo"}"#);
+        let v = parse(&out);
+        assert_eq!(v["ok"], Value::Bool(false));
+        assert!(v["error"].as_str().unwrap_or("").contains("Unknown command"));
+    }
+}
