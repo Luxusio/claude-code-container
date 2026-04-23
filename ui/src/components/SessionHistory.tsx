@@ -66,6 +66,18 @@ export function SessionHistory({ projectPath }: SessionHistoryProps = {}) {
   const activeSessions = sessions.filter((s) => !s.archived);
   const archivedSessions = sessions.filter((s) => s.archived);
 
+  // Live in-memory sessions for this project that haven't produced a jsonl yet
+  // — count them under "Active" so the sidebar reflects reality.
+  const liveForProject = projectPath
+    ? storeSessions.filter(
+        (s) =>
+          s.projectPath === projectPath &&
+          !s.archived &&
+          !sessions.some((h) => h.id === s.continueSessionId),
+      )
+    : [];
+  const activeCount = activeSessions.length + liveForProject.length;
+
   // Only create session record — Terminal component owns PTY lifecycle
   const handleRestore = (sessionId: string, projectPath: string, pinned = false) => {
     const newId = crypto.randomUUID();
@@ -161,7 +173,7 @@ export function SessionHistory({ projectPath }: SessionHistoryProps = {}) {
           className={`session-tab-btn${activeTab === "active" ? " active" : ""}`}
           onClick={() => setActiveTab("active")}
         >
-          Active ({activeSessions.length})
+          Active ({activeCount})
         </button>
         <button
           className={`session-tab-btn${activeTab === "archive" ? " active" : ""}`}
@@ -172,7 +184,21 @@ export function SessionHistory({ projectPath }: SessionHistoryProps = {}) {
       </div>
 
       <div className="session-list">
-        {displayed.length === 0 ? (
+        {activeTab === "active" &&
+          liveForProject.map((s) => (
+            <div
+              key={s.id}
+              className={`session-item session-item--live${s.id === activeSessionId ? " active" : " open"}`}
+              onClick={() => setActiveSession(s.id)}
+              title="Live session (not yet persisted)"
+            >
+              <div className="session-item__path">
+                {s.title || shortPath(s.projectPath)}
+                <span className="session-item__branch-tag">live</span>
+              </div>
+            </div>
+          ))}
+        {displayed.length === 0 && liveForProject.length === 0 ? (
           <div className="session-empty">No sessions</div>
         ) : (
           displayed.map((session) => {
