@@ -103,24 +103,27 @@ fn dispatch_json(line: &str) -> String {
 }
 
 fn main() {
-    use std::io::{self, BufRead};
+    use std::io::{self, BufRead, IsTerminal};
 
-    // Check if stdin has data (piped)
-    let stdin = io::stdin();
-    let mut lines = stdin.lock().lines();
+    let args: Vec<String> = std::env::args().collect();
 
-    if let Some(Ok(line)) = lines.next() {
-        // stdin JSON mode
-        let line = line.trim().to_string();
-        if !line.is_empty() {
-            let result = dispatch_json(&line);
-            println!("{}", result);
-            return;
+    // stdin JSON mode: only when no CLI args were given AND stdin is a pipe.
+    // Avoids blocking on lines.next() when Tauri spawns us with an open stdin.
+    if args.len() <= 1 && !io::stdin().is_terminal() {
+        let stdin = io::stdin();
+        let mut lines = stdin.lock().lines();
+        if let Some(Ok(line)) = lines.next() {
+            let line = line.trim().to_string();
+            if !line.is_empty() {
+                let result = dispatch_json(&line);
+                println!("{}", result);
+                return;
+            }
         }
     }
 
-    // CLI args mode (fallback)
-    let args: Vec<String> = std::env::args().collect();
+    // CLI args mode (default path for Tauri sidecar invocations).
+    let args: Vec<String> = args;
     let cmd = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let name = args.get(2).map(|s| s.as_str()).unwrap_or("");
 
