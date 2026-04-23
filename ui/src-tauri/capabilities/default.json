@@ -11,6 +11,12 @@
     "core:event:allow-emit-to",
     "core:event:allow-unlisten",
     "shell:allow-open",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "ccc-daemon", "sidecar": true, "args": true }
+      ]
+    },
     "fs:default",
     "dialog:default",
     "notification:default"
