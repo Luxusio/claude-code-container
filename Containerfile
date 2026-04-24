@@ -149,6 +149,22 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
     ~/.local/bin/mise use -g uv@latest
 
 # ============================================================
+# LAYER 7.5: x11-mcp server (xdotool/scrot wrapper, baked into image)
+# /opt/ccc/x11-mcp/server.mjs is referenced by src/mcp-forward.ts and spawned
+# in-container via `mise exec node@22 -- node ...`. We bake it at build time
+# so the path is never dangling. Order matters for layer caching:
+#   1) mkdir + chown (root)
+#   2) COPY package*.json + npm ci  ← cacheable, only invalidates on dep change
+#   3) COPY server.mjs              ← editing the server alone reuses npm layer
+# ============================================================
+USER root
+RUN mkdir -p /opt/ccc/x11-mcp && chown ccc:ccc /opt/ccc/x11-mcp
+USER ccc
+COPY --chown=ccc:ccc x11-mcp/package.json x11-mcp/package-lock.json /opt/ccc/x11-mcp/
+RUN cd /opt/ccc/x11-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
+COPY --chown=ccc:ccc x11-mcp/server.mjs /opt/ccc/x11-mcp/server.mjs
+
+# ============================================================
 # claude-code is installed at runtime and cached in mise volume.
 # See ensureClaudeInContainer() in src/index.ts
 # ============================================================

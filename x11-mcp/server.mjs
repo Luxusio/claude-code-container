@@ -6,7 +6,8 @@ import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const DISPLAY = process.env.CCC_X11_DISPLAY || ":1";
+// Matches Dockerfile ENV and scripts/ccc-x11-bridge (Xvfb :99).
+const DISPLAY = ":99";
 
 function run(cmd, args) {
     return spawnSync(cmd, args, {
