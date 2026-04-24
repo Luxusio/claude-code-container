@@ -1355,6 +1355,17 @@ body {
   overflow: auto;
 }
 
+/* Force long-line wrap inside the diff cells. react-diff-viewer-continued
+   defaults to `white-space: pre`; without these overrides a single long line
+   (e.g. a minified blob in package-lock.json) blows out the pane width. */
+.diff-viewer__body pre,
+.diff-viewer__body td.react-diff-line-content,
+.diff-viewer__body td[class*="line-content"] {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 .diff-viewer__status-msg {
   padding: 16px;
   color: var(--text-2);

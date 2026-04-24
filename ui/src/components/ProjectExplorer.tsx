@@ -90,10 +90,9 @@ export function ProjectExplorer({ onCloseProjectSessions }: ProjectExplorerProps
               <div
                 className="project-node__row"
                 onClick={() => toggleExpanded(project.id)}
-                title={project.path}
               >
                 <span className={`chevron${expanded ? " open" : ""}`}>›</span>
-                <span className="project-node__name">{project.name}</span>
+                <span className="project-node__name" title={project.path}>{project.name}</span>
                 <button
                   className="project-node__action"
                   title="New session"

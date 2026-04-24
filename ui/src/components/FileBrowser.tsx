@@ -51,10 +51,9 @@ function FileNode({ entry, depth }: FileNodeProps) {
         className={`file-entry${entry.is_dir ? " is-dir" : ""}`}
         style={{ paddingLeft: `${8 + indent}px` }}
         onClick={handleClick}
-        title={entry.path}
       >
         <span className="icon">{getIcon(entry, expanded)}</span>
-        <span className="name">{entry.name}</span>
+        <span className="name" title={entry.path}>{entry.name}</span>
       </div>
       {expanded &&
         children.map((child) => (

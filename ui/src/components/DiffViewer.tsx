@@ -77,6 +77,16 @@ export function DiffViewer({ projectPath, filePath }: DiffViewerProps) {
                   gutterBackgroundDark: "var(--bg-2, #252526)",
                 },
               },
+              // Wrap long lines so reviewing a wide diff doesn't require
+              // horizontal scroll across the entire diff body.
+              contentText: {
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
+              },
+              line: {
+                wordBreak: "break-word",
+              },
             }}
           />
         )}
