@@ -9,14 +9,16 @@ interface TerminalProps {
   sessionId: string;
   projectPath: string;
   continueSessionId?: string;
+  isActive?: boolean;
 }
 
-export function Terminal({ sessionId, projectPath, continueSessionId }: TerminalProps) {
+export function Terminal({ sessionId, projectPath, continueSessionId, isActive = true }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const unlistenDataRef = useRef<UnlistenFn | null>(null);
   const unlistenClosedRef = useRef<UnlistenFn | null>(null);
+  const refreshRef = useRef<(() => void) | null>(null);
   const { createPty, createPtyWithContinue, writePty, resizePty, onPtyData, onPtyClosed } = usePty();
 
   useEffect(() => {
@@ -57,9 +59,17 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
 
+    // Skip fit/resize when the container has no layout box (e.g. sibling
+    // terminal hidden via display:none). A 0×0 fit would push degenerate
+    // cols/rows into the PTY and corrupt the inactive session's TUI.
+    const hasLayout = () => {
+      const el = containerRef.current;
+      return !!el && el.clientWidth > 0 && el.clientHeight > 0;
+    };
+
     // Small delay to ensure DOM layout is computed before fitting
     requestAnimationFrame(() => {
-      fitAddon.fit();
+      if (hasLayout()) fitAddon.fit();
     });
 
     termRef.current = term;
@@ -73,18 +83,46 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
+        if (!hasLayout()) return;
         fitAddon.fit();
         const { cols: newCols, rows: newRows } = term;
+        if (newCols <= 0 || newRows <= 0) return;
         resizePty(sessionId, newCols, newRows).catch(console.error);
       });
     });
     resizeObserver.observe(containerRef.current);
 
+    // Expose refresh via ref so a separate effect can trigger it when
+    // isActive flips true (tab switched back to this terminal). Also nudge
+    // the PTY size so the child TUI (Claude) gets a SIGWINCH and redraws —
+    // xterm's own refresh only repaints what it already has in the buffer,
+    // and Claude's full-screen TUI keeps the canonical pixels server-side.
+    refreshRef.current = () => {
+      requestAnimationFrame(() => {
+        if (!hasLayout()) return;
+        fitAddon.fit();
+        term.refresh(0, term.rows - 1);
+        // xterm only forwards keystrokes when focused. After a tab switch
+        // the previously active terminal may keep DOM focus, so the new
+        // active tab silently swallows keys until the user clicks. Focus
+        // here so typing works the moment the tab is visible.
+        term.focus();
+        const { cols, rows } = term;
+        if (cols > 0 && rows > 0) {
+          // Bump to (cols+1, rows) and back — causes two SIGWINCH events,
+          // which Claude (and most TUIs) treat as a full redraw trigger.
+          resizePty(sessionId, cols + 1, rows)
+            .then(() => resizePty(sessionId, cols, rows))
+            .catch(() => { /* tab might be closing; ignore */ });
+        }
+      });
+    };
+
     // Register listeners FIRST, then create PTY (avoids missing initial output)
     const init = async () => {
       // Wait for layout to settle so fitAddon has correct dimensions
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      fitAddon.fit();
+      if (hasLayout()) fitAddon.fit();
 
       const { cols, rows } = term;
 
@@ -116,6 +154,7 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
 
     return () => {
       resizeObserver.disconnect();
+      refreshRef.current = null;
       dataDisposable.dispose();
       unlistenDataRef.current?.();
       unlistenClosedRef.current?.();
@@ -125,6 +164,13 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, projectPath, continueSessionId]);
+
+  // When the tab switches back to this terminal (display:none -> flex in
+  // SplitPane), force xterm to re-fit and redraw — otherwise the cells stay
+  // blank/black until the next keystroke triggers a partial paint.
+  useEffect(() => {
+    if (isActive) refreshRef.current?.();
+  }, [isActive]);
 
   return (
     <div

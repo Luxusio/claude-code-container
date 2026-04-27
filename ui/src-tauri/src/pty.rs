@@ -10,7 +10,9 @@ pub struct PtySession {
     pub child: Box<dyn portable_pty::Child + Send>,
     pub size: PtySize,
     pub cancel: Arc<AtomicBool>, // session_events watcher cancel flag
-    _master: Box<dyn portable_pty::MasterPty + Send>,  // prevent ConPTY handle drop on Windows
+    /// Owns the PTY master so ConPTY handles aren't dropped on Windows, and
+    /// also forwards SIGWINCH to the child via `resize()` on `pty_resize`.
+    master: Box<dyn portable_pty::MasterPty + Send>,
 }
 
 pub type PtyMap = Arc<Mutex<HashMap<String, PtySession>>>;
@@ -281,7 +283,15 @@ pub fn pty_create(
                         if let Err(e) = app_clone.emit(&event_name, &valid_str) {
                             eprintln!("[pty] emit error: {}", e);
                         }
-                        crate::notify::check_and_notify(&app_clone, &valid_str, &session_id);
+                        // Notification is best-effort — never let it take
+                        // down the reader thread (PTY would zombify, all
+                        // input silently dropped).
+                        let app_for_notify = app_clone.clone();
+                        let sid = session_id.clone();
+                        let s = valid_str.clone();
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            crate::notify::check_and_notify(&app_for_notify, &s, &sid);
+                        }));
                     }
 
                     // Stash the incomplete trailing bytes
@@ -321,7 +331,7 @@ pub fn pty_create(
         child,
         size,
         cancel,
-        _master: pair.master,
+        master: pair.master,
     };
 
     pty_map
@@ -360,12 +370,20 @@ pub fn pty_resize(pty_map: PtyMap, id: &str, cols: u16, rows: u16) -> Result<(),
 
     let session = map.get_mut(id).ok_or_else(|| format!("Session {} not found", id))?;
 
-    session.size = PtySize {
+    let new_size = PtySize {
         rows,
         cols,
         pixel_width: 0,
         pixel_height: 0,
     };
+
+    // Forward SIGWINCH to the child so TUI apps (Claude Code) reflow.
+    session
+        .master
+        .resize(new_size)
+        .map_err(|e| format!("Failed to resize PTY: {}", e))?;
+
+    session.size = new_size;
 
     Ok(())
 }

@@ -56,12 +56,11 @@ fn extract_ask_excerpt(data: &str) -> String {
     for line in data.lines() {
         let trimmed = line.trim();
         if ASK_PATTERNS.iter().any(|p| trimmed.contains(p)) {
-            let excerpt = if trimmed.len() > 120 {
-                &trimmed[..120]
-            } else {
-                trimmed
-            };
-            return excerpt.to_string();
+            // Slice on a char boundary — `trimmed[..120]` panics when 120
+            // lands inside a multi-byte UTF-8 char (e.g. Korean), which
+            // would crash the PTY reader thread and zombify the session.
+            let excerpt: String = trimmed.chars().take(120).collect();
+            return excerpt;
         }
     }
     "Claude is waiting for your input".to_string()

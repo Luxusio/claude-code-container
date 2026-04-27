@@ -183,27 +183,35 @@ function LeafPane({
         )}
 
         {/* Terminals — always mounted for sessions in this pane, toggled via display */}
+        {/* All terminals share the same absolute layer so switching tabs
+            never shifts the layout. Inactive ones are visibility:hidden
+            (kept laid out so xterm renders normally even while hidden). */}
         {sessions
           .filter((s) => !s.archived && terminalSessionIds.has(s.id))
-          .map((session) => (
-            <div
-              key={session.id}
-              style={{
-                display:
-                  session.id === activeTerminalSessionId ? "flex" : "none",
-                width: "100%",
-                flex: 1,
-                minHeight: 0,
-                flexDirection: "column",
-              }}
-            >
-              <Terminal
-                sessionId={session.id}
-                projectPath={session.projectPath}
-                continueSessionId={session.continueSessionId}
-              />
-            </div>
-          ))}
+          .map((session) => {
+            const active = session.id === activeTerminalSessionId;
+            return (
+              <div
+                key={session.id}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  visibility: active ? "visible" : "hidden",
+                  pointerEvents: active ? "auto" : "none",
+                  zIndex: active ? 1 : 0,
+                }}
+              >
+                <Terminal
+                  sessionId={session.id}
+                  projectPath={session.projectPath}
+                  continueSessionId={session.continueSessionId}
+                  isActive={active}
+                />
+              </div>
+            );
+          })}
 
         {/* Drop zone overlay */}
         {isDragOver && (

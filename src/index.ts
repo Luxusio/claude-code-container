@@ -84,6 +84,7 @@ import {
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
+import { launchUi } from "./ui-launcher.js";
 import {
     validateProfileName,
     listProfiles,
@@ -929,6 +930,7 @@ ccc - Claude Code Container
 USAGE:
     ccc                     Run default AI tool in current project
     ccc shell               Open bash shell in current project
+    ccc ui                  Launch ccc Tauri UI on host (CCC_DEV=1 for dev mode)
     ccc update              Update default tool to latest version
     ccc <command>           Run command in current project
 
@@ -1226,6 +1228,10 @@ async function main(): Promise<void> {
 
         case "shell":
             await exec(cwd, ["bash"], { ...envOpt }, profile);
+            break;
+
+        case "ui":
+            await launchUi(filteredArgs.slice(1));
             break;
 
         case "update": {
