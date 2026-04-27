@@ -57,9 +57,17 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
 
+    // Skip fit/resize when the container has no layout box (e.g. sibling
+    // terminal hidden via display:none). A 0×0 fit would push degenerate
+    // cols/rows into the PTY and corrupt the inactive session's TUI.
+    const hasLayout = () => {
+      const el = containerRef.current;
+      return !!el && el.clientWidth > 0 && el.clientHeight > 0;
+    };
+
     // Small delay to ensure DOM layout is computed before fitting
     requestAnimationFrame(() => {
-      fitAddon.fit();
+      if (hasLayout()) fitAddon.fit();
     });
 
     termRef.current = term;
@@ -73,8 +81,10 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
+        if (!hasLayout()) return;
         fitAddon.fit();
         const { cols: newCols, rows: newRows } = term;
+        if (newCols <= 0 || newRows <= 0) return;
         resizePty(sessionId, newCols, newRows).catch(console.error);
       });
     });
@@ -84,7 +94,7 @@ export function Terminal({ sessionId, projectPath, continueSessionId }: Terminal
     const init = async () => {
       // Wait for layout to settle so fitAddon has correct dimensions
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      fitAddon.fit();
+      if (hasLayout()) fitAddon.fit();
 
       const { cols, rows } = term;
 
