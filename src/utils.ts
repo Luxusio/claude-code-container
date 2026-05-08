@@ -106,6 +106,9 @@ export const EXCLUDE_ENV_KEYS = new Set([
     "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
     // Windows package managers (contain Windows paths like C:\Users\...\AppData)
     "PNPM_HOME", "NPM_CONFIG_PREFIX", "NPM_CONFIG_CACHE",
+    // Rust toolchain — host paths leak into container and break cargo/rustup
+    // (e.g. "could not create home directory: '/Users/<host>/.rustup'").
+    "CARGO_HOME", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN",
 ]);
 
 const EXCLUDE_ENV_PREFIXES = [

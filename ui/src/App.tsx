@@ -8,6 +8,7 @@ import { Welcome } from "./components/Welcome";
 import { usePty } from "./hooks/usePty";
 import { useSessionEvents } from "./hooks/useSessionEvents";
 import { useTabStore } from "./store/tabs";
+import { releaseTerm } from "./components/terminalRegistry";
 
 function App() {
   useSessionEvents();
@@ -35,6 +36,10 @@ function App() {
         } catch {
           /* ignore */
         }
+        // Now that the PTY is gone, dispose the persistent xterm instance
+        // we kept alive across mounts. Skipping this would leak the buffer
+        // and DOM forever.
+        releaseTerm(id);
       })
     );
     removeSessionsForProject(projectPath);

@@ -796,6 +796,9 @@ body {
   font-family: var(--font-ui);
   cursor: pointer;
   border-right: 1px solid var(--border-subtle);
+  /* Reserve the 2px the active state's bottom border occupies, so switching
+     tabs doesn't shift the tab row (and the terminal area) by 2px. */
+  border-bottom: 2px solid transparent;
   color: var(--text-3);
   transition: color 0.1s, background 0.1s;
   white-space: nowrap;
