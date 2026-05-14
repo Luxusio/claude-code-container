@@ -173,8 +173,6 @@ export function Terminal({
         if (write) writePtyOnce(write).catch(console.error);
         refreshOverlay();
         if (textarea) textarea.value = "";
-        // stopImmediatePropagation is handled by the capture-phase wrapper
-        // below so xterm's target-phase listener never fires.
       };
 
       const onKeydown = (e: Event) => {

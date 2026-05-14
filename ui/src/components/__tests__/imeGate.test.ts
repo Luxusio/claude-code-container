@@ -38,20 +38,35 @@ describe("createImeGate — Korean IME on WKWebView pattern", () => {
     expect(gate._peekPending()).toBe("ㄴ");
   });
 
-  it("commits buffered glyph on a non-CJK insertText (ASCII after Korean)", () => {
+  it("non-CJK insertText writes pending + data so space in IME mode survives", () => {
     const gate = createImeGate();
     gate.handleInput("insertText", "ㄱ");
     gate.handleInput("insertReplacementText", "가");
-    // user types 'a' on US keyboard while pending="가"
-    expect(gate.handleInput("insertText", "a")).toEqual({ write: "가" });
+    // macOS Korean IME may route space through `input` instead of keydown.
+    // We write pending ("가") + data (" ") so the space reaches PTY.
+    expect(gate.handleInput("insertText", " ")).toEqual({ write: "가 " });
     expect(gate._peekPending()).toBe("");
   });
 
-  it("commits buffered glyph on backspace inputType (xterm keydown wrote \\x7f already)", () => {
+  it("ASCII insertText with no pending forwards the data directly", () => {
+    const gate = createImeGate();
+    expect(gate.handleInput("insertText", "a")).toEqual({ write: "a" });
+    expect(gate._peekPending()).toBe("");
+  });
+
+  it("backspace via input event writes \\x7f (plus pending if any)", () => {
     const gate = createImeGate();
     gate.handleInput("insertText", "ㄱ");
     gate.handleInput("insertReplacementText", "가");
-    expect(gate.handleInput("deleteContentBackward", "")).toEqual({ write: "가" });
+    expect(gate.handleInput("deleteContentBackward", "")).toEqual({ write: "가\x7f" });
+    expect(gate._peekPending()).toBe("");
+  });
+
+  it("Enter via input event writes \\r (plus pending if any)", () => {
+    const gate = createImeGate();
+    gate.handleInput("insertText", "ㄱ");
+    gate.handleInput("insertReplacementText", "가");
+    expect(gate.handleInput("insertLineBreak", "")).toEqual({ write: "가\r" });
     expect(gate._peekPending()).toBe("");
   });
 
@@ -72,15 +87,23 @@ describe("createImeGate — Korean IME on WKWebView pattern", () => {
     expect(gate._peekPending()).toBe("");
   });
 
-  it("ASCII insertText with no pending returns no write (xterm keydown owns it)", () => {
+  it("space in Korean IME mode (no pending) still reaches PTY via input event", () => {
     const gate = createImeGate();
-    expect(gate.handleInput("insertText", "a")).toEqual({ write: null });
-    expect(gate._peekPending()).toBe("");
+    // Korean IME mode is on, user presses space — macOS routes only an
+    // input event (no keydown ' '), so we MUST write the data ourselves.
+    expect(gate.handleInput("insertText", " ")).toEqual({ write: " " });
   });
 
-  it("backspace with no pending returns no write (xterm keydown owns it)", () => {
+  it("backspace alone writes \\x7f (input event path covers IME mode)", () => {
     const gate = createImeGate();
-    expect(gate.handleInput("deleteContentBackward", "")).toEqual({ write: null });
+    expect(gate.handleInput("deleteContentBackward", "")).toEqual({ write: "\x7f" });
+  });
+
+  it("unknown inputType only flushes pending without inventing data", () => {
+    const gate = createImeGate();
+    gate.handleInput("insertText", "ㄱ");
+    gate.handleInput("insertReplacementText", "가");
+    expect(gate.handleInput("formatBold", "garbage")).toEqual({ write: "가" });
   });
 
   it("simulates the user log: typing '가나다라마사' produces correct flushes", () => {

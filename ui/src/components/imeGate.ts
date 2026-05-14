@@ -95,9 +95,36 @@ export function createImeGate(): ImeGate {
         return { write: (flushed ?? "") + data };
       }
 
-      // Anything else (ASCII insertText, deleteContentBackward, insertLineBreak,
-      // etc.) was already handled by xterm's keydown handler. Just commit any
-      // buffered glyph so its order with the upcoming key is preserved.
+      // Non-CJK insertText (ASCII char, or space pressed in Korean IME
+      // mode where macOS routes it through input event instead of
+      // keydown). Forward `data` directly. xterm's keydown path may also
+      // write the same byte for plain ASCII typing — the dedupe ring in
+      // Terminal.tsx drops the duplicate. The risk of LOSING the byte
+      // (e.g. space in IME mode) is the bigger problem.
+      if (inputType === "insertText" && data) {
+        const flushed = pending;
+        pending = "";
+        return { write: (flushed ?? "") + data };
+      }
+
+      // Backspace via `input` event. xterm's keydown for Backspace also
+      // writes \x7f; dedupe catches one of them.
+      if (inputType === "deleteContentBackward") {
+        const flushed = pending;
+        pending = "";
+        return { write: (flushed ?? "") + "\x7f" };
+      }
+
+      // Enter via `input` event (`insertLineBreak`). Same dedupe story.
+      if (inputType === "insertLineBreak") {
+        const flushed = pending;
+        pending = "";
+        return { write: (flushed ?? "") + "\r" };
+      }
+
+      // Unknown / unhandled inputType: just commit any pending buffer so
+      // its order with whatever the user just did is preserved. Don't
+      // synthesize bytes from `data` since we don't know its semantics.
       return { write: flush() };
     },
     flushPending() {
