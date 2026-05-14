@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, resolveExecTools, maybeAttachCodexClipboardImageForCommand } from '../index.js'
+import { parseArgs, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -301,6 +301,74 @@ describe('maybeAttachCodexClipboardImageForCommand', () => {
 
     expect(attachClipboardImage).not.toHaveBeenCalled()
     expect(result).toEqual(['bash'])
+  })
+})
+
+describe('buildToolInvocation', () => {
+  it('prepends defaultFlags when args are empty (default chat)', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, [])).toEqual([
+      'codex',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ])
+  })
+
+  it('places defaultFlags AFTER the subcommand for codex resume', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['resume'])).toEqual([
+      'codex',
+      'resume',
+      '--dangerously-bypass-approvals-and-sandbox',
+    ])
+  })
+
+  it('places defaultFlags AFTER codex resume preserving remaining args', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['resume', '--last'])).toEqual([
+      'codex',
+      'resume',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--last',
+    ])
+  })
+
+  it('handles codex exec alias `e`', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['e', 'fix bug'])).toEqual([
+      'codex',
+      'e',
+      '--dangerously-bypass-approvals-and-sandbox',
+      'fix bug',
+    ])
+  })
+
+  it('omits defaultFlags for codex subcommands that reject them (login)', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['login'])).toEqual(['codex', 'login'])
+  })
+
+  it('omits defaultFlags for codex update subcommand', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['update'])).toEqual(['codex', 'update'])
+  })
+
+  it('prepends defaultFlags when first arg is a flag, not a subcommand', () => {
+    const codex = getToolByName('codex')!
+    expect(buildToolInvocation(codex, ['--model', 'o3'])).toEqual([
+      'codex',
+      '--dangerously-bypass-approvals-and-sandbox',
+      '--model',
+      'o3',
+    ])
+  })
+
+  it('prepends defaultFlags for tools without subcommand metadata (claude)', () => {
+    const claude = getToolByName('claude')!
+    expect(buildToolInvocation(claude, ['--continue'])).toEqual([
+      claude.binary,
+      '--dangerously-skip-permissions',
+      '--continue',
+    ])
   })
 })
 

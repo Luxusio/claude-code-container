@@ -14,6 +14,16 @@ export interface ToolDefinition {
     displayName: string;
     binary: string;
     defaultFlags: string[];
+    // Known subcommands of this tool. When the user's first arg matches one,
+    // ccc treats the invocation as a subcommand call: defaultFlags are positioned
+    // AFTER the subcommand (per-subcommand options, not global), or skipped
+    // entirely if the subcommand is listed in `subcommands` but not in
+    // `subcommandsAcceptingDefaultFlags`.
+    subcommands?: string[];
+    // Subset of `subcommands` that accept defaultFlags. Subcommands in
+    // `subcommands` but not here will be invoked WITHOUT defaultFlags — needed
+    // because e.g. `codex login` rejects `--dangerously-bypass-approvals-and-sandbox`.
+    subcommandsAcceptingDefaultFlags?: string[];
     credentialMounts: CredentialMount[];
     needsNodeRuntime: boolean;
     updateCommand: string[];
@@ -51,6 +61,23 @@ const TOOLS: ToolDefinition[] = [
         displayName: "Codex",
         binary: "codex",
         defaultFlags: ["--dangerously-bypass-approvals-and-sandbox"],
+        // Source: `codex --help` (subcommands list, incl. aliases `e` and `a`).
+        subcommands: [
+            "exec", "e",
+            "review",
+            "login", "logout",
+            "mcp", "plugin", "mcp-server", "app-server", "remote-control",
+            "completion", "update",
+            "sandbox", "debug",
+            "apply", "a",
+            "resume", "fork",
+            "cloud",
+            "exec-server", "features",
+            "help",
+        ],
+        // Only `exec`, `resume`, and `fork` accept --dangerously-bypass-approvals-and-sandbox.
+        // Verified via `codex <sub> --help`. Other subcommands reject the flag.
+        subcommandsAcceptingDefaultFlags: ["exec", "e", "resume", "fork"],
         credentialMounts: [
             { hostDir: ".codex", containerDir: "/home/ccc/.codex" },
             { hostDir: ".omx", containerDir: "/home/ccc/.omx" },

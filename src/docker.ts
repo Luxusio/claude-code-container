@@ -115,6 +115,12 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         args.push("-e", "SSH_AUTH_SOCK=/tmp/ssh-agent.sock");
     }
 
+    // Trust the project's mise config without requiring a separate `mise trust`
+    // call. Baked in at container creation so every `docker exec` inherits it;
+    // mise checks this env var in-memory on each invocation and skips the
+    // trust-file write path entirely.
+    args.push("-e", `MISE_TRUSTED_CONFIG_PATHS=${opts.projectMountPath}`);
+
     // Extra volume mounts (e.g., source .git for worktree workspaces)
     if (opts.extraMounts) {
         for (const mount of opts.extraMounts) {
@@ -438,6 +444,13 @@ export function startProjectContainer(
     extraMounts?: Array<{ hostPath: string; containerPath: string }>,
     clipboardPortFile?: string,
     profile?: string,
+    /**
+     * Fires when the container is recreated (stop+rm+create) due to missing
+     * mounts. Callers should treat this as equivalent to a brand-new container:
+     * the writable layer is fresh, so per-container setup (ensureTools, mise
+     * install, env config) must re-run even if the old container was running.
+     */
+    onRecreate?: () => void,
 ): string {
     ensureDirs();
     ensureImage();
@@ -472,6 +485,7 @@ export function startProjectContainer(
             console.log("Recreating container (missing tool credential / git mounts)...");
             spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
             spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
+            onRecreate?.();
         } else if (debug) {
             console.error(`[ccc:debug] Container ${containerName} has all required mounts`);
         }

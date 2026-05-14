@@ -254,21 +254,25 @@ describe("container-setup.ts module", () => {
             const geminiTool = getToolByName("gemini")!;
             // Combined check returns all missing
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
-            // cleanup spawnSync
+            // cleanup partial install dirs
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // stale shim nuke
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // npm install succeeds
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // mise reshim
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // wrapper scripts
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             ensureTools(container, geminiTool);
-            // 1 check + cleanup + install + 2 wrappers = 5 calls
-            expect(spawnSyncMock).toHaveBeenCalledTimes(5);
+            // check + cleanup + shim-nuke + install + reshim + 2 wrappers = 7
+            expect(spawnSyncMock).toHaveBeenCalledTimes(7);
             // Verify wrapper script calls reference the tool names
-            const geminiWrapperCall = spawnSyncMock.mock.calls[3];
+            const geminiWrapperCall = spawnSyncMock.mock.calls[5];
             const geminiCmd = (geminiWrapperCall[1] as string[]).at(-1) as string;
             expect(geminiCmd).toContain("gemini");
-            const codexWrapperCall = spawnSyncMock.mock.calls[4];
+            const codexWrapperCall = spawnSyncMock.mock.calls[6];
             const codexCmd = (codexWrapperCall[1] as string[]).at(-1) as string;
             expect(codexCmd).toContain("codex");
         });
@@ -277,7 +281,9 @@ describe("container-setup.ts module", () => {
             const geminiTool = getToolByName("gemini")!;
             // Combined check returns both missing
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
-            // cleanup spawnSync
+            // cleanup
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // stale shim nuke
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // npm install fails
             spawnSyncMock.mockReturnValueOnce(makeResult(1));
@@ -285,26 +291,30 @@ describe("container-setup.ts module", () => {
             expect(console.warn).toHaveBeenCalledWith(
                 "Warning: Failed to install some global npm tools (non-fatal)",
             );
-            // No wrapper scripts created (install failed, early return after warn)
-            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+            // check + cleanup + shim-nuke + failed install — early return, no reshim/wrappers
+            expect(spawnSyncMock).toHaveBeenCalledTimes(4);
         });
 
         it("only installs missing tools when some are already present", () => {
             const geminiTool = getToolByName("gemini")!;
             // Combined check returns only codex missing
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "codex\n"));
-            // cleanup spawnSync
+            // cleanup
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // stale shim nuke
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // npm install succeeds
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // mise reshim
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // wrapper for codex
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             ensureTools(container, geminiTool);
             expect(console.log).toHaveBeenCalledWith("Installing codex...");
-            // 1 check + cleanup + install + 1 wrapper = 4 calls
-            expect(spawnSyncMock).toHaveBeenCalledTimes(4);
-            // Verify the npm install call contains only the missing package
-            const installCall = spawnSyncMock.mock.calls[2];
+            // check + cleanup + shim-nuke + install + reshim + 1 wrapper = 6 calls
+            expect(spawnSyncMock).toHaveBeenCalledTimes(6);
+            // Verify the npm install call (index 3) contains only the missing package
+            const installCall = spawnSyncMock.mock.calls[3];
             const installCmd = (installCall[1] as string[]).at(-1) as string;
             expect(installCmd).toContain("@openai/codex");
             expect(installCmd).not.toContain("@google/gemini-cli");

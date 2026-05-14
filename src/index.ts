@@ -94,8 +94,9 @@ import {
     isBuiltinProfile,
     ensureProfile,
 } from "./profile.js";
-import { getToolByName, getAllTools, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
+import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
+import { homedir } from "os";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -116,6 +117,13 @@ function ensureDirs(profile?: string): void {
     const claudeJsonFile = getClaudeJsonFile(profile);
     if (!existsSync(claudeJsonFile)) {
         writeFileSync(claudeJsonFile, "{}", { mode: 0o600 });
+    }
+    // Mount every coding-agent credential dir unconditionally so any tool the
+    // user later invokes already has its host source on disk.
+    const home = homedir();
+    for (const mount of getAllCredentialMounts()) {
+        if (mount.containerDir === "/home/ccc/.claude") continue;
+        mkdirSync(join(home, mount.hostDir), { recursive: true });
     }
 }
 
@@ -182,6 +190,92 @@ export function resolveExecTools(
         setupTool: commandTool ?? getDefaultTool(),
         commandTool,
     };
+}
+
+/**
+ * Build the in-container command line for a tool. defaultFlags are placed:
+ *   - AFTER the subcommand when args[0] is a known subcommand that accepts them
+ *   - dropped entirely when args[0] is a known subcommand that rejects them
+ *   - BEFORE all args otherwise (default-chat mode or unrecognized leading arg)
+ *
+ * Per-subcommand placement is required for tools whose top-level flags are
+ * actually defined on each subcommand (e.g. codex's
+ * --dangerously-bypass-approvals-and-sandbox). Placing them before the
+ * subcommand silently neutralizes them on the subcommand path.
+ */
+export function buildToolInvocation(tool: ToolDefinition, args: string[]): string[] {
+    const first = args[0];
+    if (first && tool.subcommands?.includes(first)) {
+        const rest = args.slice(1);
+        const accepts = tool.subcommandsAcceptingDefaultFlags?.includes(first) ?? false;
+        if (accepts) {
+            return [tool.binary, first, ...tool.defaultFlags, ...rest];
+        }
+        return [tool.binary, first, ...rest];
+    }
+    return [tool.binary, ...tool.defaultFlags, ...args];
+}
+
+/**
+ * Decide whether a codex exit looks like a real failure worth auto-recovering
+ * from. Excludes clean exits (0), user interrupts (SIGINT/SIGTERM, exit 130/143),
+ * and signal-terminated exits with `signal` set.
+ */
+function isCodexLikelyFailure(status: number | null, signal: NodeJS.Signals | null): boolean {
+    if (signal === "SIGINT" || signal === "SIGTERM" || signal === "SIGHUP") return false;
+    if (status == null) return false;
+    if (status === 0) return false;
+    if (status === 130 || status === 143) return false;
+    return true;
+}
+
+/**
+ * Force-update codex inside the container to the latest npm release.
+ * Returns true on success.
+ */
+function forceUpdateCodexInContainer(containerName: string): boolean {
+    const r = spawnSync(
+        "docker",
+        [
+            "exec", "-w", "/home/ccc", containerName, "sh", "-c",
+            "~/.local/bin/mise exec node@22 -- npm install -g @openai/codex@latest --force && ~/.local/bin/mise reshim 2>/dev/null; true",
+        ],
+        { stdio: "inherit" },
+    );
+    return r.status === 0;
+}
+
+/**
+ * Last-resort recovery when update+retry didn't fix codex's state mismatch.
+ * Wipes every file and subdirectory under /home/ccc/.codex except `auth.json`
+ * and `config.toml`. Bind-mounted to the host, so this clears the host's
+ * ~/.codex too. Then retries the codex command once.
+ */
+async function offerCodexStateWipe(containerName: string, execArgs: string[]): Promise<number> {
+    console.error("\n[ccc] codex state is still incompatible after the update.");
+    const answer = await prompt(
+        "Wipe everything in ~/.codex except auth.json + config.toml and retry? Session history is lost. [y/N]: ",
+        true,
+    );
+    if (answer !== "y" && answer !== "yes") {
+        console.error("[ccc] Leaving ~/.codex untouched.");
+        return 1;
+    }
+
+    spawnSync(
+        "docker",
+        [
+            "exec", containerName, "sh", "-c",
+            // Top-level entries: keep auth.json and config.toml, drop everything else
+            // (subdirectories, sqlite files of any extension, JSON state files, etc.).
+            'find /home/ccc/.codex -mindepth 1 -maxdepth 1 ! -name auth.json ! -name config.toml -exec rm -rf {} + 2>/dev/null; true',
+        ],
+        { stdio: "ignore" },
+    );
+
+    console.error("[ccc] Wiped ~/.codex (kept auth.json + config.toml). Retrying codex...");
+    const retry = spawnSync("docker", execArgs, { stdio: "inherit" });
+    return retry.status ?? 1;
 }
 
 export async function maybeAttachCodexClipboardImageForCommand(
@@ -284,7 +378,7 @@ async function exec(
     const targetContainer = getContainerName(fullPath, profile);
     progress("Checking container...");
     const containerStatus = getContainerStatus(targetContainer);
-    const wasAlreadyRunning = containerStatus.running;
+    let wasAlreadyRunning = containerStatus.running;
 
     // Auto-upgrade container if image has been rebuilt
     if (containerStatus.exists) {
@@ -316,6 +410,11 @@ async function exec(
         worktreeMounts.length > 0 ? worktreeMounts : undefined,
         clipboardPortFile,
         profile,
+        // When the container is recreated (missing mounts), its writable layer
+        // is fresh — npm tool wrappers, claude binary, etc. must be reinstalled.
+        // Force the post-startup setup path to run even though the *old*
+        // container was running when we snapshot-ed status above.
+        () => { wasAlreadyRunning = false; },
     );
 
     // Skip heavy setup if container was already running (another session set it up)
@@ -472,47 +571,79 @@ async function exec(
 
     execArgs.push(containerName);
 
-    // For claude, run mise setup and claude as SEPARATE docker exec calls.
+    // Run mise setup and the user command as SEPARATE docker exec calls.
     // mise install can be slow on first run (downloads tool binaries).
     // Running them in a single sh -c caused mise's shell hooks to intercept
     // the exec syscall, producing spurious "Argument list too long" errors.
+    //
+    // Trust is handled via MISE_TRUSTED_CONFIG_PATHS baked into `docker run`
+    // (see docker.ts), so `mise trust` is no longer needed here.
+    // `mise install -y` auto-reshims when it installs anything, so an
+    // explicit `mise reshim` would be redundant — dropped.
+    const runMiseInstall = () => {
+        spawnSync(
+            "docker",
+            [
+                "exec", "-w", projectMountPath, containerName,
+                "sh", "-c", "mise install -y 2>/dev/null || true",
+            ],
+            { stdio: "inherit" },
+        );
+    };
+
     if (commandTool?.name === "claude") {
         // Always refresh the fixed claude path before exec.
         // Existing running containers may predate the current install policy.
         progress("Checking claude install...");
         ensureClaudeInContainer(containerName);
 
-        // Step 1: mise setup (trust, install, reshim) — only on first session startup.
-        // Skipped when container was already running: a previous session already ran this.
         if (!wasAlreadyRunning) {
             progress("Installing project tools (mise)...");
-            spawnSync(
-                "docker",
-                [
-                    "exec", "-w", projectMountPath, containerName,
-                    "sh", "-c",
-                    `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
-                ],
-                { stdio: "inherit" },
-            );
-
-            // Re-verify claude wasn't overwritten by mise reshim (e.g., bun shim at the path)
+            runMiseInstall();
+            // Re-verify claude wasn't overwritten by a mise shim at the path.
             ensureClaudeInContainer(containerName);
         }
 
-        // Step 2: run claude directly (no shell wrapper — avoids mise interception)
+        // Run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
     } else {
-        // mise setup only, then direct command
-        spawnSync("docker", [
-            "exec", "-w", projectMountPath, containerName,
-            "sh", "-c",
-            `find ${projectMountPath} -name "mise.toml" -o -name ".mise.toml" 2>/dev/null | xargs -I{} mise trust {} 2>/dev/null; mise install -y 2>/dev/null || true; mise reshim 2>/dev/null || true`,
-        ], { stdio: "inherit" });
+        if (!wasAlreadyRunning) {
+            runMiseInstall();
+        }
         execArgs.push(...resolvedCmd);
     }
 
-    const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+    let resultStatus: number;
+    if (commandTool?.name === "codex") {
+        // Codex recovery ladder:
+        //   1) Run with inherited stdio (preserves the TUI when it works).
+        //   2) On unexpected non-zero exit (anything other than 0/Ctrl-C/SIGTERM),
+        //      force-update codex in the container and retry once.
+        //   3) If the retry still fails the same way, prompt to wipe codex's
+        //      state DB files and retry one more time.
+        // We don't pattern-match stderr because codex sometimes routes startup
+        // errors through stdout (especially on Windows + Docker Desktop), which
+        // is inherited, not captured, when the TUI needs a TTY.
+        const first = spawnSync("docker", execArgs, { stdio: "inherit" });
+        resultStatus = first.status ?? 1;
+        if (isCodexLikelyFailure(first.status, first.signal)) {
+            console.error("\n[ccc] codex exited with an unexpected error. Updating codex in container and retrying...");
+            if (forceUpdateCodexInContainer(containerName)) {
+                console.error("[ccc] Retrying codex...");
+                const retry = spawnSync("docker", execArgs, { stdio: "inherit" });
+                resultStatus = retry.status ?? 1;
+                if (isCodexLikelyFailure(retry.status, retry.signal)) {
+                    resultStatus = await offerCodexStateWipe(containerName, execArgs);
+                }
+            } else {
+                console.error("[ccc] Codex update failed in container.");
+                resultStatus = await offerCodexStateWipe(containerName, execArgs);
+            }
+        }
+    } else {
+        const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+        resultStatus = result.status ?? 1;
+    }
     try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
 
     if (process.env.DEBUG) {
@@ -528,7 +659,7 @@ async function exec(
 
     // Cleanup on normal exit
     cleanupSession();
-    process.exit(result.status ?? 1);
+    process.exit(resultStatus);
 }
 
 function showStatus(): void {
@@ -1086,7 +1217,7 @@ async function main(): Promise<void> {
 
         case undefined: {
             const tool = resolveTool(process.env);
-            await exec(cwd, [tool.binary, ...tool.defaultFlags], { tool, ...envOpt }, profile);
+            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt }, profile);
             break;
         }
 
@@ -1094,10 +1225,10 @@ async function main(): Promise<void> {
             const tool = getToolByName(command);
             if (tool) {
                 const toolArgs = cmdArgs.slice(1);
-                await exec(cwd, [tool.binary, ...tool.defaultFlags, ...toolArgs], { tool, ...envOpt }, profile);
+                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt }, profile);
             } else if (command.startsWith("-")) {
                 const defTool = resolveTool(process.env);
-                await exec(cwd, [defTool.binary, ...defTool.defaultFlags, ...cmdArgs], { tool: defTool, ...envOpt }, profile);
+                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt }, profile);
             } else {
                 await exec(cwd, cmdArgs, { ...envOpt }, profile);
             }

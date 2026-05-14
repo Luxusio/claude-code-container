@@ -167,6 +167,17 @@ function ensureNpmTools(containerName: string): void {
         { stdio: "ignore" },
     );
 
+    // Drop any stale mise shims for the missing tools BEFORE install. If the
+    // mise volume persisted a shim from an earlier install whose underlying
+    // package no longer matches, the shim throws "not a valid shim" — and PATH
+    // would hit it if the wrapper at /home/ccc/.local/bin/<cmd> is gone.
+    const shimNuke = missing.map((t) => `rm -f ~/.local/share/mise/shims/${t.cmd}`).join("; ");
+    spawnSync(
+        "docker",
+        ["exec", "-w", "/home/ccc", containerName, "sh", "-c", `${shimNuke}; true`],
+        { stdio: "ignore" },
+    );
+
     const installResult = spawnSync(
         "docker",
         [
@@ -179,6 +190,15 @@ function ensureNpmTools(containerName: string): void {
         console.warn("Warning: Failed to install some global npm tools (non-fatal)");
         return;
     }
+
+    // Regenerate mise shims so they reflect the freshly-installed binaries.
+    // Without this, an outdated shim from a prior install can shadow the new
+    // binary on PATH lookups that bypass the wrapper at /home/ccc/.local/bin.
+    spawnSync(
+        "docker",
+        ["exec", "-w", "/home/ccc", containerName, "sh", "-c", "~/.local/bin/mise reshim 2>/dev/null; true"],
+        { stdio: "ignore" },
+    );
 
     for (const t of missing) {
         spawnSync(
