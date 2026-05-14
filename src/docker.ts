@@ -448,20 +448,28 @@ export function startProjectContainer(
 
     const debug = !!process.env.DEBUG;
 
-    // Check if existing container is missing worktree git mounts.
-    // Instead of destroying and recreating (which changes hostname and breaks
-    // Claude Code's --resume conversation listing), warn the user.
-    // Critical mounts (project dir, ~/.claude volume) never change — only
-    // git mounts for newly-added nested repos can be missing.
-    if (isContainerExists(containerName) && extraMounts && extraMounts.length > 0) {
-        if (!containerHasMounts(containerName, extraMounts)) {
+    // Recreate the container if it's missing any required mount destination.
+    // Required = credential mounts for every registered tool (claude, gemini,
+    // codex, opencode) + any worktree git mounts the caller passed in.
+    // Otherwise an old container created before a tool was added to the
+    // registry would silently miss that tool's auth dir on subsequent runs.
+    if (isContainerExists(containerName)) {
+        const requiredMounts: Array<{ hostPath: string; containerPath: string }> = [
+            ...getAllCredentialMounts().map((m) => ({
+                // hostPath isn't checked — only containerPath matters
+                hostPath: m.hostDir,
+                containerPath: m.containerDir,
+            })),
+            ...(extraMounts ?? []),
+        ];
+        if (!containerHasMounts(containerName, requiredMounts)) {
             if (debug) {
-                console.error(`[ccc:debug] Container ${containerName} missing git mounts:`);
-                for (const m of extraMounts) {
-                    console.error(`[ccc:debug]   required: ${m.hostPath} -> ${m.containerPath}`);
+                console.error(`[ccc:debug] Container ${containerName} missing required mounts:`);
+                for (const m of requiredMounts) {
+                    console.error(`[ccc:debug]   required destination: ${m.containerPath}`);
                 }
             }
-            console.log("Recreating container (missing git mounts for worktree)...");
+            console.log("Recreating container (missing tool credential / git mounts)...");
             spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
             spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
         } else if (debug) {

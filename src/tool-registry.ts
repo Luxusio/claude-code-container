@@ -50,7 +50,7 @@ const TOOLS: ToolDefinition[] = [
         name: "codex",
         displayName: "Codex",
         binary: "codex",
-        defaultFlags: ["--ask-for-approval", "never", "--sandbox", "danger-full-access"],
+        defaultFlags: ["--dangerously-bypass-approvals-and-sandbox"],
         credentialMounts: [
             { hostDir: ".codex", containerDir: "/home/ccc/.codex" },
             { hostDir: ".omx", containerDir: "/home/ccc/.omx" },
@@ -64,7 +64,7 @@ const TOOLS: ToolDefinition[] = [
         name: "opencode",
         displayName: "OpenCode",
         binary: "opencode",
-        defaultFlags: ["--policy", "allow"],
+        defaultFlags: ["--dangerously-skip-permissions"],
         credentialMounts: [
             { hostDir: ".local/share/opencode", containerDir: "/home/ccc/.local/share/opencode" },
             { hostDir: ".config/opencode", containerDir: "/home/ccc/.config/opencode" },

@@ -42,6 +42,7 @@ Lookup table. Find your current situation, apply the listed contracts.
 | `doc/` 노트 파일 변경 | [C-06](#c-06) | auto |
 | `CLAUDE.md` 편집 필요 | [C-10](#c-10), [C-11](#c-11), [C-15](#c-15) | hard |
 | Maintenance 태스크 (MAINTENANCE 마커) | C-01 완화, [C-05](#c-05) 유지 | — |
+| `doc/changes/` 또는 `doc/common/` 자동 정리 | [C-16](#c-16) | auto |
 
 Levels:
 - **hard** — gate blocks or MCP refuses. Violation is impossible by default.
@@ -202,6 +203,39 @@ exists and is fresh (C-04).
 present a diff via `AskUserQuestion` first.
 **Why:** User trust is the most load-bearing contract. Surprise overwrites
 break it immediately.
+
+### C-16
+
+**Title:** Auto-hygiene — content-signal doc classification + contract drift auto-apply.
+**When:** SessionStart (automatic) and whenever `Skill(maintain)` is invoked.
+**Enforced by:** `plugin/scripts/hygiene_scan.py` (SessionStart hook, after
+`contract_lint --quick`); `plugin/scripts/doc_hygiene.py` (called by
+hygiene_scan); `doc/harness/hygiene.yaml` (config + canonical disable path).
+**On violation:** auto — hygiene is advisory; failure degrades to no-op.
+**Why:** Without automatic cleanup, `doc/changes/` and `doc/common/` accumulate
+indefinitely. Institutional memory erodes when the signal-to-noise ratio drops.
+
+**Tier A/B/C mapping (contract drift):**
+- `[INFO]` (Tier A): auto-applied as additive Edit within managed-block markers. No deletions.
+- `[SOFT]` additive (Tier B): auto-applied if action is matrix-row addition or contract heading addition only. Modifications/deletions deferred.
+- `[HARD]` (Tier C): deferred. Entry written to `.maintain-pending.json`; user confirms via `Skill(maintain)`.
+
+**KEEP-on-doubt rule:** absence of `superseded_by` or `distilled_to` frontmatter
+fields NEVER alone classifies a doc as REMOVE. Cold-start docs (no new frontmatter)
+always classify as KEEP or REVIEW.
+
+**Observer phase:** first `observer_until_session` sessions (default 14) run
+in observer-only mode — no archive writes, no contract edits. Intentions logged
+to `doc/harness/.maintain-observe.log`.
+
+**Restore:** `python3 plugin/scripts/maintain_restore.py <archive-path>`.
+Archive commit message always embeds the copy-pasteable restore command.
+
+**Frontmatter fields (optional, added to individual doc files):**
+- `superseded_by: <path>` — this doc is replaced by `<path>`; if target exists
+  AND `reference_count == 0`, classify REMOVE.
+- `distilled_to: <path>` — key content promoted to `<path>`; if target exists
+  AND `reference_count == 0`, classify REMOVE.
 
 <!-- harness:managed-end -->
 

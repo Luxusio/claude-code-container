@@ -199,6 +199,10 @@ describe("codex tool definition", () => {
         expect(containerDirs).toContain("/home/ccc/.omx");
         expect(containerDirs).toContain("/home/ccc/.agents");
     });
+
+    it("has defaultFlags including --dangerously-bypass-approvals-and-sandbox", () => {
+        expect(tool.defaultFlags).toContain("--dangerously-bypass-approvals-and-sandbox");
+    });
 });
 
 describe("opencode tool definition", () => {

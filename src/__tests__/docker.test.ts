@@ -42,12 +42,24 @@ const {
 } = await import("../docker.js");
 
 const { CLI_VERSION } = await import("../utils.js");
+const { getAllCredentialMounts } = await import("../tool-registry.js");
 
 function makeResult(
     status: number,
     stdout = "",
 ): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
+}
+
+// docker inspect Mounts JSON containing every credential mount destination
+// the runtime expects. Use this whenever a test wants the existing container
+// to pass the credential-mount drift check.
+function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: string }> = []): string {
+    const credMounts = getAllCredentialMounts().map((m) => ({
+        Source: `/host${m.containerDir}`,
+        Destination: m.containerDir,
+    }));
+    return JSON.stringify([...credMounts, ...extra]);
 }
 
 describe("docker.ts module exports", () => {
@@ -527,13 +539,14 @@ describe("docker.ts module exports", () => {
 
         it("returns container name when container is already running", () => {
             // Call sequence (no extraMounts):
-            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (extraMounts guard),
-            // #4 isContainerRunning -> true (returns early)
+            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists,
+            // #4 docker inspect (credential-mount drift check), #5 isContainerRunning -> true
             spawnSyncMock
-                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
-                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
-                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard)
-                .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> running
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))           // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))           // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))               // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson())) // inspect -> all cred mounts present
+                .mockReturnValueOnce(makeResult(0, "abc123\n"));              // isContainerRunning -> running
 
             const name = startProjectContainer(projectPath, ensureDirs);
             expect(name).toMatch(/^ccc-/);
@@ -541,15 +554,16 @@ describe("docker.ts module exports", () => {
         });
 
         it("starts a stopped container and returns its name", () => {
-            // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists (extraMounts guard),
-            // #4 isContainerRunning->false, #5 isContainerExists->true, #6 docker start
+            // #1 isImageExists, #2 getImageLabel, #3 isContainerExists, #4 inspect (drift check),
+            // #5 isContainerRunning->false, #6 isContainerExists->true, #7 docker start
             spawnSyncMock
-                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
-                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
-                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists but no extraMounts
-                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
-                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> true
-                .mockReturnValueOnce(makeResult(0));                 // docker start
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))           // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))           // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))               // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson())) // inspect -> all cred mounts present
+                .mockReturnValueOnce(makeResult(0, ""))                       // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))               // isContainerExists -> true
+                .mockReturnValueOnce(makeResult(0));                           // docker start
 
             const name = startProjectContainer(projectPath, ensureDirs);
             expect(name).toMatch(/^ccc-/);
@@ -558,6 +572,34 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "start"
             );
             expect(startCall).toBeDefined();
+        });
+
+        it("recreates container when credential mounts are missing (drift after tool registry update)", () => {
+            mockExistsSync.mockReturnValue(false);
+
+            // Existing container only has the old claude-only mounts → drift detected → recreate.
+            const driftMountsJson = JSON.stringify([
+                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
+            ]);
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))   // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))   // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))       // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, driftMountsJson))  // inspect -> missing codex/gemini/opencode mounts
+                .mockReturnValueOnce(makeResult(0))                    // docker stop
+                .mockReturnValueOnce(makeResult(0))                    // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))                // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))                // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                    // docker run
+
+            const name = startProjectContainer(projectPath, ensureDirs);
+            expect(name).toMatch(/^ccc-/);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
         });
 
         it("creates a new container when none exists", () => {
@@ -710,15 +752,15 @@ describe("docker.ts module exports", () => {
 
         it("reuses container when extraMounts are present and all mounts exist", () => {
             const extraMounts = [{ hostPath: "/host/repo/.git", containerPath: "/project/repo/.git" }];
-            const mountsJson = JSON.stringify([
+            const mountsJson = fullCredentialMountsJson([
                 { Source: "/host/repo/.git", Destination: "/project/repo/.git" },
             ]);
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
-                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
-                .mockReturnValueOnce(makeResult(0, mountsJson))     // docker inspect (containerHasMounts) -> all present
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, mountsJson))     // docker inspect -> all present
                 .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> true
 
             const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
@@ -734,7 +776,7 @@ describe("docker.ts module exports", () => {
         it("reuses container when Source differs but Destination matches (macOS Docker Desktop)", () => {
             const extraMounts = [{ hostPath: "/Users/me/repo/.git", containerPath: "/Users/me/repo/.git" }];
             // Docker Desktop on macOS may prefix Source with /host_mnt/ or resolve symlinks
-            const mountsJson = JSON.stringify([
+            const mountsJson = fullCredentialMountsJson([
                 { Source: "/host_mnt/Users/me/repo/.git", Destination: "/Users/me/repo/.git" },
             ]);
 
@@ -763,7 +805,7 @@ describe("docker.ts module exports", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
-                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> not exists, skip inspect
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> not exists, skip inspect
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValue(makeResult(0));                     // docker run (and any extra)
