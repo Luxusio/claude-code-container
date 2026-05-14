@@ -4,7 +4,7 @@ import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync,
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { execSync, spawnSync } from "child_process";
+import { execSync, execFileSync, spawnSync } from "child_process";
 import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -126,6 +126,108 @@ function buildImage() {
     }
 }
 
+// Windows User-scope PATH I/O.
+//
+// We deliberately do NOT use `process.env.PATH` — that's the merged
+// (User + System) view of the current process and writing to it can't
+// persist. Instead we shell out to PowerShell purely for the two
+// primitives `.NET` already exposes for the User scope:
+//   - read:  [Environment]::GetEnvironmentVariable("Path", "User")
+//   - write: [Environment]::SetEnvironmentVariable("Path", $v, "User")
+//
+// The new value is passed via an env var ($env:__CCC_NEW_PATH) so there's
+// no PowerShell-side quoting at all — backslashes and quotes round-trip
+// untouched. All parsing, dedupe, length-checks live in Node below.
+
+const PATH_LIMIT = 32767;
+
+function readUserPath() {
+    const out = execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", `[Environment]::GetEnvironmentVariable("Path","User")`,
+    ], { encoding: "utf8", windowsHide: true });
+    return out.replace(/\r?\n$/, "");
+}
+
+function writeUserPath(value) {
+    execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", `[Environment]::SetEnvironmentVariable("Path", $env:__CCC_NEW_PATH, "User")`,
+    ], {
+        encoding: "utf8",
+        windowsHide: true,
+        env: { ...process.env, __CCC_NEW_PATH: value },
+    });
+}
+
+function normalizePathEntry(p) {
+    return p.trim().replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function splitUserPath(p) {
+    return (p || "").split(";").filter(s => s.trim() !== "");
+}
+
+function manualPathHint(installDir) {
+    console.log("Add it manually in PowerShell:");
+    console.log(`  [Environment]::SetEnvironmentVariable("Path", ([Environment]::GetEnvironmentVariable("Path","User") + ";${installDir}"), "User")`);
+}
+
+function tryAddInstallDirToUserPath(installDir) {
+    if (!existsSync(installDir)) {
+        console.log(`PATH update skipped (DIR_NOT_FOUND): ${installDir}`);
+        return;
+    }
+    let current;
+    try {
+        current = readUserPath();
+    } catch (e) {
+        console.log(`PATH update skipped (READ_ERROR): ${e.message}`);
+        manualPathHint(installDir);
+        return;
+    }
+    const parts = splitUserPath(current);
+    const target = normalizePathEntry(installDir);
+    if (parts.some(p => normalizePathEntry(p) === target)) {
+        console.log("Already on User PATH.");
+        return;
+    }
+    const next = [...parts, installDir].join(";");
+    if (next.length >= PATH_LIMIT) {
+        console.log(`PATH update skipped (PATH_TOO_LONG): ${next.length} >= ${PATH_LIMIT}`);
+        manualPathHint(installDir);
+        return;
+    }
+    try {
+        writeUserPath(next);
+        console.log("Added to User PATH. Open a new terminal to pick it up.");
+    } catch (e) {
+        console.log(`PATH update skipped (WRITE_ERROR): ${e.message}`);
+        manualPathHint(installDir);
+    }
+}
+
+function tryRemoveInstallDirFromUserPath(installDir) {
+    let current;
+    try {
+        current = readUserPath();
+    } catch {
+        return; // best-effort during uninstall
+    }
+    const parts = splitUserPath(current);
+    const target = normalizePathEntry(installDir);
+    const kept = parts.filter(p => normalizePathEntry(p) !== target);
+    if (kept.length === parts.length) return;
+    try {
+        writeUserPath(kept.join(";"));
+        console.log("Removed from User PATH.");
+    } catch {
+        // best-effort
+    }
+}
+
 function linkBinary() {
     const installDir = getInstallDir();
 
@@ -136,11 +238,7 @@ function linkBinary() {
         writeFileSync(cmdPath, cmdContent);
         console.log(`Installed: ${cmdPath}`);
 
-        const pathDirs = (process.env.PATH || "").split(";");
-        if (!pathDirs.some(p => p.toLowerCase() === installDir.toLowerCase())) {
-            console.log(`\nAdd to PATH (run in PowerShell as Admin):`);
-            console.log(`  [Environment]::SetEnvironmentVariable("Path", $env:Path + ";${installDir}", "User")`);
-        }
+        tryAddInstallDirToUserPath(installDir);
         return;
     }
 
@@ -216,6 +314,7 @@ function uninstall() {
         } else {
             console.log("Not installed.");
         }
+        tryRemoveInstallDirFromUserPath(installDir);
         return;
     }
 
