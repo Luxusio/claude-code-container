@@ -51,6 +51,7 @@ describe("container-runtime", () => {
         // Scrub env of any pollution from other suites or the shell.
         delete process.env.CCC_RUNTIME;
         delete process.env.CCC_SELINUX_RELABEL;
+        delete process.env.CCC_PODMAN_CGROUPS;
         delete process.env.container;
         delete process.env.VITEST;
         for (const key of Object.keys(process.env)) {
@@ -201,6 +202,39 @@ describe("container-runtime", () => {
             ]);
         });
 
+        it("normalizes Docker Desktop Windows mount sources for nested docker", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
+                {
+                    Source: "C:\\Users\\Luxus\\.ccc\\codex",
+                    Destination: "/home/ccc/.codex",
+                },
+            ])));
+
+            expect(bindMountArgs("/home/ccc/.codex/config.toml", "/tmp/config.toml")).toEqual([
+                "-v",
+                "/run/desktop/mnt/host/c/Users/Luxus/.ccc/codex/config.toml:/tmp/config.toml",
+            ]);
+        });
+
+        it("keeps current-container paths unchanged for nested local podman", () => {
+            _setRuntimeInfoForTest({ runtime: "podman" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+
+            expect(bindMountArgs("/home/ccc/.codex", "/home/ccc/.codex")).toEqual([
+                "-v",
+                "/home/ccc/.codex:/home/ccc/.codex",
+            ]);
+            expect(spawnSyncMock).not.toHaveBeenCalledWith(
+                "docker",
+                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
+                expect.any(Object),
+            );
+        });
+
         it("does not inspect or translate mounts during Vitest runs", () => {
             _setRuntimeInfoForTest({ runtime: "docker" });
             process.env.container = "docker";
@@ -234,6 +268,28 @@ describe("container-runtime", () => {
             _setRuntimeInfoForTest({ runtime: "podman", rootless: true });
             expect(runtimeExtraRunArgs()).toEqual(["--userns=keep-id:uid=1000,gid=1000"]);
         });
+
+        it("disables cgroups for nested local podman inside docker", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: false, remote: false });
+            process.env.container = "docker";
+            expect(runtimeExtraRunArgs()).toEqual(["--cgroups=disabled"]);
+        });
+
+        it("combines nested cgroup disablement with rootless podman userns mapping", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, remote: false });
+            process.env.container = "docker";
+            expect(runtimeExtraRunArgs()).toEqual([
+                "--cgroups=disabled",
+                "--userns=keep-id:uid=1000,gid=1000",
+            ]);
+        });
+
+        it("allows nested podman cgroup disablement to be overridden", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: false, remote: false });
+            process.env.container = "docker";
+            process.env.CCC_PODMAN_CGROUPS = "enabled";
+            expect(runtimeExtraRunArgs()).toEqual([]);
+        });
     });
 
     describe("isContainerHostRemote", () => {
@@ -242,6 +298,18 @@ describe("container-runtime", () => {
             expect(isContainerHostRemote()).toBe(true);
             _setRuntimeInfoForTest({ runtime: "podman", remote: false });
             expect(isContainerHostRemote()).toBe(false);
+        });
+
+        it("detects Docker Desktop from docker info as VM-backed", () => {
+            process.env.CCC_RUNTIME = "docker";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Docker Desktop\n"))
+                .mockReturnValue(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.remote).toBe(true);
+            expect(info.flavor).toBe("docker-desktop");
         });
     });
 
@@ -304,6 +372,37 @@ describe("container-runtime", () => {
     });
 
     describe("getRuntimeInfo caching", () => {
+        it("detects linux rootless podman and derives the user socket path", () => {
+            process.env.CCC_RUNTIME = "podman";
+            process.env.XDG_RUNTIME_DIR = "/run/user/1001";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "podman version 5.2.3\n"))
+                .mockReturnValueOnce(result(0, "false\n"))
+                .mockReturnValueOnce(result(0, "true\n"));
+
+            const info = getRuntimeInfo();
+            expect(info.runtime).toBe("podman");
+            expect(info.rootless).toBe(true);
+            expect(info.flavor).toBe("linux-rootless");
+            expect(info.socketPath).toBe("/run/user/1001/podman/podman.sock");
+        });
+
+        it("falls back to effective uid for older podman rootless detection", () => {
+            process.env.CCC_RUNTIME = "podman";
+            delete process.env.XDG_RUNTIME_DIR;
+            const getuidSpy = vi.spyOn(process, "getuid").mockReturnValue(1002);
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "podman version 4.9.3\n"))
+                .mockReturnValueOnce(result(1, ""))
+                .mockReturnValueOnce(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.rootless).toBe(true);
+            expect(info.flavor).toBe("linux-rootless");
+            expect(info.socketPath).toBe("/run/user/1002/podman/podman.sock");
+            getuidSpy.mockRestore();
+        });
+
         it("caches after first resolve; subsequent calls do not spawn", () => {
             process.env.CCC_RUNTIME = "docker";
             spawnSyncMock.mockReturnValue(result(0, "v1.2.3"));

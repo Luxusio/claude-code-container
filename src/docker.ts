@@ -179,6 +179,10 @@ export function isDockerRunning(): boolean {
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],
     });
+    if (result.status !== 0 && process.env.DEBUG) {
+        const stderr = (result.stderr ?? "").toString().trim();
+        if (stderr) console.error(`[ccc:debug] ${runtimeCli()} info failed: ${stderr}`);
+    }
     return result.status === 0;
 }
 
@@ -331,6 +335,17 @@ export function tagImage(source: string, target: string): void {
     spawnSync(runtimeCli(), ["tag", source, target], { stdio: "ignore" });
 }
 
+function hasExplicitRegistry(imageRef: string): boolean {
+    const firstSegment = imageRef.split("/")[0] ?? "";
+    return firstSegment === "localhost" || firstSegment.includes(".") || firstSegment.includes(":");
+}
+
+export function qualifyImageRefForRuntime(imageRef: string): string {
+    if (runtimeCli() !== "podman") return imageRef;
+    if (hasExplicitRegistry(imageRef)) return imageRef;
+    return `docker.io/${imageRef}`;
+}
+
 export function ensureImage(): void {
     const localExists = isImageExists();
 
@@ -343,7 +358,7 @@ export function ensureImage(): void {
         console.log(`Pulling ccc image v${CLI_VERSION} from registry...`);
     }
 
-    const remoteRef = `${DOCKER_REGISTRY_IMAGE}:${CLI_VERSION}`;
+    const remoteRef = qualifyImageRefForRuntime(`${DOCKER_REGISTRY_IMAGE}:${CLI_VERSION}`);
     if (pullImage(remoteRef)) {
         tagImage(remoteRef, IMAGE_NAME);
         return;

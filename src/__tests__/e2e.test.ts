@@ -29,6 +29,7 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}
         childEnv[k] = v
     }
     childEnv.NODE_ENV = 'test'
+    childEnv.CCC_RUNTIME = 'docker'
 
     const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',

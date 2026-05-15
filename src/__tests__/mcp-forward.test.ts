@@ -5,6 +5,7 @@ vi.mock("fs", async () => {
     return {
         ...actual,
         existsSync: vi.fn(),
+        mkdirSync: vi.fn(),
         readFileSync: vi.fn(),
         writeFileSync: vi.fn(),
     };

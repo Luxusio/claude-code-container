@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { getClaudeJsonFile, getCodexConfigFile } from "./utils.js";
 
 interface McpServerConfig {
@@ -128,6 +128,7 @@ function stripCodexManagedBlock(configToml: string): string {
 
 function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>): void {
     const codexConfigFile = getCodexConfigFile();
+    mkdirSync(dirname(codexConfigFile), { recursive: true });
     let existing = "";
     if (existsSync(codexConfigFile)) {
         try {

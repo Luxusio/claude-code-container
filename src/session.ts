@@ -6,6 +6,7 @@ import { getProjectId, DATA_DIR } from "./utils.js";
 import { getContainerName, isContainerRunning } from "./docker.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
+import { runtimeCli } from "./container-runtime.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -156,7 +157,7 @@ export function cleanupSession(): void {
             if (currentToolName === "claude") {
                 saveClaudeBinaryToVolume(containerName);
             }
-            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
+            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
         }
     }
 

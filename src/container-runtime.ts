@@ -393,6 +393,7 @@ export function bindMountArgs(
 function translateCurrentContainerPath(hostPath: string): string {
     if (!hostPath.startsWith("/")) return hostPath;
     if (process.env.container !== "docker" || isVitestProcess()) return hostPath;
+    if (runtimeCli() !== "docker") return hostPath;
 
     const mounts = getCurrentContainerMounts();
     let best: { source: string; destination: string } | null = null;
@@ -405,8 +406,17 @@ function translateCurrentContainerPath(hostPath: string): string {
     }
     if (!best) return hostPath;
 
+    const source = normalizeDockerMountSource(best.source);
     const rel = hostPath.slice(best.destination.length).replace(/^\/+/, "");
-    return rel ? join(best.source, rel) : best.source;
+    return rel ? join(source, rel) : source;
+}
+
+function normalizeDockerMountSource(source: string): string {
+    const match = source.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (!match) return source;
+    const drive = match[1].toLowerCase();
+    const rest = match[2].replace(/\\/g, "/");
+    return `/run/desktop/mnt/host/${drive}/${rest}`;
 }
 
 function isVitestProcess(): boolean {
@@ -458,6 +468,14 @@ function getCurrentContainerMounts(): Array<{ source: string; destination: strin
 export function runtimeExtraRunArgs(): string[] {
     const info = getRuntimeInfo();
     const extras: string[] = [];
+    const podmanCgroups = (process.env.CCC_PODMAN_CGROUPS ?? "").toLowerCase();
+    if (
+        info.runtime === "podman"
+        && !info.remote
+        && (podmanCgroups === "disabled" || (podmanCgroups !== "enabled" && process.env.container === "docker"))
+    ) {
+        extras.push("--cgroups=disabled");
+    }
     if (info.runtime === "podman" && info.rootless) {
         extras.push("--userns=keep-id:uid=1000,gid=1000");
     }

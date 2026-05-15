@@ -96,6 +96,7 @@ import {
 } from "./profile.js";
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
+import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
 import { homedir } from "os";
 
 
@@ -235,7 +236,7 @@ function isCodexLikelyFailure(status: number | null, signal: NodeJS.Signals | nu
  */
 function forceUpdateCodexInContainer(containerName: string): boolean {
     const r = spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
             "~/.local/bin/mise exec node@22 -- npm install -g @openai/codex@latest --force && ~/.local/bin/mise reshim 2>/dev/null; true",
@@ -263,7 +264,7 @@ async function offerCodexStateWipe(containerName: string, execArgs: string[]): P
     }
 
     spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "exec", containerName, "sh", "-c",
             // Top-level entries: keep auth.json and config.toml, drop everything else
@@ -274,7 +275,7 @@ async function offerCodexStateWipe(containerName: string, execArgs: string[]): P
     );
 
     console.error("[ccc] Wiped ~/.codex (kept auth.json + config.toml). Retrying codex...");
-    const retry = spawnSync("docker", execArgs, { stdio: "inherit" });
+    const retry = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
     return retry.status ?? 1;
 }
 
@@ -355,8 +356,9 @@ async function exec(
         console.error(`[ccc:debug] exec: cmd=${cmd.join(" ")}`);
     }
     const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
+    const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
     const sessionLockFile = createSessionLock(projectId, profile);
-    setSession(sessionLockFile, fullPath, profile, (commandTool ?? setupTool).name);
+    setSession(sessionLockFile, fullPath, profile, (commandTool ?? options.tool)?.name ?? "command");
     setupSignalHandlers();
 
     // Start clipboard server early — must complete before container creation so
@@ -389,12 +391,12 @@ async function exec(
                 const oldImageId = containerStatus.imageId;
 
                 progress("Upgrading container to new image...");
-                spawnSync("docker", ["stop", targetContainer], { stdio: "ignore" });
-                spawnSync("docker", ["rm", targetContainer], { stdio: "ignore" });
+                spawnSync(runtimeCli(), ["stop", targetContainer], { stdio: "ignore" });
+                spawnSync(runtimeCli(), ["rm", targetContainer], { stdio: "ignore" });
 
                 // Remove old image (now dangling). Silently fails if still in use by other containers.
                 if (oldImageId) {
-                    spawnSync("docker", ["rmi", oldImageId], { stdio: "ignore" });
+                    spawnSync(runtimeCli(), ["rmi", oldImageId], { stdio: "ignore" });
                 }
             } else {
                 console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
@@ -422,18 +424,20 @@ async function exec(
         // Ensure tools are installed (claude via curl + npm tools from registry).
         // Retry once if a concurrent session stopped the container during setup.
         progress("Checking tools...");
-        for (let attempt = 0; attempt < 2; attempt++) {
-            if (!isContainerRunning(containerName)) {
-                console.log("Container stopped during setup (concurrent session), restarting...");
-                startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
-            }
-            try {
-                ensureTools(containerName, setupTool);
-                break;
-            } catch {
-                if (attempt === 1) {
-                    console.error("Failed to install tools in container");
-                    process.exit(1);
+        if (shouldEnsureTool) {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                if (!isContainerRunning(containerName)) {
+                    console.log("Container stopped during setup (concurrent session), restarting...");
+                    startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
+                }
+                try {
+                    ensureTools(containerName, setupTool);
+                    break;
+                } catch {
+                    if (attempt === 1) {
+                        console.error("Failed to install tools in container");
+                        process.exit(1);
+                    }
                 }
             }
         }
@@ -500,7 +504,7 @@ async function exec(
         const bridgeEnv: string[] = [];
         if (clipboardUrl) bridgeEnv.push("-e", `CCC_CLIPBOARD_URL=${clipboardUrl}`);
         if (clipboardToken) bridgeEnv.push("-e", `CCC_CLIPBOARD_TOKEN=${clipboardToken}`);
-        spawnSync("docker", [
+        spawnSync(runtimeCli(), [
             "exec", "-d", ...bridgeEnv, containerName,
             "/usr/local/bin/ccc-x11-bridge",
         ], { stdio: "ignore" });
@@ -583,7 +587,7 @@ async function exec(
     // explicit `mise reshim` would be redundant — dropped.
     const runMiseInstall = () => {
         spawnSync(
-            "docker",
+            runtimeCli(),
             [
                 "exec", "-w", projectMountPath, containerName,
                 "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y 2>/dev/null || true",
@@ -625,13 +629,13 @@ async function exec(
         // We don't pattern-match stderr because codex sometimes routes startup
         // errors through stdout (especially on Windows + Docker Desktop), which
         // is inherited, not captured, when the TUI needs a TTY.
-        const first = spawnSync("docker", execArgs, { stdio: "inherit" });
+        const first = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
         resultStatus = first.status ?? 1;
         if (isCodexLikelyFailure(first.status, first.signal)) {
             console.error("\n[ccc] codex exited with an unexpected error. Updating codex in container and retrying...");
             if (forceUpdateCodexInContainer(containerName)) {
                 console.error("[ccc] Retrying codex...");
-                const retry = spawnSync("docker", execArgs, { stdio: "inherit" });
+                const retry = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
                 resultStatus = retry.status ?? 1;
                 if (isCodexLikelyFailure(retry.status, retry.signal)) {
                     resultStatus = await offerCodexStateWipe(containerName, execArgs);
@@ -642,7 +646,7 @@ async function exec(
             }
         }
     } else {
-        const result = spawnSync("docker", execArgs, { stdio: "inherit" });
+        const result = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
         resultStatus = result.status ?? 1;
     }
     try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
@@ -650,7 +654,7 @@ async function exec(
     if (process.env.DEBUG) {
         // Check conversation directory state after Claude exits
         const claudeProjectDir = `/home/ccc/.claude/projects/-project-${projectId}`;
-        const checkResult = spawnSync("docker", [
+        const checkResult = spawnSync(runtimeCli(), [
             "exec", containerName, "sh", "-c",
             `ls -1 "${claudeProjectDir}"/*.jsonl 2>/dev/null | wc -l; echo "dir:${claudeProjectDir}"`,
         ], { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
@@ -683,7 +687,7 @@ function showStatus(): void {
 
     // List all ccc containers
     const result = spawnSync(
-        "docker",
+        runtimeCli(),
         [
             "ps",
             "-a",
@@ -888,8 +892,8 @@ function handleWorktreeRemove(
         const containerName = getContainerName(wsPath);
         if (isContainerExists(containerName)) {
             console.log(`Stopping container ${containerName}...`);
-            spawnSync("docker", ["stop", containerName], { stdio: "ignore" });
-            spawnSync("docker", ["rm", containerName], { stdio: "ignore" });
+            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
+            spawnSync(runtimeCli(), ["rm", containerName], { stdio: "ignore" });
         }
     } catch {
         // Docker not running, skip container cleanup
@@ -952,6 +956,7 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
     ccc doctor              Health check and diagnostics
+    ccc runtime             Show detected container runtime
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
     ccc clean --all         Remove everything (including running)
@@ -966,6 +971,7 @@ REMOTE (run on remote host via Tailscale + Mutagen):
 
 OPTIONS:
     --env KEY=VALUE         Set environment variable
+    --runtime <name>        Use docker or podman for this invocation
     --default <tool>        Set default tool (claude/gemini/codex/opencode)
     --default               Show current default tool
     -h, --help              Show this help
@@ -1050,7 +1056,7 @@ async function main(): Promise<void> {
         }
     }
 
-    // Parse --env KEY=VALUE flags before dispatching so they are removed from
+    // Parse global flags before dispatching so they are removed from
     // the command args and forwarded to exec() as options.env overrides.
     const extraEnv: Record<string, string> = {};
     const cmdArgs: string[] = [];
@@ -1059,6 +1065,14 @@ async function main(): Promise<void> {
             const kv = filteredArgs[i + 1];
             const eqIdx = kv.indexOf("=");
             if (eqIdx > 0) extraEnv[kv.slice(0, eqIdx)] = kv.slice(eqIdx + 1);
+            i++; // consume the value arg
+        } else if (filteredArgs[i] === "--runtime" && i + 1 < filteredArgs.length) {
+            try {
+                setRuntimeOverride(filteredArgs[i + 1]);
+            } catch (e) {
+                console.error((e as Error).message);
+                process.exit(1);
+            }
             i++; // consume the value arg
         } else {
             cmdArgs.push(filteredArgs[i]);
@@ -1111,6 +1125,10 @@ async function main(): Promise<void> {
 
         case "status":
             showStatus();
+            break;
+
+        case "runtime":
+            console.log(formatRuntimeSummary());
             break;
 
         case "doctor": {

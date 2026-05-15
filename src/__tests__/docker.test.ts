@@ -36,6 +36,7 @@ const {
     syncClipboardShims,
     ensureDockerRunning,
     ensureImage,
+    qualifyImageRefForRuntime,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -43,6 +44,10 @@ const {
 
 const { CLI_VERSION } = await import("../utils.js");
 const { getAllCredentialMounts } = await import("../tool-registry.js");
+const {
+    _resetRuntimeCacheForTest,
+    _setRuntimeInfoForTest,
+} = await import("../container-runtime.js");
 
 function makeResult(
     status: number,
@@ -67,6 +72,7 @@ describe("docker.ts module exports", () => {
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
         mockExistsSync.mockReset().mockReturnValue(true);
+        _resetRuntimeCacheForTest();
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
     });
@@ -427,6 +433,28 @@ describe("docker.ts module exports", () => {
         });
     });
 
+    describe("qualifyImageRefForRuntime", () => {
+        it("leaves docker image refs unchanged", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            expect(qualifyImageRefForRuntime("luxusio/claude-code-container:1.2.3")).toBe(
+                "luxusio/claude-code-container:1.2.3",
+            );
+        });
+
+        it("qualifies Docker Hub short-name refs for podman", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            expect(qualifyImageRefForRuntime("luxusio/claude-code-container:1.2.3")).toBe(
+                "docker.io/luxusio/claude-code-container:1.2.3",
+            );
+        });
+
+        it("does not rewrite already-qualified podman refs", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            expect(qualifyImageRefForRuntime("ghcr.io/luxusio/ccc:1.2.3")).toBe("ghcr.io/luxusio/ccc:1.2.3");
+            expect(qualifyImageRefForRuntime("localhost:5000/ccc:1.2.3")).toBe("localhost:5000/ccc:1.2.3");
+        });
+    });
+
     describe("ensureImage (label-based)", () => {
         it("uses local dev build (no cli.version label) without pulling", () => {
             spawnSyncMock
@@ -497,6 +525,25 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "pull"
             );
             expect(pullCall).toBeDefined();
+            mockExit.mockRestore();
+        });
+
+        it("pulls the fully-qualified Docker Hub ref on rootless podman", () => {
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, ""))    // isImageExists -> false
+                .mockReturnValueOnce(makeResult(0))        // pullImage -> success
+                .mockReturnValueOnce(makeResult(0));       // tagImage
+
+            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
+                throw new Error("process.exit");
+            });
+            expect(() => ensureImage()).not.toThrow();
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "podman",
+                ["pull", `docker.io/luxusio/claude-code-container:${CLI_VERSION}`],
+                { stdio: "inherit" },
+            );
             mockExit.mockRestore();
         });
 
