@@ -522,6 +522,7 @@ async function exec(
         // Container marker: enables per-project env separation via mise.toml [env]
         [CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE],
         ...forwardedEnvPlan.forwarded,
+        ["MISE_TRUSTED_CONFIG_PATHS", projectMountPath],
     ];
 
     // Locale: forward host LANG/LC_* (no longer excluded).
@@ -565,7 +566,7 @@ async function exec(
     const envFile = writeEnvFile(envEntries);
     execArgs.push("--env-file", envFile);
 
-    if (options.interactive !== false) {
+    if (options.interactive !== false && process.stdin.isTTY && process.stdout.isTTY) {
         execArgs.push("-it");
     }
 
@@ -585,7 +586,7 @@ async function exec(
             "docker",
             [
                 "exec", "-w", projectMountPath, containerName,
-                "sh", "-c", "mise install -y 2>/dev/null || true",
+                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y 2>/dev/null || true",
             ],
             { stdio: "inherit" },
         );

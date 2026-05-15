@@ -139,6 +139,12 @@ describe("buildMcpConfig", () => {
         return JSON.parse(rawJson);
     }
 
+    function getWrittenCodexConfig(): string {
+        const call = writeFileSync.mock.calls.find(([path]) => String(path).endsWith(".ccc/codex/config.toml"));
+        expect(call).toBeDefined();
+        return call![1] as string;
+    }
+
     beforeEach(async () => {
         vi.resetModules();
         fsMock = await import("fs");
@@ -159,6 +165,7 @@ describe("buildMcpConfig", () => {
         expect(servers["chrome-devtools"]).toBeDefined();
         const entry = servers["chrome-devtools"] as { command: string; args: string[] };
         expect(entry.command).toBe("mise");
+        expect(entry.args.slice(0, 3)).toEqual(["--no-config", "exec", "node@22"]);
         expect(entry.args).toContain("--executablePath=/usr/bin/chromium");
     });
 
@@ -168,8 +175,61 @@ describe("buildMcpConfig", () => {
         const servers = config.mcpServers as Record<string, unknown>;
         expect(servers["x11-display"]).toEqual({
             command: "mise",
-            args: ["exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
+            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
         });
+    });
+
+    it("writes ccc-managed MCP servers to Codex config.toml", () => {
+        buildMcpConfig();
+        const codexConfig = getWrittenCodexConfig();
+        expect(codexConfig).toContain("# ccc-managed-mcp begin");
+        expect(codexConfig).toContain("[mcp_servers.chrome-devtools]");
+        expect(codexConfig).toContain('command = "mise"');
+        expect(codexConfig).toContain('"--no-config"');
+        expect(codexConfig).toContain('"--executablePath=/usr/bin/chromium"');
+        expect(codexConfig).toContain("[mcp_servers.x11-display]");
+        expect(codexConfig).toContain('"/opt/ccc/x11-mcp/server.mjs"');
+        expect(codexConfig).toContain("# ccc-managed-mcp end");
+    });
+
+    it("writes Codex TOML arrays in the exact order needed for MCP startup", () => {
+        buildMcpConfig();
+        const codexConfig = getWrittenCodexConfig();
+        expect(codexConfig).toContain(
+            'args = ["--no-config", "exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp"',
+        );
+        expect(codexConfig).toContain(
+            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"]',
+        );
+    });
+
+    it("preserves user Codex config while replacing the prior ccc-managed block", () => {
+        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/codex/config.toml"));
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".ccc/codex/config.toml")) {
+                return [
+                    'model = "gpt-5.2-codex"',
+                    "",
+                    "# ccc-managed-mcp begin",
+                    "",
+                    "[mcp_servers.old-server]",
+                    'command = "old"',
+                    "",
+                    "# ccc-managed-mcp end",
+                    "",
+                    "[projects.\"/project/example\"]",
+                    'trust_level = "trusted"',
+                ].join("\n");
+            }
+            return "{}";
+        });
+
+        buildMcpConfig();
+        const codexConfig = getWrittenCodexConfig();
+        expect(codexConfig).toContain('model = "gpt-5.2-codex"');
+        expect(codexConfig).toContain('[projects."/project/example"]');
+        expect(codexConfig).toContain("[mcp_servers.chrome-devtools]");
+        expect(codexConfig).not.toContain("[mcp_servers.old-server]");
     });
 
     it("forwards host MCP servers (stdio)", () => {

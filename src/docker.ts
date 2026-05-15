@@ -214,6 +214,15 @@ export function isContainerRunning(containerName: string): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
+export function canExecContainer(containerName: string): boolean {
+    const result = spawnSync(
+        runtimeCli(),
+        ["exec", containerName, "true"],
+        { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 },
+    );
+    return result.status === 0;
+}
+
 export function isContainerExists(containerName: string): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -436,6 +445,14 @@ function fixSshPermissions(containerName: string): void {
     }
 }
 
+function recreateContainer(containerName: string, reason: string, onRecreate?: () => void): void {
+    console.log(`Recreating container (${reason})...`);
+    const cli = runtimeCli();
+    spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
+    spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
+    onRecreate?.();
+}
+
 // === Container Lifecycle ===
 
 export function startProjectContainer(
@@ -482,27 +499,38 @@ export function startProjectContainer(
                     console.error(`[ccc:debug]   required destination: ${m.containerPath}`);
                 }
             }
-            console.log("Recreating container (missing tool credential / git mounts)...");
-            spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
-            spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
-            onRecreate?.();
+            recreateContainer(containerName, "missing tool credential / git mounts", onRecreate);
         } else if (debug) {
             console.error(`[ccc:debug] Container ${containerName} has all required mounts`);
         }
     }
 
     if (isContainerRunning(containerName)) {
-        return containerName;
+        if (canExecContainer(containerName)) {
+            return containerName;
+        }
+        recreateContainer(containerName, "container exec failed", onRecreate);
     }
 
     if (isContainerExists(containerName)) {
         if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
         spawnSync(cli, ["start", containerName], { stdio: "inherit" });
-        fixSshPermissions(containerName);
-        return containerName;
+        if (!canExecContainer(containerName)) {
+            recreateContainer(containerName, "container exec failed after restart", onRecreate);
+        } else {
+            fixSshPermissions(containerName);
+            return containerName;
+        }
     }
 
-    if (debug) console.error(`[ccc:debug] Container ${containerName} not found, creating`);
+    if (isContainerExists(containerName)) {
+        console.error(`Failed to remove unhealthy container ${containerName}`);
+        process.exit(1);
+    }
+
+    if (debug) {
+        console.error(`[ccc:debug] Container ${containerName} not found, creating`);
+    }
     console.log("Creating container...");
 
     const projectId = getProjectId(fullPath);
@@ -510,7 +538,9 @@ export function startProjectContainer(
 
     const credentialMounts = getAllCredentialMounts().map(m => {
         // Profile override: claude credentials use profile-specific directory
-        const hostPath = (profile && m.containerDir === "/home/ccc/.claude")
+        const hostPath = (!profile && process.env.container === "docker" && !process.env.VITEST)
+            ? m.containerDir
+            : (profile && m.containerDir === "/home/ccc/.claude")
             ? getClaudeDir(profile)
             : join(homedir(), m.hostDir);
         mkdirSync(hostPath, { recursive: true });

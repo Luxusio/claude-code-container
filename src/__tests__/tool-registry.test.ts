@@ -203,6 +203,11 @@ describe("codex tool definition", () => {
     it("has defaultFlags including --dangerously-bypass-approvals-and-sandbox", () => {
         expect(tool.defaultFlags).toContain("--dangerously-bypass-approvals-and-sandbox");
     });
+
+    it("mounts codex config from ~/.ccc/codex, not host ~/.codex", () => {
+        const codexMount = tool.credentialMounts.find((m) => m.containerDir === "/home/ccc/.codex");
+        expect(codexMount?.hostDir).toBe(".ccc/codex");
+    });
 });
 
 describe("opencode tool definition", () => {

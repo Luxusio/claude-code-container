@@ -13,17 +13,36 @@ export const CLI_VERSION: string = "__CLI_VERSION__";
 export const DATA_DIR = join(homedir(), ".ccc");
 export const CLAUDE_DIR = join(DATA_DIR, "claude");
 export const CLAUDE_JSON_FILE = join(DATA_DIR, "claude.json"); // ~/.claude.json in container (onboarding state)
+export const CODEX_DIR = join(DATA_DIR, "codex");
+export const CODEX_CONFIG_FILE = join(CODEX_DIR, "config.toml");
 export const REMOTE_CONFIG_DIR = join(DATA_DIR, "remote");
 export const PROFILES_DIR = join(DATA_DIR, "profiles");
 
+function useMountedCredentialPaths(): boolean {
+    return process.env.container === CONTAINER_ENV_VALUE
+        && !Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
+}
+
 export function getClaudeDir(profile?: string): string {
+    if (!profile && useMountedCredentialPaths()) return join(homedir(), ".claude");
     if (!profile) return CLAUDE_DIR;
     return join(PROFILES_DIR, profile, "claude");
 }
 
 export function getClaudeJsonFile(profile?: string): string {
+    if (!profile && useMountedCredentialPaths()) return join(homedir(), ".claude.json");
     if (!profile) return CLAUDE_JSON_FILE;
     return join(PROFILES_DIR, profile, "claude.json");
+}
+
+export function getCodexDir(): string {
+    if (useMountedCredentialPaths()) return join(homedir(), ".codex");
+    return CODEX_DIR;
+}
+
+export function getCodexConfigFile(): string {
+    if (useMountedCredentialPaths()) return join(getCodexDir(), "config.toml");
+    return CODEX_CONFIG_FILE;
 }
 export const IMAGE_NAME = "ccc";
 export const DOCKER_REGISTRY_IMAGE = process.env.CCC_REGISTRY || "luxusio/claude-code-container";

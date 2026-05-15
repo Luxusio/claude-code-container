@@ -79,7 +79,7 @@ const TOOLS: ToolDefinition[] = [
         // Verified via `codex <sub> --help`. Other subcommands reject the flag.
         subcommandsAcceptingDefaultFlags: ["exec", "e", "resume", "fork"],
         credentialMounts: [
-            { hostDir: ".codex", containerDir: "/home/ccc/.codex" },
+            { hostDir: ".ccc/codex", containerDir: "/home/ccc/.codex" },
             { hostDir: ".omx", containerDir: "/home/ccc/.omx" },
             { hostDir: ".agents", containerDir: "/home/ccc/.agents" },
         ],

@@ -320,8 +320,10 @@ export function getHostInternalAlias(): string {
  * Read via /sys/fs/selinux/enforce (== "1") with a getenforce fallback.
  */
 let _selinuxCached: boolean | null = null;
+let _currentContainerMounts: Array<{ source: string; destination: string }> | null = null;
 export function _resetSelinuxCacheForTest(): void {
     _selinuxCached = null;
+    _currentContainerMounts = null;
 }
 
 export function isSelinuxEnforcing(): boolean {
@@ -379,12 +381,67 @@ export function bindMountArgs(
 ): string[] {
     const suffixes: string[] = [];
     if (opts.readonly) suffixes.push("ro");
-    const isHostPath = hostPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(hostPath);
+    const translatedHostPath = translateCurrentContainerPath(hostPath);
+    const isHostPath = translatedHostPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(translatedHostPath);
     if (isHostPath && needsSelinuxRelabel()) {
         suffixes.push("Z");
     }
     const suffix = suffixes.length > 0 ? `:${suffixes.join(",")}` : "";
-    return ["-v", `${hostPath}:${containerPath}${suffix}`];
+    return ["-v", `${translatedHostPath}:${containerPath}${suffix}`];
+}
+
+function translateCurrentContainerPath(hostPath: string): string {
+    if (!hostPath.startsWith("/")) return hostPath;
+    if (process.env.container !== "docker" || isVitestProcess()) return hostPath;
+
+    const mounts = getCurrentContainerMounts();
+    let best: { source: string; destination: string } | null = null;
+    for (const mount of mounts) {
+        if (hostPath === mount.destination || hostPath.startsWith(`${mount.destination}/`)) {
+            if (!best || mount.destination.length > best.destination.length) {
+                best = mount;
+            }
+        }
+    }
+    if (!best) return hostPath;
+
+    const rel = hostPath.slice(best.destination.length).replace(/^\/+/, "");
+    return rel ? join(best.source, rel) : best.source;
+}
+
+function isVitestProcess(): boolean {
+    return Object.keys(process.env).some((key) => key === "VITEST" || key.startsWith("VITEST_"));
+}
+
+function getCurrentContainerMounts(): Array<{ source: string; destination: string }> {
+    if (_currentContainerMounts) return _currentContainerMounts;
+    _currentContainerMounts = [];
+
+    const name = process.env.HOSTNAME;
+    if (!name) return _currentContainerMounts;
+
+    const result = spawnSync(
+        "docker",
+        ["inspect", name, "--format", "{{json .Mounts}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) return _currentContainerMounts;
+
+    try {
+        const mounts = JSON.parse((result.stdout ?? "").trim()) as Array<{
+            Source?: string;
+            Destination?: string;
+        }>;
+        _currentContainerMounts = mounts
+            .filter((mount) => mount.Source && mount.Destination)
+            .map((mount) => ({
+                source: mount.Source!,
+                destination: mount.Destination!,
+            }));
+    } catch {
+        _currentContainerMounts = [];
+    }
+    return _currentContainerMounts;
 }
 
 /**

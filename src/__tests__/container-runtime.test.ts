@@ -51,7 +51,11 @@ describe("container-runtime", () => {
         // Scrub env of any pollution from other suites or the shell.
         delete process.env.CCC_RUNTIME;
         delete process.env.CCC_SELINUX_RELABEL;
+        delete process.env.container;
         delete process.env.VITEST;
+        for (const key of Object.keys(process.env)) {
+            if (key.startsWith("VITEST_")) delete process.env[key];
+        }
         vi.spyOn(console, "error").mockImplementation(() => {});
     });
 
@@ -159,6 +163,59 @@ describe("container-runtime", () => {
             // still applies; the helper currently gates on podman. Accept either.
             const args = bindMountArgs("/x", "/y");
             expect(args[0]).toBe("-v");
+        });
+
+        it("translates nested-container bind mount sources to the outer host source", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
+                {
+                    Source: "/run/desktop/mnt/host/c/Users/me/.ccc/codex",
+                    Destination: "/home/ccc/.codex",
+                },
+                {
+                    Source: "/run/desktop/mnt/host/c/Users/me/project",
+                    Destination: "/project/app",
+                },
+            ])));
+
+            expect(bindMountArgs("/home/ccc/.codex/config.toml", "/tmp/config.toml")).toEqual([
+                "-v",
+                "/run/desktop/mnt/host/c/Users/me/.ccc/codex/config.toml:/tmp/config.toml",
+            ]);
+        });
+
+        it("uses the longest matching nested-container mount destination", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
+                { Source: "/outer/home", Destination: "/home/ccc" },
+                { Source: "/outer/codex", Destination: "/home/ccc/.codex" },
+            ])));
+
+            expect(bindMountArgs("/home/ccc/.codex/auth.json", "/auth.json")).toEqual([
+                "-v",
+                "/outer/codex/auth.json:/auth.json",
+            ]);
+        });
+
+        it("does not inspect or translate mounts during Vitest runs", () => {
+            _setRuntimeInfoForTest({ runtime: "docker" });
+            process.env.container = "docker";
+            process.env.HOSTNAME = "ccc-parent";
+            process.env.VITEST_POOL_ID = "1";
+
+            expect(bindMountArgs("/home/ccc/.codex", "/home/ccc/.codex")).toEqual([
+                "-v",
+                "/home/ccc/.codex:/home/ccc/.codex",
+            ]);
+            expect(spawnSyncMock).not.toHaveBeenCalledWith(
+                "docker",
+                ["inspect", "ccc-parent", "--format", "{{json .Mounts}}"],
+                expect.any(Object),
+            );
         });
     });
 

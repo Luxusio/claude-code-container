@@ -65,6 +65,7 @@ function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: st
 describe("docker.ts module exports", () => {
     beforeEach(() => {
         spawnSyncMock.mockReset();
+        spawnSyncMock.mockReturnValue(makeResult(0));
         mockExistsSync.mockReset().mockReturnValue(true);
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});

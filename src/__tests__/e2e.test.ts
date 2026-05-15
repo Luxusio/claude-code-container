@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { spawnSync } from 'child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { spawnSync, execFileSync } from 'child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -11,13 +11,30 @@ function isDockerAvailable(): boolean {
 }
 
 // Run ccc command from the project root
+const CCC_PATH = join(__dirname, '../../dist/index.js')
+
+function ensureBuilt(): void {
+    if (existsSync(CCC_PATH) && process.env.CCC_E2E_SKIP_BUILD === '1') return
+    execFileSync('npm', ['run', 'build'], {
+        cwd: join(__dirname, '../..'),
+        stdio: 'inherit',
+    })
+}
+
 function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
-    const cccPath = join(__dirname, '../index.ts')
-    const result = spawnSync('npx', ['tsx', cccPath, ...args], {
+    const childEnv: Record<string, string> = {}
+    for (const [k, v] of Object.entries(process.env)) {
+        if (v === undefined) continue
+        if (k === 'VITEST' || k.startsWith('VITEST_')) continue
+        childEnv[k] = v
+    }
+    childEnv.NODE_ENV = 'test'
+
+    const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',
         cwd: options.cwd ?? process.cwd(),
         timeout: options.timeout ?? 60000,
-        env: { ...process.env, NODE_ENV: 'test' }
+        env: childEnv,
     })
     return {
         stdout: result.stdout ?? '',
@@ -32,10 +49,12 @@ let testProjectDir: string
 describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
 
     beforeAll(() => {
+        ensureBuilt()
         // Create a unique temp directory for test project
         testProjectDir = mkdtempSync(join(tmpdir(), 'ccc-test-'))
         // Create a minimal project structure
         writeFileSync(join(testProjectDir, 'package.json'), JSON.stringify({ name: 'test-project' }))
+        writeFileSync(join(testProjectDir, 'mise.toml'), '[tools]\n')
     })
 
     afterAll(() => {
@@ -89,8 +108,8 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
             // Run a simple command that creates container
             const result = runCcc(['echo', 'hello'], { cwd: testProjectDir, timeout: 120000 })
             // Container should be created (check with docker ps)
-            const ps = spawnSync('docker', ['ps', '-a', '--filter', 'name=^ccc-test-project-', '--format', '{{.Names}}'], { encoding: 'utf-8' })
-            expect(ps.stdout?.trim()).toMatch(/^ccc-test-project-/)
+            const ps = spawnSync('docker', ['ps', '-a', '--filter', 'name=^ccc-ccc-test-', '--format', '{{.Names}}'], { encoding: 'utf-8' })
+            expect(ps.stdout?.trim()).toMatch(/^ccc-ccc-test-/)
         })
 
         it('executes command and returns output', { timeout: 60000 }, () => {

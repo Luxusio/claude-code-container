@@ -5,6 +5,8 @@ import {
     DATA_DIR,
     CLAUDE_DIR,
     CLAUDE_JSON_FILE,
+    CODEX_DIR,
+    CODEX_CONFIG_FILE,
     REMOTE_CONFIG_DIR,
     IMAGE_NAME,
     CONTAINER_PID_LIMIT,
@@ -17,6 +19,10 @@ import {
     collectForwardedEnv,
     DEFAULT_ENV_FORWARD_BYTE_LIMIT,
     isValidEnvKey,
+    getClaudeDir,
+    getClaudeJsonFile,
+    getCodexDir,
+    getCodexConfigFile,
 } from '../utils.js';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -35,6 +41,12 @@ vi.mock('readline', () => ({
 }));
 
 describe('utils constants', () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+        process.env = { ...originalEnv };
+    });
+
     it('DATA_DIR should be ~/.ccc', () => {
         expect(DATA_DIR).toBe(join(homedir(), '.ccc'));
     });
@@ -64,6 +76,37 @@ describe('utils constants', () => {
         expect(COMMON_IGNORE_DIRS).toContain('.git');
         expect(COMMON_IGNORE_DIRS).toContain('dist');
         expect(COMMON_IGNORE_DIRS).toContain('build');
+    });
+
+    it('uses ~/.ccc credential paths on the host', () => {
+        delete process.env.container;
+        expect(getClaudeDir()).toBe(CLAUDE_DIR);
+        expect(getClaudeJsonFile()).toBe(CLAUDE_JSON_FILE);
+        expect(getCodexDir()).toBe(CODEX_DIR);
+        expect(getCodexConfigFile()).toBe(CODEX_CONFIG_FILE);
+    });
+
+    it('uses mounted credential paths inside a real ccc container', () => {
+        process.env.container = CONTAINER_ENV_VALUE;
+        delete process.env.VITEST;
+        for (const key of Object.keys(process.env)) {
+            if (key.startsWith('VITEST_')) delete process.env[key];
+        }
+
+        expect(getClaudeDir()).toBe(join(homedir(), '.claude'));
+        expect(getClaudeJsonFile()).toBe(join(homedir(), '.claude.json'));
+        expect(getCodexDir()).toBe(join(homedir(), '.codex'));
+        expect(getCodexConfigFile()).toBe(join(homedir(), '.codex', 'config.toml'));
+    });
+
+    it('keeps host-style credential paths inside Vitest even when container env is set', () => {
+        process.env.container = CONTAINER_ENV_VALUE;
+        process.env.VITEST_POOL_ID = '1';
+
+        expect(getClaudeDir()).toBe(CLAUDE_DIR);
+        expect(getClaudeJsonFile()).toBe(CLAUDE_JSON_FILE);
+        expect(getCodexDir()).toBe(CODEX_DIR);
+        expect(getCodexConfigFile()).toBe(CODEX_CONFIG_FILE);
     });
 });
 
@@ -269,6 +312,11 @@ describe('isValidEnvKey', () => {
 describe('additional constants', () => {
     it('CLAUDE_JSON_FILE should be ~/.ccc/claude.json', () => {
         expect(CLAUDE_JSON_FILE).toBe(join(homedir(), '.ccc', 'claude.json'));
+    });
+
+    it('CODEX_CONFIG_FILE should be ~/.ccc/codex/config.toml', () => {
+        expect(CODEX_DIR).toBe(join(homedir(), '.ccc', 'codex'));
+        expect(CODEX_CONFIG_FILE).toBe(join(homedir(), '.ccc', 'codex', 'config.toml'));
     });
 
     it('CONTAINER_ENV_KEY should be "container"', () => {

@@ -54,18 +54,20 @@ describe("ensureTools (npm tools)", () => {
         // Combined check returns all 3 missing
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper gemini
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper opencode
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 1 cleanup + 1 install + 3 wrappers = 6 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(6);
+        // 1 check + 2 cleanups + 1 install + 1 reshim + 3 wrappers = 8 calls
+        expect(spawnSyncMock).toHaveBeenCalledTimes(8);
 
-        // Verify install command uses mise exec node@22 (index 2 after cleanup)
-        const installCall = spawnSyncMock.mock.calls[2];
+        // Verify install command uses mise exec node@22 (index 3 after cleanup)
+        const installCall = spawnSyncMock.mock.calls[3];
         expect(installCall[0]).toBe("docker");
         const installArgs = installCall[1] as string[];
         expect(installArgs).toContain("exec");
@@ -77,7 +79,7 @@ describe("ensureTools (npm tools)", () => {
         expect(shCmd).toContain("opencode-ai");
 
         // Verify wrapper creation
-        const wrapperCall = spawnSyncMock.mock.calls[3];
+        const wrapperCall = spawnSyncMock.mock.calls[5];
         const wrapperArgs = wrapperCall[1] as string[];
         const wrapperCmd = wrapperArgs[wrapperArgs.length - 1];
         expect(wrapperCmd).toContain("mise exec node@22 -- gemini");
@@ -90,16 +92,18 @@ describe("ensureTools (npm tools)", () => {
         // Combined check returns only codex missing
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "codex\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 1 cleanup + 1 install + 1 wrapper = 4 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(4);
+        // 1 check + 2 cleanups + 1 install + 1 reshim + 1 wrapper = 6 calls
+        expect(spawnSyncMock).toHaveBeenCalledTimes(6);
 
-        // Install only codex (index 2 after cleanup)
-        const installCall = spawnSyncMock.mock.calls[2];
+        // Install only codex (index 3 after cleanup)
+        const installCall = spawnSyncMock.mock.calls[3];
         const shCmd = (installCall[1] as string[])[
             (installCall[1] as string[]).length - 1
         ];
@@ -113,12 +117,13 @@ describe("ensureTools (npm tools)", () => {
         // Combined check returns all 3 missing
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 1 cleanup + 1 install = 3 calls (no wrapper calls)
-        expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+        // 1 check + 2 cleanups + 1 install = 4 calls (no reshim/wrapper calls)
+        expect(spawnSyncMock).toHaveBeenCalledTimes(4);
         expect(console.warn).toHaveBeenCalledWith(
             "Warning: Failed to install some global npm tools (non-fatal)",
         );
