@@ -76,6 +76,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     libpango-1.0-0 \
     xvfb \
     xclip \
+    xdotool \
+    scrot \
     iptables \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8 \
