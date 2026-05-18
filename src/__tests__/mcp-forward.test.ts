@@ -233,6 +233,40 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).not.toContain("[mcp_servers.old-server]");
     });
 
+    it("removes legacy unmarked ccc-managed Codex MCP tables before writing", () => {
+        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/codex/config.toml"));
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".ccc/codex/config.toml")) {
+                return [
+                    'model = "gpt-5.2-codex"',
+                    "",
+                    "[mcp_servers.chrome-devtools]",
+                    'command = "mise"',
+                    'args = ["old"]',
+                    "",
+                    "[mcp_servers.x11-display]",
+                    'command = "mise"',
+                    'args = ["old"]',
+                    "",
+                    "[mcp_servers.user-server]",
+                    'command = "user-tool"',
+                    "",
+                    "[projects.\"/project/example\"]",
+                    'trust_level = "trusted"',
+                ].join("\n");
+            }
+            return "{}";
+        });
+
+        buildMcpConfig();
+        const codexConfig = getWrittenCodexConfig();
+        expect(codexConfig.match(/\[mcp_servers\.chrome-devtools\]/g)).toHaveLength(1);
+        expect(codexConfig.match(/\[mcp_servers\.x11-display\]/g)).toHaveLength(1);
+        expect(codexConfig).not.toContain('args = ["old"]');
+        expect(codexConfig).toContain("[mcp_servers.user-server]");
+        expect(codexConfig).toContain('[projects."/project/example"]');
+    });
+
     it("forwards host MCP servers (stdio)", () => {
         // CLAUDE_JSON_FILE does not exist, but host ~/.claude.json does
         existsSync.mockImplementation((p: string) => {

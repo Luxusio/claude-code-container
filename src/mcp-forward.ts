@@ -126,6 +126,37 @@ function stripCodexManagedBlock(configToml: string): string {
     return configToml.replace(pattern, "\n").trimEnd();
 }
 
+function isCodexManagedMcpTable(line: string): boolean {
+    return /^\[mcp_servers\.(?:"?(?:chrome-devtools|x11-display)"?)\]\s*$/.test(line.trim());
+}
+
+function isTomlTableHeader(line: string): boolean {
+    return /^\s*\[{1,2}[^\]]+\]{1,2}\s*$/.test(line);
+}
+
+function stripCodexManagedMcpTables(configToml: string): string {
+    const lines = configToml.split("\n");
+    const kept: string[] = [];
+
+    for (let i = 0; i < lines.length; i += 1) {
+        if (!isCodexManagedMcpTable(lines[i])) {
+            kept.push(lines[i]);
+            continue;
+        }
+
+        i += 1;
+        while (i < lines.length && !isTomlTableHeader(lines[i])) {
+            i += 1;
+        }
+        i -= 1;
+        while (kept.length > 0 && kept[kept.length - 1].trim() === "") {
+            kept.pop();
+        }
+    }
+
+    return kept.join("\n").trimEnd();
+}
+
 function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>): void {
     const codexConfigFile = getCodexConfigFile();
     mkdirSync(dirname(codexConfigFile), { recursive: true });
@@ -145,7 +176,7 @@ function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>): void 
         CODEX_MANAGED_END,
     ].join("\n\n");
 
-    const preserved = stripCodexManagedBlock(existing);
+    const preserved = stripCodexManagedMcpTables(stripCodexManagedBlock(existing));
     const nextConfig = preserved
         ? `${preserved}\n\n${managedBlock}\n`
         : `${managedBlock}\n`;
