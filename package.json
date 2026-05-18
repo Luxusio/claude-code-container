@@ -8,6 +8,7 @@
   },
   "files": [
     "dist/",
+    "scripts/install.js",
     "scripts/clipboard-shims/",
     "scripts/clipboard-helper-darwin.m",
     "README.md"
