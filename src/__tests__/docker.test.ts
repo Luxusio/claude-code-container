@@ -442,14 +442,14 @@ describe("docker.ts module exports", () => {
         });
 
         it("qualifies Docker Hub short-name refs for podman", () => {
-            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "podman-rootless" });
             expect(qualifyImageRefForRuntime("luxusio/claude-code-container:1.2.3")).toBe(
                 "docker.io/luxusio/claude-code-container:1.2.3",
             );
         });
 
         it("does not rewrite already-qualified podman refs", () => {
-            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "podman-rootless" });
             expect(qualifyImageRefForRuntime("ghcr.io/luxusio/ccc:1.2.3")).toBe("ghcr.io/luxusio/ccc:1.2.3");
             expect(qualifyImageRefForRuntime("localhost:5000/ccc:1.2.3")).toBe("localhost:5000/ccc:1.2.3");
         });
@@ -529,7 +529,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("pulls the fully-qualified Docker Hub ref on rootless podman", () => {
-            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "linux-rootless" });
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "podman-rootless" });
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, ""))    // isImageExists -> false
                 .mockReturnValueOnce(makeResult(0))        // pullImage -> success

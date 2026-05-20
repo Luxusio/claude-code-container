@@ -265,7 +265,17 @@ describe("container-runtime", () => {
         });
 
         it("adds --userns=keep-id:uid=1000,gid=1000 on rootless podman", () => {
-            _setRuntimeInfoForTest({ runtime: "podman", rootless: true });
+            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, flavor: "podman-rootless" });
+            expect(runtimeExtraRunArgs()).toEqual(["--userns=keep-id:uid=1000,gid=1000"]);
+        });
+
+        it("adds --userns=keep-id:uid=1000,gid=1000 on podman-machine (macOS/Windows)", () => {
+            _setRuntimeInfoForTest({
+                runtime: "podman",
+                rootless: false,
+                remote: true,
+                flavor: "podman-machine",
+            });
             expect(runtimeExtraRunArgs()).toEqual(["--userns=keep-id:uid=1000,gid=1000"]);
         });
 
@@ -276,7 +286,12 @@ describe("container-runtime", () => {
         });
 
         it("combines nested cgroup disablement with rootless podman userns mapping", () => {
-            _setRuntimeInfoForTest({ runtime: "podman", rootless: true, remote: false });
+            _setRuntimeInfoForTest({
+                runtime: "podman",
+                rootless: true,
+                remote: false,
+                flavor: "podman-rootless",
+            });
             process.env.container = "docker";
             expect(runtimeExtraRunArgs()).toEqual([
                 "--cgroups=disabled",
@@ -342,7 +357,7 @@ describe("container-runtime", () => {
             _setRuntimeInfoForTest({
                 runtime: "podman",
                 version: "5.2.3",
-                flavor: "linux-rootless",
+                flavor: "podman-rootless",
                 socketPath: "/run/user/1000/podman/podman.sock",
                 rootless: true,
                 remote: false,
@@ -350,7 +365,7 @@ describe("container-runtime", () => {
             const s = formatRuntimeSummary();
             expect(s).toContain("runtime=podman");
             expect(s).toContain("version=5.2.3");
-            expect(s).toContain("flavor=linux-rootless");
+            expect(s).toContain("flavor=podman-rootless");
             expect(s).toContain("socket=/run/user/1000/podman/podman.sock");
         });
     });
@@ -383,7 +398,7 @@ describe("container-runtime", () => {
             const info = getRuntimeInfo();
             expect(info.runtime).toBe("podman");
             expect(info.rootless).toBe(true);
-            expect(info.flavor).toBe("linux-rootless");
+            expect(info.flavor).toBe("podman-rootless");
             expect(info.socketPath).toBe("/run/user/1001/podman/podman.sock");
         });
 
@@ -398,7 +413,7 @@ describe("container-runtime", () => {
 
             const info = getRuntimeInfo();
             expect(info.rootless).toBe(true);
-            expect(info.flavor).toBe("linux-rootless");
+            expect(info.flavor).toBe("podman-rootless");
             expect(info.socketPath).toBe("/run/user/1002/podman/podman.sock");
             getuidSpy.mockRestore();
         });

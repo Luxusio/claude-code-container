@@ -85,7 +85,7 @@ describe.skipIf(!isPodmanAvailable())('E2E: Podman Integration', () => {
             expect(result.status).toBe(0)
             expect(result.stdout).toMatch(/runtime=podman\b/)
             expect(result.stdout).toMatch(/version=\d+\.\d+(\.\d+)?/)
-            expect(result.stdout).toMatch(/flavor=(linux-rootless|linux-rootful|podman-machine)/)
+            expect(result.stdout).toMatch(/flavor=(podman-rootless|podman-rootful|podman-machine)/)
             expect(result.stdout).toMatch(/socket=\S+/)
         })
 

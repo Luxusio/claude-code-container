@@ -27,9 +27,10 @@ import { join } from "path";
 export type RuntimeName = "docker" | "podman";
 
 export type RuntimeFlavor =
-    | "linux-rootful"        // docker or podman, running natively on Linux as root-equivalent
-    | "linux-rootless"       // podman rootless on Linux
+    | "docker-native"        // docker on Linux (native daemon, rootful)
     | "docker-desktop"       // docker on macOS/Windows/WSL2 (VM-backed)
+    | "podman-rootful"       // podman on Linux running as root
+    | "podman-rootless"      // podman on Linux running as unprivileged user
     | "podman-machine"       // podman on macOS/Windows (VM-backed)
     | "unknown";
 
@@ -64,7 +65,7 @@ export function _resetRuntimeCacheForTest(): void {
 export function _setRuntimeInfoForTest(info: Partial<RuntimeInfo> & { runtime: RuntimeName }): void {
     const defaults: RuntimeInfo = {
         runtime: info.runtime,
-        flavor: info.runtime === "docker" ? "linux-rootful" : "linux-rootful",
+        flavor: info.runtime === "docker" ? "docker-native" : "podman-rootful",
         version: "0.0.0",
         socketPath: info.runtime === "docker" ? "/var/run/docker.sock" : "/run/podman/podman.sock",
         rootless: false,
@@ -216,12 +217,12 @@ function detectRootless(runtime: RuntimeName): boolean {
 function deriveFlavor(runtime: RuntimeName, remote: boolean, rootless: boolean): RuntimeFlavor {
     if (runtime === "docker") {
         if (remote) return "docker-desktop";
-        return "linux-rootful";
+        return "docker-native";
     }
     // runtime === "podman"
     if (remote) return "podman-machine";
-    if (rootless) return "linux-rootless";
-    return "linux-rootful";
+    if (rootless) return "podman-rootless";
+    return "podman-rootful";
 }
 
 /**
@@ -266,7 +267,7 @@ export function getRuntimeInfo(): RuntimeInfo {
     if (process.env.VITEST && !_runtimeOverride) {
         _cachedInfo = {
             runtime: "docker",
-            flavor: "linux-rootful",
+            flavor: "docker-native",
             version: "0.0.0",
             socketPath: "/var/run/docker.sock",
             rootless: false,
@@ -463,6 +464,12 @@ function getCurrentContainerMounts(): Array<{ source: string; destination: strin
  * as the host UID can't chmod/write those paths ("Operation not permitted"
  * when `claude.ai/install.sh` tries to chmod the downloaded binary).
  *
+ * The same mapping is required for podman-machine (macOS/Windows): the VM
+ * runs rootless podman internally, so bind mounts coming through the machine
+ * VM land with a subuid that doesn't match container UID 1000 unless we
+ * explicitly remap. Without this, first-run claude install hits the same
+ * "Operation not permitted" chmod failure observed on Linux rootless.
+ *
  * Requires Podman 4.3+ for the `:uid=,gid=` syntax (released Nov 2022).
  */
 export function runtimeExtraRunArgs(): string[] {
@@ -476,7 +483,7 @@ export function runtimeExtraRunArgs(): string[] {
     ) {
         extras.push("--cgroups=disabled");
     }
-    if (info.runtime === "podman" && info.rootless) {
+    if (info.flavor === "podman-rootless" || info.flavor === "podman-machine") {
         extras.push("--userns=keep-id:uid=1000,gid=1000");
     }
     return extras;

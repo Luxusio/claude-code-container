@@ -71,7 +71,7 @@ ccc ui                     # Launch the desktop app (Tauri 2). Set CCC_DEV=1 for
 runtime is available and picks it automatically.
 
 ```bash
-ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=linux-rootless socket=...
+ccc runtime                # e.g. runtime=podman version=5.2.3 flavor=podman-rootless socket=...
 ```
 
 **Selection order (first hit wins):**

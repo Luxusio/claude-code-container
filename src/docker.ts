@@ -199,7 +199,7 @@ export function ensureDockerRunning(): void {
         } else {
             if (info.flavor === "podman-machine") {
                 console.error("Please start the Podman machine (`podman machine start`) and try again.");
-            } else if (info.flavor === "linux-rootless") {
+            } else if (info.flavor === "podman-rootless") {
                 console.error("Please start the rootless Podman service (`systemctl --user start podman.socket`) and try again.");
             } else {
                 console.error("Please start the Podman service (`sudo systemctl start podman.socket`) and try again.");
