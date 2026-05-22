@@ -37,6 +37,7 @@ const {
     ensureDockerRunning,
     ensureImage,
     qualifyImageRefForRuntime,
+    getHostGitIdentityMounts,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -64,7 +65,11 @@ function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: st
         Source: `/host${m.containerDir}`,
         Destination: m.containerDir,
     }));
-    return JSON.stringify([...credMounts, ...extra]);
+    const gitIdentityMounts = [
+        { Source: "/host/home/user/.gitconfig", Destination: "/home/ccc/.gitconfig" },
+        { Source: "/host/home/user/.config/git", Destination: "/home/ccc/.config/git" },
+    ];
+    return JSON.stringify([...credMounts, ...gitIdentityMounts, ...extra]);
 }
 
 describe("docker.ts module exports", () => {
@@ -311,6 +316,30 @@ describe("docker.ts module exports", () => {
                 sshAgentSocket: null,
             });
             expect(args).toContain("/home/user/.ccc/claude.json:/home/ccc/.claude.json");
+        });
+    });
+
+    describe("getHostGitIdentityMounts", () => {
+        it("returns existing host git identity config paths", () => {
+            mockExistsSync.mockImplementation((p: string) => (
+                p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
+            ));
+
+            const mounts = getHostGitIdentityMounts();
+
+            expect(mounts).toEqual([
+                expect.objectContaining({ containerPath: "/home/ccc/.gitconfig" }),
+                expect.objectContaining({ containerPath: "/home/ccc/.config/git" }),
+            ]);
+        });
+
+        it("omits host git identity paths that do not exist", () => {
+            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
+
+            const mounts = getHostGitIdentityMounts();
+
+            expect(mounts).toHaveLength(1);
+            expect(mounts[0].containerPath).toBe("/home/ccc/.gitconfig");
         });
     });
 
@@ -672,6 +701,29 @@ describe("docker.ts module exports", () => {
             expect(runCall).toBeDefined();
         });
 
+        it("mounts existing host git identity paths when creating a container", () => {
+            mockExistsSync.mockImplementation((p: string) => (
+                p.endsWith("/.gitconfig")
+            ));
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValue(makeResult(0));                     // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            const runArgs = runCall![1] as string[];
+            expect(runArgs.some((a) => a.endsWith("/.gitconfig:/home/ccc/.gitconfig:ro"))).toBe(true);
+            expect(runArgs.some((a) => a.includes("/.config/git:/home/ccc/.config/git"))).toBe(false);
+        });
+
         it("fixes SSH key permissions after creating container when ssh dir exists", () => {
             mockExistsSync.mockReturnValue(true);
 
@@ -796,6 +848,31 @@ describe("docker.ts module exports", () => {
             );
             expect(stopCall).toBeDefined();
             expect(rmCall).toBeDefined();
+        });
+
+        it("recreates container when host git identity mounts are missing", () => {
+            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
+
+            const missingGitIdentityMountsJson = fullCredentialMountsJson()
+                .replace(/,\{"Source":"\/host\/home\/user\/\.gitconfig","Destination":"\/home\/ccc\/\.gitconfig"\}/, "");
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, missingGitIdentityMountsJson)) // inspect -> missing git identity mount
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
         });
 
         it("reuses container when extraMounts are present and all mounts exist", () => {

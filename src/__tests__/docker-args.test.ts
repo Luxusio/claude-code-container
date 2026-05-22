@@ -19,6 +19,7 @@ function makeOpts(
             { hostPath: "/home/user/.ccc/claude", containerPath: "/home/ccc/.claude" },
             { hostPath: "/home/user/.claude/ide", containerPath: "/home/ccc/.claude/ide" },
         ],
+        gitIdentityMounts: [],
         claudeJsonFile: "/home/user/.ccc/claude.json",
         miseVolumeName: "ccc-mise-cache",
         pidsLimit: "-1",
@@ -200,6 +201,42 @@ describe("buildDockerRunArgs — GIT_SSH_COMMAND", () => {
         const imageIdx = args.lastIndexOf("ccc");
         expect(envIdx).toBeGreaterThan(0);
         expect(envIdx).toBeLessThan(imageIdx);
+    });
+});
+
+// ===========================================================================
+// 1b.1 Git identity mounts — host git config forwarding
+// ===========================================================================
+describe("buildDockerRunArgs — git identity mounts", () => {
+    it("mounts host ~/.gitconfig read-only when supplied", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({
+                gitIdentityMounts: [
+                    { hostPath: "/home/user/.gitconfig", containerPath: "/home/ccc/.gitconfig" },
+                ],
+            }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain("/home/user/.gitconfig:/home/ccc/.gitconfig:ro");
+    });
+
+    it("mounts host ~/.config/git read-only when supplied", () => {
+        const args = buildDockerRunArgs(
+            makeOpts({
+                gitIdentityMounts: [
+                    { hostPath: "/home/user/.config/git", containerPath: "/home/ccc/.config/git" },
+                ],
+            }),
+        );
+        const mounts = extractVolumeMounts(args);
+        expect(mounts).toContain("/home/user/.config/git:/home/ccc/.config/git:ro");
+    });
+
+    it("omits git identity mounts when none are supplied", () => {
+        const args = buildDockerRunArgs(makeOpts());
+        const mounts = extractVolumeMounts(args);
+        expect(mounts.find((m) => m.includes(".gitconfig"))).toBeUndefined();
+        expect(mounts.find((m) => m.includes(".config/git"))).toBeUndefined();
     });
 });
 

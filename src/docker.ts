@@ -35,6 +35,7 @@ export interface DockerRunArgsOptions {
     fullPath: string;
     projectMountPath: string;
     credentialMounts: Array<{ hostPath: string; containerPath: string }>;
+    gitIdentityMounts?: Array<{ hostPath: string; containerPath: string }>;
     claudeJsonFile: string;
     miseVolumeName: string;
     pidsLimit: string;
@@ -86,6 +87,9 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     args.push(...bindMountArgs(opts.fullPath, opts.projectMountPath));
     for (const mount of opts.credentialMounts) {
         args.push(...bindMountArgs(mount.hostPath, mount.containerPath));
+    }
+    for (const mount of opts.gitIdentityMounts ?? []) {
+        args.push(...bindMountArgs(mount.hostPath, mount.containerPath, { readonly: true }));
     }
     args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
     // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
@@ -430,6 +434,15 @@ function containerHasMounts(
     }
 }
 
+export function getHostGitIdentityMounts(): Array<{ hostPath: string; containerPath: string }> {
+    const home = homedir();
+    const candidates = [
+        { hostPath: join(home, ".gitconfig"), containerPath: "/home/ccc/.gitconfig" },
+        { hostPath: join(home, ".config", "git"), containerPath: "/home/ccc/.config/git" },
+    ];
+    return candidates.filter((mount) => existsSync(mount.hostPath));
+}
+
 function fixSshPermissions(containerName: string): void {
     const hostSshDir = join(homedir(), ".ssh");
     const cli = runtimeCli();
@@ -499,12 +512,14 @@ export function startProjectContainer(
     // Otherwise an old container created before a tool was added to the
     // registry would silently miss that tool's auth dir on subsequent runs.
     if (isContainerExists(containerName)) {
+        const gitIdentityMounts = getHostGitIdentityMounts();
         const requiredMounts: Array<{ hostPath: string; containerPath: string }> = [
             ...getAllCredentialMounts().map((m) => ({
                 // hostPath isn't checked — only containerPath matters
                 hostPath: m.hostDir,
                 containerPath: m.containerDir,
             })),
+            ...gitIdentityMounts,
             ...(extraMounts ?? []),
         ];
         if (!containerHasMounts(containerName, requiredMounts)) {
@@ -561,6 +576,7 @@ export function startProjectContainer(
         mkdirSync(hostPath, { recursive: true });
         return { hostPath, containerPath: m.containerDir };
     });
+    const gitIdentityMounts = getHostGitIdentityMounts();
 
     const hostSshDir = join(homedir(), ".ssh");
 
@@ -579,6 +595,7 @@ export function startProjectContainer(
         fullPath,
         projectMountPath,
         credentialMounts,
+        gitIdentityMounts,
         claudeJsonFile: getClaudeJsonFile(profile),
         miseVolumeName: MISE_VOLUME_NAME,
         pidsLimit: CONTAINER_PID_LIMIT,

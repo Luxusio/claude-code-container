@@ -21,7 +21,7 @@ function ensureBuilt(): void {
     })
 }
 
-function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}): { stdout: string, stderr: string, status: number | null } {
+function runCcc(args: string[], options: { cwd?: string, timeout?: number, env?: Record<string, string> } = {}): { stdout: string, stderr: string, status: number | null } {
     const childEnv: Record<string, string> = {}
     for (const [k, v] of Object.entries(process.env)) {
         if (v === undefined) continue
@@ -30,6 +30,7 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}
     }
     childEnv.NODE_ENV = 'test'
     childEnv.CCC_RUNTIME = 'docker'
+    Object.assign(childEnv, options.env ?? {})
 
     const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
         encoding: 'utf-8',
@@ -46,6 +47,7 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number } = {}
 
 // Get test project path with unique hash
 let testProjectDir: string
+let gitHomeDir: string
 
 describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
 
@@ -53,9 +55,16 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
         ensureBuilt()
         // Create a unique temp directory for test project
         testProjectDir = mkdtempSync(join(tmpdir(), 'ccc-test-'))
+        gitHomeDir = mkdtempSync(join(tmpdir(), 'ccc-git-home-'))
         // Create a minimal project structure
         writeFileSync(join(testProjectDir, 'package.json'), JSON.stringify({ name: 'test-project' }))
         writeFileSync(join(testProjectDir, 'mise.toml'), '[tools]\n')
+        writeFileSync(join(gitHomeDir, '.gitconfig'), [
+            '[user]',
+            '\tname = CCC E2E User',
+            '\temail = ccc-e2e@example.com',
+            '',
+        ].join('\n'))
     })
 
     afterAll(() => {
@@ -65,6 +74,7 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
             const result = runCcc(['rm'], { cwd: testProjectDir, timeout: 30000 })
             // Remove temp directory
             rmSync(testProjectDir, { recursive: true, force: true })
+            rmSync(gitHomeDir, { recursive: true, force: true })
         }
     })
 
@@ -116,6 +126,18 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
         it('executes command and returns output', { timeout: 60000 }, () => {
             const result = runCcc(['echo', 'test-output'], { cwd: testProjectDir, timeout: 60000 })
             expect(result.stdout).toContain('test-output')
+        })
+
+        it('mounts host git identity into the container', { timeout: 120000 }, () => {
+            runCcc(['rm'], { cwd: testProjectDir, timeout: 30000, env: { HOME: gitHomeDir } })
+
+            const result = runCcc(
+                ['git', 'config', '--global', 'user.email'],
+                { cwd: testProjectDir, timeout: 120000, env: { HOME: gitHomeDir } },
+            )
+
+            expect(result.status).toBe(0)
+            expect(result.stdout.trim()).toBe('ccc-e2e@example.com')
         })
 
         it('ccc stop stops the container', { timeout: 30000 }, () => {
