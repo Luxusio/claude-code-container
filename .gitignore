@@ -27,3 +27,6 @@ doc/harness/.maintain-observe.log
 doc/harness/.maintain-pending.json
 doc/harness/.hygiene.lock
 doc/harness/.hygiene-session-count
+doc/harness/.hygiene-last-run
+doc/harness/.hygiene-observe.log
+doc/harness/runtime/
