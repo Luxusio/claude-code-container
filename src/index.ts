@@ -586,11 +586,15 @@ async function exec(
     // `mise install -y` auto-reshims when it installs anything, so an
     // explicit `mise reshim` would be redundant — dropped.
     const runMiseInstall = () => {
+        // Keep mise's stderr visible — that's where it streams download/build
+        // progress (e.g. "downloading node@22…"). `|| true` already makes the
+        // step non-fatal; muting stderr just hid the install activity and made
+        // long first-run installs look hung.
         spawnSync(
             runtimeCli(),
             [
                 "exec", "-w", projectMountPath, containerName,
-                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y 2>/dev/null || true",
+                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true",
             ],
             { stdio: "inherit" },
         );

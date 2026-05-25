@@ -366,7 +366,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         }
         const envString = envFlags.join(" ");
 
-        const execCmd = `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y 2>/dev/null || true; claude ${claudeArgs}"`;
+        const execCmd = `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y || true; claude ${claudeArgs}"`;
 
         const sshProcess = spawn("ssh", ["-t", `${config.user}@${config.host}`, execCmd], {
             stdio: "inherit"
