@@ -81,6 +81,17 @@ exec "$@"
     writeFileSync(join(bin, 'fake-proxy'), `#!/bin/bash\nexit 0\n`);
     chmodSync(join(bin, 'fake-proxy'), 0o755);
 
+    // Mock git — logs every invocation to MOCK_STATE so tests can assert on
+    // exactly which `git config --global ...` calls the entrypoint made.
+    writeFileSync(
+        join(bin, 'git'),
+        `#!/bin/bash
+echo "git $*" >> "$MOCK_STATE"
+exit 0
+`,
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+
     return {
         dir,
         bin,
@@ -106,6 +117,11 @@ function runEntrypoint(
                 // Tests run on a real host where port 19999 may or may not be
                 // taken. Pin the listening check to a known answer per case.
                 CCC_TEST_PROXY_LISTENING: 'force-absent',
+                // Pin gitconfig staging/target into the fixture so tests are
+                // hermetic. By default the staging file is absent (setup_host_gitconfig
+                // no-ops); tests that exercise the copy path create the file.
+                CCC_HOST_GITCONFIG_STAGE: join(fx.dir, 'staged-gitconfig'),
+                CCC_GITCONFIG_TARGET: join(fx.dir, 'home-gitconfig'),
                 ...env,
             },
             encoding: 'utf-8',
@@ -257,6 +273,69 @@ describe('ccc-entrypoint.sh', () => {
         expect(result.status).toBe(0);
         expect(result.stderr).toContain('ccc-proxy daemon started');
         expect(result.stderr).not.toMatch(/skipping daemon/);
+    });
+
+    it('copies staged host gitconfig into HOME and re-applies safe.directory baseline', () => {
+        const stage = join(fx.dir, 'staged-gitconfig');
+        const target = join(fx.dir, 'home-gitconfig');
+        writeFileSync(stage, '[user]\n\tname = Foo\n\temail = foo@bar.com\n');
+
+        const result = runEntrypoint(fx, {
+            CCC_HOST_GITCONFIG_STAGE: stage,
+            CCC_GITCONFIG_TARGET: target,
+        });
+
+        expect(result.status).toBe(0);
+        // Target now contains the staged content verbatim.
+        expect(readFileSync(target, 'utf-8')).toContain('foo@bar.com');
+        // safe.directory='*' baseline re-applied AFTER copy via git config.
+        const state = readFileSync(fx.stateFile, 'utf-8');
+        expect(state).toContain("git config --global --add safe.directory *");
+        expect(result.stderr).toMatch(/host gitconfig copied/i);
+    });
+
+    it('no-ops the gitconfig phase when the staged file is absent', () => {
+        const result = runEntrypoint(fx, {});
+
+        expect(result.status).toBe(0);
+        // No copy, no git invocation in the gitconfig phase.
+        const state = readFileSync(fx.stateFile, 'utf-8');
+        expect(state).not.toContain('git config --global --add safe.directory');
+        expect(result.stderr).toMatch(/no host gitconfig staged/i);
+        // Target was not created either.
+        expect(existsSync(join(fx.dir, 'home-gitconfig'))).toBe(false);
+    });
+
+    it('invokes safe.directory re-application exactly once per startup', () => {
+        const stage = join(fx.dir, 'staged-gitconfig');
+        writeFileSync(stage, '[user]\n\tname = Foo\n');
+
+        const result = runEntrypoint(fx, {
+            CCC_HOST_GITCONFIG_STAGE: stage,
+            CCC_GITCONFIG_TARGET: join(fx.dir, 'home-gitconfig'),
+        });
+
+        expect(result.status).toBe(0);
+        const state = readFileSync(fx.stateFile, 'utf-8');
+        const safeDirCalls = (state.match(/git config --global --add safe\.directory \*/g) ?? []).length;
+        expect(safeDirCalls).toBe(1);
+    });
+
+    it('runs the gitconfig phase even when CCC_PROXY_ENABLED is unset', () => {
+        // The gitconfig fix matters on every platform, not just the ones that
+        // need the proxy. Confirm it runs in the default (proxy-disabled) path.
+        const stage = join(fx.dir, 'staged-gitconfig');
+        writeFileSync(stage, '[user]\n\tname = Foo\n');
+
+        const result = runEntrypoint(fx, {
+            CCC_HOST_GITCONFIG_STAGE: stage,
+            CCC_GITCONFIG_TARGET: join(fx.dir, 'home-gitconfig'),
+            // CCC_PROXY_ENABLED intentionally unset
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stderr).toMatch(/host gitconfig copied/i);
+        expect(result.stderr).toContain('skipping proxy setup');
     });
 
     it('every log line carries the [ccc-entrypoint] prefix for grep', () => {

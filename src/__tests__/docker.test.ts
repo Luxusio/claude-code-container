@@ -66,7 +66,7 @@ function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: st
         Destination: m.containerDir,
     }));
     const gitIdentityMounts = [
-        { Source: "/host/home/user/.gitconfig", Destination: "/home/ccc/.gitconfig" },
+        { Source: "/host/home/user/.gitconfig", Destination: "/host-stage/gitconfig" },
         { Source: "/host/home/user/.config/git", Destination: "/home/ccc/.config/git" },
     ];
     return JSON.stringify([...credMounts, ...gitIdentityMounts, ...extra]);
@@ -328,7 +328,7 @@ describe("docker.ts module exports", () => {
             const mounts = getHostGitIdentityMounts();
 
             expect(mounts).toEqual([
-                expect.objectContaining({ containerPath: "/home/ccc/.gitconfig" }),
+                expect.objectContaining({ containerPath: "/host-stage/gitconfig" }),
                 expect.objectContaining({ containerPath: "/home/ccc/.config/git" }),
             ]);
         });
@@ -339,7 +339,20 @@ describe("docker.ts module exports", () => {
             const mounts = getHostGitIdentityMounts();
 
             expect(mounts).toHaveLength(1);
-            expect(mounts[0].containerPath).toBe("/home/ccc/.gitconfig");
+            expect(mounts[0].containerPath).toBe("/host-stage/gitconfig");
+        });
+
+        it("never mounts host gitconfig directly at /home/ccc/.gitconfig (atomic-rename safety)", () => {
+            mockExistsSync.mockImplementation((p: string) => (
+                p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
+            ));
+
+            const mounts = getHostGitIdentityMounts();
+
+            // The entrypoint copies /host-stage/gitconfig → /home/ccc/.gitconfig
+            // so the in-HOME file is a regular file, not a bind mount whose
+            // inode is anchored to the mountpoint (rename(2) would EBUSY otherwise).
+            expect(mounts.find((m) => m.containerPath === "/home/ccc/.gitconfig")).toBeUndefined();
         });
     });
 
@@ -720,7 +733,7 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
             const runArgs = runCall![1] as string[];
-            expect(runArgs.some((a) => a.endsWith("/.gitconfig:/home/ccc/.gitconfig:ro"))).toBe(true);
+            expect(runArgs.some((a) => a.endsWith("/.gitconfig:/host-stage/gitconfig:ro"))).toBe(true);
             expect(runArgs.some((a) => a.includes("/.config/git:/home/ccc/.config/git"))).toBe(false);
         });
 
@@ -854,7 +867,7 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
 
             const missingGitIdentityMountsJson = fullCredentialMountsJson()
-                .replace(/,\{"Source":"\/host\/home\/user\/\.gitconfig","Destination":"\/home\/ccc\/\.gitconfig"\}/, "");
+                .replace(/,\{"Source":"\/host\/home\/user\/\.gitconfig","Destination":"\/host-stage\/gitconfig"\}/, "");
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists

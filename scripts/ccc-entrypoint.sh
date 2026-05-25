@@ -29,6 +29,12 @@ MAX_ATTEMPTS="${CCC_IPTABLES_MAX_ATTEMPTS:-3}"
 INITIAL_BACKOFF_MS="${CCC_IPTABLES_INITIAL_BACKOFF_MS:-200}"
 LOCK_WAIT_SEC="${CCC_IPTABLES_LOCK_WAIT_SEC:-2}"
 
+# Host ~/.gitconfig is mounted read-only at this staging path, not at
+# /home/ccc/.gitconfig directly — see src/docker.ts:getHostGitIdentityMounts
+# for the rationale (atomic rename can't replace single-file bind mounts).
+HOST_GITCONFIG_STAGE="${CCC_HOST_GITCONFIG_STAGE:-/host-stage/gitconfig}"
+GITCONFIG_TARGET="${CCC_GITCONFIG_TARGET:-/home/ccc/.gitconfig}"
+
 # Every line emitted by this entrypoint starts with `[ccc-entrypoint]` so it
 # is greppable in `docker logs` and never collides with the user command's
 # own output. Phase-timing lines additionally carry a `[timing]` infix.
@@ -121,6 +127,23 @@ is_proxy_listening() {
     return 1
 }
 
+# Copy the host gitconfig from its read-only staging mount into HOME, so the
+# resulting /home/ccc/.gitconfig is a regular file on the same filesystem as
+# /home/ccc. After the copy, re-apply the Dockerfile's safe.directory='*'
+# baseline since the host file likely doesn't have it.
+setup_host_gitconfig() {
+    if [ ! -f "${HOST_GITCONFIG_STAGE}" ]; then
+        log "no host gitconfig staged — keeping Dockerfile baseline"
+        return 0
+    fi
+    if ! cp "${HOST_GITCONFIG_STAGE}" "${GITCONFIG_TARGET}"; then
+        log "ERROR: failed to copy host gitconfig — keeping Dockerfile baseline"
+        return 0
+    fi
+    git config --global --add safe.directory '*'
+    log "host gitconfig copied to ${GITCONFIG_TARGET} (safe.directory re-applied)"
+}
+
 start_proxy_daemon() {
     # --network host means every ccc container shares one host netns and one
     # loopback. If another ccc container already brought the proxy up, our
@@ -134,6 +157,8 @@ start_proxy_daemon() {
 }
 
 main() {
+    setup_host_gitconfig
+
     if [ "${CCC_PROXY_ENABLED:-0}" = "1" ]; then
         log "configuring localhost proxy"
         local t0 t1

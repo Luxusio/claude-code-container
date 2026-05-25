@@ -445,10 +445,17 @@ function containerHasMounts(
     }
 }
 
+// Why host ~/.gitconfig is staged, not mounted at /home/ccc/.gitconfig directly:
+// single-file bind mounts anchor the inode, so rename(2) — the call git uses to
+// atomically replace .gitconfig after writing .gitconfig.lock — returns EBUSY or
+// stalls. Inside the container, scripts/ccc-entrypoint.sh copies
+// /host-stage/gitconfig to /home/ccc/.gitconfig at startup, producing a regular
+// file on the same filesystem as /home/ccc that supports atomic replace.
+// Directory mounts (~/.config/git/) don't have this problem and stay as-is.
 export function getHostGitIdentityMounts(): Array<{ hostPath: string; containerPath: string }> {
     const home = homedir();
     const candidates = [
-        { hostPath: join(home, ".gitconfig"), containerPath: "/home/ccc/.gitconfig" },
+        { hostPath: join(home, ".gitconfig"), containerPath: "/host-stage/gitconfig" },
         { hostPath: join(home, ".config", "git"), containerPath: "/home/ccc/.config/git" },
     ];
     return candidates.filter((mount) => existsSync(mount.hostPath));

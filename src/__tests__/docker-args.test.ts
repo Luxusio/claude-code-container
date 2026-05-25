@@ -208,16 +208,20 @@ describe("buildDockerRunArgs — GIT_SSH_COMMAND", () => {
 // 1b.1 Git identity mounts — host git config forwarding
 // ===========================================================================
 describe("buildDockerRunArgs — git identity mounts", () => {
-    it("mounts host ~/.gitconfig read-only when supplied", () => {
+    it("mounts host ~/.gitconfig read-only at the staging path (not at HOME)", () => {
+        // The entrypoint copies /host-stage/gitconfig → /home/ccc/.gitconfig at
+        // container start. Mounting the file directly at /home/ccc/.gitconfig
+        // anchors the inode and breaks atomic rename for `git config --global`.
         const args = buildDockerRunArgs(
             makeOpts({
                 gitIdentityMounts: [
-                    { hostPath: "/home/user/.gitconfig", containerPath: "/home/ccc/.gitconfig" },
+                    { hostPath: "/home/user/.gitconfig", containerPath: "/host-stage/gitconfig" },
                 ],
             }),
         );
         const mounts = extractVolumeMounts(args);
-        expect(mounts).toContain("/home/user/.gitconfig:/home/ccc/.gitconfig:ro");
+        expect(mounts).toContain("/home/user/.gitconfig:/host-stage/gitconfig:ro");
+        expect(mounts.find((m) => m.endsWith(":/home/ccc/.gitconfig:ro"))).toBeUndefined();
     });
 
     it("mounts host ~/.config/git read-only when supplied", () => {
