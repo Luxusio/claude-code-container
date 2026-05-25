@@ -1,164 +1,117 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { spawnSync } from 'child_process'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { spawnSync } from 'child_process';
 
 vi.mock('child_process', () => ({
     spawnSync: vi.fn(),
-}))
+}));
 
-const mockIsContainerHostRemote = vi.fn<() => boolean>().mockReturnValue(false)
+const mockIsContainerHostRemote = vi.fn<() => boolean>().mockReturnValue(false);
 vi.mock('../container-runtime.js', () => ({
     runtimeCli: () => 'docker',
     isContainerHostRemote: (...args: unknown[]) => mockIsContainerHostRemote(...(args as [])),
-}))
+}));
 
-const mockSpawnSync = vi.mocked(spawnSync)
+const mockDetectHostNetworkReach = vi.fn();
+vi.mock('../network-reach.js', () => ({
+    detectHostNetworkReach: (...args: unknown[]) => mockDetectHostNetworkReach(...args),
+}));
 
-const OK = { status: 0, stdout: '', stderr: '', pid: 0, signal: null, output: [] } as any
-const FAIL = { status: 1, stdout: '', stderr: '', pid: 0, signal: null, output: [] } as any
+const mockSpawnSync = vi.mocked(spawnSync);
 
-describe('localhost-proxy-setup', () => {
-    const originalPlatform = process.platform
-    const originalEnv = { ...process.env }
+const OK = { status: 0, stdout: '', stderr: '', pid: 0, signal: null, output: [] } as any;
+const FAIL = { status: 1, stdout: '', stderr: '', pid: 0, signal: null, output: [] } as any;
+
+describe('setupLocalhostProxy (post-entrypoint verification layer)', () => {
+    const originalPlatform = process.platform;
+    let warnSpy: ReturnType<typeof vi.spyOn>;
+    let errorSpy: ReturnType<typeof vi.spyOn>;
 
     beforeEach(() => {
-        vi.resetAllMocks()
-        mockIsContainerHostRemote.mockReturnValue(false)
-    })
+        vi.resetAllMocks();
+        mockIsContainerHostRemote.mockReturnValue(false);
+        warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
 
     afterEach(() => {
-        Object.defineProperty(process, 'platform', { value: originalPlatform })
-        process.env = { ...originalEnv }
-    })
+        Object.defineProperty(process, 'platform', { value: originalPlatform });
+        warnSpy.mockRestore();
+        errorSpy.mockRestore();
+    });
 
-    it('skips proxy setup on native Linux Docker (--network host works natively)', async () => {
-        Object.defineProperty(process, 'platform', { value: 'linux' })
-        mockIsContainerHostRemote.mockReturnValue(false)
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
+    it('skips entirely on native Linux Docker (--network host works natively)', async () => {
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        mockIsContainerHostRemote.mockReturnValue(false);
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
 
-        setupLocalhostProxy('test-container')
-        expect(mockSpawnSync).not.toHaveBeenCalled()
-    })
+        setupLocalhostProxy('test-container');
 
-    it('runs proxy setup on Linux with Docker Desktop (WSL2)', async () => {
-        Object.defineProperty(process, 'platform', { value: 'linux' })
-        mockIsContainerHostRemote.mockReturnValue(true)
+        expect(mockDetectHostNetworkReach).not.toHaveBeenCalled();
+        expect(mockSpawnSync).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
 
-        mockSpawnSync
-            .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running
-            .mockReturnValueOnce({ ...OK, stdout: '999\n' } as any)             // id -u ccc-proxy → 999
-            .mockReturnValueOnce(FAIL)                                          // iptables -C → not exists
-            .mockReturnValueOnce(OK)                                            // iptables -A → success
-            .mockReturnValueOnce(OK)                                            // start ccc-proxy binary
+    it('skips when the container already has direct host reach (mirrored mode)', async () => {
+        Object.defineProperty(process, 'platform', { value: 'darwin' });
+        mockDetectHostNetworkReach.mockReturnValue({ reachable: true, latencyMs: 3 });
 
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-        setupLocalhostProxy('test-container')
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
+        setupLocalhostProxy('test-container');
 
-        expect(mockSpawnSync.mock.calls.length).toBe(5)
+        expect(mockDetectHostNetworkReach).toHaveBeenCalledWith('test-container', { timeoutMs: 1500 });
+        // No further checks — the proxy is unnecessary in this environment.
+        expect(mockSpawnSync).not.toHaveBeenCalled();
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
 
-        // Verify iptables add was called
-        const iptablesAddCall = mockSpawnSync.mock.calls.find(
-            (call) => {
-                const args = call[1] as string[]
-                return args && args.includes('-A') && args.includes('OUTPUT')
-            }
-        )
-        expect(iptablesAddCall).toBeDefined()
+    it('confirms silently when host is unreachable and the proxy daemon is running', async () => {
+        Object.defineProperty(process, 'platform', { value: 'darwin' });
+        mockDetectHostNetworkReach.mockReturnValue({ reachable: false, latencyMs: 12, reason: 'unreachable' });
+        mockSpawnSync.mockReturnValue(OK); // isProxyRunning → port listening
 
-        // Verify Go proxy binary was started
-        const proxyCall = mockSpawnSync.mock.calls.find(
-            (call) => {
-                const args = call[1] as string[]
-                return args && args.includes('/usr/local/bin/ccc-proxy')
-            }
-        )
-        expect(proxyCall).toBeDefined()
-    })
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
+        setupLocalhostProxy('test-container');
 
-    it('runs proxy setup on macOS (darwin)', async () => {
-        Object.defineProperty(process, 'platform', { value: 'darwin' })
+        expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
 
-        mockSpawnSync
-            .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running
-            .mockReturnValueOnce({ ...OK, stdout: '999\n' } as any)             // id -u ccc-proxy → 999
-            .mockReturnValueOnce(FAIL)                                          // iptables -C → not exists
-            .mockReturnValueOnce(OK)                                            // iptables -A → success
-            .mockReturnValueOnce(OK)                                            // start ccc-proxy binary
+    it('warns loudly when host is unreachable AND the proxy daemon is missing', async () => {
+        Object.defineProperty(process, 'platform', { value: 'darwin' });
+        mockDetectHostNetworkReach.mockReturnValue({ reachable: false, latencyMs: 12, reason: 'unreachable' });
+        mockSpawnSync.mockReturnValue(FAIL); // proxy port not listening
 
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-        setupLocalhostProxy('test-container')
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
+        setupLocalhostProxy('test-container');
 
-        expect(mockSpawnSync.mock.calls.length).toBe(5)
+        expect(warnSpy).toHaveBeenCalled();
+        const messages = warnSpy.mock.calls.map((c) => c[0] as string).join('\n');
+        expect(messages).toMatch(/proxy daemon not detected/i);
+        expect(messages).toContain('docker logs test-container');
+    });
 
-        // Verify iptables add was called with correct args
-        const iptablesAddCall = mockSpawnSync.mock.calls.find(
-            (call) => {
-                const args = call[1] as string[]
-                return args && args.includes('-A') && args.includes('OUTPUT')
-            }
-        )
-        expect(iptablesAddCall).toBeDefined()
-        const addArgs = iptablesAddCall![1] as string[]
-        expect(addArgs).toContain('127.0.0.1')
-        expect(addArgs).toContain('REDIRECT')
-        expect(addArgs).toContain('999')
-    })
+    it('runs the verification path on Windows (win32) the same as darwin', async () => {
+        Object.defineProperty(process, 'platform', { value: 'win32' });
+        mockDetectHostNetworkReach.mockReturnValue({ reachable: false, latencyMs: 50, reason: 'timeout' });
+        mockSpawnSync.mockReturnValue(OK);
 
-    it('runs proxy setup on Windows (win32)', async () => {
-        Object.defineProperty(process, 'platform', { value: 'win32' })
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
+        setupLocalhostProxy('test-container');
 
-        mockSpawnSync
-            .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running
-            .mockReturnValueOnce({ ...OK, stdout: '999\n' } as any)             // id -u ccc-proxy → 999
-            .mockReturnValueOnce(OK)                                            // iptables -C → already exists
-            .mockReturnValueOnce(OK)                                            // start ccc-proxy binary
+        expect(mockDetectHostNetworkReach).toHaveBeenCalled();
+        expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    });
 
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-        setupLocalhostProxy('test-container')
+    it('runs the verification path on Linux when the container host is remote (WSL2)', async () => {
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        mockIsContainerHostRemote.mockReturnValue(true);
+        mockDetectHostNetworkReach.mockReturnValue({ reachable: false, latencyMs: 8, reason: 'unreachable' });
+        mockSpawnSync.mockReturnValue(OK);
 
-        // 4 calls: isProxyRunning, id, iptables-C (exists), start proxy
-        expect(mockSpawnSync.mock.calls.length).toBe(4)
-    })
+        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js');
+        setupLocalhostProxy('test-container');
 
-    it('skips if proxy is already running', async () => {
-        Object.defineProperty(process, 'platform', { value: 'darwin' })
-
-        // isProxyRunning → already running
-        mockSpawnSync.mockReturnValueOnce(OK)
-
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-        setupLocalhostProxy('test-container')
-
-        // Only one call (the isProxyRunning check)
-        expect(mockSpawnSync.mock.calls.length).toBe(1)
-    })
-
-    it('handles missing ccc-proxy user gracefully', async () => {
-        Object.defineProperty(process, 'platform', { value: 'darwin' })
-
-        mockSpawnSync
-            .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running
-            .mockReturnValueOnce({ ...FAIL, stderr: 'no such user' } as any)    // id -u ccc-proxy → fails
-
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-
-        // Should not throw
-        expect(() => setupLocalhostProxy('test-container')).not.toThrow()
-    })
-
-    it('handles iptables failure gracefully', async () => {
-        Object.defineProperty(process, 'platform', { value: 'darwin' })
-
-        mockSpawnSync
-            .mockReturnValueOnce(FAIL)                                          // isProxyRunning → not running
-            .mockReturnValueOnce({ ...OK, stdout: '999\n' } as any)             // id -u ccc-proxy → 999
-            .mockReturnValueOnce(FAIL)                                          // iptables -C → not exists
-            .mockReturnValueOnce({ ...FAIL, stderr: 'iptables error' } as any)  // iptables -A → fails
-
-        const { setupLocalhostProxy } = await import('../localhost-proxy-setup.js')
-
-        // Should not throw even if iptables fails
-        expect(() => setupLocalhostProxy('test-container')).not.toThrow()
-        // Should NOT start proxy (iptables failed, so no redirect would happen)
-        expect(mockSpawnSync.mock.calls.length).toBe(4)
-    })
-})
+        expect(mockDetectHostNetworkReach).toHaveBeenCalled();
+        expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    });
+});
