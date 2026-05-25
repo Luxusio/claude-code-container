@@ -257,9 +257,12 @@ export function ensureUvAvailable(containerName: string): void {
     );
     if (checkResult.status === 0) return;
 
+    process.stderr.write("\x1b[2m▸ Installing uv (one-time, ~30-60s)...\x1b[0m\n");
+    // MISE_VERBOSE=1 forces mise to stream download/build progress so the user
+    // sees activity instead of a silent stall during the install.
     spawnSync(
         runtimeCli(),
-        ["exec", containerName, "sh", "-c",
+        ["exec", "-e", "MISE_VERBOSE=1", containerName, "sh", "-c",
          "~/.local/bin/mise use -g uv@latest"],
         { stdio: "inherit" },
     );

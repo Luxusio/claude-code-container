@@ -442,14 +442,20 @@ async function exec(
             }
         }
 
-        // Run independent setup steps in parallel after tools are installed.
-        progress("Configuring environment...");
-        const [, , forwardedMcp] = await Promise.all([
-            Promise.resolve(ensureUvAvailable(containerName)),
-            Promise.resolve(syncClipboardShims(containerName, __dirname)),
-            Promise.resolve(buildMcpConfig(profile)),
-            Promise.resolve(setupLocalhostProxy(containerName)),
-        ]);
+        // Setup steps. spawnSync blocks the event loop so wrapping in Promise.all
+        // doesn't actually parallelize — run each step with its own progress line
+        // so the user can see exactly where time is being spent.
+        progress("Ensuring uv...");
+        ensureUvAvailable(containerName);
+
+        progress("Syncing clipboard shims...");
+        syncClipboardShims(containerName, __dirname);
+
+        progress("Building MCP config...");
+        const forwardedMcp = buildMcpConfig(profile);
+
+        progress("Setting up localhost proxy...");
+        setupLocalhostProxy(containerName);
 
         if (forwardedMcp.length > 0) {
             console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
