@@ -79,7 +79,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     xdotool \
     scrot \
     iptables \
+    nftables \
     && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --set iptables /usr/sbin/iptables-nft \
+    && update-alternatives --set ip6tables /usr/sbin/ip6tables-nft \
     && locale-gen en_US.UTF-8 \
     && locale-gen ko_KR.UTF-8 \
     && locale-gen ja_JP.UTF-8 \
@@ -185,4 +188,18 @@ ENV LANG=en_US.UTF-8
 ENV TZ=UTC
 
 WORKDIR /project
+
+# ============================================================
+# Entrypoint: bounded iptables setup + ccc-proxy daemon launch.
+# Runs as the Dockerfile USER (ccc) and elevates via NOPASSWD sudo for the
+# iptables/daemon steps. Gated by CCC_PROXY_ENABLED=1 so native-Linux
+# containers pay nothing. See scripts/ccc-entrypoint.sh for the protocol.
+# CRLF strip handles Windows checkouts that flipped LF→CRLF.
+# ============================================================
+USER root
+COPY --chmod=755 scripts/ccc-entrypoint.sh /usr/local/bin/ccc-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/ccc-entrypoint.sh
+USER ccc
+
+ENTRYPOINT ["/usr/local/bin/ccc-entrypoint.sh"]
 CMD ["tail", "-f", "/dev/null"]
