@@ -326,6 +326,35 @@ describe("container-runtime", () => {
             expect(info.remote).toBe(true);
             expect(info.flavor).toBe("docker-desktop");
         });
+
+        it("WSL2 NAT mode (no loopback0) is treated as remote", () => {
+            process.env.CCC_RUNTIME = "docker";
+            process.env.WSL_DISTRO_NAME = "Ubuntu";
+            // mockExistsSync default returns false → loopback0 absent
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Ubuntu 24.04 LTS\n"))   // not Docker Desktop
+                .mockReturnValue(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.remote).toBe(true);
+            delete process.env.WSL_DISTRO_NAME;
+        });
+
+        it("WSL2 mirrored mode (loopback0 present) is treated as local", () => {
+            process.env.CCC_RUNTIME = "docker";
+            process.env.WSL_DISTRO_NAME = "Ubuntu";
+            mockExistsSync.mockImplementation((p: unknown) => p === "/sys/class/net/loopback0");
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Ubuntu 24.04 LTS\n"))
+                .mockReturnValue(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.remote).toBe(false);
+            expect(info.flavor).toBe("docker-native");
+            delete process.env.WSL_DISTRO_NAME;
+        });
     });
 
     describe("needsSelinuxRelabel", () => {

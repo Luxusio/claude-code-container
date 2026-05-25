@@ -615,7 +615,10 @@ export function startProjectContainer(
         sshAgentSocket,
         extraMounts,
         clipboardPortFile,
-        proxyEnabled: isContainerHostRemote(),
+        // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
+        // heuristics get it wrong (exotic VPN/networking setups, mirrored
+        // mode we failed to recognize, etc).
+        proxyEnabled: isContainerHostRemote() && process.env.CCC_DISABLE_PROXY !== "1",
     });
 
     const result = spawnSync(cli, args, { stdio: "inherit" });

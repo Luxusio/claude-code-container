@@ -169,8 +169,13 @@ function detectRemote(runtime: RuntimeName): boolean {
         if ((result.stdout ?? "").toLowerCase().includes("docker desktop")) {
             return true;
         }
-        // WSL2 hosting Docker Desktop for Windows
-        if (process.env.WSL_DISTRO_NAME) return true;
+        if (process.env.WSL_DISTRO_NAME) {
+            // WSL2 has two networking modes. Mirrored mode shares the Windows
+            // host's loopback so --network host behaves equivalently to native
+            // Linux; NAT mode (the default) keeps WSL's loopback separate and
+            // therefore needs ccc-proxy. Treat only NAT as remote.
+            return !isWSL2MirroredMode();
+        }
         return false;
     }
 
@@ -185,6 +190,18 @@ function detectRemote(runtime: RuntimeName): boolean {
         return true;
     }
     return false;
+}
+
+/**
+ * Detect WSL2 mirrored networking mode. Mirrored mode injects a virtual
+ * `loopback0` interface that mirrors the Windows host's 127.0.0.1; its
+ * presence is the single most reliable runtime signal we have. Parsing
+ * `/etc/wsl.conf` is unreliable because mirrored mode can be enabled
+ * exclusively via the Windows-side `.wslconfig` and never written to the
+ * Linux-side file.
+ */
+function isWSL2MirroredMode(): boolean {
+    return existsSync("/sys/class/net/loopback0");
 }
 
 /**
