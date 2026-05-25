@@ -11,6 +11,20 @@ import { spawnSync } from "child_process";
 import { PROXY_PORT } from "./localhost-proxy.js";
 import { runtimeCli, isContainerHostRemote } from "./container-runtime.js";
 
+// Per-command timeout. iptables in particular can block forever on the xtables
+// lock if a prior call wedged; bound every step so setup degrades to "skip"
+// instead of stalling the whole `ccc` invocation.
+const STEP_TIMEOUT_MS = 10_000;
+
+// `iptables -w 5` bounds how long iptables itself waits for the xtables lock
+// before giving up. Combined with the spawnSync timeout this prevents indefinite
+// hangs even when something else holds the lock.
+const IPTABLES_LOCK_WAIT_SEC = "5";
+
+function note(msg: string): void {
+    process.stderr.write(`\x1b[2m  · ${msg}\x1b[0m\n`);
+}
+
 // UID for ccc-proxy user (created in Dockerfile with useradd -r)
 // We detect it at runtime via `id -u ccc-proxy` inside the container.
 
@@ -21,7 +35,7 @@ function isProxyRunning(containerName: string): boolean {
     const result = spawnSync(
         runtimeCli(),
         ["exec", containerName, "sh", "-c", `ss -tlnp 2>/dev/null | grep -q ':${PROXY_PORT}'`],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
     );
     return result.status === 0;
 }
@@ -49,16 +63,15 @@ export function setupLocalhostProxy(containerName: string): void {
 
     try {
         // Get ccc-proxy UID
+        note("resolving ccc-proxy uid");
         const uidResult = spawnSync(
             cli,
             ["exec", containerName, "id", "-u", "ccc-proxy"],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
         );
         const proxyUid = (uidResult.stdout ?? "").trim();
         if (!proxyUid || uidResult.status !== 0) {
-            if (process.env.DEBUG) {
-                console.error("[ccc] ccc-proxy user not found in container, skipping proxy setup");
-            }
+            note("ccc-proxy user missing — skipping");
             return;
         }
 
@@ -66,35 +79,48 @@ export function setupLocalhostProxy(containerName: string): void {
         // All TCP traffic to 127.0.0.1 (any port) is redirected to PROXY_PORT,
         // EXCEPT traffic from ccc-proxy user (to avoid infinite loop).
         // -C checks if the rule already exists; if not, -A adds it.
+        note("checking iptables NAT rule");
         const checkResult = spawnSync(
             cli,
             [
                 "exec", containerName,
-                "sudo", "iptables", "-t", "nat", "-C", "OUTPUT",
+                "sudo", "iptables", "-w", IPTABLES_LOCK_WAIT_SEC,
+                "-t", "nat", "-C", "OUTPUT",
                 "-p", "tcp", "-d", "127.0.0.1",
                 "-m", "owner", "!", "--uid-owner", proxyUid,
                 "-j", "REDIRECT", "--to-ports", String(PROXY_PORT),
             ],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
         );
 
+        if (checkResult.signal === "SIGTERM" || checkResult.status === null) {
+            note("iptables check timed out — skipping proxy setup");
+            return;
+        }
+
         if (checkResult.status !== 0) {
-            // Rule doesn't exist, add it
+            note("adding iptables NAT rule");
             const addResult = spawnSync(
                 cli,
                 [
                     "exec", containerName,
-                    "sudo", "iptables", "-t", "nat", "-A", "OUTPUT",
+                    "sudo", "iptables", "-w", IPTABLES_LOCK_WAIT_SEC,
+                    "-t", "nat", "-A", "OUTPUT",
                     "-p", "tcp", "-d", "127.0.0.1",
                     "-m", "owner", "!", "--uid-owner", proxyUid,
                     "-j", "REDIRECT", "--to-ports", String(PROXY_PORT),
                 ],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
             );
 
+            if (addResult.signal === "SIGTERM" || addResult.status === null) {
+                note("iptables add timed out — skipping");
+                return;
+            }
             if (addResult.status !== 0) {
+                note(`iptables add failed (exit ${addResult.status}) — skipping`);
                 if (process.env.DEBUG) {
-                    console.error(`[ccc] iptables setup failed: ${addResult.stderr}`);
+                    console.error(`[ccc] iptables stderr: ${addResult.stderr}`);
                 }
                 return;
             }
@@ -102,6 +128,7 @@ export function setupLocalhostProxy(containerName: string): void {
 
         // Start proxy daemon as ccc-proxy user in background
         // Uses the pre-compiled Go binary (no runtime dependencies)
+        note("starting ccc-proxy daemon");
         spawnSync(
             cli,
             [
@@ -110,16 +137,10 @@ export function setupLocalhostProxy(containerName: string): void {
                 containerName,
                 "/usr/local/bin/ccc-proxy",
             ],
-            { stdio: ["pipe", "pipe", "pipe"] },
+            { stdio: ["pipe", "pipe", "pipe"], timeout: STEP_TIMEOUT_MS },
         );
-
-        if (process.env.DEBUG) {
-            console.error(`[ccc] localhost proxy started on port ${PROXY_PORT}`);
-        }
     } catch (err) {
-        if (process.env.DEBUG) {
-            console.error(`[ccc] localhost proxy setup failed: ${err}`);
-        }
+        note(`proxy setup error — skipping (${(err as Error).message ?? err})`);
         // Never block container exec
     }
 }
