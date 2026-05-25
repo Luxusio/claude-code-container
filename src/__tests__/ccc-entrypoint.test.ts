@@ -103,6 +103,9 @@ function runEntrypoint(
                 MOCK_STATE: fx.stateFile,
                 CCC_PROXY_DAEMON: join(fx.bin, 'fake-proxy'),
                 CCC_IPTABLES_INITIAL_BACKOFF_MS: '1',
+                // Tests run on a real host where port 19999 may or may not be
+                // taken. Pin the listening check to a known answer per case.
+                CCC_TEST_PROXY_LISTENING: 'force-absent',
                 ...env,
             },
             encoding: 'utf-8',
@@ -226,6 +229,34 @@ describe('ccc-entrypoint.sh', () => {
         expect(result.status).toBe(0);
         expect(result.stderr).toMatch(/\[timing\] iptables_setup=/);
         expect(result.stderr).toMatch(/\[timing\] proxy_daemon=/);
+    });
+
+    it('skips the daemon fork when another container already holds the proxy port', () => {
+        const result = runEntrypoint(fx, {
+            CCC_PROXY_ENABLED: '1',
+            MOCK_CHECK_EXIT: '0', // iptables rule already present too
+            CCC_TEST_PROXY_LISTENING: '1', // simulate another container's daemon
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('CMD_RAN');
+        expect(result.stderr).toMatch(/proxy already listening.*skipping daemon/i);
+        // No sudo invocation of the daemon — the fake-proxy was not exec'd.
+        const state = readFileSync(fx.stateFile, 'utf-8');
+        expect(state).not.toContain('fake-proxy');
+    });
+
+    it('does fork the daemon when no one is listening yet (first container)', () => {
+        const result = runEntrypoint(fx, {
+            CCC_PROXY_ENABLED: '1',
+            MOCK_CHECK_EXIT: '1',
+            MOCK_ADD_EXITS: '0',
+            CCC_TEST_PROXY_LISTENING: 'force-absent',
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain('ccc-proxy daemon started');
+        expect(result.stderr).not.toMatch(/skipping daemon/);
     });
 
     it('every log line carries the [ccc-entrypoint] prefix for grep', () => {

@@ -112,7 +112,23 @@ setup_iptables() {
     return 1
 }
 
+# bash /dev/tcp probe — no external command dependency. CCC_TEST_PROXY_LISTENING
+# is a test-only backdoor; production never sets it.
+is_proxy_listening() {
+    if [ "${CCC_TEST_PROXY_LISTENING:-0}" = "1" ]; then return 0; fi
+    if [ "${CCC_TEST_PROXY_LISTENING:-0}" = "force-absent" ]; then return 1; fi
+    (exec 3<>/dev/tcp/127.0.0.1/"${PROXY_PORT}") 2>/dev/null && { exec 3>&-; return 0; }
+    return 1
+}
+
 start_proxy_daemon() {
+    # --network host means every ccc container shares one host netns and one
+    # loopback. If another ccc container already brought the proxy up, our
+    # extra fork would EADDRINUSE and die silently. Detect and skip.
+    if is_proxy_listening; then
+        log "proxy already listening on ${PROXY_PORT} — skipping daemon (shared host netns)"
+        return 0
+    fi
     sudo -n -u "${PROXY_USER}" "${PROXY_DAEMON}" >/dev/null 2>&1 &
     log "ccc-proxy daemon started (pid $!)"
 }
