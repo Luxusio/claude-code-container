@@ -44,6 +44,13 @@ export interface DockerRunArgsOptions {
     sshAgentSocket: string | null;
     extraMounts?: Array<{ hostPath: string; containerPath: string }>;
     clipboardPortFile?: string;
+    /**
+     * Tells the in-container entrypoint to install the iptables NAT REDIRECT
+     * and start ccc-proxy. Set on Docker Desktop / WSL2 / podman-machine
+     * flavors where --network host doesn't actually share the host loopback;
+     * left unset on docker-native and rootful podman where it does.
+     */
+    proxyEnabled?: boolean;
 }
 
 // Docker Compose-compatible labels for Docker Desktop grouping.
@@ -124,6 +131,10 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     // mise checks this env var in-memory on each invocation and skips the
     // trust-file write path entirely.
     args.push("-e", `MISE_TRUSTED_CONFIG_PATHS=${opts.projectMountPath}`);
+
+    if (opts.proxyEnabled) {
+        args.push("-e", "CCC_PROXY_ENABLED=1");
+    }
 
     // Extra volume mounts (e.g., source .git for worktree workspaces)
     if (opts.extraMounts) {
@@ -604,6 +615,7 @@ export function startProjectContainer(
         sshAgentSocket,
         extraMounts,
         clipboardPortFile,
+        proxyEnabled: isContainerHostRemote(),
     });
 
     const result = spawnSync(cli, args, { stdio: "inherit" });

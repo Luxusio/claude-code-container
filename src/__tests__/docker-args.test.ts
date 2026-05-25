@@ -682,3 +682,28 @@ describe("buildDockerRunArgs — container labels", () => {
         expect(args[args.length - 1]).toBe("ccc");
     });
 });
+
+// ===========================================================================
+// CCC_PROXY_ENABLED — entrypoint gate for the in-container iptables/proxy
+// setup. Set only on remote (VM-backed) runtimes where --network host doesn't
+// actually expose the host loopback to the container.
+// ===========================================================================
+describe("buildDockerRunArgs — CCC_PROXY_ENABLED", () => {
+    it("omits CCC_PROXY_ENABLED when proxyEnabled is unset", () => {
+        const args = buildDockerRunArgs(makeOpts());
+        const envs = extractEnvVars(args);
+        expect(envs).not.toHaveProperty("CCC_PROXY_ENABLED");
+    });
+
+    it("omits CCC_PROXY_ENABLED when proxyEnabled is false", () => {
+        const args = buildDockerRunArgs(makeOpts({ proxyEnabled: false }));
+        const envs = extractEnvVars(args);
+        expect(envs).not.toHaveProperty("CCC_PROXY_ENABLED");
+    });
+
+    it("sets CCC_PROXY_ENABLED=1 when proxyEnabled is true", () => {
+        const args = buildDockerRunArgs(makeOpts({ proxyEnabled: true }));
+        const envs = extractEnvVars(args);
+        expect(envs["CCC_PROXY_ENABLED"]).toBe("1");
+    });
+});
