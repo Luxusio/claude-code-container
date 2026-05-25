@@ -29,7 +29,11 @@ MAX_ATTEMPTS="${CCC_IPTABLES_MAX_ATTEMPTS:-3}"
 INITIAL_BACKOFF_MS="${CCC_IPTABLES_INITIAL_BACKOFF_MS:-200}"
 LOCK_WAIT_SEC="${CCC_IPTABLES_LOCK_WAIT_SEC:-2}"
 
+# Every line emitted by this entrypoint starts with `[ccc-entrypoint]` so it
+# is greppable in `docker logs` and never collides with the user command's
+# own output. Phase-timing lines additionally carry a `[timing]` infix.
 log() { printf '[ccc-entrypoint] %s\n' "$*" >&2; }
+log_timing() { printf '[ccc-entrypoint] [timing] %s\n' "$*" >&2; }
 
 now_ms() {
     # bash 5.x exposes EPOCHREALTIME with microsecond resolution; fall back
@@ -42,13 +46,29 @@ now_ms() {
     fi
 }
 
+# Pretty-print a millisecond count. Sub-second stays in ms for precision;
+# longer durations switch to seconds so a 30000ms hang reads as "30.0s".
+format_duration() {
+    local ms="$1"
+    if [ "$ms" -lt 1000 ]; then
+        printf '%dms' "$ms"
+    else
+        awk -v ms="$ms" 'BEGIN{printf "%.2fs", ms/1000}'
+    fi
+}
+
+# Run a labelled phase, capture its duration. Per-phase timing is only
+# emitted when CCC_DEBUG_TIMING=1 — the always-on summary at the end of
+# main() is enough for normal operation.
 timed() {
     local label="$1"; shift
     local t0 t1 rc
     t0=$(now_ms)
     if "$@"; then rc=0; else rc=$?; fi
     t1=$(now_ms)
-    log "  ${label}: $((t1 - t0))ms"
+    if [ "${CCC_DEBUG_TIMING:-0}" = "1" ]; then
+        log_timing "${label}=$(format_duration $((t1 - t0)))"
+    fi
     return "$rc"
 }
 
@@ -100,10 +120,14 @@ start_proxy_daemon() {
 main() {
     if [ "${CCC_PROXY_ENABLED:-0}" = "1" ]; then
         log "configuring localhost proxy"
+        local t0 t1
+        t0=$(now_ms)
         if ! timed iptables_setup setup_iptables; then
             exit 1
         fi
         timed proxy_daemon start_proxy_daemon
+        t1=$(now_ms)
+        log "proxy setup complete in $(format_duration $((t1 - t0)))"
     else
         log "CCC_PROXY_ENABLED unset — skipping proxy setup"
     fi

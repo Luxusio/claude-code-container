@@ -201,7 +201,7 @@ describe('ccc-entrypoint.sh', () => {
         expect(result.stderr).toMatch(/user missing/);
     });
 
-    it('emits timing logs for each phase', () => {
+    it('always emits a one-line summary when proxy setup runs', () => {
         const result = runEntrypoint(fx, {
             CCC_PROXY_ENABLED: '1',
             MOCK_CHECK_EXIT: '1',
@@ -209,7 +209,43 @@ describe('ccc-entrypoint.sh', () => {
         });
 
         expect(result.status).toBe(0);
-        expect(result.stderr).toMatch(/iptables_setup: \d+ms/);
-        expect(result.stderr).toMatch(/proxy_daemon: \d+ms/);
+        // Per-phase timing is gated on CCC_DEBUG_TIMING and stays quiet here.
+        expect(result.stderr).not.toMatch(/\[timing\]/);
+        // Summary is always shown so a regressing hang is immediately visible.
+        expect(result.stderr).toMatch(/proxy setup complete in (\d+ms|\d+\.\d+s)/);
     });
+
+    it('emits per-phase timing only when CCC_DEBUG_TIMING=1', () => {
+        const result = runEntrypoint(fx, {
+            CCC_PROXY_ENABLED: '1',
+            CCC_DEBUG_TIMING: '1',
+            MOCK_CHECK_EXIT: '1',
+            MOCK_ADD_EXITS: '0',
+        });
+
+        expect(result.status).toBe(0);
+        expect(result.stderr).toMatch(/\[timing\] iptables_setup=/);
+        expect(result.stderr).toMatch(/\[timing\] proxy_daemon=/);
+    });
+
+    it('every log line carries the [ccc-entrypoint] prefix for grep', () => {
+        const result = runEntrypoint(fx, {
+            CCC_PROXY_ENABLED: '1',
+            CCC_DEBUG_TIMING: '1',
+            MOCK_CHECK_EXIT: '1',
+            MOCK_ADD_EXITS: '0',
+        });
+
+        const ourLines = result.stderr
+            .split('\n')
+            .filter((l) => l.trim().length > 0)
+            // The mock daemon doesn't emit anything, but defensive filtering
+            // here keeps the assertion stable if future scripts append output.
+            .filter((l) => !l.startsWith('+ ') && !l.startsWith('CMD_RAN'));
+        expect(ourLines.length).toBeGreaterThan(0);
+        for (const line of ourLines) {
+            expect(line.startsWith('[ccc-entrypoint]')).toBe(true);
+        }
+    });
+
 });
