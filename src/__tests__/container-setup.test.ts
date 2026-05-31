@@ -13,6 +13,7 @@ const {
     CLAUDE_PERSIST_DIR,
     CLAUDE_EXECUTABLE,
     CLAUDE_BIN_PATH,
+    isClaudeVersionLine,
     isMiseShim,
     isValidClaudeBinary,
     saveClaudeBinaryToVolume,
@@ -84,12 +85,28 @@ describe("container-setup.ts module", () => {
     });
 
     describe("isValidClaudeBinary", () => {
-        it("returns true when --version contains claude", () => {
-            spawnSyncMock.mockReturnValue(makeResult(0));
-            expect(isValidClaudeBinary(container, "/usr/bin/claude")).toBe(true);
+        it("accepts Claude Code version lines", () => {
+            expect(isClaudeVersionLine("2.1.158")).toBe(true);
+            expect(isClaudeVersionLine("1.0.83 (Claude Code)")).toBe(true);
+            expect(isClaudeVersionLine("Claude Code 1.0.83")).toBe(true);
         });
 
-        it("returns false when --version does not contain claude", () => {
+        it("rejects Bun crash output even when it mentions the claude path", () => {
+            expect(isClaudeVersionLine("============================================================")).toBe(false);
+            expect(isClaudeVersionLine('Args: "/home/ccc/.local/bin/claude" "--dangerously-skip-permissions"')).toBe(false);
+            expect(isClaudeVersionLine("Bun v1.3.14 (521eedd6) Linux x64")).toBe(false);
+        });
+
+        it("returns true when --version has Claude Code version shape", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0));
+            expect(isValidClaudeBinary(container, "/usr/bin/claude")).toBe(true);
+
+            const shCmd = (spawnSyncMock.mock.calls[0][1] as string[]).at(-1) as string;
+            expect(shCmd).toContain("head -n 1");
+            expect(shCmd).toContain("claude([[:space:]]+code)?");
+        });
+
+        it("returns false when --version does not match Claude Code version shape", () => {
             spawnSyncMock.mockReturnValue(makeResult(1));
             expect(isValidClaudeBinary(container, "/usr/bin/claude")).toBe(
                 false,
@@ -209,6 +226,8 @@ describe("container-setup.ts module", () => {
             expect(shCmd).toContain("command -v claude");
             expect(shCmd).toContain("is_shim");
             expect(shCmd).toContain("is_claude");
+            expect(shCmd).toContain("head -n 1");
+            expect(shCmd).toContain("claude([[:space:]]+code)?");
         });
 
         it("install command caches binary to volume", () => {

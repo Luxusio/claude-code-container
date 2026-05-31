@@ -12,6 +12,11 @@ export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
 export const CLAUDE_EXECUTABLE = "claude";
 export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
 
+export function isClaudeVersionLine(line: string): boolean {
+    const trimmed = line.trim();
+    return /^(claude(\s+code)?\s+v?\d+\.\d+\.\d+|v?\d+\.\d+\.\d+(\s|$)|v?\d+\.\d+\.\d+.*\bclaude(\s+code)?\b)/i.test(trimmed);
+}
+
 /**
  * Check if a file in the container is a mise shim (shell script referencing mise)
  * rather than a real native binary.
@@ -30,9 +35,13 @@ export function isMiseShim(containerName: string, path: string): boolean {
  * Guards against bun or other binaries accidentally cached at the claude path.
  */
 export function isValidClaudeBinary(containerName: string, path: string): boolean {
+    const escapedPath = path.replace(/'/g, "'\\''");
     const result = spawnSync(
         runtimeCli(),
-        ["exec", containerName, "sh", "-c", `'${path.replace(/'/g, "'\\''")}' --version 2>&1 | grep -qi claude`],
+        [
+            "exec", containerName, "sh", "-c",
+            `first_line="$('${escapedPath}' --version 2>/dev/null | head -n 1 || true)"; printf '%s\\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\\bclaude([[:space:]]+code)?\\b)'`,
+        ],
         { encoding: "utf-8", timeout: 10000 },
     );
     return result.status === 0;
@@ -55,7 +64,10 @@ BIN="${CLAUDE_BIN_PATH}"
 CACHE="${CLAUDE_PERSIST_DIR}/claude"
 FOUND="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)"
 is_shim() { head -c 500 "$1" 2>/dev/null | grep -q mise; }
-is_claude() { "$1" --version 2>&1 | grep -qi claude; }
+is_claude() {
+  first_line="$("$1" --version 2>/dev/null | head -n 1 || true)"
+  printf '%s\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\bclaude([[:space:]]+code)?\b)'
+}
 
 if [ -x "$BIN" ]; then
   if is_shim "$BIN"; then
