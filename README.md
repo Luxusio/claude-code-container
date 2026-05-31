@@ -134,6 +134,10 @@ Each workspace has its own container and can run simultaneously.
 
 SSH keys and agent are auto-mounted from host. No setup required.
 
+Every local container invocation mounts the registered credential directories
+for all supported coding tools (Claude, Codex, Gemini, and OpenCode), regardless
+of which tool or shell command starts the container.
+
 ```bash
 # If SSH isn't working:
 ssh-add ~/.ssh/id_ed25519   # Add key to agent

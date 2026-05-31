@@ -67,6 +67,7 @@ import {
     syncClipboardShims,
     getContainerStatus,
     getCurrentImageId,
+    resolveCredentialHostPath,
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
@@ -97,7 +98,6 @@ import {
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
-import { homedir } from "os";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -119,12 +119,10 @@ function ensureDirs(profile?: string): void {
     if (!existsSync(claudeJsonFile)) {
         writeFileSync(claudeJsonFile, "{}", { mode: 0o600 });
     }
-    // Mount every coding-agent credential dir unconditionally so any tool the
+    // Prepare every coding-agent credential dir unconditionally so any tool the
     // user later invokes already has its host source on disk.
-    const home = homedir();
     for (const mount of getAllCredentialMounts()) {
-        if (mount.containerDir === "/home/ccc/.claude") continue;
-        mkdirSync(join(home, mount.hostDir), { recursive: true });
+        mkdirSync(resolveCredentialHostPath(mount, profile), { recursive: true });
     }
 }
 

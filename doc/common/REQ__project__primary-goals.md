@@ -16,3 +16,4 @@ Run Claude Code in isolated containers with:
 5. **Tool version management** — mise-based per-project tool versions
 6. **Browser testing** — Chromium included for headless testing
 7. **Network transparency** — `--network host` for direct port access, localhost proxy for Docker Desktop / podman machine
+8. **Tool credential availability** — every local container mounts all registered coding-tool credential directories regardless of the command or tool that starts it

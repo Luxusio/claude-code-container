@@ -38,6 +38,7 @@ const {
     ensureImage,
     qualifyImageRefForRuntime,
     getHostGitIdentityMounts,
+    resolveCredentialHostPath,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -299,6 +300,14 @@ describe("docker.ts module exports", () => {
             });
             expect(args).toContain("/home/user/.ccc/claude:/home/ccc/.claude");
             expect(args).toContain("/home/user/.claude/ide:/home/ccc/.claude/ide");
+        });
+
+        it("resolves profile-specific claude credentials and default tool credential paths", () => {
+            const claudeMount = { hostDir: ".ccc/claude", containerDir: "/home/ccc/.claude" };
+            const codexMount = { hostDir: ".ccc/codex", containerDir: "/home/ccc/.codex" };
+
+            expect(resolveCredentialHostPath(claudeMount, "work")).toMatch(/\/\.ccc\/profiles\/work\/claude$/);
+            expect(resolveCredentialHostPath(codexMount, "work")).toMatch(/\/\.ccc\/codex$/);
         });
 
         it("includes -v for claude.json mount independently of credentialMounts", () => {
@@ -712,6 +721,29 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
             expect(runCall).toBeDefined();
+        });
+
+        it("mounts every registered tool credential path when creating a container", () => {
+            mockExistsSync.mockReturnValue(false);
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValue(makeResult(0));                     // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            const runArgs = runCall![1] as string[];
+
+            for (const mount of getAllCredentialMounts()) {
+                expect(runArgs.some((arg) => arg.includes(`:${mount.containerDir}`))).toBe(true);
+            }
         });
 
         it("mounts existing host git identity paths when creating a container", () => {

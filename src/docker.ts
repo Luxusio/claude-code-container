@@ -27,6 +27,7 @@ import {
     getRuntimeInfo,
 } from "./container-runtime.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
+import type { CredentialMount } from "./tool-registry.js";
 
 // === Docker Args Builder ===
 
@@ -187,6 +188,16 @@ export function getContainerName(projectPath: string, profile?: string): string 
  */
 export function isDockerDesktop(): boolean {
     return isContainerHostRemote();
+}
+
+export function resolveCredentialHostPath(mount: CredentialMount, profile?: string): string {
+    if (!profile && process.env.container === "docker" && !process.env.VITEST) {
+        return mount.containerDir;
+    }
+    if (profile && mount.containerDir === "/home/ccc/.claude") {
+        return getClaudeDir(profile);
+    }
+    return join(homedir(), mount.hostDir);
 }
 
 export function isDockerRunning(): boolean {
@@ -585,12 +596,7 @@ export function startProjectContainer(
     const projectMountPath = `/project/${projectId}`;
 
     const credentialMounts = getAllCredentialMounts().map(m => {
-        // Profile override: claude credentials use profile-specific directory
-        const hostPath = (!profile && process.env.container === "docker" && !process.env.VITEST)
-            ? m.containerDir
-            : (profile && m.containerDir === "/home/ccc/.claude")
-            ? getClaudeDir(profile)
-            : join(homedir(), m.hostDir);
+        const hostPath = resolveCredentialHostPath(m, profile);
         mkdirSync(hostPath, { recursive: true });
         return { hostPath, containerPath: m.containerDir };
     });
