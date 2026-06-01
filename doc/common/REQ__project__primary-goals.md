@@ -17,3 +17,4 @@ Run Claude Code in isolated containers with:
 6. **Browser testing** — Chromium included for headless testing
 7. **Network transparency** — `--network host` for direct port access, localhost proxy for Docker Desktop / podman machine
 8. **Tool credential availability** — every local container mounts all registered coding-tool credential directories regardless of the command or tool that starts it
+9. **Host-owned credential config** — `~/.ccc/*` credential directories and generated config files remain writable by the invoking host user; if a containerized tool rewrites a mounted config as its own UID/GID, `ccc` restores host ownership before the next host-side config write and after the tool exits. Permission failures must surface with an actionable ownership repair instead of a raw stack trace

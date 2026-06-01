@@ -152,9 +152,12 @@ describe("buildMcpConfig", () => {
         existsSync = fsMock.existsSync as ReturnType<typeof vi.fn>;
         readFileSync = fsMock.readFileSync as ReturnType<typeof vi.fn>;
         writeFileSync = fsMock.writeFileSync as ReturnType<typeof vi.fn>;
-        vi.clearAllMocks();
+        existsSync.mockReset();
+        readFileSync.mockReset();
+        writeFileSync.mockReset();
         // Default: CLAUDE_JSON_FILE does not exist, host ~/.claude.json does not exist
         existsSync.mockReturnValue(false);
+        writeFileSync.mockImplementation(() => undefined);
         const mod = await import("../mcp-forward.js");
         buildMcpConfig = mod.buildMcpConfig;
     });
@@ -191,6 +194,49 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).toContain("[mcp_servers.x11-display]");
         expect(codexConfig).toContain('"/opt/ccc/x11-mcp/server.mjs"');
         expect(codexConfig).toContain("# ccc-managed-mcp end");
+    });
+
+    it("does not rewrite Codex config.toml when the generated config is unchanged", () => {
+        buildMcpConfig();
+        const existingCodexConfig = getWrittenCodexConfig();
+
+        vi.clearAllMocks();
+        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/codex/config.toml"));
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".ccc/codex/config.toml")) return existingCodexConfig;
+            return "{}";
+        });
+
+        buildMcpConfig();
+
+        const codexWrites = writeFileSync.mock.calls.filter(([path]) => String(path).endsWith(".ccc/codex/config.toml"));
+        expect(codexWrites).toHaveLength(0);
+    });
+
+    it("throws an actionable error when existing Codex config cannot be read", () => {
+        existsSync.mockImplementation((p: string) => p.endsWith(".ccc/codex/config.toml"));
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".ccc/codex/config.toml")) {
+                const error = new Error("permission denied") as NodeJS.ErrnoException;
+                error.code = "EACCES";
+                throw error;
+            }
+            return "{}";
+        });
+
+        expect(() => buildMcpConfig()).toThrow(/sudo chown -R "\$USER:\$USER" ~\/\.ccc\/codex/);
+    });
+
+    it("throws an actionable error when Codex config cannot be written", () => {
+        writeFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".ccc/codex/config.toml")) {
+                const error = new Error("permission denied") as NodeJS.ErrnoException;
+                error.code = "EACCES";
+                throw error;
+            }
+        });
+
+        expect(() => buildMcpConfig()).toThrow(/Unable to write Codex config.*sudo chown -R "\$USER:\$USER" ~\/\.ccc\/codex/);
     });
 
     it("writes Codex TOML arrays in the exact order needed for MCP startup", () => {

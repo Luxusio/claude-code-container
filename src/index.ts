@@ -68,6 +68,8 @@ import {
     getContainerStatus,
     getCurrentImageId,
     resolveCredentialHostPath,
+    prepareCodexConfigForContainer,
+    restoreCodexConfigHostOwnership,
 } from "./docker.js";
 import {
     ensureClaudeInContainer,
@@ -416,6 +418,7 @@ async function exec(
         // container was running when we snapshot-ed status above.
         () => { wasAlreadyRunning = false; },
     );
+    restoreCodexConfigHostOwnership(containerName);
 
     // Skip heavy setup if container was already running (another session set it up)
     if (!wasAlreadyRunning) {
@@ -623,6 +626,9 @@ async function exec(
         if (!wasAlreadyRunning) {
             runMiseInstall();
         }
+        if (commandTool?.name === "codex") {
+            prepareCodexConfigForContainer(containerName);
+        }
         execArgs.push(...resolvedCmd);
     }
 
@@ -657,6 +663,7 @@ async function exec(
         const result = spawnSync(runtimeCli(), execArgs, { stdio: "inherit" });
         resultStatus = result.status ?? 1;
     }
+    restoreCodexConfigHostOwnership(containerName);
     try { unlinkSync(envFile); } catch { /* ignore cleanup error */ }
 
     if (process.env.DEBUG) {

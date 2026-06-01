@@ -157,15 +157,35 @@ function stripCodexManagedMcpTables(configToml: string): string {
     return kept.join("\n").trimEnd();
 }
 
+function isPermissionError(error: unknown): boolean {
+    return typeof error === "object"
+        && error !== null
+        && "code" in error
+        && (error.code === "EACCES" || error.code === "EPERM");
+}
+
+function codexConfigAccessError(action: "create" | "read" | "write", file: string, error: unknown): Error {
+    const reason = error instanceof Error ? error.message : String(error);
+    const hint = isPermissionError(error)
+        ? ` This usually means ${file} or one of its parent directories is owned by another user. Fix it with: sudo chown -R "$USER:$USER" ~/.ccc/codex`
+        : "";
+    return new Error(`Unable to ${action} Codex config at ${file}: ${reason}.${hint}`);
+}
+
 function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>): void {
     const codexConfigFile = getCodexConfigFile();
-    mkdirSync(dirname(codexConfigFile), { recursive: true });
+    try {
+        mkdirSync(dirname(codexConfigFile), { recursive: true });
+    } catch (error) {
+        throw codexConfigAccessError("create", codexConfigFile, error);
+    }
+
     let existing = "";
     if (existsSync(codexConfigFile)) {
         try {
             existing = readFileSync(codexConfigFile, "utf-8");
-        } catch {
-            existing = "";
+        } catch (error) {
+            throw codexConfigAccessError("read", codexConfigFile, error);
         }
     }
 
@@ -180,7 +200,13 @@ function writeCodexMcpConfig(mcpServers: Record<string, McpServerConfig>): void 
     const nextConfig = preserved
         ? `${preserved}\n\n${managedBlock}\n`
         : `${managedBlock}\n`;
-    writeFileSync(codexConfigFile, nextConfig, { mode: 0o600 });
+    if (nextConfig === existing) return;
+
+    try {
+        writeFileSync(codexConfigFile, nextConfig, { mode: 0o600 });
+    } catch (error) {
+        throw codexConfigAccessError("write", codexConfigFile, error);
+    }
 }
 
 /**
