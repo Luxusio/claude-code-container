@@ -11,6 +11,7 @@ import {
     existsSync,
     readFileSync,
     writeFileSync,
+    copyFileSync,
     unlinkSync,
     readdirSync,
     openSync,
@@ -20,6 +21,7 @@ import {
 import { join, dirname, basename } from "path";
 import { homedir, platform } from "os";
 import { fileURLToPath } from "url";
+import { CLIPBOARD_FILES_CONTAINER_DIR, CLIPBOARD_FILES_DIR } from "./utils.js";
 
 // === Version (for auto-restart on upgrade) ===
 // Uses content hash of the compiled server file so ANY code change triggers restart
@@ -403,8 +405,8 @@ function runPSCommand(command: string, timeout = 8000): Promise<string> {
 
             ps.stdout!.on("data", onData);
 
-            // First call: load System.Windows.Forms assembly (only once)
-            const prefix = psAssemblyLoaded ? "" : "Add-Type -AssemblyName System.Windows.Forms\n";
+            // First call: load clipboard/image assemblies (only once)
+            const prefix = psAssemblyLoaded ? "" : "Add-Type -AssemblyName System.Windows.Forms\nAdd-Type -AssemblyName System.Drawing\n";
             psAssemblyLoaded = true;
 
             try {
@@ -447,6 +449,218 @@ interface ClipboardSnapshot {
 }
 let clipboardCache: ClipboardSnapshot | null = null;
 
+const IMAGE_MIME_TYPES = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/tiff",
+    "image/bmp",
+];
+
+const IMAGE_FILE_EXTENSIONS = [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".avif",
+    ".tif",
+    ".tiff",
+];
+
+const WINDOWS_IMAGE_FILE_EXTENSIONS = IMAGE_FILE_EXTENSIONS;
+
+function isSupportedImageTarget(target: string): boolean {
+    return IMAGE_MIME_TYPES.includes(target.toLowerCase());
+}
+
+export function buildImageMimeReadOrder(targets: string[], preferred: "png" | "bmp" = "png"): string[] {
+    const preferredMime = preferred === "bmp" ? "image/bmp" : "image/png";
+    const ordered = [
+        preferredMime,
+        ...targets.map((target) => target.toLowerCase()).filter(isSupportedImageTarget),
+        ...IMAGE_MIME_TYPES,
+    ];
+    return [...new Set(ordered)];
+}
+
+export function isImageFilePath(filePath: string): boolean {
+    const lower = filePath.toLowerCase();
+    return IMAGE_FILE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+function copiedClipboardFileContainerPath(destName: string): string {
+    return `${CLIPBOARD_FILES_CONTAINER_DIR}/${destName}`;
+}
+
+function copyImageFileToClipboardShare(filePath: string): Buffer | null {
+    if (!isImageFilePath(filePath) || !existsSync(filePath)) return null;
+    try {
+        mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
+        const destName = `${Date.now()}-${randomBytes(4).toString("hex")}-${basename(filePath)}`;
+        copyFileSync(filePath, join(CLIPBOARD_FILES_DIR, destName));
+        return Buffer.from(copiedClipboardFileContainerPath(destName), "utf-8");
+    } catch {
+        return null;
+    }
+}
+
+export function parseClipboardFileUriList(input: string): string[] {
+    return input
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith("#") && line !== "copy" && line !== "cut")
+        .map((line) => {
+            if (line.startsWith("file://")) {
+                try {
+                    return decodeURIComponent(new URL(line).pathname);
+                } catch {
+                    return "";
+                }
+            }
+            return line;
+        })
+        .filter(Boolean);
+}
+
+export function buildImageFileClipboardFallbackFromPaths(
+    paths: string[],
+    options: {
+        readImageFile?: (filePath: string) => Buffer | null;
+        copyImageFile?: (filePath: string) => Buffer | null;
+    } = {},
+): Omit<ClipboardSnapshot, "timestamp"> {
+    const readImageFile = options.readImageFile ?? ((filePath: string) => {
+        if (!isImageFilePath(filePath)) return null;
+        try {
+            const body = readFileSync(filePath);
+            return body.length > 0 ? body : null;
+        } catch {
+            return null;
+        }
+    });
+    const copyImageFile = options.copyImageFile ?? copyImageFileToClipboardShare;
+
+    for (const filePath of paths) {
+        const image = readImageFile(filePath);
+        if (image) {
+            return {
+                targets: ["image/png", "application/x-ccc-image-file"],
+                text: null,
+                imagePng: image,
+                imageBmp: null,
+            };
+        }
+    }
+
+    for (const filePath of paths) {
+        const copiedPath = copyImageFile(filePath);
+        if (copiedPath) return withCopiedImageFileTextFallback(copiedPath);
+    }
+
+    return withCopiedImageFileTextFallback(null);
+}
+
+function withCopiedImageFileTextFallback(
+    text: Buffer | null,
+): Omit<ClipboardSnapshot, "timestamp"> {
+    return {
+        targets: text ? ["text/plain", "application/x-ccc-copied-image-file"] : [],
+        text,
+        imagePng: null,
+        imageBmp: null,
+    };
+}
+
+export function parseWindowsClipboardSnapshot(output: string): Omit<ClipboardSnapshot, "timestamp"> | null {
+    if (!output) return null;
+    try {
+        const json = JSON.parse(output);
+        const rawTargets = json.targets;
+        const targets = Array.isArray(rawTargets) ? rawTargets
+            : typeof rawTargets === "string" ? [rawTargets]
+            : [];
+        const imagePng = json.imagePng ? Buffer.from(json.imagePng, "base64") : null;
+        return {
+            targets,
+            text: imagePng ? null : json.text ? Buffer.from(json.text, "utf-8") : null,
+            imagePng,
+            imageBmp: null,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function psSingleQuote(value: string): string {
+    return `'${value.replace(/'/g, "''")}'`;
+}
+
+export function buildWindowsClipboardReadCommand(
+    sharedHostDir = CLIPBOARD_FILES_DIR,
+    sharedContainerDir = CLIPBOARD_FILES_CONTAINER_DIR,
+): string {
+    const extensions = WINDOWS_IMAGE_FILE_EXTENSIONS.map(psSingleQuote).join(",");
+    const sharedHost = psSingleQuote(sharedHostDir);
+    const sharedContainer = psSingleQuote(sharedContainerDir);
+    return [
+        "$r = @{ targets = @(); text = $null; imagePng = $null }",
+        `$imageExts = @(${extensions})`,
+        `$sharedHost = ${sharedHost}`,
+        `$sharedContainer = ${sharedContainer}`,
+        "$img = [System.Windows.Forms.Clipboard]::GetImage()",
+        "if (!$img -and [System.Windows.Forms.Clipboard]::ContainsFileDropList()) {",
+        "  $files = [System.Windows.Forms.Clipboard]::GetFileDropList()",
+        "  foreach ($file in $files) {",
+        "    $ext = [System.IO.Path]::GetExtension($file).ToLowerInvariant()",
+        "    if ($imageExts -contains $ext -and [System.IO.File]::Exists($file)) {",
+        "      try {",
+        "        $img = [System.Drawing.Image]::FromFile($file)",
+        "        $r.targets += 'application/x-ccc-image-file'",
+        "        break",
+        "      } catch {",
+        "        try {",
+        "          $bytes = [System.IO.File]::ReadAllBytes($file)",
+        "          if ($bytes.Length -gt 0) {",
+        "            $r.targets += 'image/png'",
+        "            $r.targets += 'application/x-ccc-image-file'",
+        "            $r.imagePng = [Convert]::ToBase64String($bytes)",
+        "            break",
+        "          }",
+        "        } catch {",
+        "          try {",
+        "          [System.IO.Directory]::CreateDirectory($sharedHost) | Out-Null",
+        "          $destName = ([System.Guid]::NewGuid().ToString() + '-' + [System.IO.Path]::GetFileName($file))",
+        "          $dest = [System.IO.Path]::Combine($sharedHost, $destName)",
+        "          Copy-Item -LiteralPath $file -Destination $dest -Force",
+        "          $r.targets += 'text/plain'",
+        "          $r.targets += 'application/x-ccc-copied-image-file'",
+        "          $r.text = ($sharedContainer.TrimEnd('/') + '/' + $destName)",
+        "          break",
+        "          } catch { }",
+        "        }",
+        "      }",
+        "    }",
+        "  }",
+        "}",
+        "if ($img) {",
+        "  $r.targets += 'image/png'",
+        "  $ms = New-Object System.IO.MemoryStream",
+        "  $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
+        "  $r.imagePng = [Convert]::ToBase64String($ms.ToArray())",
+        "  $ms.Dispose()",
+        "  $img.Dispose()",
+        "}",
+        "$text = [System.Windows.Forms.Clipboard]::GetText()",
+        "if ($text -and !$r.imagePng -and !$r.text) { $r.targets += 'text/plain'; $r.text = $text }",
+        "$r | ConvertTo-Json -Compress",
+    ].join("; ");
+}
+
 /**
  * macOS: Read all clipboard data with parallel process spawns.
  * Skips 'clipboard info' — infers targets from actual data availability.
@@ -483,6 +697,11 @@ async function readAllClipboardDarwin(): Promise<Omit<ClipboardSnapshot, "timest
     }
     if (imagePng) targets.push("image/png");
 
+    if (!imagePng) {
+        const fileFallback = readDarwinClipboardImageFileFallback();
+        if (fileFallback.targets.length > 0) return fileFallback;
+    }
+
     if (textResult.status === 0 && textResult.stdout.length > 0) {
         text = textResult.stdout;
         targets.push("text/plain");
@@ -498,32 +717,51 @@ async function readAllClipboardDarwin(): Promise<Omit<ClipboardSnapshot, "timest
 async function readAllClipboardWindows(): Promise<Omit<ClipboardSnapshot, "timestamp">> {
     // Single-line command: PS interactive stdin (-Command -) without a console
     // cannot handle multi-line continuation blocks (if { ... } across lines).
-    const command = "$r = @{ targets = @(); text = $null; imagePng = $null }; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $r.targets += 'image/png'; $ms = New-Object System.IO.MemoryStream; $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png); $r.imagePng = [Convert]::ToBase64String($ms.ToArray()); $ms.Dispose(); $img.Dispose() }; $text = [System.Windows.Forms.Clipboard]::GetText(); if ($text) { $r.targets += 'text/plain'; $r.text = $text }; $r | ConvertTo-Json -Compress";
+    mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
+    const command = buildWindowsClipboardReadCommand();
 
     const output = await runPSCommand(command);
     if (!output) return { targets: [], text: null, imagePng: null, imageBmp: null };
 
-    try {
-        const json = JSON.parse(output);
-        // PowerShell's ConvertTo-Json may serialize single-element arrays as scalars
-        const rawTargets = json.targets;
-        const targets = Array.isArray(rawTargets) ? rawTargets
-            : typeof rawTargets === "string" ? [rawTargets]
-            : [];
-        return {
-            targets,
-            text: json.text ? Buffer.from(json.text, "utf-8") : null,
-            imagePng: json.imagePng ? Buffer.from(json.imagePng, "base64") : null,
-            imageBmp: null,
-        };
-    } catch {
-        return { targets: [], text: null, imagePng: null, imageBmp: null };
-    }
+    return parseWindowsClipboardSnapshot(output) ?? { targets: [], text: null, imagePng: null, imageBmp: null };
 }
 
-async function getCachedClipboard(plat: ClipboardPlatform): Promise<ClipboardSnapshot> {
+function readDarwinClipboardImageFileFallback(): Omit<ClipboardSnapshot, "timestamp"> {
+    const r = execCommand("osascript", ["-e", [
+        "try",
+        "set f to the clipboard as «class furl»",
+        "return POSIX path of f",
+        "end try",
+    ].join("\n")]);
+    if (r.status !== 0 || r.stdout.length === 0) return withCopiedImageFileTextFallback(null);
+    return buildImageFileClipboardFallbackFromPaths(r.stdout.toString("utf-8").split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+}
+
+function readLinuxClipboardUriList(plat: ClipboardPlatform, targets: string[]): string[] {
+    const candidateTargets = [
+        ...targets.filter((target) => target === "text/uri-list" || target === "x-special/gnome-copied-files"),
+        "text/uri-list",
+        "x-special/gnome-copied-files",
+    ];
+    for (const target of [...new Set(candidateTargets)]) {
+        const r = plat === "linux-x11"
+            ? execCommand("xclip", ["-selection", "clipboard", "-t", target, "-o"])
+            : execCommand("wl-paste", ["--type", target]);
+        if (r.status === 0 && r.stdout.length > 0) {
+            const paths = parseClipboardFileUriList(r.stdout.toString("utf-8"));
+            if (paths.length > 0) return paths;
+        }
+    }
+    return [];
+}
+
+function readLinuxClipboardImageFileFallback(plat: ClipboardPlatform, targets: string[]): Omit<ClipboardSnapshot, "timestamp"> {
+    return buildImageFileClipboardFallbackFromPaths(readLinuxClipboardUriList(plat, targets));
+}
+
+async function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false): Promise<ClipboardSnapshot> {
     const now = Date.now();
-    if (clipboardCache && now - clipboardCache.timestamp < CACHE_TTL_MS) {
+    if (!forceRefresh && clipboardCache && now - clipboardCache.timestamp < CACHE_TTL_MS) {
         return clipboardCache;
     }
 
@@ -541,16 +779,27 @@ async function getCachedClipboard(plat: ClipboardPlatform): Promise<ClipboardSna
 
     // Linux: individual calls
     const targets = readClipboardTargets(plat);
-    const hasImage = targets.some(t => /image\/(png|jpeg|jpg|gif|webp|bmp)/.test(t));
+    const hasImage = targets.some(isSupportedImageTarget);
     const hasText = targets.some(t => t.includes("text/plain") || t === "STRING" || t === "UTF8_STRING");
     const text = hasText ? readClipboardText(plat) : null;
-    const imagePng = hasImage ? readClipboardImage(plat, "png") : null;
-    const imageBmp = hasImage ? readClipboardImage(plat, "bmp") : null;
+    const imagePng = hasImage ? readClipboardImage(plat, "png", targets) : null;
+    const imageBmp = hasImage ? readClipboardImage(plat, "bmp", targets) : null;
+
+    if (!imagePng && !imageBmp) {
+        const fileFallback = readLinuxClipboardImageFileFallback(plat, targets);
+        if (fileFallback.targets.length > 0) {
+            clipboardCache = {
+                timestamp: now,
+                ...fileFallback,
+            };
+            return clipboardCache;
+        }
+    }
 
     // Filter targets: remove image types if actual image data is null/empty,
     // and remove text/plain if actual text data is null/empty
     const filteredTargets = targets.filter(t => {
-        if (/image\/(png|jpeg|jpg|gif|webp|bmp)/.test(t)) return imagePng !== null || imageBmp !== null;
+        if (isSupportedImageTarget(t)) return imagePng !== null || imageBmp !== null;
         if (t.includes("text/plain") || t === "STRING" || t === "UTF8_STRING") return text !== null;
         return true;
     });
@@ -611,7 +860,7 @@ function readClipboardText(plat: ClipboardPlatform): Buffer | null {
     return r.status === 0 && r.stdout.length > 0 ? r.stdout : null;
 }
 
-function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp"): Buffer | null {
+function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp", targets: string[] = []): Buffer | null {
     let r: { stdout: Buffer; status: number };
     const mimeType = format === "png" ? "image/png" : "image/bmp";
 
@@ -633,11 +882,17 @@ function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp"): Buf
             break;
         }
         case "linux-x11":
-            r = execCommand("xclip", ["-selection", "clipboard", "-t", mimeType, "-o"]);
-            break;
-        case "linux-wayland":
-            r = execCommand("wl-paste", ["--type", mimeType]);
-            break;
+        case "linux-wayland": {
+            for (const candidateMimeType of buildImageMimeReadOrder(targets, format)) {
+                r = plat === "linux-x11"
+                    ? execCommand("xclip", ["-selection", "clipboard", "-t", candidateMimeType, "-o"])
+                    : execCommand("wl-paste", ["--type", candidateMimeType]);
+                if (r.status === 0 && r.stdout.length > 0) {
+                    return r.stdout;
+                }
+            }
+            return null;
+        }
         default:
             return null;
     }
@@ -726,8 +981,12 @@ function createClipboardServer(token: string, plat: ClipboardPlatform): { server
             }
 
             if (method === "GET" && (url === "/clipboard/image/png" || url === "/clipboard/image/bmp")) {
-                const cache = await getCachedClipboard(plat);
-                const image = url.endsWith("/bmp") ? cache.imageBmp : cache.imagePng;
+                let cache = await getCachedClipboard(plat);
+                let image = url.endsWith("/bmp") ? cache.imageBmp : cache.imagePng;
+                if (!image && (plat === "windows" || plat === "wsl")) {
+                    cache = await getCachedClipboard(plat, true);
+                    image = url.endsWith("/bmp") ? cache.imageBmp : cache.imagePng;
+                }
                 if (!image) {
                     res.writeHead(204);
                     res.end();

@@ -10,6 +10,38 @@
 
 static const char *MARKER = "<<<CCC_CB_DONE>>>";
 
+static NSData *PNGDataFromImage(NSImage *image) {
+    if (!image) return nil;
+
+    CGImageRef cgImage = [image CGImageForProposedRect:NULL context:nil hints:nil];
+    if (!cgImage) return nil;
+
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithCGImage:cgImage];
+    return [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+}
+
+static NSData *PNGDataFromPasteboard(NSPasteboard *pb) {
+    NSData *png = [pb dataForType:NSPasteboardTypePNG];
+    if (png) return png;
+
+    NSData *tiff = [pb dataForType:NSPasteboardTypeTIFF];
+    if (tiff) {
+        NSData *converted = PNGDataFromImage([[NSImage alloc] initWithData:tiff]);
+        if (converted) return converted;
+    }
+
+    for (NSPasteboardType type in [pb types]) {
+        NSData *data = [pb dataForType:type];
+        if (!data) continue;
+
+        NSImage *image = [[NSImage alloc] initWithData:data];
+        NSData *converted = PNGDataFromImage(image);
+        if (converted) return converted;
+    }
+
+    return nil;
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         // Disable buffering for real-time output
@@ -22,8 +54,8 @@ int main(int argc, const char *argv[]) {
                 NSMutableDictionary *result = [NSMutableDictionary new];
                 NSMutableArray *targets = [NSMutableArray new];
 
-                // Read PNG image data
-                NSData *png = [pb dataForType:NSPasteboardTypePNG];
+                // Normalize common image pasteboard payloads to PNG for Codex.
+                NSData *png = PNGDataFromPasteboard(pb);
                 if (png) {
                     [targets addObject:@"image/png"];
                     result[@"imagePng"] = [png base64EncodedStringWithOptions:0];

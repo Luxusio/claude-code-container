@@ -18,6 +18,8 @@ import {
     MISE_VOLUME_NAME,
     CLI_VERSION,
     DOCKER_REGISTRY_IMAGE,
+    CLIPBOARD_FILES_DIR,
+    CLIPBOARD_FILES_CONTAINER_DIR,
 } from "./utils.js";
 import {
     runtimeCli,
@@ -45,6 +47,7 @@ export interface DockerRunArgsOptions {
     sshAgentSocket: string | null;
     extraMounts?: Array<{ hostPath: string; containerPath: string }>;
     clipboardPortFile?: string;
+    clipboardFilesHostDir?: string;
     /**
      * Tells the in-container entrypoint to install the iptables NAT REDIRECT
      * and start ccc-proxy. Set on Docker Desktop / WSL2 / podman-machine
@@ -147,6 +150,9 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     // Mount clipboard port file so shims can read the latest token even after server restarts
     if (opts.clipboardPortFile && existsSync(opts.clipboardPortFile)) {
         args.push(...bindMountArgs(opts.clipboardPortFile, "/run/ccc/clipboard.port", { readonly: true }));
+    }
+    if (opts.clipboardFilesHostDir) {
+        args.push(...bindMountArgs(opts.clipboardFilesHostDir, CLIPBOARD_FILES_CONTAINER_DIR));
     }
 
     args.push(...getComposeLabels(opts.containerName, opts.fullPath));
@@ -553,6 +559,7 @@ export function startProjectContainer(
     onRecreate?: () => void,
 ): string {
     ensureDirs();
+    mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
     ensureImage();
 
     const fullPath = resolve(projectPath);
@@ -576,6 +583,7 @@ export function startProjectContainer(
             })),
             ...gitIdentityMounts,
             ...(extraMounts ?? []),
+            { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR },
         ];
         if (!containerHasMounts(containerName, requiredMounts)) {
             if (debug) {
@@ -654,6 +662,7 @@ export function startProjectContainer(
         sshAgentSocket,
         extraMounts,
         clipboardPortFile,
+        clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
         // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
         // heuristics get it wrong (exotic VPN/networking setups, mirrored
         // mode we failed to recognize, etc).

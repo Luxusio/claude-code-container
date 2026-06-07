@@ -612,6 +612,15 @@ describe("clipboard-server", () => {
     // ═══════════════════════════════════════════════════════════════════════
     describe("Clipboard Reading", () => {
         describe("readAllClipboardWindows", () => {
+            let parseWindowsClipboardSnapshot: (output: string) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
+            let buildWindowsClipboardReadCommand: (sharedHostDir?: string, sharedContainerDir?: string) => string;
+
+            beforeEach(async () => {
+                const mod = await import("../clipboard-server.js");
+                parseWindowsClipboardSnapshot = mod.parseWindowsClipboardSnapshot;
+                buildWindowsClipboardReadCommand = mod.buildWindowsClipboardReadCommand;
+            });
+
             it("should parse JSON with image and text", () => {
                 const imgBase64 = Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64");
                 const json = JSON.stringify({
@@ -635,6 +644,69 @@ describe("clipboard-server", () => {
                 expect(result.text!.toString()).toBe("hello world");
                 expect(result.imagePng).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
                 expect(result.imageBmp).toBeNull();
+            });
+
+            it("parses copied image file snapshots as image and suppresses path text", () => {
+                const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+                const result = parseWindowsClipboardSnapshot(JSON.stringify({
+                    targets: ["application/x-ccc-image-file", "image/png"],
+                    text: "C:\\Users\\me\\Pictures\\clip.png",
+                    imagePng: pngBytes.toString("base64"),
+                }));
+
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["application/x-ccc-image-file", "image/png"]);
+                expect(result!.imagePng).toEqual(pngBytes);
+                expect(result!.text).toBeNull();
+            });
+
+            it("preserves normal text when no image is available", () => {
+                const result = parseWindowsClipboardSnapshot(JSON.stringify({
+                    targets: ["text/plain"],
+                    text: "C:\\Users\\me\\Documents\\notes.txt",
+                    imagePng: null,
+                }));
+
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["text/plain"]);
+                expect(result!.imagePng).toBeNull();
+                expect(result!.text!.toString()).toBe("C:\\Users\\me\\Documents\\notes.txt");
+            });
+
+            it("preserves copied container fallback paths when image conversion failed", () => {
+                const result = parseWindowsClipboardSnapshot(JSON.stringify({
+                    targets: ["text/plain", "application/x-ccc-copied-image-file"],
+                    text: "/run/ccc/clipboard-files/abc-clip.avif",
+                    imagePng: null,
+                }));
+
+                expect(result).not.toBeNull();
+                expect(result!.targets).toEqual(["text/plain", "application/x-ccc-copied-image-file"]);
+                expect(result!.imagePng).toBeNull();
+                expect(result!.text!.toString()).toBe("/run/ccc/clipboard-files/abc-clip.avif");
+            });
+
+            it("builds a Windows command that tries WebP/AVIF image files and copies fallback files into the shared mount", () => {
+                const command = buildWindowsClipboardReadCommand("C:\\Users\\me\\.ccc\\clipboard-files", "/run/ccc/clipboard-files");
+
+                expect(command).toContain("'.webp'");
+                expect(command).toContain("'.avif'");
+                expect(command).toContain("'.tiff'");
+                expect(command).toContain("[System.Drawing.Image]::FromFile($file)");
+                expect(command).toContain("[System.IO.File]::ReadAllBytes($file)");
+                expect(command).toContain("Copy-Item -LiteralPath $file -Destination $dest -Force");
+                expect(command.indexOf("[System.Drawing.Image]::FromFile($file)")).toBeLessThan(
+                    command.indexOf("[System.IO.File]::ReadAllBytes($file)"),
+                );
+                expect(command.indexOf("[System.IO.File]::ReadAllBytes($file)")).toBeLessThan(
+                    command.indexOf("Copy-Item -LiteralPath $file -Destination $dest -Force"),
+                );
+                expect(command.indexOf("Copy-Item -LiteralPath $file -Destination $dest -Force")).toBeLessThan(
+                    command.indexOf("$text = [System.Windows.Forms.Clipboard]::GetText()"),
+                );
+                expect(command).toContain("if ($text -and !$r.imagePng -and !$r.text)");
+                expect(command).toContain("$sharedContainer.TrimEnd('/') + '/' + $destName");
+                expect(command).toContain("application/x-ccc-copied-image-file");
             });
 
             it("should handle empty output", () => {
@@ -690,10 +762,24 @@ describe("clipboard-server", () => {
 
         describe("parseDarwinHelperOutput (native helper JSON)", () => {
             let parseDarwinHelperOutput: (output: string) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
+            let buildImageMimeReadOrder: (targets: string[], preferred?: "png" | "bmp") => string[];
+            let parseClipboardFileUriList: (input: string) => string[];
+            let isImageFilePath: (filePath: string) => boolean;
+            let buildImageFileClipboardFallbackFromPaths: (
+                paths: string[],
+                options?: {
+                    readImageFile?: (filePath: string) => Buffer | null;
+                    copyImageFile?: (filePath: string) => Buffer | null;
+                },
+            ) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null };
 
             beforeEach(async () => {
                 const mod = await import("../clipboard-server.js");
                 parseDarwinHelperOutput = mod.parseDarwinHelperOutput;
+                buildImageMimeReadOrder = mod.buildImageMimeReadOrder;
+                parseClipboardFileUriList = mod.parseClipboardFileUriList;
+                isImageFilePath = mod.isImageFilePath;
+                buildImageFileClipboardFallbackFromPaths = mod.buildImageFileClipboardFallbackFromPaths;
             });
 
             it("should parse JSON with image and text", () => {
@@ -741,6 +827,187 @@ describe("clipboard-server", () => {
                 const result = parseDarwinHelperOutput(json);
                 expect(result).not.toBeNull();
                 expect(result!.targets).toEqual(["image/png"]);
+            });
+
+            it("orders advertised alternate image MIME types after preferred PNG", () => {
+                expect(buildImageMimeReadOrder(["text/plain", "image/jpeg", "image/webp", "image/avif", "image/png"])).toEqual([
+                    "image/png",
+                    "image/jpeg",
+                    "image/webp",
+                    "image/avif",
+                    "image/jpg",
+                    "image/gif",
+                    "image/tiff",
+                    "image/bmp",
+                ]);
+            });
+
+            it("deduplicates MIME read order while preserving preferred type first", () => {
+                expect(buildImageMimeReadOrder(["image/webp", "image/webp", "image/png"])).toEqual([
+                    "image/png",
+                    "image/webp",
+                    "image/jpeg",
+                    "image/jpg",
+                    "image/gif",
+                    "image/avif",
+                    "image/tiff",
+                    "image/bmp",
+                ]);
+            });
+
+            it("can prefer BMP while still falling back to advertised image MIME types", () => {
+                expect(buildImageMimeReadOrder(["image/jpeg"], "bmp")).toEqual([
+                    "image/bmp",
+                    "image/jpeg",
+                    "image/png",
+                    "image/jpg",
+                    "image/gif",
+                    "image/webp",
+                    "image/avif",
+                    "image/tiff",
+                ]);
+            });
+
+            it("parses Linux file URI clipboard lists and GNOME copied-files payloads", () => {
+                expect(parseClipboardFileUriList([
+                    "copy",
+                    "file:///home/me/Pictures/clip.avif",
+                    "file:///home/me/Pictures/space%20name.webp",
+                    "# comment",
+                ].join("\n"))).toEqual([
+                    "/home/me/Pictures/clip.avif",
+                    "/home/me/Pictures/space name.webp",
+                ]);
+            });
+
+            it("parses cut operations, raw paths, blank lines, and malformed file URIs defensively", () => {
+                expect(parseClipboardFileUriList([
+                    "",
+                    "cut",
+                    "/home/me/Pictures/raw.png",
+                    "file://%",
+                    "file:///home/me/Pictures/ok%20name.jpg",
+                    "   ",
+                ].join("\n"))).toEqual([
+                    "/home/me/Pictures/raw.png",
+                    "/home/me/Pictures/ok name.jpg",
+                ]);
+            });
+
+            it("does not treat copy or cut markers as file paths", () => {
+                expect(parseClipboardFileUriList("copy\ncut\n# ignored\n")).toEqual([]);
+            });
+
+            it("recognizes best-effort image file extensions", () => {
+                expect(isImageFilePath("/tmp/clip.webp")).toBe(true);
+                expect(isImageFilePath("/tmp/clip.avif")).toBe(true);
+                expect(isImageFilePath("/tmp/clip.TIFF")).toBe(true);
+                expect(isImageFilePath("/tmp/clip.svg")).toBe(false);
+                expect(isImageFilePath("/tmp/clip.txt")).toBe(false);
+            });
+
+            it("uses readable image file bytes before copied path fallback", () => {
+                const result = buildImageFileClipboardFallbackFromPaths(
+                    ["/tmp/clip.avif"],
+                    {
+                        readImageFile: () => Buffer.from("avif-bytes"),
+                        copyImageFile: () => Buffer.from("/run/ccc/clipboard-files/copied.avif"),
+                    },
+                );
+
+                expect(result.targets).toEqual(["image/png", "application/x-ccc-image-file"]);
+                expect(result.imagePng!.toString()).toBe("avif-bytes");
+                expect(result.text).toBeNull();
+            });
+
+            it("skips unreadable earlier image files and uses the first readable image bytes", () => {
+                const readCalls: string[] = [];
+                const copyCalls: string[] = [];
+                const result = buildImageFileClipboardFallbackFromPaths(
+                    ["/tmp/first.avif", "/tmp/second.webp"],
+                    {
+                        readImageFile: (filePath) => {
+                            readCalls.push(filePath);
+                            return filePath.endsWith("second.webp") ? Buffer.from("second-bytes") : null;
+                        },
+                        copyImageFile: (filePath) => {
+                            copyCalls.push(filePath);
+                            return Buffer.from(`/run/ccc/clipboard-files/${filePath.split("/").pop()}`);
+                        },
+                    },
+                );
+
+                expect(readCalls).toEqual(["/tmp/first.avif", "/tmp/second.webp"]);
+                expect(copyCalls).toEqual([]);
+                expect(result.targets).toEqual(["image/png", "application/x-ccc-image-file"]);
+                expect(result.imagePng!.toString()).toBe("second-bytes");
+            });
+
+            it("falls back to copied container path when image file bytes cannot be read", () => {
+                const result = buildImageFileClipboardFallbackFromPaths(
+                    ["/tmp/clip.avif"],
+                    {
+                        readImageFile: () => null,
+                        copyImageFile: () => Buffer.from("/run/ccc/clipboard-files/copied.avif"),
+                    },
+                );
+
+                expect(result.targets).toEqual(["text/plain", "application/x-ccc-copied-image-file"]);
+                expect(result.imagePng).toBeNull();
+                expect(result.text!.toString()).toBe("/run/ccc/clipboard-files/copied.avif");
+            });
+
+            it("tries copy fallback in file order after all image byte reads fail", () => {
+                const readCalls: string[] = [];
+                const copyCalls: string[] = [];
+                const result = buildImageFileClipboardFallbackFromPaths(
+                    ["/tmp/first.avif", "/tmp/second.webp"],
+                    {
+                        readImageFile: (filePath) => {
+                            readCalls.push(filePath);
+                            return null;
+                        },
+                        copyImageFile: (filePath) => {
+                            copyCalls.push(filePath);
+                            return filePath.endsWith("second.webp")
+                                ? Buffer.from("/run/ccc/clipboard-files/second.webp")
+                                : null;
+                        },
+                    },
+                );
+
+                expect(readCalls).toEqual(["/tmp/first.avif", "/tmp/second.webp"]);
+                expect(copyCalls).toEqual(["/tmp/first.avif", "/tmp/second.webp"]);
+                expect(result.targets).toEqual(["text/plain", "application/x-ccc-copied-image-file"]);
+                expect(result.text!.toString()).toBe("/run/ccc/clipboard-files/second.webp");
+            });
+
+            it("returns an empty snapshot when image reads and copy fallback all fail", () => {
+                const result = buildImageFileClipboardFallbackFromPaths(
+                    ["/tmp/clip.avif"],
+                    {
+                        readImageFile: () => null,
+                        copyImageFile: () => null,
+                    },
+                );
+
+                expect(result).toEqual({
+                    targets: [],
+                    text: null,
+                    imagePng: null,
+                    imageBmp: null,
+                });
+            });
+
+            it("ignores non-image paths when using default file readers", () => {
+                const result = buildImageFileClipboardFallbackFromPaths(["/tmp/not-image.txt"]);
+
+                expect(result).toEqual({
+                    targets: [],
+                    text: null,
+                    imagePng: null,
+                    imageBmp: null,
+                });
             });
         });
 
@@ -2559,7 +2826,28 @@ describe("clipboard-server", () => {
                 .mockReturnValue({ stdout: pngData, status: 0, signal: null });
             const { port, token } = await startServeModule();
             const res = await httpGet(port, "/clipboard/image/png", { Authorization: `Bearer ${token}` });
-            expect([200, 204]).toContain(res.status);
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(pngData);
+        });
+
+        it("GET /clipboard/image/png falls back to advertised non-PNG image targets", async () => {
+            const jpegData = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+            mockSpawnSync
+                .mockReturnValueOnce({ stdout: Buffer.from("image/jpeg\n"), status: 0, signal: null })
+                .mockReturnValueOnce({ stdout: Buffer.alloc(0), status: 1, signal: null })
+                .mockReturnValueOnce({ stdout: jpegData, status: 0, signal: null })
+                .mockReturnValue({ stdout: Buffer.alloc(0), status: 1, signal: null });
+
+            const { port, token } = await startServeModule();
+            const res = await httpGet(port, "/clipboard/image/png", { Authorization: `Bearer ${token}` });
+
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual(jpegData);
+            expect(mockSpawnSync).toHaveBeenCalledWith(
+                "xclip",
+                ["-selection", "clipboard", "-t", "image/jpeg", "-o"],
+                expect.any(Object),
+            );
         });
 
         it("GET /clipboard/image/bmp returns 204 when no bmp (covers image/bmp branch)", async () => {

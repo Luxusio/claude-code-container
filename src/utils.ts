@@ -15,6 +15,8 @@ export const CLAUDE_DIR = join(DATA_DIR, "claude");
 export const CLAUDE_JSON_FILE = join(DATA_DIR, "claude.json"); // ~/.claude.json in container (onboarding state)
 export const CODEX_DIR = join(DATA_DIR, "codex");
 export const CODEX_CONFIG_FILE = join(CODEX_DIR, "config.toml");
+export const CLIPBOARD_FILES_DIR = join(DATA_DIR, "clipboard-files");
+export const CLIPBOARD_FILES_CONTAINER_DIR = "/run/ccc/clipboard-files";
 export const REMOTE_CONFIG_DIR = join(DATA_DIR, "remote");
 export const PROFILES_DIR = join(DATA_DIR, "profiles");
 

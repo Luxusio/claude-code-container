@@ -46,7 +46,7 @@ const {
     removeProjectContainer,
 } = await import("../docker.js");
 
-const { CLI_VERSION } = await import("../utils.js");
+const { CLI_VERSION, CLIPBOARD_FILES_CONTAINER_DIR } = await import("../utils.js");
 const { getAllCredentialMounts } = await import("../tool-registry.js");
 const {
     _resetRuntimeCacheForTest,
@@ -72,7 +72,10 @@ function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: st
         { Source: "/host/home/user/.gitconfig", Destination: "/host-stage/gitconfig" },
         { Source: "/host/home/user/.config/git", Destination: "/home/ccc/.config/git" },
     ];
-    return JSON.stringify([...credMounts, ...gitIdentityMounts, ...extra]);
+    const clipboardMounts = [
+        { Source: "/host/home/user/.ccc/clipboard-files", Destination: CLIPBOARD_FILES_CONTAINER_DIR },
+    ];
+    return JSON.stringify([...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...extra]);
 }
 
 describe("docker.ts module exports", () => {
@@ -358,6 +361,24 @@ describe("docker.ts module exports", () => {
                 sshAgentSocket: null,
             });
             expect(args).toContain("/home/user/.ccc/claude.json:/home/ccc/.claude.json");
+        });
+
+        it("includes clipboard shared-files mount when configured", () => {
+            mockExistsSync.mockReturnValue(false);
+            const args = buildDockerRunArgs({
+                containerName: "ccc-my-project-abc123",
+                fullPath: "/home/user/my-project",
+                projectMountPath: "/project/my-project-abc123",
+                credentialMounts: [],
+                claudeJsonFile: "/home/user/.ccc/claude.json",
+                miseVolumeName: "ccc-mise-cache",
+                pidsLimit: "-1",
+                imageName: "ccc",
+                hostSshDir: null,
+                sshAgentSocket: null,
+                clipboardFilesHostDir: "/home/user/.ccc/clipboard-files",
+            });
+            expect(args).toContain("/home/user/.ccc/clipboard-files:/run/ccc/clipboard-files");
         });
     });
 
