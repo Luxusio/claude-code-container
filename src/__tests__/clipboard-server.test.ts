@@ -737,10 +737,13 @@ describe("clipboard-server", () => {
                 expect(command).toContain("'.tiff'");
                 expect(command).toContain("GetClipboardSequenceNumber");
                 expect(command).toContain("$r = @{ marker = $null; targets = @(); text = $null; imagePng = $null }");
+                expect(command).toContain("$dataObj = [System.Windows.Forms.Clipboard]::GetDataObject()");
+                expect(command).toContain("foreach ($fmt in @('PNG', 'image/png'))");
                 expect(command).toContain("[System.Drawing.Image]::FromFile($file)");
                 expect(command).toContain("[System.IO.File]::ReadAllBytes($file)");
                 expect(command).toContain("Copy-Item -LiteralPath $file -Destination $dest -Force");
                 expect(command).toContain("$file = $text.Trim().Trim([char]34).Trim([char]39)");
+                expect(command).toContain("if ($bytes.Length -gt 0) {");
                 expect(command.indexOf("[System.Drawing.Image]::FromFile($file)")).toBeLessThan(
                     command.indexOf("[System.IO.File]::ReadAllBytes($file)"),
                 );
