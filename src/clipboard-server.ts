@@ -133,6 +133,9 @@ export function parseDarwinHelperOutput(output: string): Omit<ClipboardSnapshot,
             : typeof rawTargets === "string" ? [rawTargets]
             : [];
         return {
+            marker: typeof json.changeCount === "number" || typeof json.changeCount === "string"
+                ? String(json.changeCount)
+                : null,
             targets,
             text: json.text ? Buffer.from(json.text, "utf-8") : null,
             imagePng: json.imagePng ? Buffer.from(json.imagePng, "base64") : null,
@@ -216,7 +219,7 @@ function ensurePersistentDarwin(): ChildProcess | null {
     return persistentDarwin;
 }
 
-function runDarwinCommand(timeout = 5000): Promise<string> {
+function runDarwinCommand(command = "READ", timeout = 5000): Promise<string> {
     return new Promise((resolve) => {
         let helper: ChildProcess | null;
         try {
@@ -252,7 +255,7 @@ function runDarwinCommand(timeout = 5000): Promise<string> {
         helper.stdout!.on("data", onData);
 
         try {
-            helper.stdin!.write("READ\n");
+            helper.stdin!.write(`${command}\n`);
         } catch {
             clearTimeout(timer);
             helper.stdout!.removeListener("data", onData);
@@ -439,15 +442,27 @@ function killPersistentPS(): void {
 }
 
 // === Clipboard Cache ===
-const CACHE_TTL_MS = 2000; // 2 seconds
+export const CACHE_TTL_MS = 200; // Short no-marker fallback; marker platforms can reuse longer safely.
 interface ClipboardSnapshot {
     timestamp: number;
+    marker?: string | null;
     targets: string[];
     text: Buffer | null;
     imagePng: Buffer | null;
     imageBmp: Buffer | null;
 }
 let clipboardCache: ClipboardSnapshot | null = null;
+
+export function shouldReuseClipboardCache(
+    cache: Pick<ClipboardSnapshot, "timestamp" | "marker"> | null,
+    now: number,
+    marker: string | null,
+    ttlMs = CACHE_TTL_MS,
+): boolean {
+    if (!cache) return false;
+    if (marker !== null) return cache.marker === marker;
+    return now - cache.timestamp < ttlMs;
+}
 
 const IMAGE_MIME_TYPES = [
     "image/png",
@@ -586,6 +601,9 @@ export function parseWindowsClipboardSnapshot(output: string): Omit<ClipboardSna
             : [];
         const imagePng = json.imagePng ? Buffer.from(json.imagePng, "base64") : null;
         return {
+            marker: typeof json.marker === "number" || typeof json.marker === "string"
+                ? String(json.marker)
+                : null,
             targets,
             text: imagePng ? null : json.text ? Buffer.from(json.text, "utf-8") : null,
             imagePng,
@@ -600,6 +618,17 @@ function psSingleQuote(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
 }
 
+const WINDOWS_CLIPBOARD_SEQUENCE_TYPE = "CCCClipboardSequence";
+
+export function buildWindowsClipboardChangeMarkerCommand(): string {
+    return [
+        `if (-not (${psSingleQuote(WINDOWS_CLIPBOARD_SEQUENCE_TYPE)} -as [type])) {`,
+        "  Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class CCCClipboardSequence { [DllImport(\"user32.dll\")] public static extern uint GetClipboardSequenceNumber(); }'",
+        "}",
+        "[CCCClipboardSequence]::GetClipboardSequenceNumber()",
+    ].join("; ");
+}
+
 export function buildWindowsClipboardReadCommand(
     sharedHostDir = CLIPBOARD_FILES_DIR,
     sharedContainerDir = CLIPBOARD_FILES_CONTAINER_DIR,
@@ -608,7 +637,11 @@ export function buildWindowsClipboardReadCommand(
     const sharedHost = psSingleQuote(sharedHostDir);
     const sharedContainer = psSingleQuote(sharedContainerDir);
     return [
-        "$r = @{ targets = @(); text = $null; imagePng = $null }",
+        `if (-not (${psSingleQuote(WINDOWS_CLIPBOARD_SEQUENCE_TYPE)} -as [type])) {`,
+        "  Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class CCCClipboardSequence { [DllImport(\"user32.dll\")] public static extern uint GetClipboardSequenceNumber(); }'",
+        "}",
+        "$r = @{ marker = $null; targets = @(); text = $null; imagePng = $null }",
+        "try { $r.marker = [CCCClipboardSequence]::GetClipboardSequenceNumber() } catch { }",
         `$imageExts = @(${extensions})`,
         `$sharedHost = ${sharedHost}`,
         `$sharedContainer = ${sharedContainer}`,
@@ -726,6 +759,30 @@ async function readAllClipboardWindows(): Promise<Omit<ClipboardSnapshot, "times
     return parseWindowsClipboardSnapshot(output) ?? { targets: [], text: null, imagePng: null, imageBmp: null };
 }
 
+async function readWindowsClipboardChangeMarker(): Promise<string | null> {
+    const output = await runPSCommand(buildWindowsClipboardChangeMarkerCommand(), 2000);
+    const marker = output.trim();
+    return marker.length > 0 ? marker : null;
+}
+
+async function readDarwinClipboardChangeMarker(): Promise<string | null> {
+    const output = await runDarwinCommand("MARK", 1000);
+    if (!output) return null;
+    try {
+        const json = JSON.parse(output);
+        if (typeof json.changeCount === "number" || typeof json.changeCount === "string") {
+            return String(json.changeCount);
+        }
+    } catch { /* helper without MARK support or invalid output */ }
+    return null;
+}
+
+async function readClipboardChangeMarker(plat: ClipboardPlatform): Promise<string | null> {
+    if (plat === "windows" || plat === "wsl") return readWindowsClipboardChangeMarker();
+    if (plat === "darwin") return readDarwinClipboardChangeMarker();
+    return null;
+}
+
 function readDarwinClipboardImageFileFallback(): Omit<ClipboardSnapshot, "timestamp"> {
     const r = execCommand("osascript", ["-e", [
         "try",
@@ -761,19 +818,23 @@ function readLinuxClipboardImageFileFallback(plat: ClipboardPlatform, targets: s
 
 async function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false): Promise<ClipboardSnapshot> {
     const now = Date.now();
-    if (!forceRefresh && clipboardCache && now - clipboardCache.timestamp < CACHE_TTL_MS) {
-        return clipboardCache;
+    const marker = forceRefresh ? null : await readClipboardChangeMarker(plat);
+    const cached = clipboardCache;
+    if (cached && !forceRefresh && shouldReuseClipboardCache(cached, now, marker)) {
+        return cached;
     }
 
     // Windows/WSL: persistent PowerShell process
     if (plat === "windows" || plat === "wsl") {
-        clipboardCache = { timestamp: now, ...await readAllClipboardWindows() };
+        const snapshot = await readAllClipboardWindows();
+        clipboardCache = { timestamp: now, ...snapshot, marker: snapshot.marker ?? marker };
         return clipboardCache;
     }
 
     // macOS: parallel reads (skip clipboard info, infer targets from actual data)
     if (plat === "darwin") {
-        clipboardCache = { timestamp: now, ...await readAllClipboardDarwin() };
+        const snapshot = await readAllClipboardDarwin();
+        clipboardCache = { timestamp: now, ...snapshot, marker: snapshot.marker ?? marker };
         return clipboardCache;
     }
 
@@ -790,6 +851,7 @@ async function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false)
         if (fileFallback.targets.length > 0) {
             clipboardCache = {
                 timestamp: now,
+                marker: null,
                 ...fileFallback,
             };
             return clipboardCache;
@@ -806,6 +868,7 @@ async function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false)
 
     clipboardCache = {
         timestamp: now,
+        marker: null,
         targets: filteredTargets,
         text,
         imagePng,
@@ -981,9 +1044,10 @@ function createClipboardServer(token: string, plat: ClipboardPlatform): { server
             }
 
             if (method === "GET" && (url === "/clipboard/image/png" || url === "/clipboard/image/bmp")) {
-                let cache = await getCachedClipboard(plat);
+                const forceFreshImageRead = plat === "linux-x11" || plat === "linux-wayland";
+                let cache = await getCachedClipboard(plat, forceFreshImageRead);
                 let image = url.endsWith("/bmp") ? cache.imageBmp : cache.imagePng;
-                if (!image && (plat === "windows" || plat === "wsl")) {
+                if (!image) {
                     cache = await getCachedClipboard(plat, true);
                     image = url.endsWith("/bmp") ? cache.imageBmp : cache.imagePng;
                 }

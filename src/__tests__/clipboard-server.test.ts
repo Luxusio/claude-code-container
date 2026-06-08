@@ -612,13 +612,15 @@ describe("clipboard-server", () => {
     // ═══════════════════════════════════════════════════════════════════════
     describe("Clipboard Reading", () => {
         describe("readAllClipboardWindows", () => {
-            let parseWindowsClipboardSnapshot: (output: string) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
+            let parseWindowsClipboardSnapshot: (output: string) => { marker?: string | null; targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
             let buildWindowsClipboardReadCommand: (sharedHostDir?: string, sharedContainerDir?: string) => string;
+            let buildWindowsClipboardChangeMarkerCommand: () => string;
 
             beforeEach(async () => {
                 const mod = await import("../clipboard-server.js");
                 parseWindowsClipboardSnapshot = mod.parseWindowsClipboardSnapshot;
                 buildWindowsClipboardReadCommand = mod.buildWindowsClipboardReadCommand;
+                buildWindowsClipboardChangeMarkerCommand = mod.buildWindowsClipboardChangeMarkerCommand;
             });
 
             it("should parse JSON with image and text", () => {
@@ -662,12 +664,14 @@ describe("clipboard-server", () => {
 
             it("preserves normal text when no image is available", () => {
                 const result = parseWindowsClipboardSnapshot(JSON.stringify({
+                    marker: 42,
                     targets: ["text/plain"],
                     text: "C:\\Users\\me\\Documents\\notes.txt",
                     imagePng: null,
                 }));
 
                 expect(result).not.toBeNull();
+                expect(result!.marker).toBe("42");
                 expect(result!.targets).toEqual(["text/plain"]);
                 expect(result!.imagePng).toBeNull();
                 expect(result!.text!.toString()).toBe("C:\\Users\\me\\Documents\\notes.txt");
@@ -692,6 +696,8 @@ describe("clipboard-server", () => {
                 expect(command).toContain("'.webp'");
                 expect(command).toContain("'.avif'");
                 expect(command).toContain("'.tiff'");
+                expect(command).toContain("GetClipboardSequenceNumber");
+                expect(command).toContain("$r = @{ marker = $null; targets = @(); text = $null; imagePng = $null }");
                 expect(command).toContain("[System.Drawing.Image]::FromFile($file)");
                 expect(command).toContain("[System.IO.File]::ReadAllBytes($file)");
                 expect(command).toContain("Copy-Item -LiteralPath $file -Destination $dest -Force");
@@ -707,6 +713,16 @@ describe("clipboard-server", () => {
                 expect(command).toContain("if ($text -and !$r.imagePng -and !$r.text)");
                 expect(command).toContain("$sharedContainer.TrimEnd('/') + '/' + $destName");
                 expect(command).toContain("application/x-ccc-copied-image-file");
+            });
+
+            it("builds a lightweight Windows clipboard sequence marker command", () => {
+                const command = buildWindowsClipboardChangeMarkerCommand();
+
+                expect(command).toContain("user32.dll");
+                expect(command).toContain("GetClipboardSequenceNumber");
+                expect(command).not.toContain("GetImage()");
+                expect(command).not.toContain("GetText()");
+                expect(command).not.toContain("GetFileDropList()");
             });
 
             it("should handle empty output", () => {
@@ -761,7 +777,7 @@ describe("clipboard-server", () => {
         });
 
         describe("parseDarwinHelperOutput (native helper JSON)", () => {
-            let parseDarwinHelperOutput: (output: string) => { targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
+            let parseDarwinHelperOutput: (output: string) => { marker?: string | null; targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
             let buildImageMimeReadOrder: (targets: string[], preferred?: "png" | "bmp") => string[];
             let parseClipboardFileUriList: (input: string) => string[];
             let isImageFilePath: (filePath: string) => boolean;
@@ -786,6 +802,7 @@ describe("clipboard-server", () => {
                 const pngBytes = Buffer.from([0x89, 0x50, 0x4E, 0x47]);
                 const b64 = pngBytes.toString("base64");
                 const json = JSON.stringify({
+                    changeCount: 123,
                     targets: ["image/png", "text/plain"],
                     text: "hello",
                     imagePng: b64,
@@ -794,10 +811,21 @@ describe("clipboard-server", () => {
                 const result = parseDarwinHelperOutput(json);
 
                 expect(result).not.toBeNull();
+                expect(result!.marker).toBe("123");
                 expect(result!.targets).toEqual(["image/png", "text/plain"]);
                 expect(result!.text!.toString()).toBe("hello");
                 expect(result!.imagePng).toEqual(pngBytes);
                 expect(result!.imageBmp).toBeNull();
+            });
+
+            it("should parse MARK-only JSON with changeCount", () => {
+                const result = parseDarwinHelperOutput(JSON.stringify({ changeCount: "456" }));
+
+                expect(result).not.toBeNull();
+                expect(result!.marker).toBe("456");
+                expect(result!.targets).toEqual([]);
+                expect(result!.text).toBeNull();
+                expect(result!.imagePng).toBeNull();
             });
 
             it("should parse JSON with text only", () => {
@@ -1486,35 +1514,65 @@ describe("clipboard-server", () => {
     // getCachedClipboard
     // ═══════════════════════════════════════════════════════════════════════
     describe("getCachedClipboard", () => {
-        it("should return cached result within TTL", () => {
-            const CACHE_TTL_MS = 2000;
+        let shouldReuseClipboardCache: (
+            cache: { timestamp: number; marker?: string | null } | null,
+            now: number,
+            marker: string | null,
+            ttlMs?: number,
+        ) => boolean;
+        let CACHE_TTL_MS: number;
+
+        beforeEach(async () => {
+            const mod = await import("../clipboard-server.js");
+            shouldReuseClipboardCache = mod.shouldReuseClipboardCache;
+            CACHE_TTL_MS = mod.CACHE_TTL_MS;
+        });
+
+        it("should return cached result within the short no-marker TTL", () => {
             const now = Date.now();
             const cached = {
-                timestamp: now - 1000, // 1s ago, within 2s TTL
+                timestamp: now - 100,
                 targets: ["text/plain"],
                 text: Buffer.from("cached"),
                 imagePng: null,
                 imageBmp: null,
             };
 
-            // Simulate cache check
-            const isFresh = now - cached.timestamp < CACHE_TTL_MS;
-            expect(isFresh).toBe(true);
+            expect(CACHE_TTL_MS).toBeLessThanOrEqual(200);
+            expect(shouldReuseClipboardCache(cached, now, null)).toBe(true);
         });
 
-        it("should miss cache after TTL expires", () => {
-            const CACHE_TTL_MS = 2000;
+        it("should miss no-marker cache after the short TTL expires", () => {
             const now = Date.now();
             const cached = {
-                timestamp: now - 3000, // 3s ago, past 2s TTL
+                timestamp: now - CACHE_TTL_MS - 1,
                 targets: ["text/plain"],
                 text: Buffer.from("stale"),
                 imagePng: null,
                 imageBmp: null,
             };
 
-            const isFresh = now - cached.timestamp < CACHE_TTL_MS;
-            expect(isFresh).toBe(false);
+            expect(shouldReuseClipboardCache(cached, now, null)).toBe(false);
+        });
+
+        it("should reuse marker-backed cache even after TTL when marker is unchanged", () => {
+            const now = Date.now();
+            const cached = {
+                timestamp: now - CACHE_TTL_MS - 5000,
+                marker: "991",
+            };
+
+            expect(shouldReuseClipboardCache(cached, now, "991")).toBe(true);
+        });
+
+        it("should miss marker-backed cache immediately when marker changes", () => {
+            const now = Date.now();
+            const cached = {
+                timestamp: now,
+                marker: "991",
+            };
+
+            expect(shouldReuseClipboardCache(cached, now, "992")).toBe(false);
         });
 
         it("should use readAllClipboardWindows for windows platform", () => {

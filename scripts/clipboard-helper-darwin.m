@@ -4,6 +4,7 @@
 //
 // Build: cc -framework AppKit -framework Foundation -O2 -o clipboard-helper-darwin clipboard-helper-darwin.m
 // Usage: echo READ | ./clipboard-helper-darwin
+//        echo MARK | ./clipboard-helper-darwin
 
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
@@ -51,8 +52,26 @@ int main(int argc, const char *argv[]) {
         while (fgets(buf, sizeof(buf), stdin)) {
             @autoreleasepool {
                 NSPasteboard *pb = [NSPasteboard generalPasteboard];
+                NSString *command = [[[NSString alloc] initWithUTF8String:buf]
+                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
                 NSMutableDictionary *result = [NSMutableDictionary new];
                 NSMutableArray *targets = [NSMutableArray new];
+
+                result[@"changeCount"] = @([pb changeCount]);
+
+                if ([command isEqualToString:@"MARK"]) {
+                    NSData *json = [NSJSONSerialization dataWithJSONObject:result
+                                                                   options:0
+                                                                     error:nil];
+                    if (json) {
+                        NSString *jsonStr = [[NSString alloc] initWithData:json
+                                                                 encoding:NSUTF8StringEncoding];
+                        printf("%s\n%s\n", jsonStr.UTF8String, MARKER);
+                    } else {
+                        printf("{\"changeCount\":0}\n%s\n", MARKER);
+                    }
+                    continue;
+                }
 
                 // Normalize common image pasteboard payloads to PNG for Codex.
                 NSData *png = PNGDataFromPasteboard(pb);
