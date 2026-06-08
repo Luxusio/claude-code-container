@@ -197,6 +197,7 @@ describe("clipboard-server", () => {
 
         it("should detect linux WSL from /proc/version", () => {
             mockPlatform.mockReturnValue("linux");
+            mockSpawnSync.mockReturnValue({ status: 0, error: undefined });
             mockReadFileSync.mockImplementation((path: string, _enc?: string) => {
                 if (path === "/proc/version") return "Linux version 5.10.0 microsoft-standard-WSL2";
                 if (path === "/fake/clipboard-server.js") return "content";
@@ -204,6 +205,29 @@ describe("clipboard-server", () => {
             });
             const plat = detectPlatformReplica();
             expect(plat).toBe("wsl");
+        });
+
+        it("should not detect WSL when powershell.exe is unavailable", () => {
+            mockPlatform.mockReturnValue("linux");
+            mockSpawnSync.mockReturnValue({ status: null, error: new Error("spawn powershell.exe ENOENT") });
+            mockReadFileSync.mockImplementation((path: string, _enc?: string) => {
+                if (path === "/proc/version") return "Linux version 5.10.0 microsoft-standard-WSL2";
+                if (path === "/fake/clipboard-server.js") return "content";
+                throw new Error(`unexpected: ${path}`);
+            });
+            const origWayland = process.env.WAYLAND_DISPLAY;
+            const origDisplay = process.env.DISPLAY;
+            delete process.env.WAYLAND_DISPLAY;
+            process.env.DISPLAY = ":0";
+            try {
+                const plat = detectPlatformReplica();
+                expect(plat).toBe("linux-x11");
+            } finally {
+                if (origWayland !== undefined) process.env.WAYLAND_DISPLAY = origWayland;
+                else delete process.env.WAYLAND_DISPLAY;
+                if (origDisplay !== undefined) process.env.DISPLAY = origDisplay;
+                else delete process.env.DISPLAY;
+            }
         });
 
         it("should detect linux-wayland from WAYLAND_DISPLAY", () => {
@@ -283,13 +307,28 @@ describe("clipboard-server", () => {
             if (plat === "linux") {
                 try {
                     const release = mockReadFileSync("/proc/version", "utf-8");
-                    if (/microsoft|wsl/i.test(release)) return "wsl";
+                    if (/microsoft|wsl/i.test(release) && canRunPowerShellExeReplica()) return "wsl";
                 } catch { /* not WSL */ }
                 if (process.env.WAYLAND_DISPLAY) return "linux-wayland";
                 if (process.env.DISPLAY) return "linux-x11";
                 return "linux-x11";
             }
             return "unsupported";
+        }
+
+        function canRunPowerShellExeReplica(): boolean {
+            try {
+                const result = mockSpawnSync("powershell.exe", [
+                    "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "exit 0",
+                ], {
+                    timeout: 1000,
+                    stdio: "ignore",
+                    windowsHide: true,
+                });
+                return !result.error && result.status === 0;
+            } catch {
+                return false;
+            }
         }
     });
 
@@ -701,6 +740,7 @@ describe("clipboard-server", () => {
                 expect(command).toContain("[System.Drawing.Image]::FromFile($file)");
                 expect(command).toContain("[System.IO.File]::ReadAllBytes($file)");
                 expect(command).toContain("Copy-Item -LiteralPath $file -Destination $dest -Force");
+                expect(command).toContain("$file = $text.Trim().Trim([char]34).Trim([char]39)");
                 expect(command.indexOf("[System.Drawing.Image]::FromFile($file)")).toBeLessThan(
                     command.indexOf("[System.IO.File]::ReadAllBytes($file)"),
                 );
@@ -708,6 +748,9 @@ describe("clipboard-server", () => {
                     command.indexOf("Copy-Item -LiteralPath $file -Destination $dest -Force"),
                 );
                 expect(command.indexOf("Copy-Item -LiteralPath $file -Destination $dest -Force")).toBeLessThan(
+                    command.indexOf("$text = [System.Windows.Forms.Clipboard]::GetText()"),
+                );
+                expect(command.indexOf("$file = $text.Trim().Trim([char]34).Trim([char]39)")).toBeGreaterThan(
                     command.indexOf("$text = [System.Windows.Forms.Clipboard]::GetText()"),
                 );
                 expect(command).toContain("if ($text -and !$r.imagePng -and !$r.text)");
@@ -780,6 +823,7 @@ describe("clipboard-server", () => {
             let parseDarwinHelperOutput: (output: string) => { marker?: string | null; targets: string[]; text: Buffer | null; imagePng: Buffer | null; imageBmp: null } | null;
             let buildImageMimeReadOrder: (targets: string[], preferred?: "png" | "bmp") => string[];
             let parseClipboardFileUriList: (input: string) => string[];
+            let parseClipboardImagePathText: (input: string) => string[];
             let isImageFilePath: (filePath: string) => boolean;
             let buildImageFileClipboardFallbackFromPaths: (
                 paths: string[],
@@ -794,6 +838,7 @@ describe("clipboard-server", () => {
                 parseDarwinHelperOutput = mod.parseDarwinHelperOutput;
                 buildImageMimeReadOrder = mod.buildImageMimeReadOrder;
                 parseClipboardFileUriList = mod.parseClipboardFileUriList;
+                parseClipboardImagePathText = mod.parseClipboardImagePathText;
                 isImageFilePath = mod.isImageFilePath;
                 buildImageFileClipboardFallbackFromPaths = mod.buildImageFileClipboardFallbackFromPaths;
             });
@@ -924,6 +969,20 @@ describe("clipboard-server", () => {
 
             it("does not treat copy or cut markers as file paths", () => {
                 expect(parseClipboardFileUriList("copy\ncut\n# ignored\n")).toEqual([]);
+            });
+
+            it("parses single image path text from Windows, macOS, Linux, and file URI clipboards", () => {
+                expect(parseClipboardImagePathText('"C:\\Users\\Luxus\\Desktop\\page-concepts\\consumer-pages-ops-set.png"')).toEqual([
+                    "C:\\Users\\Luxus\\Desktop\\page-concepts\\consumer-pages-ops-set.png",
+                ]);
+                expect(parseClipboardImagePathText("/Users/me/Pictures/clip.webp")).toEqual(["/Users/me/Pictures/clip.webp"]);
+                expect(parseClipboardImagePathText("file:///home/me/Pictures/clip.avif")).toEqual(["/home/me/Pictures/clip.avif"]);
+            });
+
+            it("does not treat normal text or non-image paths as image path text", () => {
+                expect(parseClipboardImagePathText("hello world")).toEqual([]);
+                expect(parseClipboardImagePathText("C:\\Users\\Luxus\\Desktop\\notes.txt")).toEqual([]);
+                expect(parseClipboardImagePathText("C:\\one.png\nC:\\two.png")).toEqual([]);
             });
 
             it("recognizes best-effort image file extensions", () => {

@@ -65,7 +65,7 @@ function detectPlatform(): ClipboardPlatform {
         // Check for WSL
         try {
             const release = readFileSync("/proc/version", "utf-8");
-            if (/microsoft|wsl/i.test(release)) return "wsl";
+            if (/microsoft|wsl/i.test(release) && canRunPowerShellExe()) return "wsl";
         } catch { /* not WSL */ }
 
         // Check for Wayland
@@ -79,6 +79,21 @@ function detectPlatform(): ClipboardPlatform {
     }
 
     return "unsupported";
+}
+
+function canRunPowerShellExe(): boolean {
+    try {
+        const result = spawnSync("powershell.exe", [
+            "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "exit 0",
+        ], {
+            timeout: 1000,
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        return !result.error && result.status === 0;
+    } catch {
+        return false;
+    }
 }
 
 // === AppleScript Data Parsing ===
@@ -542,6 +557,18 @@ export function parseClipboardFileUriList(input: string): string[] {
         .filter(Boolean);
 }
 
+export function parseClipboardImagePathText(input: string): string[] {
+    const text = input.trim();
+    if (!text || /[\r\n]/.test(text)) return [];
+    const unquoted = text.replace(/^['"](.+)['"]$/, "$1").trim();
+    if (!isImageFilePath(unquoted)) return [];
+    if (/^[a-zA-Z]:[\\/]/.test(unquoted) || unquoted.startsWith("/") || unquoted.startsWith("~/")) {
+        return [unquoted];
+    }
+    if (unquoted.startsWith("file://")) return parseClipboardFileUriList(unquoted);
+    return [];
+}
+
 export function buildImageFileClipboardFallbackFromPaths(
     paths: string[],
     options: {
@@ -689,6 +716,43 @@ export function buildWindowsClipboardReadCommand(
         "  $img.Dispose()",
         "}",
         "$text = [System.Windows.Forms.Clipboard]::GetText()",
+        "if ($text -and !$r.imagePng -and !$r.text) {",
+        "  $file = $text.Trim().Trim([char]34).Trim([char]39)",
+        "  $ext = [System.IO.Path]::GetExtension($file).ToLowerInvariant()",
+        "  if ($imageExts -contains $ext -and [System.IO.File]::Exists($file)) {",
+        "    try {",
+        "      $img = [System.Drawing.Image]::FromFile($file)",
+        "      $r.targets += 'application/x-ccc-image-file'",
+        "    } catch {",
+        "      try {",
+        "        $bytes = [System.IO.File]::ReadAllBytes($file)",
+        "        if ($bytes.Length -gt 0) {",
+        "          $r.targets += 'image/png'",
+        "          $r.targets += 'application/x-ccc-image-file'",
+        "          $r.imagePng = [Convert]::ToBase64String($bytes)",
+        "        }",
+        "      } catch {",
+        "        try {",
+        "          [System.IO.Directory]::CreateDirectory($sharedHost) | Out-Null",
+        "          $destName = ([System.Guid]::NewGuid().ToString() + '-' + [System.IO.Path]::GetFileName($file))",
+        "          $dest = [System.IO.Path]::Combine($sharedHost, $destName)",
+        "          Copy-Item -LiteralPath $file -Destination $dest -Force",
+        "          $r.targets += 'text/plain'",
+        "          $r.targets += 'application/x-ccc-copied-image-file'",
+        "          $r.text = ($sharedContainer.TrimEnd('/') + '/' + $destName)",
+        "        } catch { }",
+        "      }",
+        "    }",
+        "  }",
+        "}",
+        "if ($img -and !$r.imagePng) {",
+        "  $r.targets += 'image/png'",
+        "  $ms = New-Object System.IO.MemoryStream",
+        "  $img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)",
+        "  $r.imagePng = [Convert]::ToBase64String($ms.ToArray())",
+        "  $ms.Dispose()",
+        "  $img.Dispose()",
+        "}",
         "if ($text -and !$r.imagePng -and !$r.text) { $r.targets += 'text/plain'; $r.text = $text }",
         "$r | ConvertTo-Json -Compress",
     ].join("; ");
@@ -737,6 +801,12 @@ async function readAllClipboardDarwin(): Promise<Omit<ClipboardSnapshot, "timest
 
     if (textResult.status === 0 && textResult.stdout.length > 0) {
         text = textResult.stdout;
+        if (!imagePng) {
+            const textPathFallback = buildImageFileClipboardFallbackFromPaths(
+                parseClipboardImagePathText(text.toString("utf-8")),
+            );
+            if (textPathFallback.targets.length > 0) return textPathFallback;
+        }
         targets.push("text/plain");
     }
 
@@ -855,6 +925,20 @@ async function getCachedClipboard(plat: ClipboardPlatform, forceRefresh = false)
                 ...fileFallback,
             };
             return clipboardCache;
+        }
+
+        if (text) {
+            const textPathFallback = buildImageFileClipboardFallbackFromPaths(
+                parseClipboardImagePathText(text.toString("utf-8")),
+            );
+            if (textPathFallback.targets.length > 0) {
+                clipboardCache = {
+                    timestamp: now,
+                    marker: null,
+                    ...textPathFallback,
+                };
+                return clipboardCache;
+            }
         }
     }
 
