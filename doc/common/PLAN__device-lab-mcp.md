@@ -35,11 +35,13 @@ device-lab-mcp/
       device-store.mjs        # generic owner-scoped backend state helpers
       android-state.mjs       # owner-scoped Android state store
       ios-state.mjs           # owner-scoped iOS Simulator state store
+      windows-state.mjs       # owner-scoped Windows Sandbox state store
     display/
       x11.mjs                 # current display target and display_* tools
     backends/
       android.mjs             # Android lifecycle and Appium Android tools
       ios-simulator.mjs       # iOS Simulator lifecycle via simctl
+      windows-sandbox.mjs     # Windows Sandbox lifecycle via wsb CLI
 ```
 
 Future backends should add files under `src/backends/` and keep persistent
@@ -396,6 +398,19 @@ Implementation:
 4. Use `wsb share`, `wsb ip`, and guest helper when command output or screenshots
    are needed.
 5. Stop through `wsb stop` and clean owner-scoped scratch artifacts.
+
+Foundation status:
+
+- The first Windows implementation slice exposes owner-scoped Windows Sandbox
+  definitions through the common `device_create`, `device_list`,
+  `device_status`, and `device_delete` tools.
+- `windows-sandbox` backend discovery reports `wsb` availability and missing
+  prerequisites without requiring Windows in normal Linux CI.
+- `device_start` writes an owner-scoped `.wsb` configuration and runs
+  `wsb start` only on explicit calls when available. `device_stop` calls
+  `wsb stop` only on explicit calls.
+- Guest helper installation, command stdout/stderr capture, and richer
+  Windows automation are deferred to later hardening slices.
 
 ### macOS VM
 

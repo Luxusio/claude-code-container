@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { androidBackend, handleAndroidTool, listAndroidDevices } from "./backends/android.mjs";
 import { handleIosTool, iosBackend, listIosDevices } from "./backends/ios-simulator.mjs";
+import { handleWindowsTool, listWindowsDevices, windowsBackend } from "./backends/windows-sandbox.mjs";
 import { ownerId } from "./context.mjs";
 import { currentDisplayTarget, handleDisplayTool, x11Available } from "./display/x11.mjs";
 import { jsonResult, textResult } from "./responses.mjs";
@@ -48,7 +49,7 @@ export async function startServer() {
                             },
                             androidBackend(),
                             iosBackend(),
-                            heavyBackend("windows-sandbox", "windows-host", ["device_create", "device_start", "device_exec"]),
+                            windowsBackend(),
                             heavyBackend("macos-vm", "macos-host", ["device_create", "device_start", "device_exec"]),
                         ],
                     });
@@ -60,6 +61,7 @@ export async function startServer() {
                             currentDisplayTarget(),
                             ...listAndroidDevices(),
                             ...listIosDevices(),
+                            ...listWindowsDevices(),
                         ],
                     });
 
@@ -69,6 +71,9 @@ export async function startServer() {
 
                     const iosResult = await handleIosTool(name, args);
                     if (iosResult) return iosResult;
+
+                    const windowsResult = await handleWindowsTool(name, args);
+                    if (windowsResult) return windowsResult;
 
                     const displayResult = await handleDisplayTool(name, args);
                     if (displayResult) return displayResult;
