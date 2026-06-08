@@ -206,25 +206,18 @@ export function resolveCredentialHostPath(mount: CredentialMount, profile?: stri
     return join(homedir(), mount.hostDir);
 }
 
-function hostUidGid(): { uid: number; gid: number } | null {
-    if (typeof process.getuid !== "function" || typeof process.getgid !== "function") {
-        return null;
-    }
-    return { uid: process.getuid(), gid: process.getgid() };
-}
-
 export function restoreCodexConfigHostOwnership(containerName: string): void {
-    const ids = hostUidGid();
-    if (!ids) return;
-
-    spawnSync(runtimeCli(), [
-        "exec", "--user", "root", containerName,
-        "sh", "-c",
-        `if [ -e /home/ccc/.codex/config.toml ]; then chown ${ids.uid}:${ids.gid} /home/ccc/.codex/config.toml 2>/dev/null || true; chmod 600 /home/ccc/.codex/config.toml 2>/dev/null || true; fi`,
-    ], { stdio: "ignore" });
+    void containerName;
 }
 
 export function prepareCodexConfigForContainer(containerName: string): void {
+    const accessCheck = spawnSync(runtimeCli(), [
+        "exec", containerName,
+        "sh", "-c",
+        "test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml",
+    ], { stdio: "ignore" });
+    if (accessCheck.status === 0) return;
+
     spawnSync(runtimeCli(), [
         "exec", "--user", "root", containerName,
         "sh", "-c",

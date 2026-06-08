@@ -242,32 +242,39 @@ describe("docker.ts module exports", () => {
     });
 
     describe("Codex config ownership helpers", () => {
-        it("restores mounted Codex config to the invoking host uid/gid", () => {
-            const uidSpy = vi.spyOn(process, "getuid").mockReturnValue(1234);
-            const gidSpy = vi.spyOn(process, "getgid").mockReturnValue(5678);
-
+        it("does not restore mounted Codex config ownership", () => {
             restoreCodexConfigHostOwnership("ccc-test");
 
-            expect(spawnSyncMock).toHaveBeenCalledWith(
-                "docker",
-                expect.arrayContaining(["exec", "--user", "root", "ccc-test"]),
-                { stdio: "ignore" },
-            );
-            const args = spawnSyncMock.mock.calls[0][1] as string[];
-            expect(args.at(-1)).toContain("chown 1234:5678 /home/ccc/.codex/config.toml");
-            uidSpy.mockRestore();
-            gidSpy.mockRestore();
+            expect(spawnSyncMock).not.toHaveBeenCalled();
         });
 
-        it("prepares mounted Codex config for the in-container ccc user", () => {
+        it("does not prepare mounted Codex config when the container user already has access", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+
             prepareCodexConfigForContainer("ccc-test");
 
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "docker",
+                expect.arrayContaining(["exec", "ccc-test"]),
+                { stdio: "ignore" },
+            );
+        });
+
+        it("prepares mounted Codex config for the in-container ccc user only after access check fails", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(0));
+
+            prepareCodexConfigForContainer("ccc-test");
+
+            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 expect.arrayContaining(["exec", "--user", "root", "ccc-test"]),
                 { stdio: "ignore" },
             );
-            const args = spawnSyncMock.mock.calls[0][1] as string[];
+            const args = spawnSyncMock.mock.calls[1][1] as string[];
             expect(args.at(-1)).toContain("chown ccc:docker /home/ccc/.codex/config.toml");
         });
     });
