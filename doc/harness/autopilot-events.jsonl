@@ -9,3 +9,5 @@
 {"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T14:45:00Z", "type": "preflight_checked", "warnings": 0}
 {"next_slice_id": "slice-005", "slice_id": "slice-004", "ts": "2026-06-08T16:28:51Z", "type": "iteration_reviewed"}
 {"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T16:28:51Z", "type": "preflight_checked", "warnings": 0}
+{"next_slice_id": "slice-006", "slice_id": "slice-005", "ts": "2026-06-08T17:17:08Z", "type": "iteration_reviewed"}
+{"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T17:17:08Z", "type": "preflight_checked", "warnings": 0}

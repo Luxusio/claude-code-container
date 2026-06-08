@@ -36,12 +36,14 @@ device-lab-mcp/
       android-state.mjs       # owner-scoped Android state store
       ios-state.mjs           # owner-scoped iOS Simulator state store
       windows-state.mjs       # owner-scoped Windows Sandbox state store
+      macos-state.mjs         # owner-scoped macOS VM state store
     display/
       x11.mjs                 # current display target and display_* tools
     backends/
       android.mjs             # Android lifecycle and Appium Android tools
       ios-simulator.mjs       # iOS Simulator lifecycle via simctl
       windows-sandbox.mjs     # Windows Sandbox lifecycle via wsb CLI
+      macos-vm.mjs            # macOS VM provider discovery and definitions
 ```
 
 Future backends should add files under `src/backends/` and keep persistent
@@ -429,6 +431,18 @@ Implementation:
 3. Start lazily, wait for guest readiness, and connect through a scoped guest
    helper or SSH where configured by the provider.
 4. Expose exec, screenshot, upload/download, and stop.
+
+Foundation status:
+
+- The first macOS VM implementation slice exposes owner-scoped macOS VM
+  definitions through the common `device_create`, `device_list`,
+  `device_status`, and `device_delete` tools.
+- `macos-vm` backend discovery reports whether the host is macOS and whether a
+  practical provider command such as `tart`, `vz`, or `utmctl` is available.
+- `device_start` remains lazy and returns diagnostics/provider-deferral instead
+  of starting a VM until a provider-specific implementation is selected.
+- Real VM image create/clone/snapshot/boot and guest helper integration are
+  deferred to later provider-specific hardening slices.
 
 ## CLI support
 

@@ -67,7 +67,7 @@
     }
   ],
   "created_at": "2026-06-08T12:13:32Z",
-  "current_iteration": 6,
+  "current_iteration": 7,
   "iteration_reviews": [
     {
       "backlog_changes": [
@@ -168,10 +168,30 @@
       "slice_id": "slice-004",
       "user_workflow_status": "complete",
       "ux_result": "PASS"
+    },
+    {
+      "backlog_changes": [
+        "Add macOS VM backend foundation because the locked product goal includes macOS host virtualization and it is not covered by the initial five slices."
+      ],
+      "demo_result": "pass",
+      "iteration": 6,
+      "learnings": [
+        "Windows Sandbox backend is host-specific like iOS: expose lazy owner-scoped definitions and diagnostics on unsupported hosts, defer guest helper/stdout capture."
+      ],
+      "next_slice_id": "slice-006",
+      "next_slice_reason": "macOS VM is the remaining requested OS backend and should use the same lazy owner-scoped foundation pattern before deeper provider integration.",
+      "qa_result": "PASS",
+      "quality_blockers": [],
+      "quality_warnings": [],
+      "review_quality": "complete",
+      "reviewed_at": "2026-06-08T17:17:08Z",
+      "slice_id": "slice-005",
+      "user_workflow_status": "complete",
+      "ux_result": "PASS"
     }
   ],
-  "next_slice_id": "slice-005",
-  "next_slice_reason": "Windows Sandbox is the next requested backend and validates host-specific lazy device control on Windows.",
+  "next_slice_id": "slice-006",
+  "next_slice_reason": "macOS VM is the remaining requested OS backend and should use the same lazy owner-scoped foundation pattern before deeper provider integration.",
   "product": "CCC Device Lab MCP: lazy, zero-env, per-container-isolated experiment environments for AI agents, covering current X11 display first and then Android/iOS/Windows/macOS backends with Appium-managed mobile automation.",
   "settings": {
     "max_attempts": 3
@@ -230,6 +250,6 @@
   ],
   "stack": "Existing TypeScript CLI repo; standalone MCP packages bundled with esbuild; host/device broker later; tests with vitest; durable docs under doc/common.",
   "status": "active",
-  "updated_at": "2026-06-08T16:28:51Z",
+  "updated_at": "2026-06-08T17:17:08Z",
   "version": 1
 }

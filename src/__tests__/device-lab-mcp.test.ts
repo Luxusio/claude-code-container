@@ -81,6 +81,7 @@ describe("device-lab MCP", () => {
         expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "ios-simulator")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "windows-sandbox")?.status).toBe("missing-prerequisites");
+        expect(payload.backends?.find((backend) => backend.name === "macos-vm")?.status).toBe("missing-prerequisites");
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {
@@ -307,6 +308,65 @@ describe("device-lab MCP", () => {
         const deleted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "windows-win-test" },
+        });
+        expect(deleted.isError).not.toBe(true);
+    });
+
+    it("creates, lists, inspects, starts with diagnostics, and deletes owner-scoped macOS VM definitions", { timeout: TIMEOUT }, async () => {
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "macos-vm",
+                name: "Mac Test",
+                provider: "auto",
+                image: "macos-restore-image",
+                memoryMb: 8192,
+                cpus: 4,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+
+        const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; status: string; platform: string; provider: string };
+        };
+        expect(created.device).toEqual(expect.objectContaining({
+            id: "macos-mac-test",
+            status: "stopped",
+            platform: "macos",
+            provider: "auto",
+        }));
+
+        const list = await client.callTool({ name: "device_list", arguments: {} });
+        const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string; backend?: string }>;
+        };
+        expect(listed.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "macos-mac-test", backend: "macos-vm" }),
+        ]));
+
+        const status = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "macos-mac-test" },
+        });
+        expect(status.isError).not.toBe(true);
+        const inspected = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string };
+            backend: { status: string; missing: string[] };
+        };
+        expect(inspected.device.id).toBe("macos-mac-test");
+        expect(inspected.backend.status).toBe("missing-prerequisites");
+        expect(inspected.backend.missing).toEqual(["macos-host"]);
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "macos-mac-test" },
+        });
+        expect(start.isError).toBe(true);
+        expect((start.content as Array<{ text?: string }>)[0].text).toContain("macOS VM backend missing prerequisites");
+
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "macos-mac-test" },
         });
         expect(deleted.isError).not.toBe(true);
     });
