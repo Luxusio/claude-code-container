@@ -57,8 +57,20 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_session_status");
         expect(names).toContain("mobile_dump_ui");
         expect(names).toContain("mobile_tap");
+        expect(names).toContain("mobile_double_tap");
+        expect(names).toContain("mobile_long_press");
+        expect(names).toContain("mobile_swipe");
         expect(names).toContain("mobile_type_text");
+        expect(names).toContain("mobile_key");
+        expect(names).toContain("mobile_home");
         expect(names).toContain("mobile_back");
+        expect(names).toContain("mobile_forward");
+        expect(names).toContain("mobile_recents");
+        expect(names).toContain("mobile_power");
+        expect(names).toContain("mobile_lock");
+        expect(names).toContain("mobile_unlock");
+        expect(names).toContain("mobile_open_url");
+        expect(names).toContain("mobile_screenshot");
     });
 
     it("reports backends without starting heavyweight devices", { timeout: TIMEOUT }, async () => {
@@ -167,7 +179,7 @@ describe("device-lab MCP", () => {
             arguments: { deviceId: "android-pixel-test", x: 10, y: 20 },
         });
         expect(tap.isError).toBe(true);
-        expect((tap.content as Array<{ text?: string }>)[0].text).toContain("Appium Android layer missing prerequisites");
+        expect((tap.content as Array<{ text?: string }>)[0].text).toContain("Android backend missing prerequisites: adb");
 
         const start = await client.callTool({
             name: "device_start",
@@ -525,6 +537,33 @@ exit 0
         expect(started.device.status).toBe("running");
         expect(started.device.bootReady).toBe(true);
 
+        const primitiveCalls = [
+            ["mobile_tap", { deviceId: "android-pixel-owned", x: 10, y: 20 }],
+            ["mobile_double_tap", { deviceId: "android-pixel-owned", x: 11, y: 21 }],
+            ["mobile_long_press", { deviceId: "android-pixel-owned", x: 12, y: 22, durationMs: 900 }],
+            ["mobile_swipe", { deviceId: "android-pixel-owned", x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 }],
+            ["mobile_type_text", { deviceId: "android-pixel-owned", text: "hello world" }],
+            ["mobile_key", { deviceId: "android-pixel-owned", keyCode: 82 }],
+            ["mobile_home", { deviceId: "android-pixel-owned" }],
+            ["mobile_back", { deviceId: "android-pixel-owned" }],
+            ["mobile_forward", { deviceId: "android-pixel-owned" }],
+            ["mobile_recents", { deviceId: "android-pixel-owned" }],
+            ["mobile_power", { deviceId: "android-pixel-owned" }],
+            ["mobile_lock", { deviceId: "android-pixel-owned" }],
+            ["mobile_unlock", { deviceId: "android-pixel-owned" }],
+            ["mobile_open_url", { deviceId: "android-pixel-owned", url: "https://example.test/path" }],
+        ] as const;
+        for (const [name, callArgs] of primitiveCalls) {
+            const action = await client.callTool({ name, arguments: callArgs });
+            expect(action.isError).not.toBe(true);
+        }
+        const screenshot = await client.callTool({
+            name: "mobile_screenshot",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(screenshot.isError).not.toBe(true);
+        expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
+
         const deleteWhileRunning = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "android-pixel-owned", deleteAvd: true },
@@ -552,7 +591,22 @@ exit 0
         expect(log).toContain(`avdmanager create avd --name ${avdName} --package system-images;android-35;google_apis;x86_64 --force --device pixel_6`);
         expect(log).toContain(`emulator -avd ${avdName}`);
         expect(log).toContain("adb -s emulator-5582 shell getprop sys.boot_completed");
+        expect(log).toContain("adb -s emulator-5582 shell input tap 10 20");
+        expect(log).toContain("adb -s emulator-5582 shell input swipe 12 22 12 22 900");
+        expect(log).toContain("adb -s emulator-5582 shell input swipe 1 2 30 40 500");
+        expect(log).toContain("adb -s emulator-5582 shell input text hello%sworld");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 82");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 3");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 4");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 125");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 187");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 26");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 223");
+        expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
+        expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
+        expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
         expect(log).toContain(`avdmanager delete avd --name ${avdName}`);
+        expect(log).not.toContain("appium");
     });
 
     it("refuses avdmanager create/delete for non-owned Android AVD names", { timeout: TIMEOUT }, async () => {

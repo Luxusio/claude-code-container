@@ -101,7 +101,10 @@ export function androidBackend() {
             "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
             "device_status", "device_exec", "device_screenshot",
             "mobile_session_status", "mobile_dump_ui", "mobile_tap",
-            "mobile_type_text", "mobile_back",
+            "mobile_double_tap", "mobile_long_press", "mobile_swipe",
+            "mobile_type_text", "mobile_key", "mobile_home", "mobile_back",
+            "mobile_forward", "mobile_recents", "mobile_power", "mobile_lock",
+            "mobile_unlock", "mobile_open_url", "mobile_screenshot",
         ],
     };
 }
@@ -126,6 +129,33 @@ function appiumPortForDevice(id) {
 
 function androidSerial(device) {
     return device.serial || (device.port ? `emulator-${device.port}` : undefined);
+}
+
+function adbArgsForDevice(device, args) {
+    const serial = androidSerial(device);
+    return serial ? ["-s", serial, ...args] : args;
+}
+
+function adbTextValue(text) {
+    return String(text).replace(/\s/g, "%s");
+}
+
+function ensureAdbDevice(deviceId) {
+    const device = findAndroidDevice(deviceId);
+    if (!device) return { error: `Unknown device for this owner: ${deviceId}` };
+    const discovery = androidDiscovery();
+    if (!discovery.adb) return { error: "Android backend missing prerequisites: adb" };
+    return { device, adb: discovery.adb };
+}
+
+function runAdbDeviceCommand(device, adb, args) {
+    const r = run(adb, adbArgsForDevice(device, args));
+    return r.status === 0 ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status } : { ok: false, result: r };
+}
+
+function adbJsonResult(device, adb, args, payload) {
+    const r = runAdbDeviceCommand(device, adb, args);
+    return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
 }
 
 function ownerAvdPrefix() {
@@ -446,9 +476,7 @@ export async function handleAndroidTool(name, args) {
             const discovery = androidDiscovery();
             if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
 
-            const serial = androidSerial(device);
-            const adbArgs = serial ? ["-s", serial, "shell", command] : ["shell", command];
-            const r = run(discovery.adb, adbArgs);
+            const r = run(discovery.adb, adbArgsForDevice(device, ["shell", command]));
             return r.status === 0 ? jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
         }
 
@@ -460,9 +488,7 @@ export async function handleAndroidTool(name, args) {
             const discovery = androidDiscovery();
             if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
 
-            const serial = androidSerial(device);
-            const adbArgs = serial ? ["-s", serial, "exec-out", "screencap", "-p"] : ["exec-out", "screencap", "-p"];
-            const r = runBuffer(discovery.adb, adbArgs);
+            const r = runBuffer(discovery.adb, adbArgsForDevice(device, ["exec-out", "screencap", "-p"]));
             if (r.status !== 0) {
                 return textResult(false, `Error: ${r.stderr?.toString() || r.stdout?.toString() || `exit ${r.status}`}`);
             }
@@ -486,47 +512,112 @@ export async function handleAndroidTool(name, args) {
 
         case "mobile_tap": {
             const { deviceId, x, y } = args;
-            const session = await ensureAppiumSession(deviceId);
-            if (session.error) return textResult(false, session.error);
-            await fetchJson(`${session.serverUrl}/session/${session.sessionId}/actions`, {
-                method: "POST",
-                body: JSON.stringify({
-                    actions: [{
-                        type: "pointer",
-                        id: "finger1",
-                        parameters: { pointerType: "touch" },
-                        actions: [
-                            { type: "pointerMove", duration: 0, x, y },
-                            { type: "pointerDown", button: 0 },
-                            { type: "pause", duration: 50 },
-                            { type: "pointerUp", button: 0 },
-                        ],
-                    }],
-                }),
-            });
-            return jsonResult({ tapped: { x, y } });
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)], { tapped: { x, y }, provider: "adb" });
+        }
+
+        case "mobile_double_tap": {
+            const { deviceId, x, y } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            const first = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
+            if (!first.ok) return fail(first.result);
+            const second = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
+            return second.ok ? jsonResult({ doubleTapped: { x, y }, provider: "adb" }) : fail(second.result);
+        }
+
+        case "mobile_long_press": {
+            const { deviceId, x, y, durationMs = 700 } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x), String(y), String(x), String(y), String(durationMs)], { longPressed: { x, y, durationMs }, provider: "adb" });
+        }
+
+        case "mobile_swipe": {
+            const { deviceId, x1, y1, x2, y2, durationMs = 300 } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)], { swiped: { x1, y1, x2, y2, durationMs }, provider: "adb" });
         }
 
         case "mobile_type_text": {
             const { deviceId, text } = args;
-            const session = await ensureAppiumSession(deviceId);
-            if (session.error) return textResult(false, session.error);
-            await fetchJson(`${session.serverUrl}/session/${session.sessionId}/keys`, {
-                method: "POST",
-                body: JSON.stringify({ text, value: Array.from(text) }),
-            });
-            return jsonResult({ typed: true });
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "text", adbTextValue(text)], { typed: true, provider: "adb" });
+        }
+
+        case "mobile_key": {
+            const { deviceId, key, keyCode } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            const resolvedKey = keyCode ?? key;
+            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") {
+                return textResult(false, "mobile_key requires key or keyCode");
+            }
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", String(resolvedKey)], { key: resolvedKey, provider: "adb" });
         }
 
         case "mobile_back": {
             const { deviceId } = args;
-            const session = await ensureAppiumSession(deviceId);
-            if (session.error) return textResult(false, session.error);
-            await fetchJson(`${session.serverUrl}/session/${session.sessionId}/back`, {
-                method: "POST",
-                body: JSON.stringify({}),
-            });
-            return jsonResult({ back: true });
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "4"], { back: true, provider: "adb" });
+        }
+
+        case "mobile_home": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "3"], { home: true, provider: "adb" });
+        }
+
+        case "mobile_forward": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "125"], { forward: true, provider: "adb" });
+        }
+
+        case "mobile_recents": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "187"], { recents: true, provider: "adb" });
+        }
+
+        case "mobile_power": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "26"], { power: true, provider: "adb" });
+        }
+
+        case "mobile_lock": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "223"], { locked: true, provider: "adb" });
+        }
+
+        case "mobile_unlock": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "224"], { unlocked: true, provider: "adb" });
+        }
+
+        case "mobile_open_url": {
+            const { deviceId, url } = args;
+            const target = ensureAdbDevice(deviceId);
+            if (target.error) return textResult(false, target.error);
+            return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], { openedUrl: url, provider: "adb" });
+        }
+
+        case "mobile_screenshot": {
+            const { deviceId } = args;
+            return handleAndroidTool("device_screenshot", { deviceId });
         }
 
         default:

@@ -286,6 +286,18 @@ Not every mobile action is available on every backend. Tool responses should
 return a clear unsupported capability error instead of silently approximating a
 different action.
 
+Android direct-ADB action status:
+
+- Android primitive mobile actions now cover tap, double tap, long press,
+  swipe, text input, arbitrary keyevent, home, back, forward, recents, power,
+  lock, unlock, open URL, and screenshot through direct `adb` commands.
+- These primitive actions require only an owner-scoped Android device
+  definition and `adb`; they do not start Appium or create an Appium session.
+- `mobile_dump_ui` remains Appium-backed because UI hierarchy is stronger
+  through WebDriver/Appium until a direct `uiautomator dump` layer is added.
+- Tests use fake Android SDK commands to verify serial-targeted ADB command
+  mapping and missing-prerequisite behavior without requiring a real emulator.
+
 Current-display tools:
 
 - `display_current`
