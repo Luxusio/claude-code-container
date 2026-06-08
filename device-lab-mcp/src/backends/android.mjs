@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { commandPath, localBinPath, run, runBuffer } from "../commands.mjs";
@@ -27,20 +27,50 @@ function findAndroidTool(name) {
     if (fromPath) return fromPath;
 
     for (const sdk of androidSdkCandidates()) {
-        const subdir = name === "emulator" ? "emulator" : "platform-tools";
-        const candidate = join(sdk, subdir, name);
-        if (existsSync(candidate)) return candidate;
+        const subdirs = androidToolSubdirs(sdk, name);
+        for (const subdir of subdirs) {
+            const candidate = join(sdk, subdir, name);
+            if (existsSync(candidate)) return candidate;
+        }
     }
     return null;
+}
+
+function androidToolSubdirs(sdk, name) {
+    if (name === "emulator") return ["emulator"];
+    if (name === "avdmanager") {
+        const cmdlineToolSubdirs = [];
+        const cmdlineTools = join(sdk, "cmdline-tools");
+        try {
+            for (const entry of readdirSync(cmdlineTools, { withFileTypes: true })) {
+                if (entry.isDirectory()) cmdlineToolSubdirs.push(`cmdline-tools/${entry.name}/bin`);
+            }
+        } catch {
+            /* ignore absent SDK command-line tools directory */
+        }
+        return ["cmdline-tools/latest/bin", ...cmdlineToolSubdirs, "cmdline-tools/bin", "tools/bin"];
+    }
+    return ["platform-tools"];
 }
 
 export function androidDiscovery() {
     const adb = findAndroidTool("adb");
     const emulator = findAndroidTool("emulator");
+    const avdmanager = findAndroidTool("avdmanager");
     const missing = [];
     if (!adb) missing.push("adb");
     if (!emulator) missing.push("emulator");
-    return { adb, emulator, available: missing.length === 0, missing };
+    const provisioningMissing = [];
+    if (!avdmanager) provisioningMissing.push("avdmanager");
+    return {
+        adb,
+        emulator,
+        avdmanager,
+        available: missing.length === 0,
+        missing,
+        provisioningAvailable: provisioningMissing.length === 0,
+        provisioningMissing,
+    };
 }
 
 export function appiumDiscovery() {
@@ -62,9 +92,13 @@ export function androidBackend() {
         lazy: true,
         status: discovery.available ? "available" : "missing-prerequisites",
         missing: discovery.missing,
-        tools: { adb: discovery.adb, emulator: discovery.emulator },
+        tools: { adb: discovery.adb, emulator: discovery.emulator, avdmanager: discovery.avdmanager },
+        provisioning: {
+            available: discovery.provisioningAvailable,
+            missing: discovery.provisioningMissing,
+        },
         capabilities: [
-            "device_create", "device_delete", "device_start", "device_stop",
+            "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
             "device_status", "device_exec", "device_screenshot",
             "mobile_session_status", "mobile_dump_ui", "mobile_tap",
             "mobile_type_text", "mobile_back",
@@ -92,6 +126,47 @@ function appiumPortForDevice(id) {
 
 function androidSerial(device) {
     return device.serial || (device.port ? `emulator-${device.port}` : undefined);
+}
+
+function ownerAvdPrefix() {
+    return `ccc-${ownerId()}-`;
+}
+
+function isOwnedAvdName(avdName) {
+    return typeof avdName === "string" && avdName.startsWith(ownerAvdPrefix());
+}
+
+function listHostAvds(discovery = androidDiscovery()) {
+    if (!discovery.emulator) return { available: false, missing: ["emulator"], avds: [] };
+    const r = run(discovery.emulator, ["-list-avds"]);
+    if (r.status !== 0) {
+        return {
+            available: false,
+            missing: [],
+            avds: [],
+            error: r.stderr || r.stdout || `exit ${r.status}`,
+        };
+    }
+    return {
+        available: true,
+        missing: [],
+        avds: r.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+    };
+}
+
+async function waitForAndroidBoot(discovery, device, timeoutMs) {
+    if (!discovery.adb) return { ready: false, skipped: true, reason: "adb missing" };
+    const serial = androidSerial(device);
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        const adbArgs = serial
+            ? ["-s", serial, "shell", "getprop", "sys.boot_completed"]
+            : ["shell", "getprop", "sys.boot_completed"];
+        const r = run(discovery.adb, adbArgs);
+        if (r.status === 0 && r.stdout.trim() === "1") return { ready: true };
+        await sleep(250);
+    }
+    return { ready: false, skipped: false, reason: "timeout" };
 }
 
 async function sleep(ms) {
@@ -202,14 +277,45 @@ export function listAndroidDevices() {
 
 export async function handleAndroidTool(name, args) {
     switch (name) {
+        case "device_inventory": {
+            const { backend = "android-emulator" } = args;
+            if (backend !== "android-emulator") return undefined;
+
+            const discovery = androidDiscovery();
+            return jsonResult({
+                backend,
+                ownerId: ownerId(),
+                devices: listAndroidDevices(),
+                hostAvds: listHostAvds(discovery),
+                discovery,
+            });
+        }
+
         case "device_create": {
-            const { backend, name: deviceName, deviceId, avdName, port } = args;
+            const { backend, name: deviceName, deviceId, avdName, port, systemImage, deviceProfile, createAvd = false } = args;
             if (backend !== "android-emulator") return undefined;
 
             const id = deviceId || androidDeviceId(deviceName);
             const devices = readAndroidDevices();
             if (devices.some((device) => device.id === id)) {
                 return textResult(false, `Device already exists for this owner: ${id}`);
+            }
+
+            const resolvedAvdName = avdName || `${ownerAvdPrefix()}${slug(deviceName)}`;
+            const shouldCreateAvd = Boolean(createAvd);
+            if (shouldCreateAvd && !isOwnedAvdName(resolvedAvdName)) {
+                return textResult(false, `Refusing to create non-owned Android AVD name: ${resolvedAvdName}`);
+            }
+            if (shouldCreateAvd) {
+                const discovery = androidDiscovery();
+                if (!discovery.provisioningAvailable) {
+                    return textResult(false, `Android AVD provisioning missing prerequisites: ${discovery.provisioningMissing.join(", ")}`);
+                }
+                if (!systemImage) return textResult(false, "Android AVD provisioning requires systemImage");
+                const avdArgs = ["create", "avd", "--name", resolvedAvdName, "--package", systemImage, "--force"];
+                if (deviceProfile) avdArgs.push("--device", deviceProfile);
+                const r = run(discovery.avdmanager, avdArgs);
+                if (r.status !== 0) return fail(r);
             }
 
             const device = {
@@ -219,7 +325,10 @@ export async function handleAndroidTool(name, args) {
                 kind: "mobile",
                 platform: "android",
                 ownerId: ownerId(),
-                avdName: avdName || `ccc-${ownerId()}-${slug(deviceName)}`,
+                avdName: resolvedAvdName,
+                systemImage: systemImage || null,
+                deviceProfile: deviceProfile || null,
+                provisioned: shouldCreateAvd,
                 port: port || null,
                 serial: port ? `emulator-${port}` : null,
                 appiumPort: appiumPortForDevice(id),
@@ -235,15 +344,26 @@ export async function handleAndroidTool(name, args) {
         }
 
         case "device_delete": {
-            const { deviceId, force = false } = args;
+            const { deviceId, force = false, deleteAvd = false } = args;
             const devices = readAndroidDevices();
             const device = devices.find((item) => item.id === deviceId);
             if (!device) return undefined;
             if (!force && device.status !== "stopped") {
                 return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
             }
+            if (deleteAvd) {
+                if (!isOwnedAvdName(device.avdName)) {
+                    return textResult(false, `Refusing to delete non-owned Android AVD name: ${device.avdName}`);
+                }
+                const discovery = androidDiscovery();
+                if (!discovery.provisioningAvailable) {
+                    return textResult(false, `Android AVD provisioning missing prerequisites: ${discovery.provisioningMissing.join(", ")}`);
+                }
+                const r = run(discovery.avdmanager, ["delete", "avd", "--name", device.avdName]);
+                if (r.status !== 0) return fail(r);
+            }
             writeAndroidDevices(devices.filter((item) => item.id !== deviceId));
-            return jsonResult({ deleted: deviceId });
+            return jsonResult({ deleted: deviceId, avdDeleted: Boolean(deleteAvd) });
         }
 
         case "device_status": {
@@ -254,13 +374,16 @@ export async function handleAndroidTool(name, args) {
         }
 
         case "device_start": {
-            const { deviceId } = args;
+            const { deviceId, waitForBoot = true, bootTimeoutMs = 60000 } = args;
             const device = findAndroidDevice(deviceId);
             if (!device) return undefined;
 
             const discovery = androidDiscovery();
             if (!discovery.available) {
                 return textResult(false, `Android backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            }
+            if (!isOwnedAvdName(device.avdName)) {
+                return textResult(false, `Refusing to start non-owned Android AVD name: ${device.avdName}`);
             }
 
             const child = spawn(discovery.emulator, ["-avd", device.avdName], {
@@ -270,13 +393,24 @@ export async function handleAndroidTool(name, args) {
             });
             child.unref();
 
-            const updated = updateAndroidDevice(deviceId, (item) => ({
+            const starting = updateAndroidDevice(deviceId, (item) => ({
                 ...item,
                 status: "starting",
                 pid: child.pid,
                 updatedAt: new Date().toISOString(),
             }));
-            return jsonResult({ device: updated });
+
+            if (!waitForBoot) return jsonResult({ device: starting, boot: { ready: false, skipped: true } });
+
+            const boot = await waitForAndroidBoot(discovery, starting, bootTimeoutMs);
+            const updated = updateAndroidDevice(deviceId, (item) => ({
+                ...item,
+                status: boot.ready ? "running" : "starting",
+                bootReady: boot.ready,
+                lastBootCheck: boot,
+                updatedAt: new Date().toISOString(),
+            }));
+            return jsonResult({ device: updated, boot });
         }
 
         case "device_stop": {

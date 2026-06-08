@@ -348,6 +348,22 @@ Appium Android layer status:
 - Mobile tools operate through owner-scoped Android device definitions and
   return missing-prerequisite diagnostics when Appium/adb are unavailable.
 
+AVD provisioning hardening status:
+
+- Android discovery now reports `avdmanager` separately from lifecycle
+  prerequisites. Missing `adb`/`emulator` blocks lifecycle actions, while
+  missing `avdmanager` blocks only real AVD create/delete provisioning.
+- `device_inventory` reports owner-scoped Android definitions and host AVD
+  names through `emulator -list-avds` without starting emulators.
+- `device_create` can create a real AVD when `createAvd=true` is explicitly
+  provided, but only for CCC owner-prefixed AVD names.
+- `device_delete` deletes a real AVD only when `deleteAvd=true`, the definition
+  is stopped or forced, and the AVD name belongs to the current owner prefix.
+- `device_start` remains lazy, refuses non-owned AVD names when lifecycle tools
+  are available, and now waits for `adb shell getprop sys.boot_completed` by
+  default when `adb` is available, while preserving an explicit
+  `waitForBoot=false` path for callers that only need process launch.
+
 ### iOS Simulator
 
 Prerequisites:

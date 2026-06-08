@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, rmSync } from "fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -43,6 +43,7 @@ describe("device-lab MCP", () => {
 
         expect(names).toContain("device_backends");
         expect(names).toContain("device_list");
+        expect(names).toContain("device_inventory");
         expect(names).toContain("display_current");
         expect(names).toContain("display_screenshot");
         expect(names).toContain("display_click");
@@ -369,5 +370,266 @@ describe("device-lab MCP", () => {
             arguments: { deviceId: "macos-mac-test" },
         });
         expect(deleted.isError).not.toBe(true);
+    });
+});
+
+describe("device-lab MCP with fake Android SDK", () => {
+    let client: Client;
+    let homeDir: string;
+    let binDir: string;
+    let logPath: string;
+
+    beforeAll(async () => {
+        homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-home-"));
+        binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-bin-"));
+        logPath = join(homeDir, "fake-android.log");
+
+        const writeScript = (name: string, body: string) => {
+            const path = join(binDir, name);
+            writeFileSync(path, `#!/bin/sh\n${body}\n`);
+            chmodSync(path, 0o755);
+        };
+
+        writeScript("emulator", `
+echo "emulator $*" >> "$FAKE_ANDROID_LOG"
+if [ "$1" = "-list-avds" ]; then
+  echo "host_pixel"
+  echo "ccc-external-other"
+  exit 0
+fi
+exit 0
+`);
+        writeScript("adb", `
+echo "adb $*" >> "$FAKE_ANDROID_LOG"
+if [ "$1" = "-s" ]; then
+  shift
+  shift
+fi
+if [ "$1" = "shell" ] && [ "$2" = "getprop" ] && [ "$3" = "sys.boot_completed" ]; then
+  echo "1"
+  exit 0
+fi
+if [ "$1" = "shell" ]; then
+  echo "ok"
+  exit 0
+fi
+exit 0
+`);
+        writeScript("avdmanager", `
+echo "avdmanager $*" >> "$FAKE_ANDROID_LOG"
+exit 0
+`);
+
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [join(repoRoot, "device-lab-mcp/server.mjs")],
+            env: {
+                HOME: homeDir,
+                PATH: binDir,
+                NODE_ENV: "test",
+                FAKE_ANDROID_LOG: logPath,
+            },
+        });
+
+        client = new Client(
+            { name: "ccc-device-lab-android-fake-client", version: "1.0.0" },
+            { capabilities: {} },
+        );
+
+        await client.connect(transport);
+    }, TIMEOUT);
+
+    afterAll(async () => {
+        await client?.close();
+        if (homeDir) rmSync(homeDir, { recursive: true, force: true });
+        if (binDir) rmSync(binDir, { recursive: true, force: true });
+    }, TIMEOUT);
+
+    it("discovers avdmanager and reports Android host AVD inventory without starting emulators", { timeout: TIMEOUT }, async () => {
+        const backends = await client.callTool({ name: "device_backends", arguments: {} });
+        const backendPayload = JSON.parse(((backends.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            backends: Array<{
+                name: string;
+                status: string;
+                tools: { adb?: string; emulator?: string; avdmanager?: string };
+                provisioning: { available: boolean; missing: string[] };
+            }>;
+        };
+        const android = backendPayload.backends.find((backend) => backend.name === "android-emulator");
+        expect(android).toEqual(expect.objectContaining({
+            status: "available",
+            provisioning: { available: true, missing: [] },
+        }));
+        expect(android?.tools.avdmanager).toBe(join(binDir, "avdmanager"));
+
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "android-emulator" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const payload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ownerId: string;
+            hostAvds: { available: boolean; avds: string[] };
+            devices: Array<{ id: string }>;
+        };
+        expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+        expect(payload.hostAvds).toEqual({ available: true, missing: [], avds: ["host_pixel", "ccc-external-other"] });
+        expect(payload.devices).toEqual([]);
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("emulator -list-avds");
+        expect(log).not.toContain("emulator -avd");
+    });
+
+    it("creates and deletes owner-prefixed AVDs through avdmanager only when requested", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "android-emulator" },
+        });
+        const ownerId = (JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string }).ownerId;
+        const avdName = `ccc-${ownerId}-pixel-owned`;
+
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Pixel Owned",
+                avdName,
+                port: 5582,
+                systemImage: "system-images;android-35;google_apis;x86_64",
+                deviceProfile: "pixel_6",
+                createAvd: true,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; avdName: string; provisioned: boolean; status: string };
+        };
+        expect(created.device).toEqual(expect.objectContaining({
+            id: "android-pixel-owned",
+            avdName,
+            provisioned: true,
+            status: "stopped",
+        }));
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "android-pixel-owned", bootTimeoutMs: 1000 },
+        });
+        expect(start.isError).not.toBe(true);
+        const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; bootReady: boolean };
+            boot: { ready: boolean };
+        };
+        expect(started.boot.ready).toBe(true);
+        expect(started.device.status).toBe("running");
+        expect(started.device.bootReady).toBe(true);
+
+        const deleteWhileRunning = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "android-pixel-owned", deleteAvd: true },
+        });
+        expect(deleteWhileRunning.isError).toBe(true);
+
+        const stop = await client.callTool({
+            name: "device_stop",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(stop.isError).not.toBe(true);
+
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "android-pixel-owned", deleteAvd: true },
+        });
+        expect(deleted.isError).not.toBe(true);
+        const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deleted: string;
+            avdDeleted: boolean;
+        };
+        expect(deletedPayload).toEqual({ deleted: "android-pixel-owned", avdDeleted: true });
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain(`avdmanager create avd --name ${avdName} --package system-images;android-35;google_apis;x86_64 --force --device pixel_6`);
+        expect(log).toContain(`emulator -avd ${avdName}`);
+        expect(log).toContain("adb -s emulator-5582 shell getprop sys.boot_completed");
+        expect(log).toContain(`avdmanager delete avd --name ${avdName}`);
+    });
+
+    it("refuses avdmanager create/delete for non-owned Android AVD names", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "android-emulator" },
+        });
+        const ownerId = (JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string }).ownerId;
+        const metadataOnlyAvd = `ccc-${ownerId}-metadata-only`;
+
+        const metadataWithSystemImage = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Metadata System Image",
+                avdName: metadataOnlyAvd,
+                systemImage: "system-images;android-35;google_apis;x86_64",
+            },
+        });
+        expect(metadataWithSystemImage.isError).not.toBe(true);
+        const metadataPayload = JSON.parse(((metadataWithSystemImage.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { provisioned: boolean; systemImage: string };
+        };
+        expect(metadataPayload.device.provisioned).toBe(false);
+        expect(metadataPayload.device.systemImage).toBe("system-images;android-35;google_apis;x86_64");
+
+        const metadataSystemImageDeleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "android-metadata-system-image" },
+        });
+        expect(metadataSystemImageDeleted.isError).not.toBe(true);
+
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Foreign Create",
+                avdName: "foreign-avd",
+                systemImage: "system-images;android-35;google_apis;x86_64",
+                createAvd: true,
+            },
+        });
+        expect(create.isError).toBe(true);
+        expect((create.content as Array<{ text?: string }>)[0].text).toContain("Refusing to create non-owned Android AVD name");
+
+        const metadataOnly = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Foreign Metadata",
+                avdName: "foreign-avd",
+            },
+        });
+        expect(metadataOnly.isError).not.toBe(true);
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "android-foreign-metadata", bootTimeoutMs: 1000 },
+        });
+        expect(start.isError).toBe(true);
+        expect((start.content as Array<{ text?: string }>)[0].text).toContain("Refusing to start non-owned Android AVD name");
+
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "android-foreign-metadata", deleteAvd: true },
+        });
+        expect(deleted.isError).toBe(true);
+        expect((deleted.content as Array<{ text?: string }>)[0].text).toContain("Refusing to delete non-owned Android AVD name");
+
+        const metadataDeleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "android-foreign-metadata" },
+        });
+        expect(metadataDeleted.isError).not.toBe(true);
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).not.toContain(`avdmanager create avd --name ${metadataOnlyAvd}`);
+        expect(log).not.toContain("emulator -avd foreign-avd");
     });
 });
