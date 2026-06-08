@@ -14,8 +14,9 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp",
+    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp",
     "build:x11-mcp": "node node_modules/esbuild-wasm/bin/esbuild x11-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/x11-mcp/server.mjs --banner:js=\"// x11-mcp-version: 2\"",
+    "build:device-lab-mcp": "node node_modules/esbuild-wasm/bin/esbuild device-lab-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/device-lab-mcp/server.mjs --banner:js=\"// device-lab-mcp-version: 1\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",

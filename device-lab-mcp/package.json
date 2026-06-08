@@ -1,0 +1,12 @@
+{
+  "name": "@ccc/device-lab-mcp",
+  "version": "0.1.0",
+  "description": "Lazy device lab MCP server for CCC containers",
+  "type": "module",
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "appium": "^3.5.0",
+    "appium-uiautomator2-driver": "^7.6.0"
+  }
+}

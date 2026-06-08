@@ -1,0 +1,215 @@
+{
+  "backlog": [
+    {
+      "acceptance": [
+        "Standalone device-lab MCP foundation with X11 current display and planned backends"
+      ],
+      "hypothesis": "Delivering Standalone device-lab MCP foundation with X11 current display and planned backends increases product completeness.",
+      "id": "slice-001",
+      "kind": "MVP",
+      "learned_from": "",
+      "priority": 999,
+      "status": "pending",
+      "title": "Standalone device-lab MCP foundation with X11 current display and planned backends",
+      "user_value": "User can experience: Standalone device-lab MCP foundation with X11 current display and planned backends"
+    },
+    {
+      "acceptance": [
+        "Android backend foundation with owner-scoped AVD inventory, start/stop status, adb shell, screenshot, and no Appium yet"
+      ],
+      "hypothesis": "Delivering Android backend foundation with owner-scoped AVD inventory, start/stop status, adb shell, screenshot, and no Appium yet increases product completeness.",
+      "id": "slice-002",
+      "kind": "MVP",
+      "learned_from": "",
+      "priority": 998,
+      "status": "pending",
+      "title": "Android backend foundation with owner-scoped AVD inventory, start/stop status, adb shell, screenshot, and no Appium yet",
+      "user_value": "User can experience: Android backend foundation with owner-scoped AVD inventory, start/stop status, adb shell, screenshot, and no Appium yet"
+    },
+    {
+      "acceptance": [
+        "CCC-managed Appium Android layer with UiAutomator2 session and mobile_* tools"
+      ],
+      "hypothesis": "Delivering CCC-managed Appium Android layer with UiAutomator2 session and mobile_* tools increases product completeness.",
+      "id": "slice-003",
+      "kind": "MVP",
+      "learned_from": "",
+      "priority": 997,
+      "status": "pending",
+      "title": "CCC-managed Appium Android layer with UiAutomator2 session and mobile_* tools",
+      "user_value": "User can experience: CCC-managed Appium Android layer with UiAutomator2 session and mobile_* tools"
+    },
+    {
+      "acceptance": [
+        "iOS Simulator backend foundation via simctl on macOS"
+      ],
+      "hypothesis": "Delivering iOS Simulator backend foundation via simctl on macOS increases product completeness.",
+      "id": "slice-004",
+      "kind": "MVP",
+      "learned_from": "",
+      "priority": 996,
+      "status": "pending",
+      "title": "iOS Simulator backend foundation via simctl on macOS",
+      "user_value": "User can experience: iOS Simulator backend foundation via simctl on macOS"
+    },
+    {
+      "acceptance": [
+        "Windows Sandbox backend foundation"
+      ],
+      "hypothesis": "Delivering Windows Sandbox backend foundation increases product completeness.",
+      "id": "slice-005",
+      "kind": "MVP",
+      "learned_from": "",
+      "priority": 995,
+      "status": "pending",
+      "title": "Windows Sandbox backend foundation",
+      "user_value": "User can experience: Windows Sandbox backend foundation"
+    }
+  ],
+  "created_at": "2026-06-08T12:13:32Z",
+  "current_iteration": 5,
+  "iteration_reviews": [
+    {
+      "backlog_changes": [
+        "Proceed to Android backend foundation as the first real inventory-managed device backend."
+      ],
+      "demo_result": "pass",
+      "iteration": 1,
+      "learnings": [
+        "Standalone device-lab MCP can coexist with x11-display and expose current display tools without starting heavyweight devices."
+      ],
+      "next_slice_id": "slice-002",
+      "next_slice_reason": "Android has the clearest command-line lifecycle via emulator/adb and validates the owner-scoped backend contract before Appium.",
+      "qa_result": "PASS",
+      "quality_blockers": [],
+      "quality_warnings": [],
+      "review_quality": "complete",
+      "reviewed_at": "2026-06-08T12:14:58Z",
+      "slice_id": "slice-001",
+      "user_workflow_status": "complete",
+      "ux_result": "PASS"
+    },
+    {
+      "backlog_changes": [
+        "Proceed to Appium Android high-level mobile automation on top of the owner-scoped Android device definitions."
+      ],
+      "demo_result": "pass",
+      "iteration": 2,
+      "learnings": [
+        "Android lifecycle can be represented as owner-scoped definitions with lazy command execution and missing-prerequisite diagnostics, without a real SDK in CI."
+      ],
+      "next_slice_id": "slice-003",
+      "next_slice_reason": "Appium provides the high-level UI/action layer the user asked for while reusing the Android device lifecycle foundation.",
+      "qa_result": "PASS",
+      "quality_blockers": [],
+      "quality_warnings": [],
+      "review_quality": "complete",
+      "reviewed_at": "2026-06-08T12:41:11Z",
+      "slice_id": "slice-002",
+      "user_workflow_status": "complete",
+      "ux_result": "PASS"
+    },
+    {
+      "backlog_changes": [
+        "Proceed to iOS Simulator backend foundation using the same modular backend/state pattern."
+      ],
+      "demo_result": "pass",
+      "iteration": 3,
+      "learnings": [
+        "Device-lab MCP needs a modular source layout before adding more backends; Android Appium tools can stay lazy and owner-scoped on top of lifecycle definitions."
+      ],
+      "next_slice_id": "slice-004",
+      "next_slice_reason": "iOS Simulator is the next mobile backend and validates that the backend abstraction handles macOS-only prerequisites cleanly.",
+      "qa_result": "PASS",
+      "quality_blockers": [],
+      "quality_warnings": [],
+      "review_quality": "complete",
+      "reviewed_at": "2026-06-08T13:20:53Z",
+      "slice_id": "slice-003",
+      "user_workflow_status": "complete",
+      "ux_result": "PASS"
+    },
+    {
+      "backlog_changes": [
+        "Proceed to iOS Simulator backend only after preserving the subagent QA gate in each close cycle."
+      ],
+      "demo_result": "pass",
+      "iteration": 4,
+      "learnings": [
+        "Independent QA must run before harness close when spawn_agent is available; remediation fixed owner isolation, Appium discovery/session/port risks, and image hash coverage."
+      ],
+      "next_slice_id": "slice-004",
+      "next_slice_reason": "iOS Simulator is the next highest-value backend and validates the modular backend/state pattern.",
+      "qa_result": "PASS",
+      "quality_blockers": [],
+      "quality_warnings": [],
+      "review_quality": "complete",
+      "reviewed_at": "2026-06-08T14:38:24Z",
+      "slice_id": "slice-003",
+      "user_workflow_status": "complete",
+      "ux_result": "PASS"
+    }
+  ],
+  "next_slice_id": "slice-004",
+  "next_slice_reason": "iOS Simulator is the next highest-value backend and validates the modular backend/state pattern.",
+  "product": "CCC Device Lab MCP: lazy, zero-env, per-container-isolated experiment environments for AI agents, covering current X11 display first and then Android/iOS/Windows/macOS backends with Appium-managed mobile automation.",
+  "settings": {
+    "max_attempts": 3
+  },
+  "slices": [
+    {
+      "attempts": 0,
+      "id": "slice-001",
+      "last_command": "",
+      "last_result": "",
+      "status": "pending",
+      "task_id": "TASK__autopilot-slice-001",
+      "title": "Standalone device-lab MCP foundation with X11 current display and planned backends",
+      "updated_at": "2026-06-08T12:13:32Z"
+    },
+    {
+      "attempts": 0,
+      "id": "slice-002",
+      "last_command": "",
+      "last_result": "",
+      "status": "pending",
+      "task_id": "TASK__autopilot-slice-002",
+      "title": "Android backend foundation with owner-scoped AVD inventory, start/stop status, adb shell, screenshot, and no Appium yet",
+      "updated_at": "2026-06-08T12:13:32Z"
+    },
+    {
+      "attempts": 0,
+      "id": "slice-003",
+      "last_command": "",
+      "last_result": "",
+      "status": "pending",
+      "task_id": "TASK__autopilot-slice-003",
+      "title": "CCC-managed Appium Android layer with UiAutomator2 session and mobile_* tools",
+      "updated_at": "2026-06-08T12:13:32Z"
+    },
+    {
+      "attempts": 0,
+      "id": "slice-004",
+      "last_command": "",
+      "last_result": "",
+      "status": "pending",
+      "task_id": "TASK__autopilot-slice-004",
+      "title": "iOS Simulator backend foundation via simctl on macOS",
+      "updated_at": "2026-06-08T12:13:32Z"
+    },
+    {
+      "attempts": 0,
+      "id": "slice-005",
+      "last_command": "",
+      "last_result": "",
+      "status": "pending",
+      "task_id": "TASK__autopilot-slice-005",
+      "title": "Windows Sandbox backend foundation",
+      "updated_at": "2026-06-08T12:13:32Z"
+    }
+  ],
+  "stack": "Existing TypeScript CLI repo; standalone MCP packages bundled with esbuild; host/device broker later; tests with vitest; durable docs under doc/common.",
+  "status": "active",
+  "updated_at": "2026-06-08T14:38:24Z",
+  "version": 1
+}

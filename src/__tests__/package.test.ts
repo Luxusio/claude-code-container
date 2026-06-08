@@ -25,5 +25,6 @@ describe("npm package contents", () => {
         expect(files).toContain("scripts/install.js");
         expect(files).toContain("dist/index.js");
         expect(files).toContain("dist/x11-mcp/server.mjs");
+        expect(files).toContain("dist/device-lab-mcp/server.mjs");
     });
 });

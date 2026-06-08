@@ -1,0 +1,9 @@
+{"product": "CCC Device Lab MCP: lazy, zero-env, per-container-isolated experiment environments for AI agents, covering current X11 display first and then Android/iOS/Windows/macOS backends with Appium-managed mobile automation.", "slices": 5, "ts": "2026-06-08T12:13:32Z", "type": "initialized"}
+{"next_slice_id": "slice-002", "slice_id": "slice-001", "ts": "2026-06-08T12:14:58Z", "type": "iteration_reviewed"}
+{"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T12:14:58Z", "type": "preflight_checked", "warnings": 0}
+{"next_slice_id": "slice-003", "slice_id": "slice-002", "ts": "2026-06-08T12:41:11Z", "type": "iteration_reviewed"}
+{"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T12:41:11Z", "type": "preflight_checked", "warnings": 0}
+{"next_slice_id": "slice-004", "slice_id": "slice-003", "ts": "2026-06-08T13:20:53Z", "type": "iteration_reviewed"}
+{"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T13:20:53Z", "type": "preflight_checked", "warnings": 0}
+{"next_slice_id": "slice-004", "slice_id": "slice-003", "ts": "2026-06-08T14:38:24Z", "type": "iteration_reviewed"}
+{"blockers": 0, "require_review_before_next": true, "ts": "2026-06-08T14:45:00Z", "type": "preflight_checked", "warnings": 0}

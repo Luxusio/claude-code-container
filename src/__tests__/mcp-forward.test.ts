@@ -183,6 +183,16 @@ describe("buildMcpConfig", () => {
         });
     });
 
+    it("always includes device-lab with the expected direct-spawn shape", () => {
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        expect(servers["device-lab"]).toEqual({
+            command: "mise",
+            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/device-lab-mcp/server.mjs"],
+        });
+    });
+
     it("writes ccc-managed MCP servers to Codex config.toml", () => {
         buildMcpConfig();
         const codexConfig = getWrittenCodexConfig();
@@ -193,6 +203,8 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).toContain('"--executablePath=/usr/bin/chromium"');
         expect(codexConfig).toContain("[mcp_servers.x11-display]");
         expect(codexConfig).toContain('"/opt/ccc/x11-mcp/server.mjs"');
+        expect(codexConfig).toContain("[mcp_servers.device-lab]");
+        expect(codexConfig).toContain('"/opt/ccc/device-lab-mcp/server.mjs"');
         expect(codexConfig).toContain("# ccc-managed-mcp end");
     });
 
@@ -248,6 +260,9 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).toContain(
             'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"]',
         );
+        expect(codexConfig).toContain(
+            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/device-lab-mcp/server.mjs"]',
+        );
     });
 
     it("preserves user Codex config while replacing the prior ccc-managed block", () => {
@@ -294,6 +309,10 @@ describe("buildMcpConfig", () => {
                     'command = "mise"',
                     'args = ["old"]',
                     "",
+                    "[mcp_servers.device-lab]",
+                    'command = "mise"',
+                    'args = ["old"]',
+                    "",
                     "[mcp_servers.user-server]",
                     'command = "user-tool"',
                     "",
@@ -308,6 +327,7 @@ describe("buildMcpConfig", () => {
         const codexConfig = getWrittenCodexConfig();
         expect(codexConfig.match(/\[mcp_servers\.chrome-devtools\]/g)).toHaveLength(1);
         expect(codexConfig.match(/\[mcp_servers\.x11-display\]/g)).toHaveLength(1);
+        expect(codexConfig.match(/\[mcp_servers\.device-lab\]/g)).toHaveLength(1);
         expect(codexConfig).not.toContain('args = ["old"]');
         expect(codexConfig).toContain("[mcp_servers.user-server]");
         expect(codexConfig).toContain('[projects."/project/example"]');
@@ -356,6 +376,29 @@ describe("buildMcpConfig", () => {
         // ccc's own chrome-devtools should be present, not host's version
         const entry = servers["chrome-devtools"] as { command: string };
         expect(entry.command).toBe("mise");
+    });
+
+    it("does not forward host device-lab (ccc manages its own)", () => {
+        existsSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) return true;
+            return false;
+        });
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) {
+                return JSON.stringify({
+                    mcpServers: {
+                        "device-lab": { command: "host-device-lab", args: [] },
+                    },
+                });
+            }
+            return "{}";
+        });
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        const entry = servers["device-lab"] as { command: string; args: string[] };
+        expect(entry.command).toBe("mise");
+        expect(entry.args).toContain("/opt/ccc/device-lab-mcp/server.mjs");
     });
 
     it("does not forward playwright (legacy, removed)", () => {
