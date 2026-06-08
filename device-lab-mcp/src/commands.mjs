@@ -10,6 +10,14 @@ export function run(cmd, args) {
     });
 }
 
+export function runWithTimeout(cmd, args, timeoutMs) {
+    return spawnSync(cmd, args, {
+        encoding: "utf-8",
+        env: { ...process.env, DISPLAY },
+        timeout: timeoutMs,
+    });
+}
+
 export function runBuffer(cmd, args) {
     return spawnSync(cmd, args, {
         env: { ...process.env, DISPLAY },

@@ -633,3 +633,258 @@ exit 0
         expect(log).not.toContain("emulator -avd foreign-avd");
     });
 });
+
+describe("device-lab MCP with fake iOS simctl", () => {
+    let client: Client;
+    let homeDir: string;
+    let binDir: string;
+    let logPath: string;
+
+    beforeAll(async () => {
+        homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-ios-home-"));
+        binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-ios-bin-"));
+        logPath = join(homeDir, "fake-ios.log");
+
+        const xcrunPath = join(binDir, "xcrun");
+        writeFileSync(xcrunPath, `#!/bin/sh
+echo "xcrun $*" >> "$FAKE_IOS_LOG"
+if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
+  printf '%s\\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"}]},"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}'
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "create" ]; then
+  echo "CREATED-IOS-UDID"
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "boot" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "bootstatus" ]; then
+  echo "Booted"
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "shutdown" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "delete" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "spawn" ]; then
+  echo "ok"
+  exit 0
+fi
+exit 0
+`);
+        chmodSync(xcrunPath, 0o755);
+
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [join(repoRoot, "device-lab-mcp/server.mjs")],
+            env: {
+                HOME: homeDir,
+                PATH: binDir,
+                NODE_ENV: "test",
+                FAKE_IOS_LOG: logPath,
+            },
+        });
+
+        client = new Client(
+            { name: "ccc-device-lab-ios-fake-client", version: "1.0.0" },
+            { capabilities: {} },
+        );
+
+        await client.connect(transport);
+    }, TIMEOUT);
+
+    afterAll(async () => {
+        await client?.close();
+        if (homeDir) rmSync(homeDir, { recursive: true, force: true });
+        if (binDir) rmSync(binDir, { recursive: true, force: true });
+    }, TIMEOUT);
+
+    it("reports iOS simctl inventory without booting simulators", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "ios-simulator" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const payload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ownerId: string;
+            hostSimulators: {
+                available: boolean;
+                devices: Record<string, Array<{ name: string; udid: string; state: string }>>;
+                runtimes: Array<{ identifier: string }>;
+                deviceTypes: Array<{ identifier: string }>;
+            };
+            devices: Array<{ id: string }>;
+            discovery: { available: boolean; xcrun: string };
+        };
+        expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+        expect(payload.discovery).toEqual({ available: true, missing: [], xcrun: join(binDir, "xcrun") });
+        expect(payload.hostSimulators.available).toBe(true);
+        expect(payload.hostSimulators.runtimes[0].identifier).toBe("com.apple.CoreSimulator.SimRuntime.iOS-17-0");
+        expect(payload.hostSimulators.deviceTypes[0].identifier).toBe("com.apple.CoreSimulator.SimDeviceType.iPhone-15");
+        expect(payload.devices).toEqual([]);
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("xcrun simctl list -j");
+        expect(log).not.toContain("xcrun simctl boot ");
+        expect(log).not.toContain("xcrun simctl create ");
+    });
+
+    it("creates, boots, stops, and deletes owner-prefixed iOS simulators only when explicit", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "ios-simulator" },
+        });
+        const ownerId = (JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string }).ownerId;
+        const simulatorName = `ccc-${ownerId}-iphone-owned`;
+
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                name: "iPhone Owned",
+                simulatorName,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; simulatorName: string; udid: string; provisioning: string; status: string };
+        };
+        expect(created.device).toEqual(expect.objectContaining({
+            id: "ios-iphone-owned",
+            simulatorName,
+            udid: "CREATED-IOS-UDID",
+            provisioning: "created",
+            status: "stopped",
+        }));
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "ios-iphone-owned", bootTimeoutMs: 1000 },
+        });
+        expect(start.isError).not.toBe(true);
+        const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; bootReady: boolean };
+            boot: { ready: boolean };
+        };
+        expect(started.boot.ready).toBe(true);
+        expect(started.device.status).toBe("booted");
+        expect(started.device.bootReady).toBe(true);
+
+        const deleteWhileBooted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "ios-iphone-owned", deleteSimulator: true },
+        });
+        expect(deleteWhileBooted.isError).toBe(true);
+
+        const stop = await client.callTool({
+            name: "device_stop",
+            arguments: { deviceId: "ios-iphone-owned" },
+        });
+        expect(stop.isError).not.toBe(true);
+
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "ios-iphone-owned", deleteSimulator: true },
+        });
+        expect(deleted.isError).not.toBe(true);
+        const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deleted: string;
+            simulatorDeleted: boolean;
+        };
+        expect(deletedPayload).toEqual({ deleted: "ios-iphone-owned", simulatorDeleted: true });
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain(`xcrun simctl create ${simulatorName} com.apple.CoreSimulator.SimDeviceType.iPhone-15 com.apple.CoreSimulator.SimRuntime.iOS-17-0`);
+        expect(log).toContain("xcrun simctl boot CREATED-IOS-UDID");
+        expect(log).toContain("xcrun simctl bootstatus CREATED-IOS-UDID -b");
+        expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
+    });
+
+    it("keeps metadata-only iOS definitions lazy and refuses non-owned simulator operations", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "ios-simulator" },
+        });
+        const ownerId = (JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string }).ownerId;
+        const metadataOnlyName = `ccc-${ownerId}-ios-metadata-only`;
+
+        const metadataOnly = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                name: "iOS Metadata Only",
+                simulatorName: metadataOnlyName,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+            },
+        });
+        expect(metadataOnly.isError).not.toBe(true);
+        const metadataPayload = JSON.parse(((metadataOnly.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { provisioning: string; udid: string | null };
+        };
+        expect(metadataPayload.device.provisioning).toBe("definition-only");
+        expect(metadataPayload.device.udid).toBeNull();
+
+        const metadataDeleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "ios-ios-metadata-only" },
+        });
+        expect(metadataDeleted.isError).not.toBe(true);
+
+        const foreignCreate = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                name: "Foreign iOS Create",
+                simulatorName: "foreign-ios",
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        });
+        expect(foreignCreate.isError).toBe(true);
+        expect((foreignCreate.content as Array<{ text?: string }>)[0].text).toContain("Refusing to create non-owned iOS Simulator name");
+
+        const foreignMetadata = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                name: "Foreign iOS Metadata",
+                simulatorName: "foreign-ios",
+                udid: "FOREIGN-UDID",
+            },
+        });
+        expect(foreignMetadata.isError).not.toBe(true);
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "ios-foreign-ios-metadata", bootTimeoutMs: 1000 },
+        });
+        expect(start.isError).toBe(true);
+        expect((start.content as Array<{ text?: string }>)[0].text).toContain("Refusing to start non-owned iOS Simulator name");
+
+        const deleteSimulator = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "ios-foreign-ios-metadata", deleteSimulator: true },
+        });
+        expect(deleteSimulator.isError).toBe(true);
+        expect((deleteSimulator.content as Array<{ text?: string }>)[0].text).toContain("Refusing to delete non-owned iOS Simulator name");
+
+        const foreignDeleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "ios-foreign-ios-metadata" },
+        });
+        expect(foreignDeleted.isError).not.toBe(true);
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).not.toContain(`xcrun simctl create ${metadataOnlyName}`);
+        expect(log).not.toContain("xcrun simctl boot FOREIGN-UDID");
+        expect(log).not.toContain("xcrun simctl delete FOREIGN-UDID");
+    });
+});

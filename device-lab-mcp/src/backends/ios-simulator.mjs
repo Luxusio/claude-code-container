@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandPath, run } from "../commands.mjs";
+import { commandPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findIosDevice, readIosDevices, updateIosDevice, writeIosDevices } from "../state/ios-state.mjs";
@@ -29,6 +29,7 @@ export function iosBackend() {
         missing: discovery.missing,
         tools: { xcrun: discovery.xcrun },
         capabilities: [
+            "device_inventory",
             "device_create",
             "device_delete",
             "device_start",
@@ -50,6 +51,14 @@ function simctlTarget(device) {
     return device.udid || device.simulatorName || device.name || device.id;
 }
 
+function ownerSimulatorPrefix() {
+    return `ccc-${ownerId()}-`;
+}
+
+function isOwnedSimulatorName(name) {
+    return typeof name === "string" && name.startsWith(ownerSimulatorPrefix());
+}
+
 function missingPrereqResult(discovery) {
     return textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
 }
@@ -66,6 +75,36 @@ function simctlJson(xcrun, args) {
     } catch {
         return { error: { ...r, stderr: `Invalid simctl JSON: ${r.stdout}` } };
     }
+}
+
+function hostSimulatorInventory(discovery = iosDiscovery()) {
+    if (!discovery.available) {
+        return {
+            available: false,
+            missing: discovery.missing,
+            devices: {},
+            runtimes: [],
+            deviceTypes: [],
+        };
+    }
+    const listed = simctlJson(discovery.xcrun, ["list", "-j"]);
+    if (listed.error) {
+        return {
+            available: false,
+            missing: [],
+            devices: {},
+            runtimes: [],
+            deviceTypes: [],
+            error: listed.error.stderr || listed.error.stdout || `exit ${listed.error.status}`,
+        };
+    }
+    return {
+        available: true,
+        missing: [],
+        devices: listed.value.devices || {},
+        runtimes: listed.value.runtimes || [],
+        deviceTypes: listed.value.devicetypes || listed.value.deviceTypes || [],
+    };
 }
 
 function findRuntimeDevice(simctlList, udid) {
@@ -109,8 +148,22 @@ export function listIosDevices() {
 
 export async function handleIosTool(name, args) {
     switch (name) {
+        case "device_inventory": {
+            const { backend = "ios-simulator" } = args;
+            if (backend !== "ios-simulator") return undefined;
+
+            const discovery = iosDiscovery();
+            return jsonResult({
+                backend,
+                ownerId: ownerId(),
+                devices: listIosDevices(),
+                hostSimulators: hostSimulatorInventory(discovery),
+                discovery,
+            });
+        }
+
         case "device_create": {
-            const { backend, name: deviceName, deviceId, simulatorName, deviceType, runtime, udid } = args;
+            const { backend, name: deviceName, deviceId, simulatorName, deviceType, runtime, udid, createSimulator = false } = args;
             if (backend !== "ios-simulator") return undefined;
 
             const id = deviceId || iosDeviceId(deviceName);
@@ -119,17 +172,22 @@ export async function handleIosTool(name, args) {
                 return textResult(false, `Device already exists for this owner: ${id}`);
             }
 
-            const discovery = iosDiscovery();
+            const simulatorDisplayName = simulatorName || `${ownerSimulatorPrefix()}${slug(deviceName)}`;
             let createdUdid = udid || null;
             let provisioning = "definition-only";
-            if (!createdUdid && discovery.available && deviceType && runtime) {
-                const simulatorDisplayName = simulatorName || `ccc-${ownerId()}-${slug(deviceName)}`;
+            if (createSimulator) {
+                if (!isOwnedSimulatorName(simulatorDisplayName)) {
+                    return textResult(false, `Refusing to create non-owned iOS Simulator name: ${simulatorDisplayName}`);
+                }
+                if (!deviceType || !runtime) {
+                    return textResult(false, "iOS Simulator provisioning requires deviceType and runtime");
+                }
+                const discovery = iosDiscovery();
+                if (!discovery.available) return missingPrereqResult(discovery);
                 const r = run(discovery.xcrun, ["simctl", "create", simulatorDisplayName, deviceType, runtime]);
                 if (r.status !== 0) return fail(r);
                 createdUdid = r.stdout.trim();
                 provisioning = "created";
-            } else if (!discovery.available) {
-                provisioning = "missing-prerequisites";
             }
 
             const device = {
@@ -139,7 +197,7 @@ export async function handleIosTool(name, args) {
                 kind: "mobile",
                 platform: "ios",
                 ownerId: ownerId(),
-                simulatorName: simulatorName || `ccc-${ownerId()}-${slug(deviceName)}`,
+                simulatorName: simulatorDisplayName,
                 deviceType: deviceType || null,
                 runtime: runtime || null,
                 udid: createdUdid,
@@ -155,7 +213,7 @@ export async function handleIosTool(name, args) {
         }
 
         case "device_delete": {
-            const { deviceId, force = false } = args;
+            const { deviceId, force = false, deleteSimulator = false } = args;
             const devices = readIosDevices();
             const device = devices.find((item) => item.id === deviceId);
             if (!device) return undefined;
@@ -163,8 +221,13 @@ export async function handleIosTool(name, args) {
                 return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
             }
 
-            const discovery = iosDiscovery();
-            if (discovery.available && device.udid) {
+            if (deleteSimulator) {
+                if (!isOwnedSimulatorName(device.simulatorName)) {
+                    return textResult(false, `Refusing to delete non-owned iOS Simulator name: ${device.simulatorName}`);
+                }
+                const discovery = iosDiscovery();
+                if (!discovery.available) return missingPrereqResult(discovery);
+                if (!device.udid) return textResult(false, `Cannot delete iOS Simulator without udid: ${deviceId}`);
                 if (force && device.status !== "stopped") {
                     run(discovery.xcrun, ["simctl", "shutdown", device.udid]);
                 }
@@ -173,7 +236,7 @@ export async function handleIosTool(name, args) {
             }
 
             writeIosDevices(devices.filter((item) => item.id !== deviceId));
-            return jsonResult({ deleted: deviceId });
+            return jsonResult({ deleted: deviceId, simulatorDeleted: Boolean(deleteSimulator) });
         }
 
         case "device_status": {
@@ -184,7 +247,7 @@ export async function handleIosTool(name, args) {
         }
 
         case "device_start": {
-            const { deviceId } = args;
+            const { deviceId, waitForBoot = true, bootTimeoutMs = 60000 } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
 
@@ -192,18 +255,37 @@ export async function handleIosTool(name, args) {
             if (!discovery.available) {
                 return missingPrereqResult(discovery);
             }
+            if (!isOwnedSimulatorName(device.simulatorName)) {
+                return textResult(false, `Refusing to start non-owned iOS Simulator name: ${device.simulatorName}`);
+            }
 
-            const r = run(discovery.xcrun, ["simctl", "boot", simctlTarget(device)]);
+            const target = simctlTarget(device);
+            const r = run(discovery.xcrun, ["simctl", "boot", target]);
             if (r.status !== 0 && !String(r.stderr || r.stdout).includes("Unable to boot device in current state: Booted")) {
                 return fail(r);
             }
 
+            let boot = { ready: true, skipped: true };
+            if (waitForBoot) {
+                const bootstatus = runWithTimeout(discovery.xcrun, ["simctl", "bootstatus", target, "-b"], bootTimeoutMs);
+                boot = {
+                    ready: bootstatus.status === 0,
+                    skipped: false,
+                    status: bootstatus.status,
+                    stdout: bootstatus.stdout,
+                    stderr: bootstatus.stderr,
+                };
+                if (bootstatus.error) boot.error = bootstatus.error;
+            }
+
             const updated = updateIosDevice(deviceId, (item) => ({
                 ...item,
-                status: "booted",
+                status: boot.ready ? "booted" : "starting",
+                bootReady: boot.ready,
+                lastBootCheck: boot,
                 updatedAt: now(),
             }));
-            return jsonResult({ device: updated });
+            return jsonResult({ device: updated, boot });
         }
 
         case "device_stop": {

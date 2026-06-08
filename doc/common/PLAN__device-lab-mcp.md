@@ -398,6 +398,22 @@ Foundation status:
 - Real `simctl create/delete` and iOS Appium/XCUITest integration are deferred
   to later hardening/mobile automation slices.
 
+simctl provisioning hardening status:
+
+- `device_inventory` reports owner-scoped iOS Simulator definitions and host
+  `simctl list -j` inventory without booting simulators.
+- `device_create` stores iOS metadata by default. It calls `simctl create` only
+  when `createSimulator=true`, `deviceType`, and `runtime` are provided, and
+  the simulator name uses the current CCC owner prefix.
+- `device_delete` removes metadata by default. It calls `simctl delete` only
+  when `deleteSimulator=true`, the stored simulator name is owner-prefixed, and
+  the definition is stopped unless `force=true`.
+- `device_start` remains lazy, refuses non-owned simulator names when `xcrun`
+  is available, and waits for `simctl bootstatus <target> -b` by default with a
+  bounded timeout.
+- Linux CI coverage uses fake `xcrun` commands, so the provisioning behavior is
+  tested without requiring macOS or Xcode.
+
 ### Windows Sandbox
 
 Prerequisites:
