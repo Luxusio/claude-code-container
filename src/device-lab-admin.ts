@@ -15,6 +15,7 @@ type Backend = typeof DEVICE_BACKENDS[number];
 type DeviceRecord = Record<string, unknown> & { id?: string; status?: string };
 type CommandResult = { command: string; status: number | null; stderr?: string; stdout?: string };
 type OwnerDeviceMatch = { backend: Backend; devices: DeviceRecord[]; index: number; device: DeviceRecord };
+type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
 
 export function deviceLabOwnerId(cwd = process.cwd()): string {
     return createHash("sha256").update(`${hostname()}:${cwd || "/project"}`).digest("hex").slice(0, 16);
@@ -51,15 +52,72 @@ function commandPath(command: string): string | null {
     return result.status === 0 ? result.stdout.trim().split("\n")[0] : null;
 }
 
-function runCommand(command: string | null, args: string[]): CommandResult | null {
+function runCommand(command: string | null, args: string[], timeoutMs?: number): CommandResult | null {
     if (!command) return null;
-    const result = spawnSync(command, args, { encoding: "utf-8", env: process.env });
+    const result = spawnSync(command, args, { encoding: "utf-8", env: process.env, timeout: timeoutMs });
     return {
         command: [command, ...args].join(" "),
         status: result.status,
         stdout: result.stdout || "",
         stderr: result.stderr || result.error?.message || "",
     };
+}
+
+function smokeCommand(command: string, args: string[], timeoutMs: number): CommandResult {
+    return runCommand(command, args, timeoutMs) || {
+        command: [command, ...args].join(" "),
+        status: null,
+        stderr: "command not found",
+    };
+}
+
+function smokeFromCommands(backend: string, commands: Array<[string, string[]]>, detail: string, timeoutMs: number): SmokeResult {
+    const results = commands.map(([command, args]) => smokeCommand(command, args, timeoutMs));
+    const failed = results.find((result) => result.status !== 0);
+    if (failed) {
+        return {
+            backend,
+            status: "FAIL",
+            detail: failed.stderr || failed.stdout || `command exited ${failed.status}`,
+            commands: results,
+        };
+    }
+    return { backend, status: "PASS", detail, commands: results };
+}
+
+export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000): { ownerId: string; results: SmokeResult[] } {
+    const ownerId = deviceLabOwnerId(cwd);
+    const tools = Object.fromEntries(
+        DEVICE_BACKENDS.flatMap((backend) => backend.tools.map((tool) => [tool, commandPath(tool)])),
+    ) as Record<string, string | null>;
+
+    const results: SmokeResult[] = [];
+    if (!tools.adb || !tools.emulator) {
+        results.push({ backend: "android-emulator", status: "SKIP", detail: `missing ${["adb", "emulator"].filter((tool) => !tools[tool]).join(", ")}` });
+    } else {
+        results.push(smokeFromCommands("android-emulator", [[tools.adb, ["version"]], [tools.emulator, ["-list-avds"]]], "adb and emulator responded", timeoutMs));
+    }
+
+    if (!tools.xcrun) {
+        results.push({ backend: "ios-simulator", status: "SKIP", detail: "missing xcrun" });
+    } else {
+        results.push(smokeFromCommands("ios-simulator", [[tools.xcrun, ["simctl", "list", "-j"]]], "xcrun simctl inventory responded", timeoutMs));
+    }
+
+    if (!tools.wsb) {
+        results.push({ backend: "windows-sandbox", status: "SKIP", detail: "missing wsb" });
+    } else {
+        results.push(smokeFromCommands("windows-sandbox", [[tools.wsb, ["--help"]]], "wsb CLI responded", timeoutMs));
+    }
+
+    const macosProvider = tools.tart || tools.vz || tools.utmctl;
+    if (!macosProvider) {
+        results.push({ backend: "macos-vm", status: "SKIP", detail: "missing tart, vz, utmctl" });
+    } else {
+        results.push(smokeFromCommands("macos-vm", [[macosProvider, ["--version"]]], "macOS VM provider responded", timeoutMs));
+    }
+
+    return { ownerId, results };
 }
 
 function killPid(value: unknown): boolean {
@@ -310,6 +368,24 @@ export function formatDevicesDoctor(cwd = process.cwd()): string {
     return `${lines.join("\n")}\n`;
 }
 
+export function formatDevicesSmoke(cwd = process.cwd(), timeoutMs = 5000): string {
+    const smoke = deviceLabSmoke(cwd, timeoutMs);
+    const lines = [
+        "=== CCC Devices Smoke ===",
+        "",
+        `owner: ${smoke.ownerId}`,
+        "Startup policy: lazy; smoke checks do not start devices",
+        "",
+    ];
+    for (const result of smoke.results) {
+        lines.push(`${result.backend}: ${result.status} - ${result.detail}`);
+        for (const command of result.commands || []) {
+            lines.push(`  ${command.command} -> ${command.status ?? "unknown"}`);
+        }
+    }
+    return `${lines.join("\n")}\n`;
+}
+
 export function devicesCli(args: string[], cwd = process.cwd()): number {
     const subcommand = args[0] || "status";
     switch (subcommand) {
@@ -324,6 +400,9 @@ export function devicesCli(args: string[], cwd = process.cwd()): number {
             return 0;
         case "doctor":
             console.log(formatDevicesDoctor(cwd));
+            return 0;
+        case "smoke":
+            console.log(formatDevicesSmoke(cwd));
             return 0;
         case "stop": {
             const deviceId = args[1];
@@ -351,7 +430,7 @@ export function devicesCli(args: string[], cwd = process.cwd()): number {
             return 0;
         }
         default:
-            console.error("Usage: ccc devices <status|list|backends|doctor|stop|delete|prune>");
+            console.error("Usage: ccc devices <status|list|backends|doctor|smoke|stop|delete|prune>");
             return 1;
     }
 }

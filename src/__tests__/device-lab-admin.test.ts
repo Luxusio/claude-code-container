@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
     formatDevicesBackends,
     formatDevicesDoctor,
     formatDevicesList,
+    formatDevicesSmoke,
     formatDevicesStatus,
     pruneOwnerDevices,
     stopOwnerDevice,
@@ -61,6 +62,13 @@ describe("device-lab admin CLI formatters", () => {
         return parsed.devices.map((device) => `${device.id}:${device.status || "unknown"}`);
     }
 
+    function writeTool(binDir: string, name: string, body: string) {
+        const path = join(binDir, name);
+        writeFileSync(path, `#!/bin/sh\n${body}\n`);
+        chmodSync(path, 0o755);
+        return path;
+    }
+
     it("formats owner-scoped device status without exposing other owners", () => {
         const cwd = "/project/admin-test";
         const { owner } = setupFixture(cwd);
@@ -99,6 +107,59 @@ describe("device-lab admin CLI formatters", () => {
         expect(backends).toContain("xcrun: missing");
         expect(doctor).toContain("Startup policy: lazy; these diagnostics do not start devices");
         expect(doctor).toContain("android-emulator: missing");
+    });
+
+    it("reports smoke SKIP for missing host prerequisites without starting devices", () => {
+        const cwd = "/project/admin-smoke-skip-test";
+        setupFixture(cwd);
+
+        const smoke = formatDevicesSmoke(cwd);
+
+        expect(smoke).toContain("=== CCC Devices Smoke ===");
+        expect(smoke).toContain("Startup policy: lazy; smoke checks do not start devices");
+        expect(smoke).toContain("android-emulator: SKIP - missing adb, emulator");
+        expect(smoke).toContain("ios-simulator: SKIP - missing xcrun");
+        expect(smoke).toContain("windows-sandbox: SKIP - missing wsb");
+        expect(smoke).toContain("macos-vm: SKIP - missing tart, vz, utmctl");
+    });
+
+    it("reports smoke PASS and FAIL from fake non-destructive host commands", () => {
+        const cwd = "/project/admin-smoke-fake-test";
+        setupFixture(cwd);
+        const binDir = join(homeDir!, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", "echo adb-version; exit 0");
+        writeTool(binDir, "emulator", "echo avd-one; exit 0");
+        writeTool(binDir, "xcrun", "echo '{\"devices\":{}}'; exit 0");
+        writeTool(binDir, "wsb", "echo wsb-help; exit 0");
+        writeTool(binDir, "tart", "echo tart-version >&2; exit 7");
+
+        const smoke = formatDevicesSmoke(cwd);
+
+        expect(smoke).toContain("android-emulator: PASS - adb and emulator responded");
+        expect(smoke).toContain(`${join(binDir, "adb")} version -> 0`);
+        expect(smoke).toContain(`${join(binDir, "emulator")} -list-avds -> 0`);
+        expect(smoke).toContain("ios-simulator: PASS - xcrun simctl inventory responded");
+        expect(smoke).toContain("windows-sandbox: PASS - wsb CLI responded");
+        expect(smoke).toContain("macos-vm: FAIL - tart-version");
+        expect(smoke).toContain(`${join(binDir, "tart")} --version -> 7`);
+    });
+
+    it("bounds smoke host command execution with a timeout", () => {
+        const cwd = "/project/admin-smoke-timeout-test";
+        setupFixture(cwd);
+        const binDir = join(homeDir!, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", `"${process.execPath}" -e 'setTimeout(() => {}, 1000)'`);
+        writeTool(binDir, "emulator", "echo avd-one; exit 0");
+
+        const smoke = formatDevicesSmoke(cwd, 50);
+
+        expect(smoke).toContain("android-emulator: FAIL -");
+        expect(smoke).toContain(`${join(binDir, "adb")} version -> unknown`);
+        expect(smoke).toMatch(/ETIMEDOUT|timed out|Timeout/i);
     });
 
     it("stops an owned device without mutating other owner devices", () => {

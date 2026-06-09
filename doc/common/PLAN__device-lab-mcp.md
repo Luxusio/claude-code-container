@@ -706,6 +706,12 @@ CLI foundation status:
 - `ccc devices prune` removes stopped definitions from the current owner
   namespace while preserving running/booted definitions and foreign owner
   state.
+- `ccc devices smoke` runs a non-destructive host prerequisite smoke matrix for
+  Android, iOS Simulator, Windows Sandbox, and macOS VM provider tooling. It
+  reports PASS/SKIP/FAIL with concrete command status or missing prerequisite
+  details and does not start emulators, simulators, sandboxes, VMs, Appium, or
+  brokers. Each smoke command is bounded by a timeout so a hanging host tool
+  reports FAIL instead of blocking the CLI indefinitely.
 - Host-broker admin commands such as all-owner list/stop/prune remain deferred
   until a dedicated broker owns cross-owner locking and cleanup. Regular
   in-container CLI commands intentionally stay owner-scoped.
@@ -765,10 +771,17 @@ CLI foundation status:
 2. Unit tests confirm owner A cannot list, stop, delete, or inspect owner B's
    devices.
 3. Mocked backend tests cover create/start/status/stop/delete for every backend.
-4. Real Android smoke test runs only when SDK prerequisites exist.
-5. Real iOS smoke test runs only on macOS with Xcode.
-6. Real Windows smoke test runs only on Windows with Sandbox CLI.
-7. Real macOS VM smoke test runs only on supported macOS hosts.
+4. `ccc devices smoke` reports Android smoke PASS only when `adb version` and
+   `emulator -list-avds` succeed; otherwise it reports SKIP or FAIL without
+   starting an emulator.
+5. `ccc devices smoke` reports iOS smoke PASS only when
+   `xcrun simctl list -j` succeeds; otherwise it reports SKIP or FAIL without
+   booting a simulator.
+6. `ccc devices smoke` reports Windows Sandbox smoke PASS only when `wsb --help`
+   succeeds; otherwise it reports SKIP or FAIL without opening a sandbox.
+7. `ccc devices smoke` reports macOS VM smoke PASS only when an available
+   provider command (`tart`, `vz`, or `utmctl`) responds to `--version`;
+   otherwise it reports SKIP or FAIL without starting a VM.
 8. `ccc devices admin prune` removes stale stopped resources without touching
    running resources from active owners.
 9. X11 display tools remain available without creating a device definition and
