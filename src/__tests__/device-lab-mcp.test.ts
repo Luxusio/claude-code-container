@@ -66,6 +66,7 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_double_tap");
         expect(names).toContain("mobile_long_press");
         expect(names).toContain("mobile_swipe");
+        expect(names).toContain("mobile_drag");
         expect(names).toContain("mobile_type_text");
         expect(names).toContain("mobile_key");
         expect(names).toContain("mobile_home");
@@ -75,12 +76,25 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_power");
         expect(names).toContain("mobile_lock");
         expect(names).toContain("mobile_unlock");
+        expect(names).toContain("mobile_rotate_left");
+        expect(names).toContain("mobile_rotate_right");
+        expect(names).toContain("mobile_set_orientation");
         expect(names).toContain("mobile_open_url");
         expect(names).toContain("mobile_install_app");
         expect(names).toContain("mobile_launch_app");
         expect(names).toContain("mobile_uninstall_app");
         expect(names).toContain("mobile_stop_app");
         expect(names).toContain("mobile_clear_app_data");
+        expect(names).toContain("mobile_grant_permission");
+        expect(names).toContain("mobile_revoke_permission");
+        expect(names).toContain("mobile_set_location");
+        expect(names).toContain("mobile_set_battery");
+        expect(names).toContain("mobile_set_network");
+        expect(names).toContain("mobile_toggle_airplane_mode");
+        expect(names).toContain("mobile_set_clipboard");
+        expect(names).toContain("mobile_get_clipboard");
+        expect(names).toContain("mobile_wait_for_text");
+        expect(names).toContain("mobile_wait_for_app");
         expect(names).toContain("mobile_screenshot");
     });
 
@@ -923,6 +937,7 @@ exit 0
             ["mobile_double_tap", { deviceId: "android-pixel-owned", x: 11, y: 21 }],
             ["mobile_long_press", { deviceId: "android-pixel-owned", x: 12, y: 22, durationMs: 900 }],
             ["mobile_swipe", { deviceId: "android-pixel-owned", x1: 1, y1: 2, x2: 30, y2: 40, durationMs: 500 }],
+            ["mobile_drag", { deviceId: "android-pixel-owned", x1: 3, y1: 4, x2: 50, y2: 60, durationMs: 800 }],
             ["mobile_type_text", { deviceId: "android-pixel-owned", text: "hello world" }],
             ["mobile_key", { deviceId: "android-pixel-owned", keyCode: 82 }],
             ["mobile_home", { deviceId: "android-pixel-owned" }],
@@ -932,12 +947,45 @@ exit 0
             ["mobile_power", { deviceId: "android-pixel-owned" }],
             ["mobile_lock", { deviceId: "android-pixel-owned" }],
             ["mobile_unlock", { deviceId: "android-pixel-owned" }],
+            ["mobile_set_orientation", { deviceId: "android-pixel-owned", orientation: "landscape" }],
+            ["mobile_rotate_left", { deviceId: "android-pixel-owned" }],
+            ["mobile_rotate_right", { deviceId: "android-pixel-owned" }],
             ["mobile_open_url", { deviceId: "android-pixel-owned", url: "https://example.test/path" }],
+            ["mobile_grant_permission", { deviceId: "android-pixel-owned", packageName: "com.example.mobile", permission: "android.permission.CAMERA" }],
+            ["mobile_revoke_permission", { deviceId: "android-pixel-owned", packageName: "com.example.mobile", permission: "android.permission.CAMERA" }],
+            ["mobile_set_location", { deviceId: "android-pixel-owned", latitude: 37.7749, longitude: -122.4194, altitude: 10 }],
+            ["mobile_set_battery", { deviceId: "android-pixel-owned", level: 42, charging: true }],
+            ["mobile_set_network", { deviceId: "android-pixel-owned", wifi: false, data: true }],
+            ["mobile_toggle_airplane_mode", { deviceId: "android-pixel-owned", enabled: true }],
+            ["mobile_set_clipboard", { deviceId: "android-pixel-owned", text: "clip text" }],
+            ["mobile_get_clipboard", { deviceId: "android-pixel-owned" }],
         ] as const;
         for (const [name, callArgs] of primitiveCalls) {
             const action = await client.callTool({ name, arguments: callArgs });
             expect(action.isError).not.toBe(true);
         }
+        const waitText = await client.callTool({
+            name: "mobile_wait_for_text",
+            arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 1000, intervalMs: 50 },
+        });
+        expect(waitText.isError).not.toBe(true);
+        const waitTextPayload = JSON.parse(((waitText.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            found: boolean;
+            provider: string;
+        };
+        expect(waitTextPayload).toEqual(expect.objectContaining({ found: true, provider: "adb-uiautomator" }));
+
+        const waitApp = await client.callTool({
+            name: "mobile_wait_for_app",
+            arguments: { deviceId: "android-pixel-owned", packageName: "com.example.mobile", timeoutMs: 1000, intervalMs: 50 },
+        });
+        expect(waitApp.isError).not.toBe(true);
+        const waitAppPayload = JSON.parse(((waitApp.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            running: boolean;
+            provider: string;
+        };
+        expect(waitAppPayload).toEqual(expect.objectContaining({ running: true, provider: "adb" }));
+
         const screenshot = await client.callTool({
             name: "mobile_screenshot",
             arguments: { deviceId: "android-pixel-owned" },
@@ -1007,6 +1055,7 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell input tap 10 20");
         expect(log).toContain("adb -s emulator-5582 shell input swipe 12 22 12 22 900");
         expect(log).toContain("adb -s emulator-5582 shell input swipe 1 2 30 40 500");
+        expect(log).toContain("adb -s emulator-5582 shell input swipe 3 4 50 60 800");
         expect(log).toContain("adb -s emulator-5582 shell input text hello%sworld");
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 82");
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 3");
@@ -1016,7 +1065,22 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 26");
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 223");
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
+        expect(log).toContain("adb -s emulator-5582 shell settings put system accelerometer_rotation 0");
+        expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 1");
+        expect(log).toContain("adb -s emulator-5582 shell settings put system user_rotation 3");
         expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
+        expect(log).toContain("adb -s emulator-5582 shell pm grant com.example.mobile android.permission.CAMERA");
+        expect(log).toContain("adb -s emulator-5582 shell pm revoke com.example.mobile android.permission.CAMERA");
+        expect(log).toContain("adb -s emulator-5582 emu geo fix -122.4194 37.7749 10");
+        expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set level 42");
+        expect(log).toContain("adb -s emulator-5582 shell dumpsys battery set ac 1");
+        expect(log).toContain("adb -s emulator-5582 shell svc wifi disable");
+        expect(log).toContain("adb -s emulator-5582 shell svc data enable");
+        expect(log).toContain("adb -s emulator-5582 shell settings put global airplane_mode_on 1");
+        expect(log).toContain("adb -s emulator-5582 shell am broadcast -a android.intent.action.AIRPLANE_MODE --ez state true");
+        expect(log).toContain("adb -s emulator-5582 shell cmd clipboard set clip text");
+        expect(log).toContain("adb -s emulator-5582 shell cmd clipboard get");
+        expect(log).toContain("adb -s emulator-5582 shell pidof com.example.mobile");
         expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
         expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
         expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");
@@ -1373,6 +1437,19 @@ exit 0
         });
         expect(commonLaunch.isError).not.toBe(true);
 
+        const advancedIosCalls = [
+            ["mobile_grant_permission", { deviceId: ownedDeviceId, bundleId: "com.example.Test", service: "camera" }],
+            ["mobile_revoke_permission", { deviceId: ownedDeviceId, bundleId: "com.example.Test", service: "camera" }],
+            ["mobile_set_location", { deviceId: ownedDeviceId, latitude: 37.7749, longitude: -122.4194 }],
+            ["mobile_set_clipboard", { deviceId: ownedDeviceId, text: "ios clip" }],
+            ["mobile_get_clipboard", { deviceId: ownedDeviceId }],
+            ["mobile_wait_for_app", { deviceId: ownedDeviceId, bundleId: "com.example.Test", timeoutMs: 1000, intervalMs: 50 }],
+        ] as const;
+        for (const [name, callArgs] of advancedIosCalls) {
+            const action = await client.callTool({ name, arguments: callArgs });
+            expect(action.isError).not.toBe(true);
+        }
+
         const upload = await client.callTool({
             name: "device_upload",
             arguments: { deviceId: ownedDeviceId, localPath: "/tmp/local.txt", remotePath: "/tmp/remote.txt" },
@@ -1474,6 +1551,13 @@ exit 0
         expect(unsupportedTap.isError).toBe(true);
         expect((unsupportedTap.content as Array<{ text?: string }>)[0].text).toContain("does not support mobile_tap through base simctl");
 
+        const unsupportedBattery = await client.callTool({
+            name: "mobile_set_battery",
+            arguments: { deviceId: ownedDeviceId, level: 50 },
+        });
+        expect(unsupportedBattery.isError).toBe(true);
+        expect((unsupportedBattery.content as Array<{ text?: string }>)[0].text).toContain("does not support mobile_set_battery through base simctl");
+
         const deleteWhileBooted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: ownedDeviceId, deleteSimulator: true },
@@ -1506,6 +1590,12 @@ exit 0
         expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Test");
         expect(log).toContain("xcrun simctl install CREATED-IOS-UDID /tmp/Common.app");
         expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Common");
+        expect(log).toContain("xcrun simctl privacy CREATED-IOS-UDID grant camera com.example.Test");
+        expect(log).toContain("xcrun simctl privacy CREATED-IOS-UDID revoke camera com.example.Test");
+        expect(log).toContain("xcrun simctl location CREATED-IOS-UDID set 37.7749,-122.4194");
+        expect(log).toContain("xcrun simctl pbcopy CREATED-IOS-UDID");
+        expect(log).toContain("xcrun simctl pbpaste CREATED-IOS-UDID");
+        expect(log).toContain("xcrun simctl spawn CREATED-IOS-UDID pgrep -f com.example.Test");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
         expect(log).toContain("appium server --port ");

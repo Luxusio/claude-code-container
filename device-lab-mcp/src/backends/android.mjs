@@ -104,11 +104,17 @@ export function androidBackend() {
             "device_install_app", "device_launch_app",
             "mobile_session_status", "mobile_dump_ui", "mobile_tap",
             "mobile_double_tap", "mobile_long_press", "mobile_swipe",
+            "mobile_drag",
             "mobile_type_text", "mobile_key", "mobile_home", "mobile_back",
             "mobile_forward", "mobile_recents", "mobile_power", "mobile_lock",
-            "mobile_unlock", "mobile_open_url", "mobile_install_app",
+            "mobile_unlock", "mobile_rotate_left", "mobile_rotate_right",
+            "mobile_set_orientation", "mobile_open_url", "mobile_install_app",
             "mobile_launch_app", "mobile_uninstall_app", "mobile_stop_app",
-            "mobile_clear_app_data", "mobile_screenshot",
+            "mobile_clear_app_data", "mobile_grant_permission", "mobile_revoke_permission",
+            "mobile_set_location", "mobile_set_battery", "mobile_set_network",
+            "mobile_toggle_airplane_mode", "mobile_set_clipboard",
+            "mobile_get_clipboard", "mobile_wait_for_text", "mobile_wait_for_app",
+            "mobile_screenshot",
         ],
     };
 }
@@ -142,6 +148,16 @@ function adbArgsForDevice(device, args) {
 
 function adbTextValue(text) {
     return String(text).replace(/\s/g, "%s");
+}
+
+function orientationRotation(orientation) {
+    const rotations = {
+        portrait: "0",
+        landscape: "1",
+        "reverse-portrait": "2",
+        "reverse-landscape": "3",
+    };
+    return rotations[orientation] || null;
 }
 
 function ensureAdbDevice(deviceId) {
@@ -259,6 +275,34 @@ function dumpAndroidUiWithAdb(device, adb) {
         dump,
         read,
     };
+}
+
+async function waitForAndroidText(device, adb, text, timeoutMs = 10000, intervalMs = 500) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let lastSource = "";
+    while (Date.now() <= deadline) {
+        const dump = dumpAndroidUiWithAdb(device, adb);
+        if (!dump.error) {
+            lastSource = dump.source;
+            if (dump.source.includes(text)) return { found: true, source: dump.source, remotePath: dump.remotePath };
+        }
+        await sleep(Math.max(50, intervalMs));
+    }
+    return { found: false, source: lastSource, timeoutMs };
+}
+
+async function waitForAndroidApp(device, adb, packageName, timeoutMs = 10000, intervalMs = 500) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let last = null;
+    while (Date.now() <= deadline) {
+        const r = run(adb, adbArgsForDevice(device, ["shell", "pidof", packageName]));
+        last = r;
+        if (r.status === 0 && r.stdout.trim()) {
+            return { running: true, pid: r.stdout.trim(), stdout: r.stdout, stderr: r.stderr, status: r.status };
+        }
+        await sleep(Math.max(50, intervalMs));
+    }
+    return { running: false, timeoutMs, stdout: last?.stdout || "", stderr: last?.stderr || "", status: last?.status ?? null };
 }
 
 async function ensureAppiumSession(deviceId) {
@@ -629,6 +673,14 @@ export async function handleAndroidTool(name, args) {
             return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)], { swiped: { x1, y1, x2, y2, durationMs }, provider: "adb" });
         }
 
+        case "mobile_drag": {
+            const { deviceId, x1, y1, x2, y2, durationMs = 700 } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)], { dragged: { x1, y1, x2, y2, durationMs }, provider: "adb" });
+        }
+
         case "mobile_type_text": {
             const { deviceId, text } = args;
             const target = ensureAdbDevice(deviceId);
@@ -705,6 +757,28 @@ export async function handleAndroidTool(name, args) {
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "224"], { unlocked: true, provider: "adb" });
         }
 
+        case "mobile_set_orientation": {
+            const { deviceId, orientation } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const rotation = orientationRotation(orientation);
+            if (rotation === null) return textResult(false, `Unsupported Android orientation: ${orientation}`);
+            const accelerometer = runAdbDeviceCommand(target.device, target.adb, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+            if (!accelerometer.ok) return fail(accelerometer.result);
+            return adbJsonResult(target.device, target.adb, ["shell", "settings", "put", "system", "user_rotation", rotation], { orientation, rotation, provider: "adb" });
+        }
+
+        case "mobile_rotate_left": {
+            const { deviceId } = args;
+            return handleAndroidTool("mobile_set_orientation", { deviceId, orientation: "landscape" });
+        }
+
+        case "mobile_rotate_right": {
+            const { deviceId } = args;
+            return handleAndroidTool("mobile_set_orientation", { deviceId, orientation: "reverse-landscape" });
+        }
+
         case "mobile_open_url": {
             const { deviceId, url } = args;
             const target = ensureAdbDevice(deviceId);
@@ -744,6 +818,111 @@ export async function handleAndroidTool(name, args) {
         case "mobile_clear_app_data": {
             const { deviceId, packageName } = args;
             return handleAndroidTool("device_reset", { deviceId, packageName });
+        }
+
+        case "mobile_grant_permission":
+        case "mobile_revoke_permission": {
+            const { deviceId, packageName, permission } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (!packageName || !permission) return textResult(false, `Android ${name} requires packageName and permission`);
+            const action = name === "mobile_grant_permission" ? "grant" : "revoke";
+            return adbJsonResult(target.device, target.adb, ["shell", "pm", action, packageName, permission], { permission: { packageName, permission, action }, provider: "adb" });
+        }
+
+        case "mobile_set_location": {
+            const { deviceId, latitude, longitude, altitude } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const serial = androidSerial(target.device);
+            if (!serial) return textResult(false, "Android location requires an emulator serial or port");
+            const geoArgs = ["-s", serial, "emu", "geo", "fix", String(longitude), String(latitude)];
+            if (altitude !== undefined) geoArgs.push(String(altitude));
+            const r = run(target.adb, geoArgs);
+            return r.status === 0 ? jsonResult({ location: { latitude, longitude, altitude: altitude ?? null }, provider: "adb-emulator", stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r);
+        }
+
+        case "mobile_set_battery": {
+            const { deviceId, level, charging, status } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const commands = [];
+            if (level !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "level", String(level)]);
+            if (status !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "status", String(status)]);
+            if (charging !== undefined) commands.push(["shell", "dumpsys", "battery", "set", "ac", charging ? "1" : "0"]);
+            if (commands.length === 0) return textResult(false, "Android battery control requires level, status, or charging");
+            const results = [];
+            for (const command of commands) {
+                const r = runAdbDeviceCommand(target.device, target.adb, command);
+                if (!r.ok) return fail(r.result);
+                results.push({ stdout: r.stdout, stderr: r.stderr, status: r.status });
+            }
+            return jsonResult({ battery: { level: level ?? null, status: status ?? null, charging: charging ?? null }, results, provider: "adb" });
+        }
+
+        case "mobile_set_network": {
+            const { deviceId, wifi, data } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const commands = [];
+            if (wifi !== undefined) commands.push(["shell", "svc", "wifi", wifi ? "enable" : "disable"]);
+            if (data !== undefined) commands.push(["shell", "svc", "data", data ? "enable" : "disable"]);
+            if (commands.length === 0) return textResult(false, "Android network control requires wifi or data");
+            for (const command of commands) {
+                const r = runAdbDeviceCommand(target.device, target.adb, command);
+                if (!r.ok) return fail(r.result);
+            }
+            return jsonResult({ network: { wifi: wifi ?? null, data: data ?? null }, provider: "adb" });
+        }
+
+        case "mobile_toggle_airplane_mode": {
+            const { deviceId, enabled } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const put = runAdbDeviceCommand(target.device, target.adb, ["shell", "settings", "put", "global", "airplane_mode_on", enabled ? "1" : "0"]);
+            if (!put.ok) return fail(put.result);
+            return adbJsonResult(target.device, target.adb, ["shell", "am", "broadcast", "-a", "android.intent.action.AIRPLANE_MODE", "--ez", "state", enabled ? "true" : "false"], { airplaneMode: enabled, provider: "adb" });
+        }
+
+        case "mobile_set_clipboard": {
+            const { deviceId, text } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            return adbJsonResult(target.device, target.adb, ["shell", "cmd", "clipboard", "set", String(text)], { clipboard: { set: true }, provider: "adb" });
+        }
+
+        case "mobile_get_clipboard": {
+            const { deviceId } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const r = runAdbDeviceCommand(target.device, target.adb, ["shell", "cmd", "clipboard", "get"]);
+            return r.ok ? jsonResult({ text: r.stdout, stderr: r.stderr, status: r.status, provider: "adb" }) : fail(r.result);
+        }
+
+        case "mobile_wait_for_text": {
+            const { deviceId, text, timeoutMs, intervalMs } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const result = await waitForAndroidText(target.device, target.adb, text, timeoutMs, intervalMs);
+            return jsonResult({ ...result, text, provider: "adb-uiautomator" });
+        }
+
+        case "mobile_wait_for_app": {
+            const { deviceId, packageName, timeoutMs, intervalMs } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (!packageName) return textResult(false, "Android wait-for-app requires packageName");
+            const result = await waitForAndroidApp(target.device, target.adb, packageName, timeoutMs, intervalMs);
+            return jsonResult({ ...result, packageName, provider: "adb" });
         }
 
         case "mobile_screenshot": {

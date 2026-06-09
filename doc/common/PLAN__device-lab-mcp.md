@@ -310,6 +310,19 @@ Android direct UI hierarchy status:
 - Appium remains available for future richer provider selection, but direct
   UIAutomator is the default Android UI dump path in this slice.
 
+Android advanced mobile action status:
+
+- The MCP surface now exposes richer mobile experiment primitives:
+  drag, rotation/orientation, permission grant/revoke, location, battery,
+  network, airplane mode, clipboard, wait-for-text, and wait-for-app.
+- Android implements these through direct owner-targeted ADB commands and
+  emulator console commands where appropriate. These actions do not start
+  Appium, boot an emulator, or create a WebDriver session.
+- `mobile_wait_for_text` uses the direct UIAutomator dump path with bounded
+  polling, while `mobile_wait_for_app` polls `pidof` through ADB.
+- Tests verify fake-ADB command mapping for these advanced actions without a
+  real Android SDK or emulator.
+
 iOS simctl mobile action status:
 
 - Shared `mobile_*` routing now lets Android handlers return no-match for
@@ -504,6 +517,20 @@ iOS Appium/XCUITest session status:
   `appium-xcuitest-driver`, and `xcodebuild`, so lazy start, session reuse,
   stale session clearing, and UI source retrieval are tested without real
   macOS/Xcode/Appium.
+
+iOS advanced mobile action status:
+
+- iOS Simulator now handles base `simctl` advanced actions for permission
+  grant/revoke, location, clipboard set/get, and wait-for-app.
+- These actions remain lazy and require only an owner-scoped iOS Simulator
+  definition plus `xcrun`; they do not start Appium or boot a simulator
+  implicitly.
+- Base `simctl` still does not provide coordinate gestures, Android-style
+  hardware keys, orientation forcing, battery/network controls, or UI text
+  polling. Those tools return explicit unsupported-capability diagnostics for
+  iOS until Appium/XCUITest or a host UI bridge provides a reliable path.
+- Tests use fake `xcrun` command logs to verify the supported simctl mappings
+  and unsupported diagnostics without requiring macOS or Xcode.
 
 ### Windows Sandbox
 

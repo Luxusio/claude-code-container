@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandPath, localBinPath, run, runWithTimeout } from "../commands.mjs";
+import { commandPath, localBinPath, run, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findIosDevice, readIosDevices, updateIosDevice, writeIosDevices } from "../state/ios-state.mjs";
@@ -72,6 +72,12 @@ export function iosBackend() {
             "mobile_uninstall_app",
             "mobile_stop_app",
             "mobile_clear_app_data",
+            "mobile_grant_permission",
+            "mobile_revoke_permission",
+            "mobile_set_location",
+            "mobile_set_clipboard",
+            "mobile_get_clipboard",
+            "mobile_wait_for_app",
         ],
     };
 }
@@ -154,6 +160,20 @@ async function waitForAppium(url) {
         }
     }
     return false;
+}
+
+async function waitForIosApp(xcrun, device, bundleId, timeoutMs = 10000, intervalMs = 500) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let last = null;
+    while (Date.now() <= deadline) {
+        const r = run(xcrun, ["simctl", "spawn", simctlTarget(device), "pgrep", "-f", bundleId]);
+        last = r;
+        if (r.status === 0 && r.stdout.trim()) {
+            return { running: true, pid: r.stdout.trim(), stdout: r.stdout, stderr: r.stderr, status: r.status };
+        }
+        await sleep(Math.max(50, intervalMs));
+    }
+    return { running: false, timeoutMs, stdout: last?.stdout || "", stderr: last?.stderr || "", status: last?.status ?? null };
 }
 
 async function ensureIosAppiumSession(deviceId) {
@@ -603,10 +623,75 @@ export async function handleIosTool(name, args) {
             return unsupportedMobileResult(name);
         }
 
+        case "mobile_grant_permission":
+        case "mobile_revoke_permission": {
+            const { deviceId, bundleId, service } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (!bundleId || !service) return textResult(false, `iOS Simulator ${name} requires bundleId and service`);
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const action = name === "mobile_grant_permission" ? "grant" : "revoke";
+            const r = run(discovery.xcrun, ["simctl", "privacy", simctlTarget(device), action, service, bundleId]);
+            return r.status === 0 ? jsonResult({ permission: { bundleId, service, action }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
+        }
+
+        case "mobile_set_location": {
+            const { deviceId, latitude, longitude } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const r = run(discovery.xcrun, ["simctl", "location", simctlTarget(device), "set", `${latitude},${longitude}`]);
+            return r.status === 0 ? jsonResult({ location: { latitude, longitude }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
+        }
+
+        case "mobile_set_clipboard": {
+            const { deviceId, text } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const r = runWithInput(discovery.xcrun, ["simctl", "pbcopy", simctlTarget(device)], String(text));
+            return r.status === 0 ? jsonResult({ clipboard: { set: true }, stdout: r.stdout, stderr: r.stderr, provider: "simctl" }) : fail(r);
+        }
+
+        case "mobile_get_clipboard": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const r = run(discovery.xcrun, ["simctl", "pbpaste", simctlTarget(device)]);
+            return r.status === 0 ? jsonResult({ text: r.stdout, stderr: r.stderr, status: r.status, provider: "simctl" }) : fail(r);
+        }
+
+        case "mobile_wait_for_app": {
+            const { deviceId, bundleId, timeoutMs, intervalMs } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (!bundleId) return textResult(false, "iOS Simulator wait-for-app requires bundleId");
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const result = await waitForIosApp(discovery.xcrun, device, bundleId, timeoutMs, intervalMs);
+            return jsonResult({ ...result, bundleId, provider: "simctl" });
+        }
+
         case "mobile_tap":
         case "mobile_double_tap":
         case "mobile_long_press":
         case "mobile_swipe":
+        case "mobile_drag":
         case "mobile_type_text":
         case "mobile_key":
         case "mobile_home":
@@ -615,7 +700,14 @@ export async function handleIosTool(name, args) {
         case "mobile_recents":
         case "mobile_power":
         case "mobile_lock":
-        case "mobile_unlock": {
+        case "mobile_unlock":
+        case "mobile_rotate_left":
+        case "mobile_rotate_right":
+        case "mobile_set_orientation":
+        case "mobile_set_battery":
+        case "mobile_set_network":
+        case "mobile_toggle_airplane_mode":
+        case "mobile_wait_for_text": {
             const { deviceId } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
