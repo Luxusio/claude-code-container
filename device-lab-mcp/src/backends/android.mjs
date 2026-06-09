@@ -242,6 +242,25 @@ async function waitForAppium(url) {
     return false;
 }
 
+function dumpAndroidUiWithAdb(device, adb) {
+    const remotePath = `/sdcard/window-${device.id}.xml`;
+    const dump = run(adb, adbArgsForDevice(device, ["shell", "uiautomator", "dump", remotePath]));
+    if (dump.status !== 0) return { error: dump };
+
+    let read = run(adb, adbArgsForDevice(device, ["exec-out", "cat", remotePath]));
+    if (read.status !== 0) {
+        read = run(adb, adbArgsForDevice(device, ["shell", "cat", remotePath]));
+    }
+    if (read.status !== 0) return { error: read };
+
+    return {
+        source: read.stdout,
+        remotePath,
+        dump,
+        read,
+    };
+}
+
 async function ensureAppiumSession(deviceId) {
     const device = findAndroidDevice(deviceId);
     if (!device) return { unknown: true };
@@ -560,11 +579,19 @@ export async function handleAndroidTool(name, args) {
 
         case "mobile_dump_ui": {
             const { deviceId } = args;
-            const session = await ensureAppiumSession(deviceId);
-            if (session.unknown) return undefined;
-            if (session.error) return textResult(false, session.error);
-            const payload = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
-            return jsonResult({ source: payload.value ?? payload });
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+
+            const dump = dumpAndroidUiWithAdb(target.device, target.adb);
+            if (dump.error) return fail(dump.error);
+            return jsonResult({
+                provider: "adb-uiautomator",
+                source: dump.source,
+                remotePath: dump.remotePath,
+                stdout: dump.dump.stdout,
+                stderr: dump.dump.stderr,
+            });
         }
 
         case "mobile_tap": {

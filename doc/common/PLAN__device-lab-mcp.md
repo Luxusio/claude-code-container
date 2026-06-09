@@ -298,6 +298,18 @@ Android direct-ADB action status:
 - Tests use fake Android SDK commands to verify serial-targeted ADB command
   mapping and missing-prerequisite behavior without requiring a real emulator.
 
+Android direct UI hierarchy status:
+
+- `mobile_dump_ui` now uses direct `adb shell uiautomator dump` plus
+  `adb exec-out cat` for owner-scoped Android devices when `adb` is available.
+- This path returns provider metadata, the remote XML path, and XML/source text
+  without starting Appium or creating an Appium session.
+- Unknown/non-Android device IDs still no-match the Android handler so later
+  backends can respond, while Android definitions without `adb` receive clear
+  missing-prerequisite diagnostics.
+- Appium remains available for future richer provider selection, but direct
+  UIAutomator is the default Android UI dump path in this slice.
+
 iOS simctl mobile action status:
 
 - Shared `mobile_*` routing now lets Android handlers return no-match for

@@ -431,6 +431,18 @@ if [ "$1" = "shell" ] && [ "$2" = "getprop" ] && [ "$3" = "sys.boot_completed" ]
   echo "1"
   exit 0
 fi
+if [ "$1" = "shell" ] && [ "$2" = "uiautomator" ] && [ "$3" = "dump" ]; then
+  echo "UI hierchary dumped to: $4"
+  exit 0
+fi
+if [ "$1" = "exec-out" ] && [ "$2" = "cat" ]; then
+  printf '%s\\n' '<hierarchy><node text="Hello" resource-id="com.example:id/title"/></hierarchy>'
+  exit 0
+fi
+if [ "$1" = "shell" ] && [ "$2" = "cat" ]; then
+  printf '%s\\n' '<hierarchy><node text="Hello" resource-id="com.example:id/title"/></hierarchy>'
+  exit 0
+fi
 if [ "$1" = "shell" ]; then
   echo "ok"
   exit 0
@@ -574,6 +586,20 @@ exit 0
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const dumpUi = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(dumpUi.isError).not.toBe(true);
+        const dumpPayload = JSON.parse(((dumpUi.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            provider: string;
+            source: string;
+            remotePath: string;
+        };
+        expect(dumpPayload.provider).toBe("adb-uiautomator");
+        expect(dumpPayload.source).toContain("<hierarchy>");
+        expect(dumpPayload.remotePath).toContain("android-pixel-owned");
+
         const fileAndAppCalls = [
             ["device_upload", { deviceId: "android-pixel-owned", localPath: "/tmp/local.txt", remotePath: "/sdcard/local.txt" }],
             ["device_download", { deviceId: "android-pixel-owned", remotePath: "/sdcard/remote.txt", localPath: "/tmp/remote.txt" }],
@@ -633,6 +659,8 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
         expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
         expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
+        expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
+        expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");
         expect(log).toContain("adb -s emulator-5582 push /tmp/local.txt /sdcard/local.txt");
         expect(log).toContain("adb -s emulator-5582 pull /sdcard/remote.txt /tmp/remote.txt");
         expect(log).toContain("adb -s emulator-5582 install -r /tmp/Test.apk");
