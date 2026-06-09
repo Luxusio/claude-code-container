@@ -976,6 +976,9 @@ CONTAINER MANAGEMENT:
     ccc devices list        List owner-scoped device definitions
     ccc devices backends    Show device backend prerequisites
     ccc devices doctor      Device-lab diagnostics
+    ccc devices stop <id>   Stop an owner-scoped device definition
+    ccc devices delete <id> Delete an owner-scoped stopped device definition
+    ccc devices prune       Remove stopped owner-scoped device definitions
     ccc runtime             Show detected container runtime
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes

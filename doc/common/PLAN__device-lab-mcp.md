@@ -652,8 +652,18 @@ CLI foundation status:
 - The CLI reads the same owner namespace shape as `device-lab-mcp` under
   `~/.ccc/devices/owners/<owner-id>/...` and does not expose other owner
   directories.
+- `ccc devices stop <device-id>` stops only a current-owner definition. It uses
+  conservative backend stop hooks when available (`adb emu kill`,
+  `simctl shutdown`, `wsb stop`, or provider VM stop) and then marks that owned
+  definition stopped without scanning other owner directories.
+- `ccc devices delete <device-id>` removes only current-owner stopped
+  definitions and refuses running definitions so callers stop first.
+- `ccc devices prune` removes stopped definitions from the current owner
+  namespace while preserving running/booted definitions and foreign owner
+  state.
 - Host-broker admin commands such as all-owner list/stop/prune remain deferred
-  until a dedicated broker owns cross-owner locking and cleanup.
+  until a dedicated broker owns cross-owner locking and cleanup. Regular
+  in-container CLI commands intentionally stay owner-scoped.
 
 ## Integration with existing CCC
 
