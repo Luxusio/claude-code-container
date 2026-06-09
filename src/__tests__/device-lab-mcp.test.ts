@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -327,7 +327,7 @@ describe("device-lab MCP", () => {
             networking: false,
         }));
         expect(created.device.helper).toEqual(expect.objectContaining({
-            status: "planned",
+            status: "file-channel",
             guestScratchDir: "C:\\ccc\\scratch",
         }));
 
@@ -361,10 +361,10 @@ describe("device-lab MCP", () => {
 
         const exec = await client.callTool({
             name: "device_exec",
-            arguments: { deviceId: "windows-win-test", command: "whoami" },
+            arguments: { deviceId: "windows-win-test", command: "whoami", helperTimeoutMs: 50 },
         });
         expect(exec.isError).toBe(true);
-        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox helper did not respond");
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -601,7 +601,15 @@ exit 0
         });
         expect(start.isError).not.toBe(true);
         const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { configPath: string; helper: { hostHelperScript: string } };
+            device: {
+                configPath: string;
+                helper: {
+                    hostHelperScript: string;
+                    inboxDir: string;
+                    outboxDir: string;
+                    downloadsDir: string;
+                };
+            };
         };
         const config = readFileSync(started.device.configPath, "utf-8");
         expect(config).toContain("<SandboxFolder>C:\\ccc\\scratch</SandboxFolder>");
@@ -609,17 +617,82 @@ exit 0
         expect(config).toContain("<ReadOnly>true</ReadOnly>");
         expect(config).toContain("<LogonCommand>");
         expect(config).toContain("ccc-guest-helper.ps1");
-        expect(readFileSync(started.device.helper.hostHelperScript, "utf-8")).toContain("CCC guest helper placeholder");
+        const helperScript = readFileSync(started.device.helper.hostHelperScript, "utf-8");
+        expect(helperScript).toContain("Get-ChildItem -Path $Inbox");
+        expect(helperScript).toContain("'exec'");
+        expect(helperScript).toContain("'screenshot'");
+        expect(helperScript).toContain("'upload'");
+        expect(helperScript).toContain("'download'");
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`wsb start ${started.device.configPath}`);
 
+        const responder = setInterval(() => {
+            let files: string[] = [];
+            try {
+                files = readdirSync(started.device.helper.inboxDir).filter((name) => name.endsWith(".json"));
+            } catch {
+                return;
+            }
+            for (const file of files) {
+                const requestPath = join(started.device.helper.inboxDir, file);
+                const request = JSON.parse(readFileSync(requestPath, "utf-8")) as {
+                    id: string;
+                    type: string;
+                    command?: string;
+                    remotePath?: string;
+                };
+                const response: Record<string, unknown> = { id: request.id, ok: true, type: request.type };
+                if (request.type === "exec") {
+                    response.stdout = `ran ${request.command}`;
+                    response.stderr = "";
+                    response.status = 0;
+                }
+                if (request.type === "screenshot") {
+                    writeFileSync(join(started.device.helper.downloadsDir, `${request.id}.png`), "fakepng");
+                    response.imagePath = `C:\\ccc\\scratch\\downloads\\${request.id}.png`;
+                }
+                if (request.type === "download") {
+                    const remoteName = String(request.remotePath ?? "remote.txt").split(/[\\/]/).filter(Boolean).pop() ?? "remote.txt";
+                    const downloadName = `${request.id}-${remoteName}`;
+                    writeFileSync(join(started.device.helper.downloadsDir, downloadName), "downloaded");
+                    response.downloadPath = `C:\\ccc\\scratch\\downloads\\${downloadName}`;
+                }
+                writeFileSync(join(started.device.helper.outboxDir, `${request.id}.json`), JSON.stringify(response));
+                rmSync(requestPath, { force: true });
+            }
+        }, 25);
+
+        const exec = await client.callTool({
+            name: "device_exec",
+            arguments: { deviceId: "windows-win-helper", command: "whoami", helperTimeoutMs: 1000 },
+        });
+        expect(exec.isError).not.toBe(true);
+        expect(((exec.content as Array<{ text?: string }>)[0].text ?? "")).toContain("ran whoami");
+
         const screenshot = await client.callTool({
             name: "device_screenshot",
-            arguments: { deviceId: "windows-win-helper" },
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
         });
-        expect(screenshot.isError).toBe(true);
-        expect((screenshot.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+        expect(screenshot.isError).not.toBe(true);
+        expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
+
+        const uploadSource = join(homeDir, "upload.txt");
+        writeFileSync(uploadSource, "upload");
+        const upload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\upload.txt", helperTimeoutMs: 1000 },
+        });
+        expect(upload.isError).not.toBe(true);
+
+        const downloadTarget = join(homeDir, "download.txt");
+        const download = await client.callTool({
+            name: "device_download",
+            arguments: { deviceId: "windows-win-helper", remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget, helperTimeoutMs: 1000 },
+        });
+        expect(download.isError).not.toBe(true);
+        expect(readFileSync(downloadTarget, "utf-8")).toBe("downloaded");
+        clearInterval(responder);
 
         const stop = await client.callTool({
             name: "device_stop",

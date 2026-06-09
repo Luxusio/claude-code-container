@@ -544,12 +544,23 @@ Guest-helper foundation status:
 - `device_start` writes a conservative `.wsb` config only on explicit start,
   mapping a writable scratch folder and a read-only tools folder into the
   sandbox and adding a LogonCommand placeholder for a future CCC guest helper.
-- `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
-  now return explicit guest-helper-required diagnostics for Windows Sandbox
-  devices instead of falling through as unknown tools.
+- The generated PowerShell guest helper watches owner-scoped mapped
+  `inbox/*.json` requests and writes `outbox/*.json` responses. The mapped
+  scratch folder also contains owner-scoped `uploads/` and `downloads/`
+  folders.
+- `device_exec` writes an `exec` request and returns stdout/stderr/status from
+  the helper response.
+- `device_screenshot` writes a `screenshot` request and returns PNG image
+  content from the mapped downloads folder.
+- `device_upload` copies the local file into the mapped uploads folder, writes
+  an `upload` request, and returns helper response metadata.
+- `device_download` writes a `download` request, copies the mapped helper output
+  to the requested local path, and returns helper response metadata.
+- When no helper responds, helper-backed tools return bounded timeout
+  diagnostics with the owner-scoped inbox path.
 - Tests use a fake `wsb` command to verify lazy `.wsb` generation, mapped
-  folders, helper bootstrap placeholder, and helper-required diagnostics
-  without requiring a Windows host.
+  folders, helper bootstrap, file-channel request/response behavior, and
+  timeout diagnostics without requiring a Windows host.
 
 ### macOS VM
 
