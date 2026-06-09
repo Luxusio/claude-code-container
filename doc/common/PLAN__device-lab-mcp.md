@@ -481,11 +481,29 @@ iOS Appium/XCUITest foundation status:
   `lazy: true` without starting Appium, booting simulators, or creating a
   WebDriver session.
 - `mobile_dump_ui` returns explicit missing-prerequisite diagnostics when
-  `xcrun`, Appium, the XCUITest driver, or `xcodebuild` are unavailable. When
-  all discovery checks pass, it returns a deferred-session diagnostic rather
-  than silently falling through to Android-only behavior.
+  `xcrun`, Appium, the XCUITest driver, or `xcodebuild` are unavailable.
 - Tests cover both Linux missing-prerequisite diagnostics and fake
   Appium/XCUITest discovery without requiring real macOS, Xcode, or Appium.
+
+iOS Appium/XCUITest session status:
+
+- `mobile_dump_ui` now starts an owner-scoped Appium server lazily only when an
+  explicit iOS UI dump is requested and all Appium/XCUITest prerequisites are
+  available.
+- The iOS Appium server port is derived from the current owner and device id,
+  and session metadata is stored on the owner-scoped iOS device definition.
+- Healthy Appium sessions are reused after `mobile_dump_ui`; stale sessions are
+  detected through Appium status/session checks and cleared before creating a
+  replacement session.
+- XCUITest sessions use deterministic capabilities:
+  `platformName: "iOS"`, `appium:automationName: "XCUITest"`, device name from
+  the simulator definition, and UDID when available.
+- `mobile_dump_ui` returns Appium source output through
+  `GET /session/<id>/source` with provider `appium-xcuitest`.
+- Linux CI coverage uses a fake Appium HTTP server plus fake `xcrun`,
+  `appium-xcuitest-driver`, and `xcodebuild`, so lazy start, session reuse,
+  stale session clearing, and UI source retrieval are tested without real
+  macOS/Xcode/Appium.
 
 ### Windows Sandbox
 

@@ -1,3 +1,5 @@
+import { spawn } from "child_process";
+import { createHash } from "crypto";
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -82,6 +84,11 @@ function simctlTarget(device) {
     return device.udid || device.simulatorName || device.name || device.id;
 }
 
+function appiumPortForIosDevice(id) {
+    const hash = createHash("sha256").update(`${ownerId()}:ios:${id}`).digest();
+    return 30000 + (hash.readUInt16BE(0) % 10000);
+}
+
 function ownerSimulatorPrefix() {
     return `ccc-${ownerId()}-`;
 }
@@ -114,6 +121,107 @@ function iosAppiumStatus(device) {
 
 function missingIosAppiumResult(discovery) {
     return textResult(false, `iOS Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}`);
+}
+
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+        },
+    });
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+        try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
+    return payload;
+}
+
+async function waitForAppium(url) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+            await fetchJson(`${url}/status`, { method: "GET" });
+            return true;
+        } catch {
+            await sleep(250);
+        }
+    }
+    return false;
+}
+
+async function ensureIosAppiumSession(deviceId) {
+    const device = findIosDevice(deviceId);
+    if (!device) return { unknown: true };
+
+    const discovery = iosAppiumDiscovery();
+    if (!discovery.available) {
+        return { error: `iOS Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}` };
+    }
+
+    const port = device.appiumPort || appiumPortForIosDevice(device.id);
+    const serverUrl = `http://127.0.0.1:${port}`;
+
+    if (device.appium?.sessionId && device.appium?.serverUrl) {
+        try {
+            await fetchJson(`${device.appium.serverUrl}/status`, { method: "GET" });
+            await fetchJson(`${device.appium.serverUrl}/session/${device.appium.sessionId}`, { method: "GET" });
+            return { device, serverUrl: device.appium.serverUrl, sessionId: device.appium.sessionId };
+        } catch {
+            updateIosDevice(deviceId, (item) => ({
+                ...item,
+                appium: null,
+                updatedAt: now(),
+            }));
+        }
+    }
+
+    const child = spawn(discovery.appium, ["server", "--port", String(port), "--base-path", "/"], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+    });
+    child.unref();
+
+    const ready = await waitForAppium(serverUrl);
+    if (!ready) return { error: `Appium server did not become ready on ${serverUrl}` };
+
+    const response = await fetchJson(`${serverUrl}/session`, {
+        method: "POST",
+        body: JSON.stringify({
+            capabilities: {
+                alwaysMatch: {
+                    platformName: "iOS",
+                    "appium:automationName": "XCUITest",
+                    "appium:deviceName": device.simulatorName || device.name || device.id,
+                    ...(device.udid ? { "appium:udid": device.udid } : {}),
+                },
+            },
+        }),
+    });
+    const sessionId = response?.value?.sessionId || response?.sessionId;
+    if (!sessionId) return { error: "Appium did not return a session id" };
+
+    const updated = updateIosDevice(deviceId, (item) => ({
+        ...item,
+        appiumPort: port,
+        appium: {
+            serverUrl,
+            serverPid: child.pid,
+            sessionId,
+            automationName: "XCUITest",
+            updatedAt: now(),
+        },
+        updatedAt: now(),
+    }));
+
+    return { device: updated, serverUrl, sessionId };
 }
 
 function now() {
@@ -254,6 +362,8 @@ export async function handleIosTool(name, args) {
                 deviceType: deviceType || null,
                 runtime: runtime || null,
                 udid: createdUdid,
+                appiumPort: appiumPortForIosDevice(id),
+                appium: null,
                 status: "stopped",
                 creatable: true,
                 provisioning,
@@ -350,10 +460,14 @@ export async function handleIosTool(name, args) {
             if (discovery.available) {
                 run(discovery.xcrun, ["simctl", "shutdown", simctlTarget(device)]);
             }
+            if (device.appium?.serverPid) {
+                try { process.kill(device.appium.serverPid); } catch { /* ignore stale pid */ }
+            }
 
             const updated = updateIosDevice(deviceId, (item) => ({
                 ...item,
                 status: "stopped",
+                appium: null,
                 updatedAt: now(),
             }));
             return jsonResult({ device: updated });
@@ -421,12 +535,17 @@ export async function handleIosTool(name, args) {
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
 
-            const discovery = iosAppiumDiscovery();
-            if (!discovery.available) return missingIosAppiumResult(discovery);
-            return textResult(
-                false,
-                "iOS Appium/XCUITest session creation is deferred; mobile_dump_ui will use an owner-scoped Appium session once the iOS session slice is implemented.",
-            );
+            const session = await ensureIosAppiumSession(deviceId);
+            if (session.unknown) return undefined;
+            if (session.error) return textResult(false, session.error);
+
+            const source = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
+            return jsonResult({
+                provider: "appium-xcuitest",
+                source: source?.value ?? source?.source ?? source,
+                sessionId: session.sessionId,
+                serverUrl: session.serverUrl,
+            });
         }
 
         case "mobile_open_url": {

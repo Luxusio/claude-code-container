@@ -1045,7 +1045,62 @@ fi
 exit 0
 `);
         chmodSync(xcrunPath, 0o755);
-        for (const name of ["appium", "appium-xcuitest-driver", "xcodebuild"]) {
+        const appiumPath = join(binDir, "appium");
+        writeFileSync(appiumPath, `#!/bin/sh
+echo "appium $*" >> "$FAKE_IOS_LOG"
+PORT=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--port" ]; then
+    shift
+    PORT="$1"
+  fi
+  shift
+done
+exec "${process.execPath}" - "$PORT" "$FAKE_IOS_LOG" "${join(homeDir, "stale-ios-session")}" <<'NODE'
+const http = require('http');
+const fs = require('fs');
+const port = Number(process.argv[2]);
+const log = process.argv[3];
+const stalePath = process.argv[4];
+let sessionCounter = 0;
+let sessionId = null;
+function send(res, status, payload) {
+  res.writeHead(status, {'Content-Type': 'application/json'});
+  res.end(JSON.stringify(payload));
+}
+const server = http.createServer((req, res) => {
+  fs.appendFileSync(log, 'appium-http ' + req.method + ' ' + req.url + '\\n');
+  if (req.method === 'GET' && req.url === '/status') return send(res, 200, {value: {ready: true}});
+  if (req.method === 'POST' && req.url === '/session') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      fs.appendFileSync(log, 'appium-session-body ' + body + '\\n');
+      sessionCounter += 1;
+      sessionId = 'IOS-SESSION-' + sessionCounter;
+      send(res, 200, {value: {sessionId}});
+    });
+    return;
+  }
+  if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId) {
+    if (fs.existsSync(stalePath)) {
+      fs.unlinkSync(stalePath);
+      send(res, 404, {value: {error: 'stale'}});
+      return setTimeout(() => server.close(() => process.exit(0)), 20);
+    }
+    return send(res, 200, {value: {sessionId}});
+  }
+  if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId + '/source') {
+    return send(res, 200, {value: '<AppiumAUT><XCUIElementTypeApplication name="Test"/></AppiumAUT>'});
+  }
+  send(res, 404, {value: {error: 'unknown route'}});
+});
+server.listen(port, '127.0.0.1');
+NODE
+`);
+        chmodSync(appiumPath, 0o755);
+
+        for (const name of ["appium-xcuitest-driver", "xcodebuild"]) {
             const toolPath = join(binDir, name);
             writeFileSync(toolPath, `#!/bin/sh
 echo "${name} $*" >> "$FAKE_IOS_LOG"
@@ -1116,12 +1171,14 @@ exit 0
         });
         const ownerId = (JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string }).ownerId;
         const simulatorName = `ccc-${ownerId}-iphone-owned`;
+        const ownedDeviceId = `ios-iphone-owned-${Date.now()}`;
 
         const create = await client.callTool({
             name: "device_create",
             arguments: {
                 backend: "ios-simulator",
                 name: "iPhone Owned",
+                deviceId: ownedDeviceId,
                 simulatorName,
                 deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
                 runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
@@ -1133,7 +1190,7 @@ exit 0
             device: { id: string; simulatorName: string; udid: string; provisioning: string; status: string };
         };
         expect(created.device).toEqual(expect.objectContaining({
-            id: "ios-iphone-owned",
+            id: ownedDeviceId,
             simulatorName,
             udid: "CREATED-IOS-UDID",
             provisioning: "created",
@@ -1142,7 +1199,7 @@ exit 0
 
         const start = await client.callTool({
             name: "device_start",
-            arguments: { deviceId: "ios-iphone-owned", bootTimeoutMs: 1000 },
+            arguments: { deviceId: ownedDeviceId, bootTimeoutMs: 1000 },
         });
         expect(start.isError).not.toBe(true);
         const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -1155,7 +1212,7 @@ exit 0
 
         const openUrl = await client.callTool({
             name: "mobile_open_url",
-            arguments: { deviceId: "ios-iphone-owned", url: "https://example.test/ios" },
+            arguments: { deviceId: ownedDeviceId, url: "https://example.test/ios" },
         });
         expect(openUrl.isError).not.toBe(true);
         const openUrlPayload = JSON.parse(((openUrl.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -1169,59 +1226,59 @@ exit 0
 
         const installApp = await client.callTool({
             name: "mobile_install_app",
-            arguments: { deviceId: "ios-iphone-owned", path: "/tmp/Test.app" },
+            arguments: { deviceId: ownedDeviceId, path: "/tmp/Test.app" },
         });
         expect(installApp.isError).not.toBe(true);
 
         const launchApp = await client.callTool({
             name: "mobile_launch_app",
-            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Test" },
+            arguments: { deviceId: ownedDeviceId, bundleId: "com.example.Test" },
         });
         expect(launchApp.isError).not.toBe(true);
 
         const commonInstall = await client.callTool({
             name: "device_install_app",
-            arguments: { deviceId: "ios-iphone-owned", path: "/tmp/Common.app" },
+            arguments: { deviceId: ownedDeviceId, path: "/tmp/Common.app" },
         });
         expect(commonInstall.isError).not.toBe(true);
 
         const commonLaunch = await client.callTool({
             name: "device_launch_app",
-            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Common" },
+            arguments: { deviceId: ownedDeviceId, bundleId: "com.example.Common" },
         });
         expect(commonLaunch.isError).not.toBe(true);
 
         const upload = await client.callTool({
             name: "device_upload",
-            arguments: { deviceId: "ios-iphone-owned", localPath: "/tmp/local.txt", remotePath: "/tmp/remote.txt" },
+            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/local.txt", remotePath: "/tmp/remote.txt" },
         });
         expect(upload.isError).toBe(true);
         expect((upload.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
 
         const download = await client.callTool({
             name: "device_download",
-            arguments: { deviceId: "ios-iphone-owned", remotePath: "/tmp/remote.txt", localPath: "/tmp/local.txt" },
+            arguments: { deviceId: ownedDeviceId, remotePath: "/tmp/remote.txt", localPath: "/tmp/local.txt" },
         });
         expect(download.isError).toBe(true);
         expect((download.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
 
         const reset = await client.callTool({
             name: "device_reset",
-            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Test" },
+            arguments: { deviceId: ownedDeviceId, bundleId: "com.example.Test" },
         });
         expect(reset.isError).toBe(true);
         expect((reset.content as Array<{ text?: string }>)[0].text).toContain("future explicit simulator erase");
 
         const screenshot = await client.callTool({
             name: "mobile_screenshot",
-            arguments: { deviceId: "ios-iphone-owned" },
+            arguments: { deviceId: ownedDeviceId },
         });
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
         const session = await client.callTool({
             name: "mobile_session_status",
-            arguments: { deviceId: "ios-iphone-owned" },
+            arguments: { deviceId: ownedDeviceId },
         });
         expect(session.isError).not.toBe(true);
         const sessionPayload = JSON.parse(((session.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -1244,40 +1301,76 @@ exit 0
 
         const dumpUi = await client.callTool({
             name: "mobile_dump_ui",
-            arguments: { deviceId: "ios-iphone-owned" },
+            arguments: { deviceId: ownedDeviceId },
         });
-        expect(dumpUi.isError).toBe(true);
-        expect((dumpUi.content as Array<{ text?: string }>)[0].text).toContain("session creation is deferred");
+        expect(dumpUi.isError).not.toBe(true);
+        const dumpPayload = JSON.parse(((dumpUi.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            provider: string;
+            source: string;
+            sessionId: string;
+            serverUrl: string;
+        };
+        expect(dumpPayload.provider).toBe("appium-xcuitest");
+        expect(dumpPayload.source).toContain("XCUIElementTypeApplication");
+        expect(dumpPayload.sessionId).toBe("IOS-SESSION-1");
+
+        const statusAfterDump = await client.callTool({
+            name: "mobile_session_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        const statusAfterDumpPayload = JSON.parse(((statusAfterDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            session: { sessionId: string; serverUrl: string };
+        };
+        expect(statusAfterDumpPayload.session.sessionId).toBe("IOS-SESSION-1");
+        expect(statusAfterDumpPayload.session.serverUrl).toBe(dumpPayload.serverUrl);
+
+        const reusedDump = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(reusedDump.isError).not.toBe(true);
+        expect(((reusedDump.content as Array<{ text?: string }>)[0].text ?? "")).toContain("IOS-SESSION-1");
+
+        writeFileSync(join(homeDir, "stale-ios-session"), "1");
+        const staleRecoveredDump = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(staleRecoveredDump.isError).not.toBe(true);
+        const staleRecoveredPayload = JSON.parse(((staleRecoveredDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            sessionId: string;
+        };
+        expect(staleRecoveredPayload.sessionId).not.toBe("IOS-SESSION-1");
 
         const unsupportedTap = await client.callTool({
             name: "mobile_tap",
-            arguments: { deviceId: "ios-iphone-owned", x: 10, y: 20 },
+            arguments: { deviceId: ownedDeviceId, x: 10, y: 20 },
         });
         expect(unsupportedTap.isError).toBe(true);
         expect((unsupportedTap.content as Array<{ text?: string }>)[0].text).toContain("does not support mobile_tap through base simctl");
 
         const deleteWhileBooted = await client.callTool({
             name: "device_delete",
-            arguments: { deviceId: "ios-iphone-owned", deleteSimulator: true },
+            arguments: { deviceId: ownedDeviceId, deleteSimulator: true },
         });
         expect(deleteWhileBooted.isError).toBe(true);
 
         const stop = await client.callTool({
             name: "device_stop",
-            arguments: { deviceId: "ios-iphone-owned" },
+            arguments: { deviceId: ownedDeviceId },
         });
         expect(stop.isError).not.toBe(true);
 
         const deleted = await client.callTool({
             name: "device_delete",
-            arguments: { deviceId: "ios-iphone-owned", deleteSimulator: true },
+            arguments: { deviceId: ownedDeviceId, deleteSimulator: true },
         });
         expect(deleted.isError).not.toBe(true);
         const deletedPayload = JSON.parse(((deleted.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             deleted: string;
             simulatorDeleted: boolean;
         };
-        expect(deletedPayload).toEqual({ deleted: "ios-iphone-owned", simulatorDeleted: true });
+        expect(deletedPayload).toEqual({ deleted: ownedDeviceId, simulatorDeleted: true });
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`xcrun simctl create ${simulatorName} com.apple.CoreSimulator.SimDeviceType.iPhone-15 com.apple.CoreSimulator.SimRuntime.iOS-17-0`);
@@ -1290,7 +1383,9 @@ exit 0
         expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Common");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
-        expect(log).not.toContain("appium server");
+        expect(log).toContain("appium server --port ");
+        expect(log).toContain("appium-http POST /session");
+        expect(log).toContain('"appium:automationName":"XCUITest"');
         expect(log).not.toContain("Android backend missing prerequisites");
     });
 
