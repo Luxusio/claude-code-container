@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { commandPath, run, runWithTimeout } from "../commands.mjs";
+import { commandPath, localBinPath, run, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findIosDevice, readIosDevices, updateIosDevice, writeIosDevices } from "../state/ios-state.mjs";
@@ -12,6 +12,25 @@ export function iosDiscovery() {
     if (!xcrun) missing.push("xcrun");
     return {
         xcrun,
+        available: missing.length === 0,
+        missing,
+    };
+}
+
+export function iosAppiumDiscovery() {
+    const ios = iosDiscovery();
+    const appium = localBinPath("appium") || commandPath("appium");
+    const xcuitestDriver = localBinPath("appium-xcuitest-driver") || commandPath("appium-xcuitest-driver");
+    const xcodebuild = commandPath("xcodebuild");
+    const missing = [...ios.missing];
+    if (!appium) missing.push("appium");
+    if (!xcuitestDriver) missing.push("appium-xcuitest-driver");
+    if (!xcodebuild) missing.push("xcodebuild");
+    return {
+        appium,
+        xcuitestDriver,
+        xcodebuild,
+        xcrun: ios.xcrun,
         available: missing.length === 0,
         missing,
     };
@@ -46,6 +65,8 @@ export function iosBackend() {
             "mobile_install_app",
             "mobile_launch_app",
             "mobile_screenshot",
+            "mobile_session_status",
+            "mobile_dump_ui",
             "mobile_uninstall_app",
             "mobile_stop_app",
             "mobile_clear_app_data",
@@ -79,6 +100,20 @@ function unsupportedMobileResult(tool) {
 
 function unsupportedIosResult(tool, reason) {
     return textResult(false, `iOS Simulator ${tool} is not supported through base simctl in this slice: ${reason}`);
+}
+
+function iosAppiumStatus(device) {
+    return {
+        deviceId: device.id,
+        appium: iosAppiumDiscovery(),
+        session: device.appium || null,
+        automationName: "XCUITest",
+        lazy: true,
+    };
+}
+
+function missingIosAppiumResult(discovery) {
+    return textResult(false, `iOS Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}`);
 }
 
 function now() {
@@ -372,6 +407,26 @@ export async function handleIosTool(name, args) {
         case "mobile_screenshot": {
             const { deviceId } = args;
             return handleIosTool("device_screenshot", { deviceId });
+        }
+
+        case "mobile_session_status": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            return jsonResult(iosAppiumStatus(device));
+        }
+
+        case "mobile_dump_ui": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+
+            const discovery = iosAppiumDiscovery();
+            if (!discovery.available) return missingIosAppiumResult(discovery);
+            return textResult(
+                false,
+                "iOS Appium/XCUITest session creation is deferred; mobile_dump_ui will use an owner-scoped Appium session once the iOS session slice is implemented.",
+            );
         }
 
         case "mobile_open_url": {

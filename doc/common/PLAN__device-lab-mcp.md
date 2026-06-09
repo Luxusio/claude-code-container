@@ -470,6 +470,23 @@ simctl provisioning hardening status:
 - Linux CI coverage uses fake `xcrun` commands, so the provisioning behavior is
   tested without requiring macOS or Xcode.
 
+iOS Appium/XCUITest foundation status:
+
+- `device-lab-mcp` declares CCC-managed `appium-xcuitest-driver` alongside
+  Appium so users do not manually install the iOS automation driver.
+- `ios-simulator` advertises `mobile_session_status` and `mobile_dump_ui`
+  capabilities through the common mobile tool surface.
+- `mobile_session_status` reports owner-scoped device metadata,
+  Appium/XCUITest discovery, `automationName: "XCUITest"`, `session: null`, and
+  `lazy: true` without starting Appium, booting simulators, or creating a
+  WebDriver session.
+- `mobile_dump_ui` returns explicit missing-prerequisite diagnostics when
+  `xcrun`, Appium, the XCUITest driver, or `xcodebuild` are unavailable. When
+  all discovery checks pass, it returns a deferred-session diagnostic rather
+  than silently falling through to Android-only behavior.
+- Tests cover both Linux missing-prerequisite diagnostics and fake
+  Appium/XCUITest discovery without requiring real macOS, Xcode, or Appium.
+
 ### Windows Sandbox
 
 Prerequisites:

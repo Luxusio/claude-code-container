@@ -270,6 +270,32 @@ describe("device-lab MCP", () => {
         expect(screenshot.isError).toBe(true);
         expect((screenshot.content as Array<{ text?: string }>)[0].text).toContain("iOS Simulator backend missing prerequisites");
 
+        const session = await client.callTool({
+            name: "mobile_session_status",
+            arguments: { deviceId: "ios-iphone-test" },
+        });
+        expect(session.isError).not.toBe(true);
+        const sessionPayload = JSON.parse(((session.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deviceId: string;
+            appium: { available: boolean; missing: string[] };
+            session: unknown;
+            automationName: string;
+            lazy: boolean;
+        };
+        expect(sessionPayload.deviceId).toBe("ios-iphone-test");
+        expect(sessionPayload.automationName).toBe("XCUITest");
+        expect(sessionPayload.session).toBeNull();
+        expect(sessionPayload.lazy).toBe(true);
+        expect(sessionPayload.appium.available).toBe(false);
+        expect(sessionPayload.appium.missing).toEqual(expect.arrayContaining(["xcrun", "appium", "appium-xcuitest-driver", "xcodebuild"]));
+
+        const dumpUi = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: "ios-iphone-test" },
+        });
+        expect(dumpUi.isError).toBe(true);
+        expect((dumpUi.content as Array<{ text?: string }>)[0].text).toContain("iOS Appium/XCUITest layer missing prerequisites");
+
         const deleted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "ios-iphone-test" },
@@ -1019,6 +1045,14 @@ fi
 exit 0
 `);
         chmodSync(xcrunPath, 0o755);
+        for (const name of ["appium", "appium-xcuitest-driver", "xcodebuild"]) {
+            const toolPath = join(binDir, name);
+            writeFileSync(toolPath, `#!/bin/sh
+echo "${name} $*" >> "$FAKE_IOS_LOG"
+exit 0
+`);
+            chmodSync(toolPath, 0o755);
+        }
 
         const transport = new StdioClientTransport({
             command: process.execPath,
@@ -1185,6 +1219,36 @@ exit 0
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const session = await client.callTool({
+            name: "mobile_session_status",
+            arguments: { deviceId: "ios-iphone-owned" },
+        });
+        expect(session.isError).not.toBe(true);
+        const sessionPayload = JSON.parse(((session.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            appium: { available: boolean; appium: string; xcuitestDriver: string; xcodebuild: string; xcrun: string; missing: string[] };
+            session: unknown;
+            automationName: string;
+            lazy: boolean;
+        };
+        expect(sessionPayload.appium).toEqual({
+            available: true,
+            missing: [],
+            appium: join(binDir, "appium"),
+            xcuitestDriver: join(binDir, "appium-xcuitest-driver"),
+            xcodebuild: join(binDir, "xcodebuild"),
+            xcrun: join(binDir, "xcrun"),
+        });
+        expect(sessionPayload.session).toBeNull();
+        expect(sessionPayload.automationName).toBe("XCUITest");
+        expect(sessionPayload.lazy).toBe(true);
+
+        const dumpUi = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: "ios-iphone-owned" },
+        });
+        expect(dumpUi.isError).toBe(true);
+        expect((dumpUi.content as Array<{ text?: string }>)[0].text).toContain("session creation is deferred");
+
         const unsupportedTap = await client.callTool({
             name: "mobile_tap",
             arguments: { deviceId: "ios-iphone-owned", x: 10, y: 20 },
@@ -1226,6 +1290,7 @@ exit 0
         expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Common");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
+        expect(log).not.toContain("appium server");
         expect(log).not.toContain("Android backend missing prerequisites");
     });
 
