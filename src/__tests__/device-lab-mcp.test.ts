@@ -3,7 +3,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { handleMacosTool } from "../../device-lab-mcp/src/backends/macos-vm.mjs";
 
 const repoRoot = join(__dirname, "../..");
 const TIMEOUT = 30000;
@@ -361,7 +362,13 @@ describe("device-lab MCP", () => {
         expect(create.isError).not.toBe(true);
 
         const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { id: string; status: string; platform: string; provider: string };
+            device: {
+                id: string;
+                status: string;
+                platform: string;
+                provider: string;
+                providerPlan: { requestedProvider: string; selectedProvider: string | null; missing: string[]; helper: { status: string } };
+            };
         };
         expect(created.device).toEqual(expect.objectContaining({
             id: "macos-mac-test",
@@ -369,6 +376,12 @@ describe("device-lab MCP", () => {
             platform: "macos",
             provider: "auto",
         }));
+        expect(created.device.providerPlan).toEqual(expect.objectContaining({
+            requestedProvider: "auto",
+            selectedProvider: null,
+            missing: ["macos-host"],
+        }));
+        expect(created.device.providerPlan.helper.status).toBe("planned");
 
         const list = await client.callTool({ name: "device_list", arguments: {} });
         const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -398,11 +411,97 @@ describe("device-lab MCP", () => {
         expect(start.isError).toBe(true);
         expect((start.content as Array<{ text?: string }>)[0].text).toContain("macOS VM backend missing prerequisites");
 
+        const exec = await client.callTool({
+            name: "device_exec",
+            arguments: { deviceId: "macos-mac-test", command: "whoami" },
+        });
+        expect(exec.isError).toBe(true);
+        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+
         const deleted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "macos-mac-test" },
         });
         expect(deleted.isError).not.toBe(true);
+    });
+});
+
+describe("macOS VM backend with fake Tart provider", () => {
+    let homeDir: string;
+    let binDir: string;
+    let logPath: string;
+    let oldHome: string | undefined;
+    let oldPath: string | undefined;
+    let platformSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeAll(() => {
+        homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-macos-home-"));
+        binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-macos-bin-"));
+        logPath = join(homeDir, "fake-tart.log");
+        const tartPath = join(binDir, "tart");
+        writeFileSync(tartPath, `#!/bin/sh
+echo "tart $*" >> "$FAKE_TART_LOG"
+exit 0
+`);
+        chmodSync(tartPath, 0o755);
+
+        oldHome = process.env.HOME;
+        oldPath = process.env.PATH;
+        process.env.HOME = homeDir;
+        process.env.PATH = binDir;
+        process.env.FAKE_TART_LOG = logPath;
+        platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    });
+
+    afterAll(() => {
+        platformSpy?.mockRestore();
+        process.env.HOME = oldHome;
+        process.env.PATH = oldPath;
+        delete process.env.FAKE_TART_LOG;
+        if (homeDir) rmSync(homeDir, { recursive: true, force: true });
+        if (binDir) rmSync(binDir, { recursive: true, force: true });
+    });
+
+    it("plans, starts, stops, and diagnoses helper-required operations without provider calls on create", async () => {
+        const create = await handleMacosTool("device_create", {
+            backend: "macos-vm",
+            name: "Fake Tart",
+            provider: "auto",
+            image: "ghcr.io/example/macos:latest",
+            memoryMb: 4096,
+            cpus: 2,
+        });
+        expect(create?.isError).not.toBe(true);
+        const created = JSON.parse(((create?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string } } };
+        };
+        expect(created.device.id).toBe("macos-fake-tart");
+        expect(created.device.providerPlan.selectedProvider).toBe("tart");
+        expect(created.device.providerPlan.providerInstance).toContain("macos-fake-tart");
+        expect(created.device.providerPlan.startCommand.args).toEqual(["run", created.device.providerPlan.providerInstance]);
+        expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
+        expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
+
+        const start = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(start?.isError).not.toBe(true);
+        const started = JSON.parse(((start?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; provider: string; providerInstance: string };
+        };
+        expect(started.device.status).toBe("running");
+        expect(started.device.provider).toBe("tart");
+
+        const exec = await handleMacosTool("device_exec", { deviceId: "macos-fake-tart", command: "whoami" });
+        expect(exec?.isError).toBe(true);
+        expect((exec?.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+
+        const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
+        expect(stop?.isError).not.toBe(true);
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain(`tart run ${started.device.providerInstance}`);
+        expect(log).toContain(`tart stop ${started.device.providerInstance}`);
+
+        const deleted = await handleMacosTool("device_delete", { deviceId: "macos-fake-tart" });
+        expect(deleted?.isError).not.toBe(true);
     });
 });
 

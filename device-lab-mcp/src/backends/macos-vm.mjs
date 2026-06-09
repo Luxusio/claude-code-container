@@ -2,13 +2,34 @@ import { commandPath, run } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findMacosDevice, readMacosDevices, updateMacosDevice, writeMacosDevices } from "../state/macos-state.mjs";
+import { homedir } from "os";
+import { join } from "path";
+
+const PROVIDERS = [
+    {
+        name: "tart",
+        command: "tart",
+        startArgs: (instance) => ["run", instance],
+        stopArgs: (instance) => ["stop", instance],
+    },
+    {
+        name: "vz",
+        command: "vz",
+        startArgs: (instance) => ["start", instance],
+        stopArgs: (instance) => ["stop", instance],
+    },
+    {
+        name: "utmctl",
+        command: "utmctl",
+        startArgs: (instance) => ["start", instance],
+        stopArgs: (instance) => ["stop", instance],
+    },
+];
 
 function providerCandidates() {
-    return [
-        { name: "tart", command: commandPath("tart") },
-        { name: "vz", command: commandPath("vz") },
-        { name: "utmctl", command: commandPath("utmctl") },
-    ].filter((provider) => provider.command);
+    return PROVIDERS
+        .map((provider) => ({ ...provider, command: commandPath(provider.command) }))
+        .filter((provider) => provider.command);
 }
 
 export function macosDiscovery() {
@@ -42,6 +63,10 @@ export function macosBackend() {
             "device_start",
             "device_stop",
             "device_status",
+            "device_exec",
+            "device_screenshot",
+            "device_upload",
+            "device_download",
         ],
     };
 }
@@ -50,8 +75,76 @@ function macosDeviceId(name) {
     return `macos-${slug(name)}`;
 }
 
+function macosWorkspaceDir(device) {
+    return join(homedir(), ".ccc/devices/owners", ownerId(), "macos", device.id);
+}
+
+function macosToolsDir(device) {
+    return join(macosWorkspaceDir(device), "tools");
+}
+
+function macosHelperMetadata(device) {
+    return {
+        workspaceDir: macosWorkspaceDir(device),
+        toolsDir: macosToolsDir(device),
+        hostHelperScript: join(macosToolsDir(device), "ccc-guest-helper.sh"),
+        status: "planned",
+        requiredFor: ["device_exec", "device_screenshot", "device_upload", "device_download"],
+    };
+}
+
+function providerByName(name) {
+    return PROVIDERS.find((provider) => provider.name === name);
+}
+
+export function macosProviderPlan(device, discovery = macosDiscovery()) {
+    const requestedProvider = device.provider || "auto";
+    const selected = requestedProvider === "auto"
+        ? discovery.providers[0]
+        : discovery.providers.find((provider) => provider.name === requestedProvider);
+    const catalog = selected ? providerByName(selected.name) : null;
+    const instance = device.providerInstance || `ccc-${ownerId()}-${device.id}`;
+    const missing = [...discovery.missing];
+    if (discovery.hostSupported && !selected) {
+        const providerMissing = requestedProvider === "auto" ? "macos-vm-provider" : `macos-vm-provider:${requestedProvider}`;
+        if (!missing.includes(providerMissing)) missing.push(providerMissing);
+    }
+    const command = selected?.command || null;
+    return {
+        requestedProvider,
+        selectedProvider: selected?.name || null,
+        providerCommand: command,
+        providerInstance: instance,
+        workspaceDir: macosWorkspaceDir(device),
+        image: device.image || null,
+        memoryMb: device.memoryMb,
+        cpus: device.cpus,
+        helper: macosHelperMetadata(device),
+        available: missing.length === 0 && Boolean(catalog && command),
+        missing,
+        startCommand: catalog && command ? { command, args: catalog.startArgs(instance) } : null,
+        stopCommand: catalog && command ? { command, args: catalog.stopArgs(instance) } : null,
+        deferred: [
+            "base-image-create",
+            "snapshot-clone",
+            "guest-helper",
+        ],
+    };
+}
+
+function deviceWithPlan(device) {
+    return {
+        ...device,
+        providerPlan: macosProviderPlan(device),
+    };
+}
+
+function helperRequiredResult(device, toolName) {
+    return textResult(false, `macOS VM ${toolName} requires the future CCC guest helper. Workspace: ${macosWorkspaceDir(device)}`);
+}
+
 export function listMacosDevices() {
-    return readMacosDevices().map((device) => ({ ...device, ownerId: ownerId() }));
+    return readMacosDevices().map((device) => ({ ...device, ownerId: ownerId(), providerPlan: macosProviderPlan(device) }));
 }
 
 export async function handleMacosTool(name, args) {
@@ -77,6 +170,8 @@ export async function handleMacosTool(name, args) {
                 image,
                 memoryMb,
                 cpus,
+                providerInstance: `ccc-${ownerId()}-${id}`,
+                helper: macosHelperMetadata({ id }),
                 status: "stopped",
                 creatable: true,
                 createdAt: new Date().toISOString(),
@@ -84,7 +179,7 @@ export async function handleMacosTool(name, args) {
             };
             devices.push(device);
             writeMacosDevices(devices);
-            return jsonResult({ device });
+            return jsonResult({ device: deviceWithPlan(device) });
         }
 
         case "device_delete": {
@@ -103,7 +198,7 @@ export async function handleMacosTool(name, args) {
             const { deviceId } = args;
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult({ device, backend: macosBackend() });
+            return jsonResult({ device: deviceWithPlan(device), backend: macosBackend() });
         }
 
         case "device_start": {
@@ -111,15 +206,23 @@ export async function handleMacosTool(name, args) {
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
 
-            const discovery = macosDiscovery();
-            if (!discovery.available) {
-                return textResult(false, `macOS VM backend missing prerequisites: ${discovery.missing.join(", ")}`);
+            const plan = macosProviderPlan(device);
+            if (!plan.available) {
+                return textResult(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
             }
 
-            return textResult(
-                false,
-                "macOS VM provider start is not implemented yet; provider discovery is available and real boot is deferred to a provider-specific slice.",
-            );
+            const r = run(plan.startCommand.command, plan.startCommand.args);
+            if (r.status !== 0) return fail(r);
+
+            const updated = updateMacosDevice(deviceId, (item) => ({
+                ...item,
+                provider: plan.selectedProvider,
+                providerInstance: plan.providerInstance,
+                helper: macosHelperMetadata(item),
+                status: "running",
+                updatedAt: new Date().toISOString(),
+            }));
+            return jsonResult({ device: deviceWithPlan(updated) });
         }
 
         case "device_stop": {
@@ -127,10 +230,9 @@ export async function handleMacosTool(name, args) {
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
 
-            const discovery = macosDiscovery();
-            const provider = discovery.providers.find((item) => item.name === device.provider);
-            if (provider && device.providerInstance) {
-                const r = run(provider.command, ["stop", device.providerInstance]);
+            const plan = macosProviderPlan(device);
+            if (plan.stopCommand && device.providerInstance) {
+                const r = run(plan.stopCommand.command, plan.stopCommand.args);
                 if (r.status !== 0) return fail(r);
             }
 
@@ -139,7 +241,17 @@ export async function handleMacosTool(name, args) {
                 status: "stopped",
                 updatedAt: new Date().toISOString(),
             }));
-            return jsonResult({ device: updated });
+            return jsonResult({ device: deviceWithPlan(updated) });
+        }
+
+        case "device_exec":
+        case "device_screenshot":
+        case "device_upload":
+        case "device_download": {
+            const { deviceId } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            return helperRequiredResult(device, name);
         }
 
         default:

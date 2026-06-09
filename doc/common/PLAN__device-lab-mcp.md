@@ -541,10 +541,24 @@ Foundation status:
   `device_status`, and `device_delete` tools.
 - `macos-vm` backend discovery reports whether the host is macOS and whether a
   practical provider command such as `tart`, `vz`, or `utmctl` is available.
-- `device_start` remains lazy and returns diagnostics/provider-deferral instead
-  of starting a VM until a provider-specific implementation is selected.
-- Real VM image create/clone/snapshot/boot and guest helper integration are
-  deferred to later provider-specific hardening slices.
+- macOS VM definitions now include provider plan metadata: requested provider,
+  selected provider, owner-scoped provider instance, owner-scoped workspace,
+  helper metadata, start/stop command plans, missing prerequisites, and deferred
+  image/helper work.
+- `device_create` remains lazy and records metadata only. Provider commands are
+  not called until an explicit `device_start`.
+- `device_start` resolves `provider: "auto"` to the first available provider and
+  currently maps `tart` to `tart run <providerInstance>`, `vz` to
+  `vz start <providerInstance>`, and `utmctl` to
+  `utmctl start <providerInstance>`. Missing macOS host/provider prerequisites
+  return explicit diagnostics without trying to boot anything.
+- `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
+  return explicit guest-helper-required diagnostics for macOS VM devices until a
+  guest helper or provider SSH bridge is implemented.
+- Tests verify Linux-host missing diagnostics and fake `tart` provider
+  start/stop behavior without requiring a real macOS host or VM image.
+- Real VM image create/clone/snapshot and guest helper integration are deferred
+  to later provider-specific hardening slices.
 
 ## CLI support
 
