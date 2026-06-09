@@ -312,6 +312,24 @@ iOS simctl mobile action status:
 - Tests use fake `xcrun` commands to verify iOS mobile action routing and
   command mapping without requiring macOS or Xcode.
 
+File and app primitive status:
+
+- Common MCP tools now expose `device_upload`, `device_download`,
+  `device_reset`, `device_install_app`, and `device_launch_app` so agents can
+  run basic app verification flows through backend-neutral tool names.
+- Android implements file transfer and app lifecycle primitives through direct
+  serial-targeted `adb` commands: `push`, `pull`, `install`, `monkey` or
+  `am start`, `pm clear`, `uninstall`, and `am force-stop`.
+- Android mobile app aliases (`mobile_install_app`, `mobile_launch_app`,
+  `mobile_uninstall_app`, `mobile_stop_app`, and `mobile_clear_app_data`) use
+  the same direct ADB path and do not start Appium.
+- iOS Simulator keeps app install/launch on `simctl install` and
+  `simctl launch`. Base `simctl` file upload/download and generic reset remain
+  unsupported until an app-container file channel or explicit simulator erase
+  flow is implemented, and the MCP tools return clear diagnostics.
+- Tests use fake Android SDK and fake `xcrun` commands to verify command
+  mapping without requiring real devices or SDK installations.
+
 Current-display tools:
 
 - `display_current`

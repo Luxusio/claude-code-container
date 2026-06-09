@@ -37,12 +37,18 @@ export function iosBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_upload",
+            "device_download",
+            "device_reset",
             "device_install_app",
             "device_launch_app",
             "mobile_open_url",
             "mobile_install_app",
             "mobile_launch_app",
             "mobile_screenshot",
+            "mobile_uninstall_app",
+            "mobile_stop_app",
+            "mobile_clear_app_data",
         ],
     };
 }
@@ -69,6 +75,10 @@ function missingPrereqResult(discovery) {
 
 function unsupportedMobileResult(tool) {
     return textResult(false, `iOS Simulator does not support ${tool} through base simctl; use Appium/XCUITest support when available.`);
+}
+
+function unsupportedIosResult(tool, reason) {
+    return textResult(false, `iOS Simulator ${tool} is not supported through base simctl in this slice: ${reason}`);
 }
 
 function now() {
@@ -344,6 +354,21 @@ export async function handleIosTool(name, args) {
             return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
         }
 
+        case "device_upload":
+        case "device_download": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            return unsupportedIosResult(name, "file transfer requires an app container target or a future guest/file channel");
+        }
+
+        case "device_reset": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            return unsupportedIosResult(name, "use a future explicit simulator erase or app-container reset flow");
+        }
+
         case "mobile_screenshot": {
             const { deviceId } = args;
             return handleIosTool("device_screenshot", { deviceId });
@@ -393,6 +418,15 @@ export async function handleIosTool(name, args) {
         case "mobile_launch_app": {
             const { deviceId, bundleId } = args;
             return handleIosTool("device_launch_app", { deviceId, bundleId });
+        }
+
+        case "mobile_uninstall_app":
+        case "mobile_stop_app":
+        case "mobile_clear_app_data": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            return unsupportedMobileResult(name);
         }
 
         case "mobile_tap":

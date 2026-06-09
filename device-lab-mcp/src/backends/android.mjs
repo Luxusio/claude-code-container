@@ -100,11 +100,15 @@ export function androidBackend() {
         capabilities: [
             "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
             "device_status", "device_exec", "device_screenshot",
+            "device_upload", "device_download", "device_reset",
+            "device_install_app", "device_launch_app",
             "mobile_session_status", "mobile_dump_ui", "mobile_tap",
             "mobile_double_tap", "mobile_long_press", "mobile_swipe",
             "mobile_type_text", "mobile_key", "mobile_home", "mobile_back",
             "mobile_forward", "mobile_recents", "mobile_power", "mobile_lock",
-            "mobile_unlock", "mobile_open_url", "mobile_screenshot",
+            "mobile_unlock", "mobile_open_url", "mobile_install_app",
+            "mobile_launch_app", "mobile_uninstall_app", "mobile_stop_app",
+            "mobile_clear_app_data", "mobile_screenshot",
         ],
     };
 }
@@ -501,6 +505,52 @@ export async function handleAndroidTool(name, args) {
             return { content: [{ type: "image", data: Buffer.from(r.stdout).toString("base64"), mimeType: "image/png" }] };
         }
 
+        case "device_upload": {
+            const { deviceId, localPath, remotePath } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            return adbJsonResult(target.device, target.adb, ["push", localPath, remotePath], { uploaded: { localPath, remotePath }, provider: "adb" });
+        }
+
+        case "device_download": {
+            const { deviceId, remotePath, localPath } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            return adbJsonResult(target.device, target.adb, ["pull", remotePath, localPath], { downloaded: { remotePath, localPath }, provider: "adb" });
+        }
+
+        case "device_install_app": {
+            const { deviceId, path, replace = true } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            const installArgs = replace ? ["install", "-r", path] : ["install", path];
+            return adbJsonResult(target.device, target.adb, installArgs, { installed: path, provider: "adb" });
+        }
+
+        case "device_launch_app": {
+            const { deviceId, packageName, component } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (component) {
+                return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" });
+            }
+            if (!packageName) return textResult(false, "Android app launch requires packageName or component");
+            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" });
+        }
+
+        case "device_reset": {
+            const { deviceId, packageName } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (!packageName) return textResult(false, "Android reset requires packageName to clear app data");
+            return adbJsonResult(target.device, target.adb, ["shell", "pm", "clear", packageName], { reset: { packageName }, provider: "adb" });
+        }
+
         case "mobile_session_status": {
             const { deviceId } = args;
             const device = findAndroidDevice(deviceId);
@@ -634,6 +684,39 @@ export async function handleAndroidTool(name, args) {
             const unavailable = adbTargetResult(target);
             if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], { openedUrl: url, provider: "adb" });
+        }
+
+        case "mobile_install_app": {
+            const { deviceId, path } = args;
+            return handleAndroidTool("device_install_app", { deviceId, path });
+        }
+
+        case "mobile_launch_app": {
+            const { deviceId, packageName, component } = args;
+            return handleAndroidTool("device_launch_app", { deviceId, packageName, component });
+        }
+
+        case "mobile_uninstall_app": {
+            const { deviceId, packageName } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (!packageName) return textResult(false, "Android app uninstall requires packageName");
+            return adbJsonResult(target.device, target.adb, ["uninstall", packageName], { uninstalled: packageName, provider: "adb" });
+        }
+
+        case "mobile_stop_app": {
+            const { deviceId, packageName } = args;
+            const target = ensureAdbDevice(deviceId);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
+            if (!packageName) return textResult(false, "Android app stop requires packageName");
+            return adbJsonResult(target.device, target.adb, ["shell", "am", "force-stop", packageName], { stopped: packageName, provider: "adb" });
+        }
+
+        case "mobile_clear_app_data": {
+            const { deviceId, packageName } = args;
+            return handleAndroidTool("device_reset", { deviceId, packageName });
         }
 
         case "mobile_screenshot": {

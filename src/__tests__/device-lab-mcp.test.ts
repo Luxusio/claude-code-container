@@ -54,6 +54,9 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_status");
         expect(names).toContain("device_exec");
         expect(names).toContain("device_screenshot");
+        expect(names).toContain("device_upload");
+        expect(names).toContain("device_download");
+        expect(names).toContain("device_reset");
         expect(names).toContain("device_install_app");
         expect(names).toContain("device_launch_app");
         expect(names).toContain("mobile_session_status");
@@ -74,6 +77,9 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_open_url");
         expect(names).toContain("mobile_install_app");
         expect(names).toContain("mobile_launch_app");
+        expect(names).toContain("mobile_uninstall_app");
+        expect(names).toContain("mobile_stop_app");
+        expect(names).toContain("mobile_clear_app_data");
         expect(names).toContain("mobile_screenshot");
     });
 
@@ -568,6 +574,24 @@ exit 0
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const fileAndAppCalls = [
+            ["device_upload", { deviceId: "android-pixel-owned", localPath: "/tmp/local.txt", remotePath: "/sdcard/local.txt" }],
+            ["device_download", { deviceId: "android-pixel-owned", remotePath: "/sdcard/remote.txt", localPath: "/tmp/remote.txt" }],
+            ["device_install_app", { deviceId: "android-pixel-owned", path: "/tmp/Test.apk" }],
+            ["device_launch_app", { deviceId: "android-pixel-owned", packageName: "com.example.test" }],
+            ["device_launch_app", { deviceId: "android-pixel-owned", component: "com.example.test/.MainActivity" }],
+            ["device_reset", { deviceId: "android-pixel-owned", packageName: "com.example.test" }],
+            ["mobile_install_app", { deviceId: "android-pixel-owned", path: "/tmp/Mobile.apk" }],
+            ["mobile_launch_app", { deviceId: "android-pixel-owned", packageName: "com.example.mobile" }],
+            ["mobile_uninstall_app", { deviceId: "android-pixel-owned", packageName: "com.example.mobile" }],
+            ["mobile_stop_app", { deviceId: "android-pixel-owned", packageName: "com.example.mobile" }],
+            ["mobile_clear_app_data", { deviceId: "android-pixel-owned", packageName: "com.example.mobile" }],
+        ] as const;
+        for (const [name, callArgs] of fileAndAppCalls) {
+            const action = await client.callTool({ name, arguments: callArgs });
+            expect(action.isError).not.toBe(true);
+        }
+
         const deleteWhileRunning = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "android-pixel-owned", deleteAvd: true },
@@ -609,6 +633,17 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell input keyevent 224");
         expect(log).toContain("adb -s emulator-5582 shell am start -a android.intent.action.VIEW -d https://example.test/path");
         expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
+        expect(log).toContain("adb -s emulator-5582 push /tmp/local.txt /sdcard/local.txt");
+        expect(log).toContain("adb -s emulator-5582 pull /sdcard/remote.txt /tmp/remote.txt");
+        expect(log).toContain("adb -s emulator-5582 install -r /tmp/Test.apk");
+        expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.test 1");
+        expect(log).toContain("adb -s emulator-5582 shell am start -n com.example.test/.MainActivity");
+        expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.test");
+        expect(log).toContain("adb -s emulator-5582 install -r /tmp/Mobile.apk");
+        expect(log).toContain("adb -s emulator-5582 shell monkey -p com.example.mobile 1");
+        expect(log).toContain("adb -s emulator-5582 uninstall com.example.mobile");
+        expect(log).toContain("adb -s emulator-5582 shell am force-stop com.example.mobile");
+        expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.mobile");
         expect(log).toContain(`avdmanager delete avd --name ${avdName}`);
         expect(log).not.toContain("appium");
     });
@@ -874,6 +909,39 @@ exit 0
         });
         expect(launchApp.isError).not.toBe(true);
 
+        const commonInstall = await client.callTool({
+            name: "device_install_app",
+            arguments: { deviceId: "ios-iphone-owned", path: "/tmp/Common.app" },
+        });
+        expect(commonInstall.isError).not.toBe(true);
+
+        const commonLaunch = await client.callTool({
+            name: "device_launch_app",
+            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Common" },
+        });
+        expect(commonLaunch.isError).not.toBe(true);
+
+        const upload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: "ios-iphone-owned", localPath: "/tmp/local.txt", remotePath: "/tmp/remote.txt" },
+        });
+        expect(upload.isError).toBe(true);
+        expect((upload.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
+
+        const download = await client.callTool({
+            name: "device_download",
+            arguments: { deviceId: "ios-iphone-owned", remotePath: "/tmp/remote.txt", localPath: "/tmp/local.txt" },
+        });
+        expect(download.isError).toBe(true);
+        expect((download.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
+
+        const reset = await client.callTool({
+            name: "device_reset",
+            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Test" },
+        });
+        expect(reset.isError).toBe(true);
+        expect((reset.content as Array<{ text?: string }>)[0].text).toContain("future explicit simulator erase");
+
         const screenshot = await client.callTool({
             name: "mobile_screenshot",
             arguments: { deviceId: "ios-iphone-owned" },
@@ -918,6 +986,8 @@ exit 0
         expect(log).toContain("xcrun simctl openurl CREATED-IOS-UDID https://example.test/ios");
         expect(log).toContain("xcrun simctl install CREATED-IOS-UDID /tmp/Test.app");
         expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Test");
+        expect(log).toContain("xcrun simctl install CREATED-IOS-UDID /tmp/Common.app");
+        expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Common");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
         expect(log).not.toContain("Android backend missing prerequisites");
