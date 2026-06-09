@@ -16,6 +16,7 @@ type DeviceRecord = Record<string, unknown> & { id?: string; status?: string };
 type CommandResult = { command: string; status: number | null; stderr?: string; stdout?: string };
 type OwnerDeviceMatch = { backend: Backend; devices: DeviceRecord[]; index: number; device: DeviceRecord };
 type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
+type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped"; commands: CommandResult[] };
 
 export function deviceLabOwnerId(cwd = process.cwd()): string {
     return createHash("sha256").update(`${hostname()}:${cwd || "/project"}`).digest("hex").slice(0, 16);
@@ -164,13 +165,13 @@ function stopMacosArgs(provider: string, instance: string): string[] | null {
     return null;
 }
 
-function stopOwnedDevice(match: OwnerDeviceMatch): CommandResult[] {
+function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandResult[] {
     const results: CommandResult[] = [];
     if (match.backend.stateKey === "android") {
         const adb = commandPath("adb");
         const serial = serialForAndroid(match.device);
         if (adb && serial) {
-            const result = runCommand(adb, ["-s", serial, "emu", "kill"]);
+            const result = runCommand(adb, ["-s", serial, "emu", "kill"], timeoutMs);
             if (result) results.push(result);
         }
         killPid(match.device.pid);
@@ -180,13 +181,13 @@ function stopOwnedDevice(match: OwnerDeviceMatch): CommandResult[] {
         const xcrun = commandPath("xcrun");
         const target = simctlTarget(match.device);
         if (xcrun && target) {
-            const result = runCommand(xcrun, ["simctl", "shutdown", target]);
+            const result = runCommand(xcrun, ["simctl", "shutdown", target], timeoutMs);
             if (result) results.push(result);
         }
         const appium = match.device.appium as { serverPid?: unknown } | null | undefined;
         if (appium) killPid(appium.serverPid);
     } else if (match.backend.stateKey === "windows") {
-        const result = runCommand(commandPath("wsb"), ["stop"]);
+        const result = runCommand(commandPath("wsb"), ["stop"], timeoutMs);
         if (result) results.push(result);
     } else if (match.backend.stateKey === "macos") {
         const provider = typeof match.device.provider === "string" ? match.device.provider : null;
@@ -194,7 +195,7 @@ function stopOwnedDevice(match: OwnerDeviceMatch): CommandResult[] {
         if (provider && instance) {
             const args = stopMacosArgs(provider, instance);
             if (args) {
-                const result = runCommand(commandPath(provider), args);
+                const result = runCommand(commandPath(provider), args, timeoutMs);
                 if (result) results.push(result);
             }
         }
@@ -210,6 +211,44 @@ function stoppedDevice(device: DeviceRecord): DeviceRecord {
         appium: null,
         updatedAt: now(),
     };
+}
+
+function shouldCleanupDevice(device: DeviceRecord): boolean {
+    return ["running", "starting", "booted"].includes(device.status || "");
+}
+
+export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ownerId: string; results: CleanupDeviceResult[] } {
+    const ownerId = deviceLabOwnerId(cwd);
+    const results: CleanupDeviceResult[] = [];
+    for (const backend of DEVICE_BACKENDS) {
+        const devices = readDevices(ownerId, backend.stateKey);
+        let changed = false;
+        const updated = devices.map((device) => {
+            if (!device.id || !shouldCleanupDevice(device)) {
+                results.push({
+                    id: device.id || "(unknown)",
+                    backend: backend.name,
+                    previousStatus: device.status || "unknown",
+                    status: "skipped",
+                    commands: [],
+                });
+                return device;
+            }
+
+            const commands = stopOwnedDevice({ backend, devices, index: -1, device }, timeoutMs);
+            results.push({
+                id: device.id,
+                backend: backend.name,
+                previousStatus: device.status || "unknown",
+                status: "stopped",
+                commands,
+            });
+            changed = true;
+            return stoppedDevice(device);
+        });
+        if (changed) writeDevices(ownerId, backend.stateKey, updated);
+    }
+    return { ownerId, results };
 }
 
 export function deviceLabSnapshot(cwd = process.cwd()) {

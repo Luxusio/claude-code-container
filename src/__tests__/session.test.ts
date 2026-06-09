@@ -59,6 +59,11 @@ vi.mock("../container-setup.js", () => ({
         mockSaveClaudeBinaryToVolume(...args),
 }));
 
+const mockCleanupOwnerDevices = vi.fn();
+vi.mock("../device-lab-admin.js", () => ({
+    cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
+}));
+
 // Import AFTER all mocks are declared
 const {
     setSession,
@@ -95,6 +100,7 @@ describe("session.ts", () => {
         mockIsContainerRunning.mockReset();
         mockGetContainerName.mockReset();
         mockSaveClaudeBinaryToVolume.mockReset();
+        mockCleanupOwnerDevices.mockReset();
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
     });
@@ -419,6 +425,7 @@ describe("session.ts", () => {
             cleanupSession();
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
                 ["stop", containerName],
@@ -449,6 +456,7 @@ describe("session.ts", () => {
 
             // getContainerName called with profile
             expect(mockGetContainerName).toHaveBeenCalledWith(projectPath, "work");
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
@@ -477,6 +485,7 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockSpawnSync).not.toHaveBeenCalled();
             expect(mockIsContainerRunning).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
         it("profile sessions do not interfere with base project session counting", () => {
@@ -505,6 +514,7 @@ describe("session.ts", () => {
 
             // Container stop check should happen (no other BASE sessions)
             expect(mockIsContainerRunning).toHaveBeenCalledWith(containerName);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
         });
 
         it("calls stopClipboardServerIfLast before removing the lock file", () => {
@@ -562,6 +572,7 @@ describe("session.ts", () => {
             expect(mockIsContainerRunning).toHaveBeenCalledWith(containerName);
             expect(mockSaveClaudeBinaryToVolume).not.toHaveBeenCalled();
             expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
         });
 
         it("calls saveClaudeBinaryToVolume before docker stop when container is running", () => {
@@ -588,12 +599,46 @@ describe("session.ts", () => {
                 callOrder.push("dockerStop");
                 return { status: 0 };
             });
+            mockCleanupOwnerDevices.mockImplementation(() => {
+                callOrder.push("cleanupDevices");
+            });
 
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            expect(callOrder).toEqual(["saveClaudeBinary", "dockerStop"]);
+            expect(callOrder).toEqual(["cleanupDevices", "saveClaudeBinary", "dockerStop"]);
             expect(mockSaveClaudeBinaryToVolume).toHaveBeenCalledWith(containerName);
+            expect(mockSpawnSync).toHaveBeenCalledWith(
+                "docker",
+                ["stop", containerName],
+                expect.any(Object),
+            );
+        });
+
+        it("still stops the container when device cleanup throws", () => {
+            const projectId = "my-project-abc123";
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
+            const lockFile = `/locks/${lockFileName}`;
+            const projectPath = "/home/user/my-project";
+            const containerName = "ccc-my-project-abc123";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync
+                .mockReturnValueOnce(true)
+                .mockReturnValueOnce(true);
+            mockReaddirSync.mockReturnValue([lockFileName]);
+            mockUnlinkSync.mockImplementation(() => {});
+            mockGetContainerName.mockReturnValue(containerName);
+            mockIsContainerRunning.mockReturnValue(true);
+            mockCleanupOwnerDevices.mockImplementation(() => {
+                throw new Error("cleanup failed");
+            });
+            mockSpawnSync.mockReturnValue({ status: 0 });
+
+            setSession(lockFile, projectPath);
+            cleanupSession();
+
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
                 ["stop", containerName],

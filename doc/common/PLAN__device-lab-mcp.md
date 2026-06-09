@@ -716,6 +716,28 @@ CLI foundation status:
   until a dedicated broker owns cross-owner locking and cleanup. Regular
   in-container CLI commands intentionally stay owner-scoped.
 
+Container cleanup hook status:
+
+- CCC now runs owner-scoped device cleanup before stopping a project container
+  through `ccc stop`, `ccc rm`, or last-session cleanup.
+- Cleanup only reads and mutates the current owner namespace under
+  `~/.ccc/devices/owners/<owner-id>/...`; foreign owner device definitions are
+  not enumerated or changed.
+- Android cleanup uses `adb -s <serial> emu kill` when an owner device has a
+  serial/port, iOS cleanup uses `xcrun simctl shutdown <target>`, Windows
+  Sandbox cleanup uses `wsb stop`, and macOS VM cleanup uses whitelisted
+  provider stop commands (`tart`, `vz`, or `utmctl`) when provider metadata is
+  available.
+- Cleanup is best-effort, bounded, and idempotent. Missing tools, stale PIDs,
+  hanging stop commands, and failed stop commands are tolerated so CCC teardown
+  continues; owned running/starting or booted definitions are marked stopped to
+  avoid zombie state.
+- Automated tests cover Android, iOS, Windows Sandbox, and macOS VM cleanup
+  command mapping, stopped-device no-op behavior, repeated cleanup,
+  missing-tool behavior, hanging/timeout stop commands, failing stop commands,
+  foreign-owner preservation, and lifecycle wiring through both session cleanup
+  and explicit container stop.
+
 ## Integration with existing CCC
 
 1. Add managed MCP entry generation in `src/mcp-forward.ts`.

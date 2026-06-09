@@ -7,6 +7,7 @@ import { getContainerName, isContainerRunning } from "./docker.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
+import { cleanupOwnerDevices } from "./device-lab-admin.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -133,6 +134,14 @@ export function hasOtherActiveSessions(
 
 let cleanedUp = false;
 
+function cleanupDevicesBestEffort(projectPath: string): void {
+    try {
+        cleanupOwnerDevices(projectPath);
+    } catch (err) {
+        console.error(`[ccc] device cleanup failed during session cleanup: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
+
 export function cleanupSession(): void {
     if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
         return;
@@ -151,6 +160,7 @@ export function cleanupSession(): void {
 
     // Stop container if no other sessions are using this project
     if (!hasOthers) {
+        cleanupDevicesBestEffort(currentProjectPath);
         const containerName = getContainerName(currentProjectPath, currentProfile);
         if (isContainerRunning(containerName)) {
             // Save claude binary to volume before stopping (handles `claude update`)

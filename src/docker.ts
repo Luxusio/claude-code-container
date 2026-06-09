@@ -28,6 +28,7 @@ import {
     isContainerHostRemote,
     getRuntimeInfo,
 } from "./container-runtime.js";
+import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
 
@@ -537,6 +538,14 @@ function recreateContainer(containerName: string, reason: string, onRecreate?: (
 
 // === Container Lifecycle ===
 
+function cleanupDevicesBestEffort(projectPath: string): void {
+    try {
+        cleanupOwnerDevices(projectPath);
+    } catch (err) {
+        console.error(`[ccc] device cleanup failed before container stop: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
+
 export function startProjectContainer(
     projectPath: string,
     ensureDirs: () => void,
@@ -675,13 +684,15 @@ export function startProjectContainer(
 
 export function stopProjectContainer(projectPath: string, profile?: string): void {
     ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath), profile);
+    const fullPath = resolve(projectPath);
+    const containerName = getContainerName(fullPath, profile);
 
     if (!isContainerExists(containerName)) {
         console.log("Container not found");
         return;
     }
 
+    cleanupDevicesBestEffort(fullPath);
     console.log("Stopping container...");
     spawnSync(runtimeCli(), ["stop", containerName], { stdio: "inherit" });
     console.log("Container stopped");

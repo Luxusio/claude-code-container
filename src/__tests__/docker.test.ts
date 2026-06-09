@@ -20,6 +20,11 @@ vi.mock("fs", async (importOriginal) => {
     };
 });
 
+const mockCleanupOwnerDevices = vi.fn();
+vi.mock("../device-lab-admin.js", () => ({
+    cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
+}));
+
 // Import AFTER mocks
 const {
     buildDockerRunArgs,
@@ -82,6 +87,7 @@ describe("docker.ts module exports", () => {
     beforeEach(() => {
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
+        mockCleanupOwnerDevices.mockReset();
         mockExistsSync.mockReset().mockReturnValue(true);
         _resetRuntimeCacheForTest();
         vi.spyOn(console, "log").mockImplementation(() => {});
@@ -1099,6 +1105,7 @@ describe("docker.ts module exports", () => {
             const consoleSpy = vi.spyOn(console, "log");
             stopProjectContainer(projectPath);
             expect(consoleSpy).toHaveBeenCalledWith("Container not found");
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
         it("stops container when it exists", () => {
@@ -1106,6 +1113,24 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))           // docker info
                 .mockReturnValueOnce(makeResult(0, "abc123\n")) // isContainerExists -> true
                 .mockReturnValueOnce(makeResult(0));            // docker stop
+
+            stopProjectContainer(projectPath);
+
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("still stops container when device cleanup throws", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))           // docker info
+                .mockReturnValueOnce(makeResult(0, "abc123\n")) // isContainerExists -> true
+                .mockReturnValueOnce(makeResult(0));            // docker stop
+            mockCleanupOwnerDevices.mockImplementation(() => {
+                throw new Error("cleanup failed");
+            });
 
             stopProjectContainer(projectPath);
 
@@ -1152,6 +1177,8 @@ describe("docker.ts module exports", () => {
 
             removeProjectContainer(projectPath);
 
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledTimes(1);
             const rmCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
