@@ -23,6 +23,96 @@ function heavyBackend(name, host, capabilities) {
     };
 }
 
+const FLOW_MAX_STEPS = 50;
+const FLOW_ALLOWED_DEVICE_TOOLS = new Set(["device_status", "device_screenshot"]);
+
+function flowStepTool(step) {
+    return step?.tool || step?.name || "";
+}
+
+function flowToolAllowed(name) {
+    if (name === "mobile_run_flow") return false;
+    if (name.startsWith("mobile_")) return true;
+    return FLOW_ALLOWED_DEVICE_TOOLS.has(name);
+}
+
+function summarizeContentItem(item) {
+    if (item.type === "image") {
+        return {
+            type: "image",
+            mimeType: item.mimeType || null,
+            bytes: item.data ? Buffer.byteLength(item.data, "base64") : 0,
+        };
+    }
+    if (item.type === "text") {
+        const text = item.text || "";
+        try {
+            return { type: "json", value: JSON.parse(text) };
+        } catch {
+            return { type: "text", text };
+        }
+    }
+    return { type: item.type || "unknown" };
+}
+
+function summarizeToolResult(result) {
+    return {
+        isError: Boolean(result?.isError),
+        content: (result?.content || []).map(summarizeContentItem),
+    };
+}
+
+async function dispatchTool(name, args) {
+    const androidResult = await handleAndroidTool(name, args);
+    if (androidResult) return androidResult;
+
+    const iosResult = await handleIosTool(name, args);
+    if (iosResult) return iosResult;
+
+    const windowsResult = await handleWindowsTool(name, args);
+    if (windowsResult) return windowsResult;
+
+    const macosResult = await handleMacosTool(name, args);
+    if (macosResult) return macosResult;
+
+    const displayResult = await handleDisplayTool(name, args);
+    if (displayResult) return displayResult;
+
+    return textResult(false, `Unknown tool: ${name}`);
+}
+
+async function handleMobileRunFlow(args) {
+    const { steps, stopOnError = true } = args;
+    if (!Array.isArray(steps)) return textResult(false, "mobile_run_flow requires steps array");
+    if (steps.length > FLOW_MAX_STEPS) return textResult(false, `mobile_run_flow supports at most ${FLOW_MAX_STEPS} steps`);
+
+    const results = [];
+    for (let index = 0; index < steps.length; index += 1) {
+        const step = steps[index] || {};
+        const tool = flowStepTool(step);
+        const label = step.label || tool || `step-${index + 1}`;
+        if (!tool) {
+            const summary = { index, label, isError: true, error: "Flow step requires tool or name" };
+            results.push(summary);
+            if (stopOnError) return jsonResult({ ok: false, stoppedAt: index, results });
+            continue;
+        }
+        if (!flowToolAllowed(tool)) {
+            const summary = { index, label, tool, isError: true, error: `mobile_run_flow does not allow step tool: ${tool}` };
+            results.push(summary);
+            if (stopOnError) return jsonResult({ ok: false, stoppedAt: index, results });
+            continue;
+        }
+
+        const result = await dispatchTool(tool, step.arguments || {});
+        const summary = { index, label, tool, ...summarizeToolResult(result) };
+        results.push(summary);
+        if (summary.isError && stopOnError) return jsonResult({ ok: false, stoppedAt: index, results });
+    }
+
+    return jsonResult({ ok: results.every((result) => !result.isError), results });
+}
+
 export async function startServer() {
     const server = new Server(
         { name: "device-lab-mcp", version: "0.1.0" },
@@ -67,23 +157,11 @@ export async function startServer() {
                         ],
                     });
 
+                case "mobile_run_flow":
+                    return handleMobileRunFlow(args);
+
                 default: {
-                    const androidResult = await handleAndroidTool(name, args);
-                    if (androidResult) return androidResult;
-
-                    const iosResult = await handleIosTool(name, args);
-                    if (iosResult) return iosResult;
-
-                    const windowsResult = await handleWindowsTool(name, args);
-                    if (windowsResult) return windowsResult;
-
-                    const macosResult = await handleMacosTool(name, args);
-                    if (macosResult) return macosResult;
-
-                    const displayResult = await handleDisplayTool(name, args);
-                    if (displayResult) return displayResult;
-
-                    return textResult(false, `Unknown tool: ${name}`);
+                    return dispatchTool(name, args);
                 }
             }
         } catch (err) {

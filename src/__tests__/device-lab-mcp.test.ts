@@ -96,6 +96,7 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_wait_for_text");
         expect(names).toContain("mobile_wait_for_app");
         expect(names).toContain("mobile_screenshot");
+        expect(names).toContain("mobile_run_flow");
     });
 
     it("reports backends without starting heavyweight devices", { timeout: TIMEOUT }, async () => {
@@ -986,6 +987,46 @@ exit 0
         };
         expect(waitAppPayload).toEqual(expect.objectContaining({ running: true, provider: "adb" }));
 
+        const flow = await client.callTool({
+            name: "mobile_run_flow",
+            arguments: {
+                steps: [
+                    { label: "tap primary", tool: "mobile_tap", arguments: { deviceId: "android-pixel-owned", x: 15, y: 25 } },
+                    { label: "wait title", tool: "mobile_wait_for_text", arguments: { deviceId: "android-pixel-owned", text: "Hello", timeoutMs: 1000, intervalMs: 50 } },
+                    { label: "capture", tool: "mobile_screenshot", arguments: { deviceId: "android-pixel-owned" } },
+                ],
+            },
+        });
+        expect(flow.isError).not.toBe(true);
+        const flowPayload = JSON.parse(((flow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            results: Array<{ label: string; isError: boolean; content: Array<{ type: string; value?: { found?: boolean }; bytes?: number }> }>;
+        };
+        expect(flowPayload.ok).toBe(true);
+        expect(flowPayload.results.map((result) => result.label)).toEqual(["tap primary", "wait title", "capture"]);
+        expect(flowPayload.results[1].content[0].value?.found).toBe(true);
+        expect(flowPayload.results[2].content[0]).toEqual(expect.objectContaining({ type: "image" }));
+        expect(typeof flowPayload.results[2].content[0].bytes).toBe("number");
+
+        const disallowedFlow = await client.callTool({
+            name: "mobile_run_flow",
+            arguments: {
+                steps: [
+                    { tool: "device_start", arguments: { deviceId: "android-pixel-owned" } },
+                    { tool: "mobile_back", arguments: { deviceId: "android-pixel-owned" } },
+                ],
+            },
+        });
+        expect(disallowedFlow.isError).not.toBe(true);
+        const disallowedPayload = JSON.parse(((disallowedFlow.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            stoppedAt: number;
+            results: Array<{ error: string }>;
+        };
+        expect(disallowedPayload.ok).toBe(false);
+        expect(disallowedPayload.stoppedAt).toBe(0);
+        expect(disallowedPayload.results[0].error).toContain("does not allow step tool: device_start");
+
         const screenshot = await client.callTool({
             name: "mobile_screenshot",
             arguments: { deviceId: "android-pixel-owned" },
@@ -1081,6 +1122,7 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell cmd clipboard set clip text");
         expect(log).toContain("adb -s emulator-5582 shell cmd clipboard get");
         expect(log).toContain("adb -s emulator-5582 shell pidof com.example.mobile");
+        expect(log).toContain("adb -s emulator-5582 shell input tap 15 25");
         expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
         expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
         expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");

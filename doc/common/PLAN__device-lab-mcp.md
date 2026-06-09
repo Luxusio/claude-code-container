@@ -532,6 +532,24 @@ iOS advanced mobile action status:
 - Tests use fake `xcrun` command logs to verify the supported simctl mappings
   and unsupported diagnostics without requiring macOS or Xcode.
 
+Batched mobile flow status:
+
+- `mobile_run_flow` runs a bounded sequence of mobile verification steps through
+  the same backend handlers as normal MCP tool calls.
+- Flow execution preserves owner-scoped routing, lazy startup, missing
+  prerequisite diagnostics, and backend-specific unsupported-capability
+  behavior because it does not bypass the existing tool handlers.
+- Allowed steps are mobile tools plus read-only `device_status` and
+  `device_screenshot`. Lifecycle mutation such as `device_create`,
+  `device_start`, `device_stop`, and `device_delete` is rejected with a clear
+  per-step diagnostic.
+- Responses return structured per-step summaries. JSON/text results are parsed
+  or summarized, and image results report MIME type and byte count without
+  embedding large screenshot payloads in the flow JSON.
+- Tests verify successful Android flow sequencing, UI wait result parsing,
+  image summary behavior, disallowed lifecycle step rejection, and that direct
+  Android flows do not start Appium.
+
 ### Windows Sandbox
 
 Prerequisites:
