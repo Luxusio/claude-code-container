@@ -100,6 +100,7 @@ import {
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
+import { devicesCli } from "./device-lab-admin.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -971,6 +972,10 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
     ccc doctor              Health check and diagnostics
+    ccc devices             Show device-lab status for this owner
+    ccc devices list        List owner-scoped device definitions
+    ccc devices backends    Show device backend prerequisites
+    ccc devices doctor      Device-lab diagnostics
     ccc runtime             Show detected container runtime
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
@@ -1150,6 +1155,12 @@ async function main(): Promise<void> {
             const { runDoctor } = await import("./doctor.js");
             const healthy = runDoctor(cwd);
             process.exit(healthy ? 0 : 1);
+            break;
+        }
+
+        case "devices": {
+            const status = devicesCli(cmdArgs.slice(1), cwd);
+            process.exit(status);
             break;
         }
 

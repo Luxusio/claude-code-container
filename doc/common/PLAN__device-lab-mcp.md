@@ -552,6 +552,18 @@ ccc devices admin prune
 
 No CCC-specific environment variables should be required.
 
+CLI foundation status:
+
+- `ccc devices status`, `ccc devices list`, `ccc devices backends`, and
+  `ccc devices doctor` expose current owner-scoped device-lab state and local
+  prerequisite diagnostics without starting devices, brokers, Appium, or
+  emulators.
+- The CLI reads the same owner namespace shape as `device-lab-mcp` under
+  `~/.ccc/devices/owners/<owner-id>/...` and does not expose other owner
+  directories.
+- Host-broker admin commands such as all-owner list/stop/prune remain deferred
+  until a dedicated broker owns cross-owner locking and cleanup.
+
 ## Integration with existing CCC
 
 1. Add managed MCP entry generation in `src/mcp-forward.ts`.
