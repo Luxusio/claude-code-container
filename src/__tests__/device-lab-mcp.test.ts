@@ -442,7 +442,7 @@ describe("device-lab MCP", () => {
             arguments: { deviceId: "macos-mac-test", command: "whoami" },
         });
         expect(exec.isError).toBe(true);
-        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires SSH bridge metadata");
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -470,6 +470,27 @@ echo "tart $*" >> "$FAKE_TART_LOG"
 exit 0
 `);
         chmodSync(tartPath, 0o755);
+        const sshPath = join(binDir, "ssh");
+writeFileSync(sshPath, `#!/bin/sh
+echo "ssh $*" >> "$FAKE_TART_LOG"
+case "$*" in
+  *screencapture*) exit 0 ;;
+  *fail-command*) echo "ssh failure stdout"; echo "ssh failure stderr" >&2; exit 7 ;;
+  *) echo "ssh output"; exit 0 ;;
+esac
+`);
+        chmodSync(sshPath, 0o755);
+        const scpPath = join(binDir, "scp");
+        writeFileSync(scpPath, `#!/bin/sh
+echo "scp $*" >> "$FAKE_TART_LOG"
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  *:*) exit 0 ;;
+  *) printf 'fakepng' > "$last"; exit 0 ;;
+esac
+`);
+        chmodSync(scpPath, 0o755);
 
         oldHome = process.env.HOME;
         oldPath = process.env.PATH;
@@ -496,6 +517,9 @@ exit 0
             image: "ghcr.io/example/macos:latest",
             memoryMb: 4096,
             cpus: 2,
+            sshHost: "127.0.0.1",
+            sshPort: 2222,
+            sshUser: "ccc",
         });
         expect(create?.isError).not.toBe(true);
         const created = JSON.parse(((create?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -517,14 +541,42 @@ exit 0
         expect(started.device.provider).toBe("tart");
 
         const exec = await handleMacosTool("device_exec", { deviceId: "macos-fake-tart", command: "whoami" });
-        expect(exec?.isError).toBe(true);
-        expect((exec?.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+        expect(exec?.isError).not.toBe(true);
+        expect((exec?.content as Array<{ text?: string }>)[0].text).toContain("ssh output");
+
+        const failedExec = await handleMacosTool("device_exec", { deviceId: "macos-fake-tart", command: "fail-command" });
+        expect(failedExec?.isError).not.toBe(true);
+        const failedExecPayload = JSON.parse(((failedExec?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            stdout: string;
+            stderr: string;
+            status: number;
+        };
+        expect(failedExecPayload.stdout).toContain("ssh failure stdout");
+        expect(failedExecPayload.stderr).toContain("ssh failure stderr");
+        expect(failedExecPayload.status).toBe(7);
+
+        const uploadSource = join(homeDir, "mac-upload.txt");
+        writeFileSync(uploadSource, "upload");
+        const upload = await handleMacosTool("device_upload", { deviceId: "macos-fake-tart", localPath: uploadSource, remotePath: "/tmp/mac-upload.txt" });
+        expect(upload?.isError).not.toBe(true);
+
+        const downloadTarget = join(homeDir, "mac-download.txt");
+        const download = await handleMacosTool("device_download", { deviceId: "macos-fake-tart", remotePath: "/tmp/mac-download.txt", localPath: downloadTarget });
+        expect(download?.isError).not.toBe(true);
+        expect(readFileSync(downloadTarget, "utf-8")).toBe("fakepng");
+
+        const screenshot = await handleMacosTool("device_screenshot", { deviceId: "macos-fake-tart" });
+        expect(screenshot?.isError).not.toBe(true);
+        expect((screenshot?.content as Array<{ type: string }>)[0].type).toBe("image");
 
         const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
         expect(stop?.isError).not.toBe(true);
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`tart run ${started.device.providerInstance}`);
         expect(log).toContain(`tart stop ${started.device.providerInstance}`);
+        expect(log).toContain("ssh -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no ccc@127.0.0.1 whoami");
+        expect(log).toContain("scp -P 2222 -o BatchMode=yes -o StrictHostKeyChecking=no");
+        expect(log).toContain("screencapture -x /tmp/ccc-macos-fake-tart-screenshot.png");
 
         const deleted = await handleMacosTool("device_delete", { deviceId: "macos-fake-tart" });
         expect(deleted?.isError).not.toBe(true);

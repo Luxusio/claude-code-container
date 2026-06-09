@@ -606,6 +606,23 @@ Foundation status:
 - Real VM image create/clone/snapshot and guest helper integration are deferred
   to later provider-specific hardening slices.
 
+macOS helper/SSH bridge status:
+
+- macOS VM definitions can now include optional SSH bridge metadata through
+  `sshHost`, `sshPort`, `sshUser`, and `sshKeyPath`.
+- Device status/helper metadata reports whether the bridge is missing or
+  SSH-configured, while preserving owner-scoped workspace paths.
+- `device_exec` uses configured SSH metadata and returns stdout/stderr/status.
+  Without SSH metadata or host `ssh`/`scp` tools, it returns explicit bridge
+  diagnostics.
+- `device_upload` and `device_download` use `scp` with the configured bridge.
+- `device_screenshot` runs `screencapture -x` through SSH, downloads the PNG via
+  `scp` into the owner-scoped workspace, and returns MCP image content.
+- Tests use fake `ssh` and `scp` commands with the fake `tart` provider, so
+  bridge behavior is covered without a real macOS VM.
+- Automatic SSH credential provisioning, real VM image lifecycle, and real
+  macOS host smoke tests remain deferred.
+
 ## CLI support
 
 Add host/user commands for visibility and explicit control. These commands

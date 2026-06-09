@@ -2,6 +2,8 @@ import { commandPath, run } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findMacosDevice, readMacosDevices, updateMacosDevice, writeMacosDevices } from "../state/macos-state.mjs";
+import { randomUUID } from "crypto";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -83,12 +85,20 @@ function macosToolsDir(device) {
     return join(macosWorkspaceDir(device), "tools");
 }
 
+function ensureMacosWorkspace(device) {
+    mkdirSync(macosWorkspaceDir(device), { recursive: true });
+    mkdirSync(macosToolsDir(device), { recursive: true });
+}
+
 function macosHelperMetadata(device) {
+    ensureMacosWorkspace(device);
     return {
         workspaceDir: macosWorkspaceDir(device),
         toolsDir: macosToolsDir(device),
         hostHelperScript: join(macosToolsDir(device), "ccc-guest-helper.sh"),
-        status: "planned",
+        bridge: device.ssh ? "ssh" : "missing",
+        ssh: device.ssh || null,
+        status: device.ssh ? "ssh-configured" : "planned",
         requiredFor: ["device_exec", "device_screenshot", "device_upload", "device_download"],
     };
 }
@@ -140,7 +150,47 @@ function deviceWithPlan(device) {
 }
 
 function helperRequiredResult(device, toolName) {
-    return textResult(false, `macOS VM ${toolName} requires the future CCC guest helper. Workspace: ${macosWorkspaceDir(device)}`);
+    return textResult(false, `macOS VM ${toolName} requires SSH bridge metadata. Configure sshHost, sshUser, and optional sshPort/sshKeyPath on the device. Workspace: ${macosWorkspaceDir(device)}`);
+}
+
+function sshDiscovery() {
+    const ssh = commandPath("ssh");
+    const scp = commandPath("scp");
+    const missing = [];
+    if (!ssh) missing.push("ssh");
+    if (!scp) missing.push("scp");
+    return { ssh, scp, available: missing.length === 0, missing };
+}
+
+function sshTarget(device) {
+    if (!device.ssh?.host || !device.ssh?.user) return null;
+    return `${device.ssh.user}@${device.ssh.host}`;
+}
+
+function sshBaseArgs(device) {
+    const args = [];
+    if (device.ssh?.keyPath) args.push("-i", device.ssh.keyPath);
+    if (device.ssh?.port) args.push("-p", String(device.ssh.port));
+    args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no");
+    return args;
+}
+
+function scpBaseArgs(device) {
+    const args = [];
+    if (device.ssh?.keyPath) args.push("-i", device.ssh.keyPath);
+    if (device.ssh?.port) args.push("-P", String(device.ssh.port));
+    args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no");
+    return args;
+}
+
+function sshBridge(device, toolName) {
+    const target = sshTarget(device);
+    if (!target) return { error: helperRequiredResult(device, toolName) };
+    const discovery = sshDiscovery();
+    if (!discovery.available) {
+        return { error: textResult(false, `macOS VM SSH bridge missing prerequisites: ${discovery.missing.join(", ")}`) };
+    }
+    return { target, discovery };
 }
 
 export function listMacosDevices() {
@@ -150,7 +200,7 @@ export function listMacosDevices() {
 export async function handleMacosTool(name, args) {
     switch (name) {
         case "device_create": {
-            const { backend, name: deviceName, deviceId, provider = "auto", image = null, memoryMb = 4096, cpus = 4 } = args;
+            const { backend, name: deviceName, deviceId, provider = "auto", image = null, memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath } = args;
             if (backend !== "macos-vm") return undefined;
 
             const id = deviceId || macosDeviceId(deviceName);
@@ -171,7 +221,13 @@ export async function handleMacosTool(name, args) {
                 memoryMb,
                 cpus,
                 providerInstance: `ccc-${ownerId()}-${id}`,
-                helper: macosHelperMetadata({ id }),
+                ssh: sshHost && sshUser ? {
+                    host: sshHost,
+                    port: sshPort,
+                    user: sshUser,
+                    keyPath: sshKeyPath || null,
+                } : null,
+                helper: macosHelperMetadata({ id, ssh: sshHost && sshUser ? { host: sshHost, port: sshPort, user: sshUser, keyPath: sshKeyPath || null } : null }),
                 status: "stopped",
                 creatable: true,
                 createdAt: new Date().toISOString(),
@@ -244,14 +300,51 @@ export async function handleMacosTool(name, args) {
             return jsonResult({ device: deviceWithPlan(updated) });
         }
 
-        case "device_exec":
-        case "device_screenshot":
-        case "device_upload":
+        case "device_exec": {
+            const { deviceId, command } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            const r = run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, command]);
+            return jsonResult({ stdout: r.stdout, stderr: r.stderr, status: r.status, provider: "ssh" });
+        }
+
+        case "device_upload": {
+            const { deviceId, localPath, remotePath } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            const r = run(bridge.discovery.scp, [...scpBaseArgs(device), localPath, `${bridge.target}:${remotePath}`]);
+            return r.status === 0 ? jsonResult({ uploaded: { localPath, remotePath }, stdout: r.stdout, stderr: r.stderr, provider: "scp" }) : fail(r);
+        }
+
         case "device_download": {
+            const { deviceId, remotePath, localPath } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            const r = run(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${remotePath}`, localPath]);
+            return r.status === 0 ? jsonResult({ downloaded: { remotePath, localPath }, stdout: r.stdout, stderr: r.stderr, provider: "scp" }) : fail(r);
+        }
+
+        case "device_screenshot": {
             const { deviceId } = args;
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
-            return helperRequiredResult(device, name);
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            ensureMacosWorkspace(device);
+            const localPath = join(macosWorkspaceDir(device), `screenshot-${randomUUID()}.png`);
+            const remotePath = `/tmp/ccc-${device.id}-screenshot.png`;
+            const capture = run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `screencapture -x ${remotePath}`]);
+            if (capture.status !== 0) return fail(capture);
+            const copy = run(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${remotePath}`, localPath]);
+            if (copy.status !== 0) return fail(copy);
+            if (!existsSync(localPath)) return textResult(false, `macOS VM screenshot output missing: ${localPath}`);
+            return { content: [{ type: "image", data: readFileSync(localPath).toString("base64"), mimeType: "image/png" }] };
         }
 
         default:
