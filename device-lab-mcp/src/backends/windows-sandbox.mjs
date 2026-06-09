@@ -34,6 +34,10 @@ export function windowsBackend() {
             "device_start",
             "device_stop",
             "device_status",
+            "device_exec",
+            "device_screenshot",
+            "device_upload",
+            "device_download",
         ],
     };
 }
@@ -46,8 +50,26 @@ function windowsScratchDir(device) {
     return join(homedir(), ".ccc/devices/owners", ownerId(), "windows", device.id);
 }
 
+function windowsToolsDir(device) {
+    return join(windowsScratchDir(device), "tools");
+}
+
 function wsbConfigPath(device) {
     return join(windowsScratchDir(device), `${device.id}.wsb`);
+}
+
+function windowsHelperMetadata(device) {
+    const scratchDir = windowsScratchDir(device);
+    const toolsDir = windowsToolsDir(device);
+    return {
+        scratchDir,
+        toolsDir,
+        hostHelperScript: join(toolsDir, "ccc-guest-helper.ps1"),
+        guestScratchDir: "C:\\ccc\\scratch",
+        guestToolsDir: "C:\\ccc\\tools",
+        status: "planned",
+        requiredFor: ["device_exec", "device_screenshot", "device_upload", "device_download"],
+    };
 }
 
 function escapeXml(value) {
@@ -62,6 +84,15 @@ function escapeXml(value) {
 function writeWsbConfig(device) {
     const scratch = windowsScratchDir(device);
     mkdirSync(scratch, { recursive: true });
+    const tools = windowsToolsDir(device);
+    mkdirSync(tools, { recursive: true });
+    const helper = windowsHelperMetadata(device);
+    writeFileSync(helper.hostHelperScript, [
+        "# CCC guest helper placeholder",
+        "# Future slices replace this with an authenticated helper service.",
+        `New-Item -ItemType Directory -Force -Path '${helper.guestScratchDir}' | Out-Null`,
+        "",
+    ].join("\n"), { mode: 0o600 });
     const networking = device.networking === true ? "Enable" : "Disable";
     const clipboard = device.clipboard === true ? "Enable" : "Disable";
     const vgpu = device.vgpu === true ? "Enable" : "Disable";
@@ -75,15 +106,28 @@ function writeWsbConfig(device) {
         "  <MappedFolders>",
         "    <MappedFolder>",
         `      <HostFolder>${escapeXml(scratch)}</HostFolder>`,
+        `      <SandboxFolder>${escapeXml(helper.guestScratchDir)}</SandboxFolder>`,
         "      <ReadOnly>false</ReadOnly>",
         "    </MappedFolder>",
+        "    <MappedFolder>",
+        `      <HostFolder>${escapeXml(tools)}</HostFolder>`,
+        `      <SandboxFolder>${escapeXml(helper.guestToolsDir)}</SandboxFolder>`,
+        "      <ReadOnly>true</ReadOnly>",
+        "    </MappedFolder>",
         "  </MappedFolders>",
+        "  <LogonCommand>",
+        `    <Command>powershell.exe -ExecutionPolicy Bypass -File ${escapeXml(helper.guestToolsDir)}\\ccc-guest-helper.ps1</Command>`,
+        "  </LogonCommand>",
         "</Configuration>",
         "",
     ].join("\n");
     const path = wsbConfigPath(device);
     writeFileSync(path, config, { mode: 0o600 });
     return path;
+}
+
+function helperRequiredResult(device, toolName) {
+    return textResult(false, `Windows Sandbox ${toolName} requires the future CCC guest helper. Scratch: ${windowsScratchDir(device)}`);
 }
 
 export function listWindowsDevices() {
@@ -113,6 +157,7 @@ export async function handleWindowsTool(name, args) {
                 clipboard: Boolean(clipboard),
                 vgpu: Boolean(vgpu),
                 memoryMb,
+                helper: windowsHelperMetadata({ id }),
                 status: "stopped",
                 creatable: true,
                 createdAt: new Date().toISOString(),
@@ -139,7 +184,7 @@ export async function handleWindowsTool(name, args) {
             const { deviceId } = args;
             const device = findWindowsDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult({ device, backend: windowsBackend() });
+            return jsonResult({ device: { ...device, helper: windowsHelperMetadata(device) }, backend: windowsBackend() });
         }
 
         case "device_start": {
@@ -160,6 +205,7 @@ export async function handleWindowsTool(name, args) {
                 ...item,
                 status: "running",
                 configPath,
+                helper: windowsHelperMetadata(item),
                 updatedAt: new Date().toISOString(),
             }));
             return jsonResult({ device: updated });
@@ -179,6 +225,16 @@ export async function handleWindowsTool(name, args) {
                 updatedAt: new Date().toISOString(),
             }));
             return jsonResult({ device: updated });
+        }
+
+        case "device_exec":
+        case "device_screenshot":
+        case "device_upload":
+        case "device_download": {
+            const { deviceId } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            return helperRequiredResult(device, name);
         }
 
         default:

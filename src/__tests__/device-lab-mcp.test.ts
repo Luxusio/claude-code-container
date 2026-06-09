@@ -291,13 +291,17 @@ describe("device-lab MCP", () => {
         expect(create.isError).not.toBe(true);
 
         const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { id: string; status: string; platform: string; networking: boolean };
+            device: { id: string; status: string; platform: string; networking: boolean; helper: { status: string; guestScratchDir: string } };
         };
         expect(created.device).toEqual(expect.objectContaining({
             id: "windows-win-test",
             status: "stopped",
             platform: "windows",
             networking: false,
+        }));
+        expect(created.device.helper).toEqual(expect.objectContaining({
+            status: "planned",
+            guestScratchDir: "C:\\ccc\\scratch",
         }));
 
         const list = await client.callTool({ name: "device_list", arguments: {} });
@@ -327,6 +331,13 @@ describe("device-lab MCP", () => {
         });
         expect(start.isError).toBe(true);
         expect((start.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox backend missing prerequisites");
+
+        const exec = await client.callTool({
+            name: "device_exec",
+            arguments: { deviceId: "windows-win-test", command: "whoami" },
+        });
+        expect(exec.isError).toBe(true);
+        expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -392,6 +403,104 @@ describe("device-lab MCP", () => {
             arguments: { deviceId: "macos-mac-test" },
         });
         expect(deleted.isError).not.toBe(true);
+    });
+});
+
+describe("device-lab MCP with fake Windows Sandbox CLI", () => {
+    let client: Client;
+    let homeDir: string;
+    let binDir: string;
+    let logPath: string;
+
+    beforeAll(async () => {
+        homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-windows-home-"));
+        binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-windows-bin-"));
+        logPath = join(homeDir, "fake-windows.log");
+
+        const wsbPath = join(binDir, "wsb");
+        writeFileSync(wsbPath, `#!/bin/sh
+echo "wsb $*" >> "$FAKE_WINDOWS_LOG"
+exit 0
+`);
+        chmodSync(wsbPath, 0o755);
+
+        const transport = new StdioClientTransport({
+            command: process.execPath,
+            args: [join(repoRoot, "device-lab-mcp/server.mjs")],
+            env: {
+                HOME: homeDir,
+                PATH: binDir,
+                NODE_ENV: "test",
+                FAKE_WINDOWS_LOG: logPath,
+            },
+        });
+
+        client = new Client(
+            { name: "ccc-device-lab-windows-fake-client", version: "1.0.0" },
+            { capabilities: {} },
+        );
+
+        await client.connect(transport);
+    }, TIMEOUT);
+
+    afterAll(async () => {
+        await client?.close();
+        if (homeDir) rmSync(homeDir, { recursive: true, force: true });
+        if (binDir) rmSync(binDir, { recursive: true, force: true });
+    }, TIMEOUT);
+
+    it("writes owner-scoped Windows Sandbox config with helper bootstrap only on explicit start", { timeout: TIMEOUT }, async () => {
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "windows-sandbox",
+                name: "Win Helper",
+                networking: false,
+                clipboard: false,
+                vgpu: false,
+                memoryMb: 2048,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        const created = JSON.parse(((create.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; helper: { scratchDir: string; toolsDir: string; hostHelperScript: string } };
+        };
+        expect(created.device.id).toBe("windows-win-helper");
+        expect(created.device.helper.scratchDir).toContain("windows-win-helper");
+
+        expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("wsb start");
+
+        const start = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "windows-win-helper" },
+        });
+        expect(start.isError).not.toBe(true);
+        const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { configPath: string; helper: { hostHelperScript: string } };
+        };
+        const config = readFileSync(started.device.configPath, "utf-8");
+        expect(config).toContain("<SandboxFolder>C:\\ccc\\scratch</SandboxFolder>");
+        expect(config).toContain("<SandboxFolder>C:\\ccc\\tools</SandboxFolder>");
+        expect(config).toContain("<ReadOnly>true</ReadOnly>");
+        expect(config).toContain("<LogonCommand>");
+        expect(config).toContain("ccc-guest-helper.ps1");
+        expect(readFileSync(started.device.helper.hostHelperScript, "utf-8")).toContain("CCC guest helper placeholder");
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain(`wsb start ${started.device.configPath}`);
+
+        const screenshot = await client.callTool({
+            name: "device_screenshot",
+            arguments: { deviceId: "windows-win-helper" },
+        });
+        expect(screenshot.isError).toBe(true);
+        expect((screenshot.content as Array<{ text?: string }>)[0].text).toContain("requires the future CCC guest helper");
+
+        const stop = await client.callTool({
+            name: "device_stop",
+            arguments: { deviceId: "windows-win-helper" },
+        });
+        expect(stop.isError).not.toBe(true);
     });
 });
 

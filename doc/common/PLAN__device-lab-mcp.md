@@ -502,6 +502,20 @@ Foundation status:
 - Guest helper installation, command stdout/stderr capture, and richer
   Windows automation are deferred to later hardening slices.
 
+Guest-helper foundation status:
+
+- Windows Sandbox definitions now include owner-scoped scratch/tools/helper
+  metadata under the current owner namespace.
+- `device_start` writes a conservative `.wsb` config only on explicit start,
+  mapping a writable scratch folder and a read-only tools folder into the
+  sandbox and adding a LogonCommand placeholder for a future CCC guest helper.
+- `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
+  now return explicit guest-helper-required diagnostics for Windows Sandbox
+  devices instead of falling through as unknown tools.
+- Tests use a fake `wsb` command to verify lazy `.wsb` generation, mapped
+  folders, helper bootstrap placeholder, and helper-required diagnostics
+  without requiring a Windows host.
+
 ### macOS VM
 
 Prerequisites:
