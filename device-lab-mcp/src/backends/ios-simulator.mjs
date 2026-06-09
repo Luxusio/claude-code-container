@@ -39,6 +39,10 @@ export function iosBackend() {
             "device_screenshot",
             "device_install_app",
             "device_launch_app",
+            "mobile_open_url",
+            "mobile_install_app",
+            "mobile_launch_app",
+            "mobile_screenshot",
         ],
     };
 }
@@ -61,6 +65,10 @@ function isOwnedSimulatorName(name) {
 
 function missingPrereqResult(discovery) {
     return textResult(false, `iOS Simulator backend missing prerequisites: ${discovery.missing.join(", ")}`);
+}
+
+function unsupportedMobileResult(tool) {
+    return textResult(false, `iOS Simulator does not support ${tool} through base simctl; use Appium/XCUITest support when available.`);
 }
 
 function now() {
@@ -336,6 +344,23 @@ export async function handleIosTool(name, args) {
             return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
         }
 
+        case "mobile_screenshot": {
+            const { deviceId } = args;
+            return handleIosTool("device_screenshot", { deviceId });
+        }
+
+        case "mobile_open_url": {
+            const { deviceId, url } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const r = run(discovery.xcrun, ["simctl", "openurl", simctlTarget(device), url]);
+            return r.status === 0 ? jsonResult({ openedUrl: url, provider: "simctl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
+        }
+
         case "device_install_app": {
             const { deviceId, path } = args;
             const device = findIosDevice(deviceId);
@@ -348,6 +373,11 @@ export async function handleIosTool(name, args) {
             return r.status === 0 ? jsonResult({ installed: path, stdout: r.stdout, stderr: r.stderr }) : fail(r);
         }
 
+        case "mobile_install_app": {
+            const { deviceId, path } = args;
+            return handleIosTool("device_install_app", { deviceId, path });
+        }
+
         case "device_launch_app": {
             const { deviceId, bundleId } = args;
             const device = findIosDevice(deviceId);
@@ -358,6 +388,30 @@ export async function handleIosTool(name, args) {
 
             const r = run(discovery.xcrun, ["simctl", "launch", simctlTarget(device), bundleId]);
             return r.status === 0 ? jsonResult({ launched: bundleId, stdout: r.stdout, stderr: r.stderr }) : fail(r);
+        }
+
+        case "mobile_launch_app": {
+            const { deviceId, bundleId } = args;
+            return handleIosTool("device_launch_app", { deviceId, bundleId });
+        }
+
+        case "mobile_tap":
+        case "mobile_double_tap":
+        case "mobile_long_press":
+        case "mobile_swipe":
+        case "mobile_type_text":
+        case "mobile_key":
+        case "mobile_home":
+        case "mobile_back":
+        case "mobile_forward":
+        case "mobile_recents":
+        case "mobile_power":
+        case "mobile_lock":
+        case "mobile_unlock": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            return unsupportedMobileResult(name);
         }
 
         default:

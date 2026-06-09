@@ -142,7 +142,7 @@ function adbTextValue(text) {
 
 function ensureAdbDevice(deviceId) {
     const device = findAndroidDevice(deviceId);
-    if (!device) return { error: `Unknown device for this owner: ${deviceId}` };
+    if (!device) return { unknown: true };
     const discovery = androidDiscovery();
     if (!discovery.adb) return { error: "Android backend missing prerequisites: adb" };
     return { device, adb: discovery.adb };
@@ -156,6 +156,12 @@ function runAdbDeviceCommand(device, adb, args) {
 function adbJsonResult(device, adb, args, payload) {
     const r = runAdbDeviceCommand(device, adb, args);
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
+}
+
+function adbTargetResult(target) {
+    if (target.unknown) return undefined;
+    if (target.error) return textResult(false, target.error);
+    return null;
 }
 
 function ownerAvdPrefix() {
@@ -234,7 +240,7 @@ async function waitForAppium(url) {
 
 async function ensureAppiumSession(deviceId) {
     const device = findAndroidDevice(deviceId);
-    if (!device) return { error: `Unknown device for this owner: ${deviceId}` };
+    if (!device) return { unknown: true };
 
     const discovery = appiumDiscovery();
     if (!discovery.available) {
@@ -498,13 +504,14 @@ export async function handleAndroidTool(name, args) {
         case "mobile_session_status": {
             const { deviceId } = args;
             const device = findAndroidDevice(deviceId);
-            if (!device) return textResult(false, `Unknown device for this owner: ${deviceId}`);
+            if (!device) return undefined;
             return jsonResult({ deviceId, appium: appiumBackendStatus(), session: device.appium || null, lazy: true });
         }
 
         case "mobile_dump_ui": {
             const { deviceId } = args;
             const session = await ensureAppiumSession(deviceId);
+            if (session.unknown) return undefined;
             if (session.error) return textResult(false, session.error);
             const payload = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
             return jsonResult({ source: payload.value ?? payload });
@@ -513,14 +520,16 @@ export async function handleAndroidTool(name, args) {
         case "mobile_tap": {
             const { deviceId, x, y } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)], { tapped: { x, y }, provider: "adb" });
         }
 
         case "mobile_double_tap": {
             const { deviceId, x, y } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             const first = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
             if (!first.ok) return fail(first.result);
             const second = runAdbDeviceCommand(target.device, target.adb, ["shell", "input", "tap", String(x), String(y)]);
@@ -530,28 +539,32 @@ export async function handleAndroidTool(name, args) {
         case "mobile_long_press": {
             const { deviceId, x, y, durationMs = 700 } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x), String(y), String(x), String(y), String(durationMs)], { longPressed: { x, y, durationMs }, provider: "adb" });
         }
 
         case "mobile_swipe": {
             const { deviceId, x1, y1, x2, y2, durationMs = 300 } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "swipe", String(x1), String(y1), String(x2), String(y2), String(durationMs)], { swiped: { x1, y1, x2, y2, durationMs }, provider: "adb" });
         }
 
         case "mobile_type_text": {
             const { deviceId, text } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "text", adbTextValue(text)], { typed: true, provider: "adb" });
         }
 
         case "mobile_key": {
             const { deviceId, key, keyCode } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             const resolvedKey = keyCode ?? key;
             if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") {
                 return textResult(false, "mobile_key requires key or keyCode");
@@ -562,56 +575,64 @@ export async function handleAndroidTool(name, args) {
         case "mobile_back": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "4"], { back: true, provider: "adb" });
         }
 
         case "mobile_home": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "3"], { home: true, provider: "adb" });
         }
 
         case "mobile_forward": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "125"], { forward: true, provider: "adb" });
         }
 
         case "mobile_recents": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "187"], { recents: true, provider: "adb" });
         }
 
         case "mobile_power": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "26"], { power: true, provider: "adb" });
         }
 
         case "mobile_lock": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "223"], { locked: true, provider: "adb" });
         }
 
         case "mobile_unlock": {
             const { deviceId } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "input", "keyevent", "224"], { unlocked: true, provider: "adb" });
         }
 
         case "mobile_open_url": {
             const { deviceId, url } = args;
             const target = ensureAdbDevice(deviceId);
-            if (target.error) return textResult(false, target.error);
+            const unavailable = adbTargetResult(target);
+            if (unavailable !== null) return unavailable;
             return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], { openedUrl: url, provider: "adb" });
         }
 

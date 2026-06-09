@@ -54,6 +54,8 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_status");
         expect(names).toContain("device_exec");
         expect(names).toContain("device_screenshot");
+        expect(names).toContain("device_install_app");
+        expect(names).toContain("device_launch_app");
         expect(names).toContain("mobile_session_status");
         expect(names).toContain("mobile_dump_ui");
         expect(names).toContain("mobile_tap");
@@ -70,6 +72,8 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_lock");
         expect(names).toContain("mobile_unlock");
         expect(names).toContain("mobile_open_url");
+        expect(names).toContain("mobile_install_app");
+        expect(names).toContain("mobile_launch_app");
         expect(names).toContain("mobile_screenshot");
     });
 
@@ -727,6 +731,20 @@ if [ "$1" = "simctl" ] && [ "$2" = "spawn" ]; then
   echo "ok"
   exit 0
 fi
+if [ "$1" = "simctl" ] && [ "$2" = "io" ] && [ "$4" = "screenshot" ]; then
+  printf 'fakepng' > "$5"
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "openurl" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "install" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "launch" ]; then
+  echo "$4: 123"
+  exit 0
+fi
 exit 0
 `);
         chmodSync(xcrunPath, 0o755);
@@ -830,6 +848,46 @@ exit 0
         expect(started.device.status).toBe("booted");
         expect(started.device.bootReady).toBe(true);
 
+        const openUrl = await client.callTool({
+            name: "mobile_open_url",
+            arguments: { deviceId: "ios-iphone-owned", url: "https://example.test/ios" },
+        });
+        expect(openUrl.isError).not.toBe(true);
+        const openUrlPayload = JSON.parse(((openUrl.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            openedUrl: string;
+            provider: string;
+        };
+        expect(openUrlPayload).toEqual(expect.objectContaining({
+            openedUrl: "https://example.test/ios",
+            provider: "simctl",
+        }));
+
+        const installApp = await client.callTool({
+            name: "mobile_install_app",
+            arguments: { deviceId: "ios-iphone-owned", path: "/tmp/Test.app" },
+        });
+        expect(installApp.isError).not.toBe(true);
+
+        const launchApp = await client.callTool({
+            name: "mobile_launch_app",
+            arguments: { deviceId: "ios-iphone-owned", bundleId: "com.example.Test" },
+        });
+        expect(launchApp.isError).not.toBe(true);
+
+        const screenshot = await client.callTool({
+            name: "mobile_screenshot",
+            arguments: { deviceId: "ios-iphone-owned" },
+        });
+        expect(screenshot.isError).not.toBe(true);
+        expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
+
+        const unsupportedTap = await client.callTool({
+            name: "mobile_tap",
+            arguments: { deviceId: "ios-iphone-owned", x: 10, y: 20 },
+        });
+        expect(unsupportedTap.isError).toBe(true);
+        expect((unsupportedTap.content as Array<{ text?: string }>)[0].text).toContain("does not support mobile_tap through base simctl");
+
         const deleteWhileBooted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "ios-iphone-owned", deleteSimulator: true },
@@ -857,7 +915,12 @@ exit 0
         expect(log).toContain(`xcrun simctl create ${simulatorName} com.apple.CoreSimulator.SimDeviceType.iPhone-15 com.apple.CoreSimulator.SimRuntime.iOS-17-0`);
         expect(log).toContain("xcrun simctl boot CREATED-IOS-UDID");
         expect(log).toContain("xcrun simctl bootstatus CREATED-IOS-UDID -b");
+        expect(log).toContain("xcrun simctl openurl CREATED-IOS-UDID https://example.test/ios");
+        expect(log).toContain("xcrun simctl install CREATED-IOS-UDID /tmp/Test.app");
+        expect(log).toContain("xcrun simctl launch CREATED-IOS-UDID com.example.Test");
+        expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
+        expect(log).not.toContain("Android backend missing prerequisites");
     });
 
     it("keeps metadata-only iOS definitions lazy and refuses non-owned simulator operations", { timeout: TIMEOUT }, async () => {

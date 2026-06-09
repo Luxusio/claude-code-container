@@ -298,6 +298,20 @@ Android direct-ADB action status:
 - Tests use fake Android SDK commands to verify serial-targeted ADB command
   mapping and missing-prerequisite behavior without requiring a real emulator.
 
+iOS simctl mobile action status:
+
+- Shared `mobile_*` routing now lets Android handlers return no-match for
+  non-Android device IDs, so iOS Simulator definitions can handle supported
+  mobile tools in the same MCP namespace.
+- iOS Simulator supports `mobile_open_url`, `mobile_install_app`,
+  `mobile_launch_app`, and `mobile_screenshot` through direct `simctl`
+  commands.
+- Base `simctl` does not support coordinate gestures or keyboard-style mobile
+  controls. Those iOS tools return explicit unsupported-capability messages
+  until Appium/XCUITest or a host UI bridge is added.
+- Tests use fake `xcrun` commands to verify iOS mobile action routing and
+  command mapping without requiring macOS or Xcode.
+
 Current-display tools:
 
 - `display_current`
