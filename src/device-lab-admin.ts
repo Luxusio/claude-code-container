@@ -1,12 +1,14 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir, hostname } from "os";
 import { dirname, join } from "path";
 import { spawnSync } from "child_process";
 
 export const DEVICE_BACKENDS = [
     { stateKey: "android", name: "android-emulator", tools: ["adb", "emulator", "avdmanager"] },
+    { stateKey: "android-device", name: "android-device", tools: ["adb"] },
     { stateKey: "ios", name: "ios-simulator", tools: ["xcrun"] },
+    { stateKey: "ios-device", name: "ios-device", tools: ["xcrun", "xcodebuild"] },
     { stateKey: "windows", name: "windows-sandbox", tools: ["wsb"] },
     { stateKey: "macos", name: "macos-vm", tools: ["tart", "vz", "utmctl"] },
 ] as const;
@@ -24,6 +26,10 @@ export function deviceLabOwnerId(cwd = process.cwd()): string {
 
 function ownerDevicesFile(ownerId: string, stateKey: string): string {
     return join(homedir(), ".ccc/devices/owners", ownerId, stateKey, "devices.json");
+}
+
+function physicalLeaseLockFile(stateKey: string, hardwareId: string): string {
+    return join(homedir(), ".ccc/devices/physical-leases", stateKey, "locks", `${encodeURIComponent(hardwareId)}.json`);
 }
 
 function readDevices(ownerId: string, stateKey: string): DeviceRecord[] {
@@ -98,11 +104,21 @@ export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000): { ownerId
     } else {
         results.push(smokeFromCommands("android-emulator", [[tools.adb, ["version"]], [tools.emulator, ["-list-avds"]]], "adb and emulator responded", timeoutMs));
     }
+    if (!tools.adb) {
+        results.push({ backend: "android-device", status: "SKIP", detail: "missing adb" });
+    } else {
+        results.push(smokeFromCommands("android-device", [[tools.adb, ["devices", "-l"]]], "adb physical-device inventory responded", timeoutMs));
+    }
 
     if (!tools.xcrun) {
         results.push({ backend: "ios-simulator", status: "SKIP", detail: "missing xcrun" });
     } else {
         results.push(smokeFromCommands("ios-simulator", [[tools.xcrun, ["simctl", "list", "-j"]]], "xcrun simctl inventory responded", timeoutMs));
+    }
+    if (!tools.xcrun || !tools.xcodebuild) {
+        results.push({ backend: "ios-device", status: "SKIP", detail: `missing ${["xcrun", "xcodebuild"].filter((tool) => !tools[tool]).join(", ")}` });
+    } else {
+        results.push(smokeFromCommands("ios-device", [[tools.xcrun, ["xctrace", "list", "devices"]], [tools.xcodebuild, ["-version"]]], "xcrun xctrace and xcodebuild responded", timeoutMs));
     }
 
     if (!tools.wsb) {
@@ -148,6 +164,27 @@ function serialForAndroid(device: DeviceRecord): string | null {
     if (typeof device.serial === "string" && device.serial) return device.serial;
     if (typeof device.port === "number") return `emulator-${device.port}`;
     return null;
+}
+
+function hardwareIdForPhysicalDevice(backend: Backend, device: DeviceRecord): string | null {
+    if (backend.stateKey === "android-device") return serialForAndroid(device);
+    if (backend.stateKey === "ios-device") {
+        const udid = device.udid;
+        return typeof udid === "string" && udid ? udid : null;
+    }
+    return null;
+}
+
+function releasePhysicalLeaseForOwner(ownerId: string, backend: Backend, device: DeviceRecord): void {
+    const hardwareId = hardwareIdForPhysicalDevice(backend, device);
+    if (!hardwareId) return;
+    const file = physicalLeaseLockFile(backend.stateKey, hardwareId);
+    try {
+        const lease = JSON.parse(readFileSync(file, "utf-8")) as { ownerId?: string; deviceId?: string };
+        if (lease.ownerId === ownerId && (!device.id || !lease.deviceId || lease.deviceId === device.id)) unlinkSync(file);
+    } catch {
+        /* ignore missing, stale, or malformed physical lock files */
+    }
 }
 
 function simctlTarget(device: DeviceRecord): string | null {
@@ -200,6 +237,13 @@ function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandRe
             const result = runCommand(adb, ["-s", serial, "emu", "kill"], timeoutMs);
             if (result) results.push(result);
         }
+    } else if (match.backend.stateKey === "android-device") {
+        const adb = commandPath("adb");
+        const serial = serialForAndroid(match.device);
+        if (adb && serial && match.device.recording) {
+            const result = runCommand(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"], timeoutMs);
+            if (result) results.push(result);
+        }
     } else if (match.backend.stateKey === "ios") {
         const xcrun = commandPath("xcrun");
         const target = simctlTarget(match.device);
@@ -207,6 +251,8 @@ function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandRe
             const result = runCommand(xcrun, ["simctl", "shutdown", target], timeoutMs);
             if (result) results.push(result);
         }
+    } else if (match.backend.stateKey === "ios-device") {
+        // Physical iOS devices are never powered off or disconnected by cleanup.
     } else if (match.backend.stateKey === "windows") {
         if (lifecycleActive(match.device)) {
             const result = runCommand(commandPath("wsb"), ["stop"], timeoutMs);
@@ -237,7 +283,22 @@ function stoppedDevice(device: DeviceRecord): DeviceRecord {
     };
 }
 
-function shouldCleanupDevice(device: DeviceRecord): boolean {
+function cleanedDevice(backend: Backend, device: DeviceRecord): DeviceRecord {
+    if (backend.stateKey === "android-device" || backend.stateKey === "ios-device") {
+        return {
+            ...device,
+            status: "detached",
+            pid: null,
+            appium: null,
+            recording: null,
+            updatedAt: now(),
+        };
+    }
+    return stoppedDevice(device);
+}
+
+function shouldCleanupDevice(backend: Backend, device: DeviceRecord): boolean {
+    if ((backend.stateKey === "android-device" || backend.stateKey === "ios-device") && device.status === "attached") return true;
     return lifecycleActive(device) || hasVolatileProcessMetadata(device);
 }
 
@@ -248,7 +309,7 @@ export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ow
         const devices = readDevices(ownerId, backend.stateKey);
         let changed = false;
         const updated = devices.map((device) => {
-            if (!device.id || !shouldCleanupDevice(device)) {
+            if (!device.id || !shouldCleanupDevice(backend, device)) {
                 results.push({
                     id: device.id || "(unknown)",
                     backend: backend.name,
@@ -260,6 +321,7 @@ export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ow
             }
 
             const commands = stopOwnedDevice({ backend, devices, index: -1, device }, timeoutMs);
+            releasePhysicalLeaseForOwner(ownerId, backend, device);
             results.push({
                 id: device.id,
                 backend: backend.name,
@@ -268,7 +330,7 @@ export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ow
                 commands,
             });
             changed = true;
-            return stoppedDevice(device);
+            return cleanedDevice(backend, device);
         });
         if (changed) writeDevices(ownerId, backend.stateKey, updated);
     }
@@ -309,7 +371,8 @@ export function stopOwnerDevice(deviceId: string, cwd = process.cwd()): { ok: bo
     if (!match) return { ok: false, text: `Device not found for owner ${ownerId}: ${deviceId}\n` };
 
     const commands = stopOwnedDevice(match);
-    const updated = stoppedDevice(match.device);
+    releasePhysicalLeaseForOwner(ownerId, match.backend, match.device);
+    const updated = cleanedDevice(match.backend, match.device);
     const devices = [...match.devices];
     devices[match.index] = updated;
     writeDevices(ownerId, match.backend.stateKey, devices);
@@ -329,7 +392,7 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd()): { ok: 
     const ownerId = deviceLabOwnerId(cwd);
     const match = findOwnerDevice(ownerId, deviceId);
     if (!match) return { ok: false, text: `Device not found for owner ${ownerId}: ${deviceId}\n` };
-    if (match.device.status !== "stopped") {
+    if (match.device.status !== "stopped" && match.device.status !== "detached") {
         return { ok: false, text: `Refusing to delete ${deviceId} while status is ${match.device.status || "unknown"}; run 'ccc devices stop ${deviceId}' first.\n` };
     }
 
@@ -345,7 +408,7 @@ export function pruneOwnerDevices(cwd = process.cwd()): { ok: boolean; text: str
     for (const backend of DEVICE_BACKENDS) {
         const devices = readDevices(ownerId, backend.stateKey);
         const remaining = devices.filter((device) => {
-            const prune = device.status === "stopped";
+            const prune = device.status === "stopped" || device.status === "detached";
             if (prune) {
                 deleted += 1;
                 lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);

@@ -2,7 +2,9 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { androidBackend, handleAndroidTool, listAndroidDevices } from "./backends/android.mjs";
+import { androidRealBackend, handleAndroidRealTool, listAndroidRealDevices } from "./backends/android-device.mjs";
 import { handleIosTool, iosBackend, listIosDevices } from "./backends/ios-simulator.mjs";
+import { handleIosRealTool, iosRealBackend, listIosRealDevices } from "./backends/ios-device.mjs";
 import { handleMacosTool, listMacosDevices, macosBackend } from "./backends/macos-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "./backends/windows-sandbox.mjs";
 import { ownerId } from "./context.mjs";
@@ -66,8 +68,14 @@ async function dispatchTool(name, args) {
     const androidResult = await handleAndroidTool(name, args);
     if (androidResult) return androidResult;
 
+    const androidRealResult = await handleAndroidRealTool(name, args);
+    if (androidRealResult) return androidRealResult;
+
     const iosResult = await handleIosTool(name, args);
     if (iosResult) return iosResult;
+
+    const iosRealResult = await handleIosRealTool(name, args);
+    if (iosRealResult) return iosRealResult;
 
     const windowsResult = await handleWindowsTool(name, args);
     if (windowsResult) return windowsResult;
@@ -139,7 +147,9 @@ export async function startServer() {
                                 capabilities: currentDisplayTarget().capabilities,
                             },
                             androidBackend(),
+                            androidRealBackend(),
                             iosBackend(),
+                            iosRealBackend(),
                             windowsBackend(),
                             macosBackend(),
                         ],
@@ -151,7 +161,9 @@ export async function startServer() {
                         devices: [
                             currentDisplayTarget(),
                             ...listAndroidDevices(),
+                            ...listAndroidRealDevices(),
                             ...listIosDevices(),
+                            ...listIosRealDevices(),
                             ...listWindowsDevices(),
                             ...listMacosDevices(),
                         ],

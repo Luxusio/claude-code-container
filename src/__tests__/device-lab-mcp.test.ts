@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -49,6 +49,8 @@ describe("device-lab MCP", () => {
         expect(names).toContain("display_screenshot");
         expect(names).toContain("display_click");
         expect(names).toContain("device_create");
+        expect(names).toContain("device_attach");
+        expect(names).toContain("device_detach");
         expect(names).toContain("device_delete");
         expect(names).toContain("device_start");
         expect(names).toContain("device_stop");
@@ -121,12 +123,16 @@ describe("device-lab MCP", () => {
         expect(payload.backends?.map((backend) => backend.name)).toEqual([
             "x11-current-display",
             "android-emulator",
+            "android-device",
             "ios-simulator",
+            "ios-device",
             "windows-sandbox",
             "macos-vm",
         ]);
         expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
+        expect(payload.backends?.find((backend) => backend.name === "android-device")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "ios-simulator")?.status).toBe("missing-prerequisites");
+        expect(payload.backends?.find((backend) => backend.name === "ios-device")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "windows-sandbox")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "macos-vm")?.status).toBe("missing-prerequisites");
     });
@@ -1146,6 +1152,19 @@ if [ "$1" = "-s" ]; then
   shift
   shift
 fi
+if [ "$1" = "devices" ] && [ "$2" = "-l" ]; then
+  echo "List of devices attached"
+  echo "R5CREAL123 device usb:1-1 product:oriole model:Pixel_6 device:oriole transport_id:7"
+  echo "R5LEASED999 device usb:1-4 product:oriole model:Pixel_6 device:oriole transport_id:8"
+  echo "UNAUTHORIZED unauthorized usb:1-2 model:Pixel_5"
+  echo "OFFLINE offline usb:1-3 model:Pixel_4"
+  echo "emulator-5554 device product:sdk_gphone"
+  exit 0
+fi
+if [ "$1" = "get-state" ]; then
+  echo "device"
+  exit 0
+fi
 if [ "$1" = "shell" ] && [ "$2" = "getprop" ] && [ "$3" = "sys.boot_completed" ]; then
   echo "1"
   exit 0
@@ -1667,6 +1686,151 @@ exit 0
         expect(log).not.toContain("appium");
     });
 
+    it("attaches, uses, and detaches host-connected Android real devices without emulator lifecycle commands", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "android-device" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            hostDevices: { devices: Array<{ serial: string; state: string; emulator: boolean; details: { model?: string } }> };
+        };
+        expect(inventoryPayload.hostDevices.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({ serial: "R5CREAL123", state: "device", emulator: false, details: expect.objectContaining({ model: "Pixel_6" }) }),
+            expect.objectContaining({ serial: "R5LEASED999", state: "device" }),
+            expect.objectContaining({ serial: "UNAUTHORIZED", state: "unauthorized" }),
+            expect.objectContaining({ serial: "emulator-5554", emulator: true }),
+        ]));
+
+        const androidLeaseDir = join(homeDir, ".ccc/devices/physical-leases/android-device/locks");
+        mkdirSync(androidLeaseDir, { recursive: true });
+        writeFileSync(join(androidLeaseDir, `${encodeURIComponent("R5LEASED999")}.json`), JSON.stringify({
+            backend: "android-device",
+            hardwareId: "R5LEASED999",
+            ownerId: "other-owner",
+            deviceId: "android-device-foreign",
+        }));
+        const rejectLeased = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Already Leased", serial: "R5LEASED999" },
+        });
+        expect(rejectLeased.isError).toBe(true);
+        expect((rejectLeased.content as Array<{ text?: string }>)[0].text).toContain("already attached by another CCC owner");
+
+        const rejectEmulator = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Bad Emulator", serial: "emulator-5554" },
+        });
+        expect(rejectEmulator.isError).toBe(true);
+        expect((rejectEmulator.content as Array<{ text?: string }>)[0].text).toContain("Refusing to attach emulator serial");
+
+        const rejectUnauthorized = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Unauthorized", serial: "UNAUTHORIZED" },
+        });
+        expect(rejectUnauthorized.isError).toBe(true);
+        expect((rejectUnauthorized.content as Array<{ text?: string }>)[0].text).toContain("adb state is unauthorized");
+
+        const attach = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Real Pixel", serial: "R5CREAL123" },
+        });
+        expect(attach.isError).not.toBe(true);
+        const attached = JSON.parse(((attach.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; backend: string; serial: string; status: string; creatable: boolean; physical: boolean };
+        };
+        expect(attached.device).toEqual(expect.objectContaining({
+            id: "android-device-real-pixel",
+            backend: "android-device",
+            serial: "R5CREAL123",
+            status: "attached",
+            creatable: false,
+            physical: true,
+        }));
+
+        const duplicate = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Real Pixel Duplicate", serial: "R5CREAL123" },
+        });
+        expect(duplicate.isError).toBe(true);
+        expect((duplicate.content as Array<{ text?: string }>)[0].text).toContain("Android serial already attached");
+
+        const status = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "android-device-real-pixel" },
+        });
+        expect(status.isError).not.toBe(true);
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            hostState: { stdout: string };
+            backend: { name: string; attachable: boolean };
+        };
+        expect(statusPayload.hostState.stdout).toBe("device");
+        expect(statusPayload.backend).toEqual(expect.objectContaining({ name: "android-device", attachable: true }));
+
+        for (const [tool, args] of [
+            ["device_exec", { deviceId: "android-device-real-pixel", command: "echo ok" }],
+            ["mobile_tap", { deviceId: "android-device-real-pixel", x: 10, y: 20 }],
+            ["mobile_back", { deviceId: "android-device-real-pixel" }],
+            ["mobile_dump_ui", { deviceId: "android-device-real-pixel" }],
+            ["mobile_wait_for_text", { deviceId: "android-device-real-pixel", text: "Hello", timeoutMs: 100, intervalMs: 50 }],
+            ["device_install_app", { deviceId: "android-device-real-pixel", path: "/tmp/Real.apk" }],
+            ["device_launch_app", { deviceId: "android-device-real-pixel", packageName: "com.example.real" }],
+            ["device_screenshot", { deviceId: "android-device-real-pixel" }],
+        ] as Array<[string, Record<string, unknown>]>) {
+            const result = await client.callTool({ name: tool, arguments: args });
+            expect(result.isError, tool).not.toBe(true);
+        }
+
+        const unsafeBattery = await client.callTool({
+            name: "mobile_set_battery",
+            arguments: { deviceId: "android-device-real-pixel", level: 10 },
+        });
+        expect(unsafeBattery.isError).toBe(true);
+        expect((unsafeBattery.content as Array<{ text?: string }>)[0].text).toContain("Android real devices do not support mobile_set_battery safely");
+        const unsafeLocation = await client.callTool({
+            name: "mobile_set_location",
+            arguments: { deviceId: "android-device-real-pixel", latitude: 37.7749, longitude: -122.4194 },
+        });
+        expect(unsafeLocation.isError).toBe(true);
+        expect((unsafeLocation.content as Array<{ text?: string }>)[0].text).toContain("Android real devices do not support mobile_set_location safely");
+
+        const stop = await client.callTool({
+            name: "device_stop",
+            arguments: { deviceId: "android-device-real-pixel" },
+        });
+        expect(stop.isError).not.toBe(true);
+        const stopped = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            physicalDevicePoweredOff: boolean;
+            device: { status: string };
+        };
+        expect(stopped.physicalDevicePoweredOff).toBe(false);
+        expect(stopped.device.status).toBe("attached");
+
+        const detach = await client.callTool({
+            name: "device_detach",
+            arguments: { deviceId: "android-device-real-pixel" },
+        });
+        expect(detach.isError).not.toBe(true);
+        expect(() => readFileSync(join(androidLeaseDir, `${encodeURIComponent("R5CREAL123")}.json`), "utf-8")).toThrow();
+
+        const list = await client.callTool({ name: "device_list", arguments: {} });
+        const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string }>;
+        };
+        expect(listed.devices.some((device) => device.id === "android-device-real-pixel")).toBe(false);
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("adb devices -l");
+        expect(log).toContain("adb -s R5CREAL123 get-state");
+        expect(log).toContain("adb -s R5CREAL123 shell echo ok");
+        expect(log).toContain("adb -s R5CREAL123 shell input tap 10 20");
+        expect(log).toContain("adb -s R5CREAL123 shell input keyevent 4");
+        expect(log).toContain("adb -s R5CREAL123 install -r /tmp/Real.apk");
+        expect(log).toContain("adb -s R5CREAL123 shell monkey -p com.example.real 1");
+        expect(log).toContain("adb -s R5CREAL123 exec-out screencap -p");
+        expect(log).not.toContain("adb -s R5CREAL123 emu kill");
+    });
+
     it("refuses avdmanager create/delete for non-owned Android AVD names", { timeout: TIMEOUT }, async () => {
         const inventory = await client.callTool({
             name: "device_inventory",
@@ -1762,6 +1926,15 @@ describe("device-lab MCP with fake iOS simctl", () => {
 echo "xcrun $*" >> "$FAKE_IOS_LOG"
 if [ "$1" = "simctl" ] && [ "$2" = "list" ]; then
   printf '%s\\n' '{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-0":[{"name":"host iPhone","udid":"HOST-UDID","state":"Shutdown"}]},"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-17-0","name":"iOS 17.0","isAvailable":true}],"devicetypes":[{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-15","name":"iPhone 15"}]}'
+  exit 0
+fi
+if [ "$1" = "xctrace" ] && [ "$2" = "list" ] && [ "$3" = "devices" ]; then
+  echo "Devices:"
+  echo "Build Mac (15.0) (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE)"
+  echo "Real iPhone (17.5) (00008110-001C195E0E91801E)"
+  echo "Other iPhone (16.7) (00008101-00DEADBEEFCAFE00)"
+  echo "Simulators:"
+  echo "iPhone 15 Simulator (17.0) (SIM-UDID)"
   exit 0
 fi
 if [ "$1" = "simctl" ] && [ "$2" = "create" ]; then
@@ -1863,6 +2036,17 @@ server.listen(port, '127.0.0.1');
 NODE
 `);
         chmodSync(appiumPath, 0o755);
+
+        const xcodebuildPath = join(binDir, "xcodebuild");
+        writeFileSync(xcodebuildPath, `#!/bin/sh
+echo "xcodebuild $*" >> "$FAKE_IOS_LOG"
+if [ "$1" = "-version" ]; then
+  echo "Xcode 15.0"
+  exit 0
+fi
+exit 0
+`);
+        chmodSync(xcodebuildPath, 0o755);
 
         for (const name of ["appium-xcuitest-driver", "xcodebuild"]) {
             const toolPath = join(binDir, name);
@@ -2288,6 +2472,106 @@ exit 0
         expect(log).toContain("appium-http POST /session");
         expect(log).toContain('"appium:automationName":"XCUITest"');
         expect(log).not.toContain("Android backend missing prerequisites");
+    });
+
+    it("attaches, inspects, and detaches iOS real devices without simctl lifecycle commands", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "ios-device" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            hostDevices: { devices: Array<{ name: string; udid: string; version: string }> };
+            discovery: { available: boolean };
+        };
+        expect(inventoryPayload.discovery.available).toBe(true);
+        expect(inventoryPayload.hostDevices.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: "Real iPhone", udid: "00008110-001C195E0E91801E", version: "17.5" }),
+        ]));
+        expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Simulator"))).toBe(false);
+        expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Mac"))).toBe(false);
+
+        const iosLeaseDir = join(homeDir, ".ccc/devices/physical-leases/ios-device/locks");
+        mkdirSync(iosLeaseDir, { recursive: true });
+        writeFileSync(join(iosLeaseDir, `${encodeURIComponent("00008101-00DEADBEEFCAFE00")}.json`), JSON.stringify({
+            backend: "ios-device",
+            hardwareId: "00008101-00DEADBEEFCAFE00",
+            ownerId: "other-owner",
+            deviceId: "ios-device-foreign",
+        }));
+        const rejectLeased = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "ios-device", name: "Already Leased iPhone", udid: "00008101-00DEADBEEFCAFE00" },
+        });
+        expect(rejectLeased.isError).toBe(true);
+        expect((rejectLeased.content as Array<{ text?: string }>)[0].text).toContain("already attached by another CCC owner");
+
+        const attach = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "ios-device", name: "Real iPhone", udid: "00008110-001C195E0E91801E" },
+        });
+        expect(attach.isError).not.toBe(true);
+        const attached = JSON.parse(((attach.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; backend: string; physical: boolean; status: string; creatable: boolean };
+        };
+        expect(attached.device).toEqual(expect.objectContaining({
+            id: "ios-device-real-iphone",
+            backend: "ios-device",
+            physical: true,
+            status: "attached",
+            creatable: false,
+        }));
+
+        const duplicate = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "ios-device", name: "Duplicate iPhone", udid: "00008110-001C195E0E91801E" },
+        });
+        expect(duplicate.isError).toBe(true);
+        expect((duplicate.content as Array<{ text?: string }>)[0].text).toContain("iOS UDID already attached");
+
+        const status = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(status.isError).not.toBe(true);
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            backend: { name: string; attachable: boolean };
+            hostDevice: { udid: string };
+            appium: { automationName: string; physical: boolean };
+        };
+        expect(statusPayload.backend).toEqual(expect.objectContaining({ name: "ios-device", attachable: true }));
+        expect(statusPayload.hostDevice.udid).toBe("00008110-001C195E0E91801E");
+        expect(statusPayload.appium).toEqual(expect.objectContaining({ automationName: "XCUITest", physical: true }));
+
+        const unsupported = await client.callTool({
+            name: "device_screenshot",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(unsupported.isError).toBe(true);
+        expect((unsupported.content as Array<{ text?: string }>)[0].text).toContain("iOS real devices do not support device_screenshot through base simctl");
+
+        const stop = await client.callTool({
+            name: "device_stop",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(stop.isError).not.toBe(true);
+        const stopped = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            physicalDevicePoweredOff: boolean;
+            device: { status: string };
+        };
+        expect(stopped.physicalDevicePoweredOff).toBe(false);
+        expect(stopped.device.status).toBe("attached");
+
+        const detach = await client.callTool({
+            name: "device_detach",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(detach.isError).not.toBe(true);
+        expect(() => readFileSync(join(iosLeaseDir, `${encodeURIComponent("00008110-001C195E0E91801E")}.json`), "utf-8")).toThrow();
+
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("xcrun xctrace list devices");
+        expect(log).not.toContain("xcrun simctl shutdown 00008110-001C195E0E91801E");
     });
 
     it("keeps metadata-only iOS definitions lazy and refuses non-owned simulator operations", { timeout: TIMEOUT }, async () => {

@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     cleanupOwnerDevices,
@@ -36,17 +36,23 @@ describe("device-lab admin CLI formatters", () => {
         process.env.PATH = "/tmp/ccc-device-admin-empty-path";
         const owner = deviceLabOwnerId(cwd);
         const androidDir = join(homeDir, ".ccc/devices/owners", owner, "android");
+        const androidDeviceDir = join(homeDir, ".ccc/devices/owners", owner, "android-device");
         const iosDir = join(homeDir, ".ccc/devices/owners", owner, "ios");
+        const iosDeviceDir = join(homeDir, ".ccc/devices/owners", owner, "ios-device");
         const windowsDir = join(homeDir, ".ccc/devices/owners", owner, "windows");
         const macosDir = join(homeDir, ".ccc/devices/owners", owner, "macos");
         const otherOwnerDir = join(homeDir, ".ccc/devices/owners", "other-owner", "android");
         mkdirSync(androidDir, { recursive: true });
+        mkdirSync(androidDeviceDir, { recursive: true });
         mkdirSync(iosDir, { recursive: true });
+        mkdirSync(iosDeviceDir, { recursive: true });
         mkdirSync(windowsDir, { recursive: true });
         mkdirSync(macosDir, { recursive: true });
         mkdirSync(otherOwnerDir, { recursive: true });
         const androidFile = join(androidDir, "devices.json");
+        const androidDeviceFile = join(androidDeviceDir, "devices.json");
         const iosFile = join(iosDir, "devices.json");
+        const iosDeviceFile = join(iosDeviceDir, "devices.json");
         const windowsFile = join(windowsDir, "devices.json");
         const macosFile = join(macosDir, "devices.json");
         const otherOwnerFile = join(otherOwnerDir, "devices.json");
@@ -56,10 +62,21 @@ describe("device-lab admin CLI formatters", () => {
                 { id: "android-running", name: "Pixel Running", status: "running", platform: "android", serial: "emulator-5582", pid: 999999 },
             ],
         }));
+        writeFileSync(androidDeviceFile, JSON.stringify({
+            devices: [
+                { id: "android-real", name: "Real Pixel", status: "attached", platform: "android", physical: true, serial: "R5CREAL123" },
+                { id: "android-real-recording", name: "Real Recording", status: "attached", platform: "android", physical: true, serial: "R5CREAL456", recording: { active: true, pid: 999998 } },
+            ],
+        }));
         writeFileSync(iosFile, JSON.stringify({
             devices: [
                 { id: "ios-owned", name: "iPhone", status: "booted", platform: "ios", udid: "IOS-UDID" },
                 { id: "ios-stopped", name: "iPhone Stopped", status: "stopped", platform: "ios", udid: "IOS-STOPPED" },
+            ],
+        }));
+        writeFileSync(iosDeviceFile, JSON.stringify({
+            devices: [
+                { id: "ios-real", name: "Real iPhone", status: "attached", platform: "ios", physical: true, udid: "REAL-IOS-UDID", appium: { serverPid: 999997 } },
             ],
         }));
         writeFileSync(windowsFile, JSON.stringify({
@@ -74,7 +91,19 @@ describe("device-lab admin CLI formatters", () => {
         writeFileSync(otherOwnerFile, JSON.stringify({
             devices: [{ id: "android-foreign", name: "Foreign", status: "running", platform: "android" }],
         }));
-        return { owner, androidFile, iosFile, windowsFile, macosFile, otherOwnerFile };
+        for (const [stateKey, hardwareId, deviceId] of [
+            ["android-device", "R5CREAL123", "android-real"],
+            ["android-device", "R5CREAL456", "android-real-recording"],
+            ["ios-device", "REAL-IOS-UDID", "ios-real"],
+        ]) {
+            const lock = physicalLeaseLockPath(stateKey, hardwareId);
+            mkdirSync(dirname(lock), { recursive: true });
+            writeFileSync(lock, JSON.stringify({ backend: stateKey, hardwareId, ownerId: owner, deviceId }));
+        }
+        const foreignLock = physicalLeaseLockPath("android-device", "FOREIGN-REAL");
+        mkdirSync(dirname(foreignLock), { recursive: true });
+        writeFileSync(foreignLock, JSON.stringify({ backend: "android-device", hardwareId: "FOREIGN-REAL", ownerId: "other-owner", deviceId: "foreign-real" }));
+        return { owner, androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile };
     }
 
     function readDeviceIds(file: string) {
@@ -84,6 +113,10 @@ describe("device-lab admin CLI formatters", () => {
 
     function readDevices(file: string) {
         return (JSON.parse(readFileSync(file, "utf-8")) as { devices: Array<Record<string, unknown>> }).devices;
+    }
+
+    function physicalLeaseLockPath(stateKey: string, hardwareId: string) {
+        return join(homeDir!, ".ccc/devices/physical-leases", stateKey, "locks", `${encodeURIComponent(hardwareId)}.json`);
     }
 
     function writeTool(binDir: string, name: string, body: string) {
@@ -101,7 +134,9 @@ describe("device-lab admin CLI formatters", () => {
 
         expect(output).toContain(`owner: ${owner}`);
         expect(output).toContain("android-emulator: 2 device(s)");
+        expect(output).toContain("android-device: 2 device(s)");
         expect(output).toContain("ios-simulator: 2 device(s)");
+        expect(output).toContain("ios-device: 1 device(s)");
         expect(output).not.toContain("android-foreign");
     });
 
@@ -112,10 +147,14 @@ describe("device-lab admin CLI formatters", () => {
         const output = formatDevicesList(cwd);
 
         expect(output).toContain("android-emulator:");
+        expect(output).toContain("android-device:");
         expect(output).toContain("android-owned  name=Pixel  status=stopped  platform=android");
         expect(output).toContain("android-running  name=Pixel Running  status=running  platform=android");
+        expect(output).toContain("android-real  name=Real Pixel  status=attached  platform=android");
         expect(output).toContain("ios-owned  name=iPhone  status=booted  platform=ios");
         expect(output).toContain("ios-stopped  name=iPhone Stopped  status=stopped  platform=ios");
+        expect(output).toContain("ios-device:");
+        expect(output).toContain("ios-real  name=Real iPhone  status=attached  platform=ios");
         expect(output).toContain("windows-sandbox:");
         expect(output).not.toContain("android-foreign");
     });
@@ -128,6 +167,8 @@ describe("device-lab admin CLI formatters", () => {
         const doctor = formatDevicesDoctor(cwd);
 
         expect(backends).toContain("android-emulator:");
+        expect(backends).toContain("android-device:");
+        expect(backends).toContain("ios-device:");
         expect(backends).toContain("adb: missing");
         expect(backends).toContain("xcrun: missing");
         expect(doctor).toContain("Startup policy: lazy; these diagnostics do not start devices");
@@ -143,7 +184,9 @@ describe("device-lab admin CLI formatters", () => {
         expect(smoke).toContain("=== CCC Devices Smoke ===");
         expect(smoke).toContain("Startup policy: lazy; smoke checks do not start devices");
         expect(smoke).toContain("android-emulator: SKIP - missing adb, emulator");
+        expect(smoke).toContain("android-device: SKIP - missing adb");
         expect(smoke).toContain("ios-simulator: SKIP - missing xcrun");
+        expect(smoke).toContain("ios-device: SKIP - missing xcrun, xcodebuild");
         expect(smoke).toContain("windows-sandbox: SKIP - missing wsb");
         expect(smoke).toContain("macos-vm: SKIP - missing tart, vz, utmctl");
     });
@@ -157,15 +200,18 @@ describe("device-lab admin CLI formatters", () => {
         writeTool(binDir, "adb", "echo adb-version; exit 0");
         writeTool(binDir, "emulator", "echo avd-one; exit 0");
         writeTool(binDir, "xcrun", "echo '{\"devices\":{}}'; exit 0");
+        writeTool(binDir, "xcodebuild", "echo Xcode; exit 0");
         writeTool(binDir, "wsb", "echo wsb-help; exit 0");
         writeTool(binDir, "tart", "echo tart-version >&2; exit 7");
 
         const smoke = formatDevicesSmoke(cwd);
 
         expect(smoke).toContain("android-emulator: PASS - adb and emulator responded");
+        expect(smoke).toContain("android-device: PASS - adb physical-device inventory responded");
         expect(smoke).toContain(`${join(binDir, "adb")} version -> 0`);
         expect(smoke).toContain(`${join(binDir, "emulator")} -list-avds -> 0`);
         expect(smoke).toContain("ios-simulator: PASS - xcrun simctl inventory responded");
+        expect(smoke).toContain("ios-device: PASS - xcrun xctrace and xcodebuild responded");
         expect(smoke).toContain("windows-sandbox: PASS - wsb CLI responded");
         expect(smoke).toContain("macos-vm: FAIL - tart-version");
         expect(smoke).toContain(`${join(binDir, "tart")} --version -> 7`);
@@ -201,7 +247,7 @@ describe("device-lab admin CLI formatters", () => {
 
     it("cleans up running current-owner devices across all backends and preserves stopped and foreign devices", () => {
         const cwd = "/project/admin-cleanup-all-test";
-        const { androidFile, iosFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
+        const { androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
         const binDir = join(homeDir!, "bin");
         const logPath = join(homeDir!, "cleanup.log");
         mkdirSync(binDir, { recursive: true });
@@ -214,23 +260,36 @@ describe("device-lab admin CLI formatters", () => {
         const cleanup = cleanupOwnerDevices(cwd);
 
         expect(cleanup.results.filter((result) => result.status === "stopped").map((result) => result.id).sort()).toEqual([
+            "android-real",
+            "android-real-recording",
             "android-running",
             "ios-owned",
+            "ios-real",
             "macos-owned",
             "windows-owned",
         ]);
         expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(readDeviceIds(androidDeviceFile)).toEqual(["android-real:detached", "android-real-recording:detached"]);
         expect(readDeviceIds(iosFile)).toEqual(["ios-owned:stopped", "ios-stopped:stopped"]);
+        expect(readDeviceIds(iosDeviceFile)).toEqual(["ios-real:detached"]);
         expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:stopped"]);
         expect(readDeviceIds(macosFile)).toEqual(["macos-owned:stopped", "macos-stopped:stopped"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain("adb -s emulator-5582 emu kill");
+        expect(log).toContain("adb -s R5CREAL456 shell pkill -2 screenrecord");
         expect(log).toContain("xcrun simctl shutdown IOS-UDID");
+        expect(log).not.toContain("xcrun simctl shutdown REAL-IOS-UDID");
+        expect(log).not.toContain("adb -s R5CREAL123 emu kill");
+        expect(log).not.toContain("adb -s R5CREAL456 emu kill");
         expect(log).toContain("wsb stop");
         expect(log).toContain("tart stop ccc-mac");
         expect(log).not.toContain("IOS-STOPPED");
         expect(log).not.toContain("ccc-mac-stopped");
+        expect(() => readFileSync(physicalLeaseLockPath("android-device", "R5CREAL123"), "utf-8")).toThrow();
+        expect(() => readFileSync(physicalLeaseLockPath("android-device", "R5CREAL456"), "utf-8")).toThrow();
+        expect(() => readFileSync(physicalLeaseLockPath("ios-device", "REAL-IOS-UDID"), "utf-8")).toThrow();
+        expect(readFileSync(physicalLeaseLockPath("android-device", "FOREIGN-REAL"), "utf-8")).toContain("other-owner");
     });
 
     it("cleans stale process metadata even when device lifecycle status is already stopped", () => {
@@ -379,20 +438,25 @@ describe("device-lab admin CLI formatters", () => {
 
     it("cleanup is idempotent and tolerates missing stop tools", () => {
         const cwd = "/project/admin-cleanup-idempotent-test";
-        const { androidFile, iosFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
+        const { androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
 
         const first = cleanupOwnerDevices(cwd);
         const second = cleanupOwnerDevices(cwd);
 
         expect(first.results.filter((result) => result.status === "stopped").map((result) => result.id).sort()).toEqual([
+            "android-real",
+            "android-real-recording",
             "android-running",
             "ios-owned",
+            "ios-real",
             "macos-owned",
             "windows-owned",
         ]);
         expect(second.results.every((result) => result.status === "skipped")).toBe(true);
         expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(readDeviceIds(androidDeviceFile)).toEqual(["android-real:detached", "android-real-recording:detached"]);
         expect(readDeviceIds(iosFile)).toEqual(["ios-owned:stopped", "ios-stopped:stopped"]);
+        expect(readDeviceIds(iosDeviceFile)).toEqual(["ios-real:detached"]);
         expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:stopped"]);
         expect(readDeviceIds(macosFile)).toEqual(["macos-owned:stopped", "macos-stopped:stopped"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);

@@ -34,14 +34,19 @@ device-lab-mcp/
     state/
       device-store.mjs        # generic owner-scoped backend state helpers
       android-state.mjs       # owner-scoped Android state store
+      android-device-state.mjs # owner-scoped physical Android attachment store
       ios-state.mjs           # owner-scoped iOS Simulator state store
+      ios-device-state.mjs    # owner-scoped physical iOS attachment store
+      physical-lease-store.mjs # host-wide physical hardware lease locks
       windows-state.mjs       # owner-scoped Windows Sandbox state store
       macos-state.mjs         # owner-scoped macOS VM state store
     display/
       x11.mjs                 # current display target and display_* tools
     backends/
       android.mjs             # Android lifecycle and Appium Android tools
+      android-device.mjs      # physical Android USB/ADB attachment
       ios-simulator.mjs       # iOS Simulator lifecycle via simctl
+      ios-device.mjs          # physical iOS USB/Xcode attachment
       windows-sandbox.mjs     # Windows Sandbox lifecycle via wsb CLI
       macos-vm.mjs            # macOS VM provider discovery and definitions
 ```
@@ -120,7 +125,11 @@ Patterns to avoid as defaults:
 
 3. Backend adapters
    - `android-emulator`: Android SDK emulator and `adb`.
+   - `android-device`: host-connected physical Android devices through `adb`.
    - `ios-simulator`: Xcode `xcrun simctl` on macOS hosts.
+   - `ios-device`: host-connected physical iOS devices through macOS Xcode
+     tooling (`xcrun xctrace`, `xcodebuild`) and Appium/XCUITest where
+     available.
    - `windows-sandbox`: Windows Sandbox `.wsb` and `wsb` CLI on Windows hosts.
    - `macos-vm`: Apple Virtualization.framework or provider-backed macOS VM on
      macOS hosts.
@@ -197,25 +206,40 @@ Required common tools:
    - Deletes an owned stopped device definition.
    - Refuses running devices unless `force` is true.
 
-5. `device_start`
+5. `device_attach`
+   - Attaches a host-connected physical device to the current owner namespace.
+   - Android requires a visible `adb devices -l` serial in `device` state.
+   - iOS requires a visible `xcrun xctrace list devices` UDID on a macOS host.
+   - Does not create, power on, or globally lock physical hardware outside the
+     current CCC owner state.
+
+6. `device_detach`
+   - Removes an owned physical-device attachment and clears local volatile
+     session metadata.
+   - Does not power off, erase, disconnect, or otherwise mutate the physical
+     device.
+
+7. `device_start`
    - Starts or attaches to an owned device instance.
    - Returns readiness state, endpoint metadata, and next useful actions.
 
-6. `device_stop`
+8. `device_stop`
    - Stops an owned running instance.
+   - For physical devices, this is metadata/session cleanup only and leaves the
+     device attached to the host.
 
-7. `device_status`
+9. `device_status`
    - Reports lifecycle, boot readiness, logs, ports, and known errors.
 
-8. `device_exec`
+10. `device_exec`
    - Runs a command where supported.
    - Android uses `adb shell`; iOS uses `simctl spawn` where supported; Windows
      and macOS VM may use a guest helper for stdout/stderr.
 
-9. `device_screenshot`
+11. `device_screenshot`
    - Captures screen evidence to an owner-scoped artifact path.
 
-10. `device_image_create` / `device_image_clone`
+12. `device_image_create` / `device_image_clone`
     - Creates and clones owner-scoped VM images where supported.
     - macOS Tart uses provider clone operations to create a stopped device
       definition from a base image or existing owned provider instance.
@@ -451,6 +475,33 @@ AVD provisioning hardening status:
   default when `adb` is available, while preserving an explicit
   `waitForBoot=false` path for callers that only need process launch.
 
+Physical Android device attachment status:
+
+- `android-device` is a separate non-creatable backend for real devices
+  connected to the CCC host over USB or an already configured ADB transport.
+- Users connect the device to the host, enable Developer Options and USB
+  debugging, approve the RSA trust prompt, and CCC verifies that
+  `adb devices -l` reports the serial in `device` state.
+- `device_inventory` reports host ADB devices, including unauthorized/offline
+  states, without claiming or starting anything.
+- `device_attach` stores an owner-scoped lease for a real serial and refuses
+  `emulator-*`, unauthorized, offline, missing, duplicate, or already-owned
+  serials in the current owner namespace.
+- Physical serials are additionally protected by host-wide hardware lock files
+  under `~/.ccc/devices/physical-leases/android-device/locks`, so two CCC
+  owners cannot attach and command the same phone at the same time.
+- `device_start` is a no-op readiness acknowledgement for physical Android
+  devices; `device_stop` clears Appium/recording/pid metadata and leaves the
+  phone attached; `device_detach` removes only the CCC owner lease.
+- Safe ADB-backed actions are exposed for shell exec, screenshot, UI dump,
+  tap/key/navigation, app install/launch/reset, file transfer, clipboard, and
+  wait helpers. Emulator-only mutation such as battery/network simulation
+  returns explicit diagnostics for real devices.
+- Cleanup on container teardown may stop owner-scoped Appium/screenrecord
+  helper processes, clear volatile metadata, mark the physical attachment
+  detached, and release the host-wide hardware lock, but it never sends
+  `adb emu kill` to physical-device serials.
+
 ### iOS Simulator
 
 Prerequisites:
@@ -515,6 +566,31 @@ iOS Appium/XCUITest foundation status:
   `xcrun`, Appium, the XCUITest driver, or `xcodebuild` are unavailable.
 - Tests cover both Linux missing-prerequisite diagnostics and fake
   Appium/XCUITest discovery without requiring real macOS, Xcode, or Appium.
+
+Physical iOS device attachment status:
+
+- `ios-device` is a separate non-creatable backend for real iPhones/iPads
+  connected to a macOS host over USB and trusted through the iOS
+  "Trust This Computer" prompt.
+- Host prerequisites are `xcrun` and `xcodebuild`; full automation still relies
+  on the Appium/XCUITest layer and normal Apple signing/provisioning
+  requirements.
+- `device_inventory` parses `xcrun xctrace list devices` and excludes simulator
+  entries so agents see only physical-device UDIDs.
+- `device_attach` stores an owner-scoped lease for a visible UDID and refuses
+  missing or duplicate UDIDs in the current owner namespace.
+- Physical UDIDs are additionally protected by host-wide hardware lock files
+  under `~/.ccc/devices/physical-leases/ios-device/locks`, so two CCC owners
+  cannot attach and command the same iPhone/iPad at the same time.
+- `device_start` is a no-op readiness acknowledgement; `device_stop` and
+  teardown cleanup clear owner-scoped Appium/recording/pid metadata but never
+  call `simctl shutdown`, erase, power off, or disconnect the physical device.
+  Teardown cleanup also marks the attachment detached and releases the
+  host-wide hardware lock so later CCC owners can attach the same trusted
+  device.
+- Base simctl-only actions such as screenshot/install/launch return explicit
+  diagnostics for physical iOS devices until routed through Appium/XCUITest or
+  a dedicated Xcode device-control adapter.
 
 iOS Appium/XCUITest session status:
 
