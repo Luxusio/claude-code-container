@@ -165,34 +165,57 @@ function stopMacosArgs(provider: string, instance: string): string[] | null {
     return null;
 }
 
+function lifecycleActive(device: DeviceRecord): boolean {
+    return ["running", "starting", "booted"].includes(device.status || "");
+}
+
+function appiumServerPid(device: DeviceRecord): unknown {
+    const appium = device.appium as { serverPid?: unknown } | null | undefined;
+    return appium?.serverPid;
+}
+
+function recordingPid(device: DeviceRecord): unknown {
+    const recording = device.recording as { pid?: unknown } | null | undefined;
+    return recording?.pid;
+}
+
+function hasVolatileProcessMetadata(device: DeviceRecord): boolean {
+    return Boolean(device.pid || appiumServerPid(device) || recordingPid(device) || device.recording || device.appium);
+}
+
 function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandResult[] {
     const results: CommandResult[] = [];
+    killPid(match.device.pid);
+    killPid(recordingPid(match.device));
+    killPid(appiumServerPid(match.device));
+
     if (match.backend.stateKey === "android") {
         const adb = commandPath("adb");
         const serial = serialForAndroid(match.device);
-        if (adb && serial) {
+        if (adb && serial && match.device.recording) {
+            const result = runCommand(adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"], timeoutMs);
+            if (result) results.push(result);
+        }
+        if (adb && serial && lifecycleActive(match.device)) {
             const result = runCommand(adb, ["-s", serial, "emu", "kill"], timeoutMs);
             if (result) results.push(result);
         }
-        killPid(match.device.pid);
-        const appium = match.device.appium as { serverPid?: unknown } | null | undefined;
-        if (appium) killPid(appium.serverPid);
     } else if (match.backend.stateKey === "ios") {
         const xcrun = commandPath("xcrun");
         const target = simctlTarget(match.device);
-        if (xcrun && target) {
+        if (xcrun && target && lifecycleActive(match.device)) {
             const result = runCommand(xcrun, ["simctl", "shutdown", target], timeoutMs);
             if (result) results.push(result);
         }
-        const appium = match.device.appium as { serverPid?: unknown } | null | undefined;
-        if (appium) killPid(appium.serverPid);
     } else if (match.backend.stateKey === "windows") {
-        const result = runCommand(commandPath("wsb"), ["stop"], timeoutMs);
-        if (result) results.push(result);
+        if (lifecycleActive(match.device)) {
+            const result = runCommand(commandPath("wsb"), ["stop"], timeoutMs);
+            if (result) results.push(result);
+        }
     } else if (match.backend.stateKey === "macos") {
         const provider = typeof match.device.provider === "string" ? match.device.provider : null;
         const instance = typeof match.device.providerInstance === "string" ? match.device.providerInstance : null;
-        if (provider && instance) {
+        if (provider && instance && lifecycleActive(match.device)) {
             const args = stopMacosArgs(provider, instance);
             if (args) {
                 const result = runCommand(commandPath(provider), args, timeoutMs);
@@ -209,12 +232,13 @@ function stoppedDevice(device: DeviceRecord): DeviceRecord {
         status: "stopped",
         pid: null,
         appium: null,
+        recording: null,
         updatedAt: now(),
     };
 }
 
 function shouldCleanupDevice(device: DeviceRecord): boolean {
-    return ["running", "starting", "booted"].includes(device.status || "");
+    return lifecycleActive(device) || hasVolatileProcessMetadata(device);
 }
 
 export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ownerId: string; results: CleanupDeviceResult[] } {

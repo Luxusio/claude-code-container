@@ -1,7 +1,7 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     cleanupOwnerDevices,
     deviceLabOwnerId,
@@ -21,6 +21,7 @@ describe("device-lab admin CLI formatters", () => {
     let homeDir: string | null = null;
 
     afterEach(() => {
+        vi.restoreAllMocks();
         if (homeDir) rmSync(homeDir, { recursive: true, force: true });
         homeDir = null;
         if (originalHome === undefined) delete process.env.HOME;
@@ -79,6 +80,10 @@ describe("device-lab admin CLI formatters", () => {
     function readDeviceIds(file: string) {
         const parsed = JSON.parse(readFileSync(file, "utf-8")) as { devices: Array<{ id: string; status?: string }> };
         return parsed.devices.map((device) => `${device.id}:${device.status || "unknown"}`);
+    }
+
+    function readDevices(file: string) {
+        return (JSON.parse(readFileSync(file, "utf-8")) as { devices: Array<Record<string, unknown>> }).devices;
     }
 
     function writeTool(binDir: string, name: string, body: string) {
@@ -226,6 +231,150 @@ describe("device-lab admin CLI formatters", () => {
         expect(log).toContain("tart stop ccc-mac");
         expect(log).not.toContain("IOS-STOPPED");
         expect(log).not.toContain("ccc-mac-stopped");
+    });
+
+    it("cleans stale process metadata even when device lifecycle status is already stopped", () => {
+        const cwd = "/project/admin-cleanup-stale-metadata-test";
+        const { androidFile, iosFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
+        const android = readDevices(androidFile);
+        android.push({
+            id: "android-stale-recording",
+            name: "Pixel Stale Recording",
+            status: "stopped",
+            platform: "android",
+            serial: "emulator-5590",
+            pid: 10101,
+            appium: { serverPid: 20202 },
+            recording: { active: true, pid: 30303, provider: "adb-screenrecord" },
+        });
+        writeFileSync(androidFile, JSON.stringify({ devices: android }));
+        const ios = readDevices(iosFile);
+        ios.push({
+            id: "ios-stale-recording",
+            name: "iPhone Stale Recording",
+            status: "stopped",
+            platform: "ios",
+            udid: "IOS-STALE",
+            appium: { serverPid: 40404 },
+            recording: { active: true, pid: 50505, provider: "simctl-recordVideo" },
+        });
+        writeFileSync(iosFile, JSON.stringify({ devices: ios }));
+        const windows = readDevices(windowsFile);
+        windows.push({
+            id: "windows-stale-pid",
+            name: "Win Stale Pid",
+            status: "stopped",
+            platform: "windows",
+            pid: 60606,
+        });
+        writeFileSync(windowsFile, JSON.stringify({ devices: windows }));
+        const macos = readDevices(macosFile);
+        macos.push({
+            id: "macos-stale-pid",
+            name: "Mac Stale Pid",
+            status: "stopped",
+            platform: "macos",
+            provider: "tart",
+            providerInstance: "ccc-mac-stale",
+            pid: 70707,
+        });
+        writeFileSync(macosFile, JSON.stringify({ devices: macos }));
+        const binDir = join(homeDir!, "bin");
+        const logPath = join(homeDir!, "cleanup-stale.log");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", `echo "adb $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "xcrun", `echo "xcrun $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "wsb", `echo "wsb $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "tart", `echo "tart $*" >> "${logPath}"; exit 0`);
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+
+        const cleanup = cleanupOwnerDevices(cwd);
+
+        expect(cleanup.results.filter((result) => result.status === "stopped").map((result) => result.id)).toEqual(expect.arrayContaining([
+            "android-running",
+            "android-stale-recording",
+            "ios-owned",
+            "ios-stale-recording",
+            "macos-stale-pid",
+            "macos-owned",
+            "windows-stale-pid",
+            "windows-owned",
+        ]));
+        expect(killSpy).toHaveBeenCalledWith(10101);
+        expect(killSpy).toHaveBeenCalledWith(20202);
+        expect(killSpy).toHaveBeenCalledWith(30303);
+        expect(killSpy).toHaveBeenCalledWith(40404);
+        expect(killSpy).toHaveBeenCalledWith(50505);
+        expect(killSpy).toHaveBeenCalledWith(60606);
+        expect(killSpy).toHaveBeenCalledWith(70707);
+
+        const androidAfter = readDevices(androidFile);
+        expect(androidAfter.find((device) => device.id === "android-stale-recording")).toEqual(expect.objectContaining({
+            status: "stopped",
+            pid: null,
+            appium: null,
+            recording: null,
+        }));
+        const iosAfter = readDevices(iosFile);
+        expect(iosAfter.find((device) => device.id === "ios-stale-recording")).toEqual(expect.objectContaining({
+            status: "stopped",
+            appium: null,
+            recording: null,
+        }));
+        expect(readDevices(windowsFile).find((device) => device.id === "windows-stale-pid")).toEqual(expect.objectContaining({
+            status: "stopped",
+            pid: null,
+        }));
+        expect(readDevices(macosFile).find((device) => device.id === "macos-stale-pid")).toEqual(expect.objectContaining({
+            status: "stopped",
+            pid: null,
+        }));
+        expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("adb -s emulator-5590 shell pkill -2 screenrecord");
+        expect(log).not.toContain("adb -s emulator-5590 emu kill");
+        expect(log).not.toContain("xcrun simctl shutdown IOS-STALE");
+        expect(log).not.toContain("tart stop ccc-mac-stale");
+    });
+
+    it("clears volatile metadata when process.kill throws or pid metadata is invalid", () => {
+        const cwd = "/project/admin-cleanup-stale-pid-values-test";
+        const { androidFile } = setupFixture(cwd);
+        const android = readDevices(androidFile);
+        android.push({
+            id: "android-invalid-pids",
+            name: "Pixel Invalid Pids",
+            status: "stopped",
+            platform: "android",
+            serial: "emulator-5594",
+            pid: 0,
+            appium: { serverPid: "not-a-number" },
+            recording: { active: true, pid: 80808, provider: "adb-screenrecord" },
+        });
+        writeFileSync(androidFile, JSON.stringify({ devices: android }));
+        const binDir = join(homeDir!, "bin");
+        const logPath = join(homeDir!, "cleanup-invalid-pids.log");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", `echo "adb $*" >> "${logPath}"; exit 0`);
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(() => {
+            throw new Error("stale pid");
+        });
+
+        const cleanup = cleanupOwnerDevices(cwd);
+
+        expect(cleanup.results.find((result) => result.id === "android-invalid-pids")?.status).toBe("stopped");
+        expect(killSpy).toHaveBeenCalledWith(80808);
+        expect(killSpy).not.toHaveBeenCalledWith(0);
+        expect(killSpy).not.toHaveBeenCalledWith("not-a-number");
+        expect(readDevices(androidFile).find((device) => device.id === "android-invalid-pids")).toEqual(expect.objectContaining({
+            status: "stopped",
+            pid: null,
+            appium: null,
+            recording: null,
+        }));
+        expect(readFileSync(logPath, "utf-8")).toContain("adb -s emulator-5594 shell pkill -2 screenrecord");
     });
 
     it("cleanup is idempotent and tolerates missing stop tools", () => {

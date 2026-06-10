@@ -746,15 +746,27 @@ Container cleanup hook status:
   Sandbox cleanup uses `wsb stop`, and macOS VM cleanup uses whitelisted
   provider stop commands (`tart`, `vz`, or `utmctl`) when provider metadata is
   available.
+- Cleanup does not rely only on lifecycle status. If an owned definition is
+  already marked stopped but still has volatile process metadata such as
+  `pid`, `appium.serverPid`, or `recording.pid`, cleanup attempts to kill those
+  PIDs and clears `appium` / `recording` metadata. Android recording cleanup
+  also sends `adb shell pkill -2 screenrecord` when serial metadata is
+  available, without forcing an emulator shutdown for stopped-only stale
+  recording metadata.
 - Cleanup is best-effort, bounded, and idempotent. Missing tools, stale PIDs,
   hanging stop commands, and failed stop commands are tolerated so CCC teardown
-  continues; owned running/starting or booted definitions are marked stopped to
-  avoid zombie state.
+  continues; owned running/starting or booted definitions and definitions with
+  stale volatile process metadata are marked stopped with process/session
+  metadata cleared to avoid zombie state.
+- Cleanup is not a host-wide process-table sweeper and cannot run after
+  uncatchable termination such as `SIGKILL` or host power loss. The next
+  explicit owner-scoped cleanup pass still clears stale owner-state process
+  metadata without touching foreign owners.
 - Automated tests cover Android, iOS, Windows Sandbox, and macOS VM cleanup
-  command mapping, stopped-device no-op behavior, repeated cleanup,
-  missing-tool behavior, hanging/timeout stop commands, failing stop commands,
-  foreign-owner preservation, and lifecycle wiring through both session cleanup
-  and explicit container stop.
+  command mapping, stopped-device no-op behavior, stopped-but-live process
+  metadata cleanup, repeated cleanup, missing-tool behavior, hanging/timeout
+  stop commands, failing stop commands, foreign-owner preservation, and
+  lifecycle wiring through both session cleanup and explicit container stop.
 
 ## Integration with existing CCC
 
