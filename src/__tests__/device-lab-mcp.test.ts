@@ -55,6 +55,11 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_status");
         expect(names).toContain("device_exec");
         expect(names).toContain("device_screenshot");
+        expect(names).toContain("device_image_create");
+        expect(names).toContain("device_image_clone");
+        expect(names).toContain("device_snapshot_create");
+        expect(names).toContain("device_snapshot_restore");
+        expect(names).toContain("device_snapshot_delete");
         expect(names).toContain("device_record_video_start");
         expect(names).toContain("device_record_video_stop");
         expect(names).toContain("device_record_video_status");
@@ -533,9 +538,24 @@ describe("macOS VM backend with fake Tart provider", () => {
         const tartPath = join(binDir, "tart");
         writeFileSync(tartPath, `#!/bin/sh
 echo "tart $*" >> "$FAKE_TART_LOG"
+if [ "$1" = "clone" ]; then
+  case "$2" in
+    *fail-restore*) exit 8 ;;
+    *restore-*fail-activate*) exit 7 ;;
+  esac
+  case "$3" in
+    *fail-snapshot*) exit 9 ;;
+  esac
+fi
 exit 0
 `);
         chmodSync(tartPath, 0o755);
+        const vzPath = join(binDir, "vz");
+        writeFileSync(vzPath, `#!/bin/sh
+echo "vz $*" >> "$FAKE_TART_LOG"
+exit 0
+`);
+        chmodSync(vzPath, 0o755);
         const sshPath = join(binDir, "ssh");
 writeFileSync(sshPath, `#!/bin/sh
 echo "ssh $*" >> "$FAKE_TART_LOG"
@@ -598,6 +618,67 @@ esac
         expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
         expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
 
+        const imageCreate = await handleMacosTool("device_image_create", {
+            backend: "macos-vm",
+            name: "Base Image",
+            sourceImage: "ghcr.io/example/macos-base:latest",
+            provider: "auto",
+            memoryMb: 4096,
+            cpus: 2,
+        });
+        expect(imageCreate?.isError).not.toBe(true);
+        const imageCreated = JSON.parse(((imageCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; provider: string; providerInstance: string; imageSource: string; provisioning: string };
+        };
+        expect(imageCreated.device).toEqual(expect.objectContaining({
+            id: "macos-base-image",
+            provider: "tart",
+            imageSource: "ghcr.io/example/macos-base:latest",
+            provisioning: "image-created",
+        }));
+        expect(imageCreated.device.providerInstance).toContain("macos-base-image");
+
+        const imageClone = await handleMacosTool("device_image_clone", {
+            backend: "macos-vm",
+            name: "Base Clone",
+            sourceDeviceId: "macos-base-image",
+        });
+        expect(imageClone?.isError).not.toBe(true);
+        const imageCloned = JSON.parse(((imageClone?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; provider: string; providerInstance: string; clonedFrom: { deviceId: string; providerInstance: string }; provisioning: string };
+        };
+        expect(imageCloned.device).toEqual(expect.objectContaining({
+            id: "macos-base-clone",
+            provider: "tart",
+            provisioning: "image-cloned",
+        }));
+        expect(imageCloned.device.clonedFrom.deviceId).toBe("macos-base-image");
+        expect(imageCloned.device.clonedFrom.providerInstance).toBe(imageCreated.device.providerInstance);
+
+        const startBaseImage = await handleMacosTool("device_start", { deviceId: "macos-base-image" });
+        expect(startBaseImage?.isError).not.toBe(true);
+        const forceClone = await handleMacosTool("device_image_clone", {
+            backend: "macos-vm",
+            name: "Forced Clone",
+            sourceDeviceId: "macos-base-image",
+            force: true,
+        });
+        expect(forceClone?.isError).not.toBe(true);
+        const baseStatusAfterForceClone = await handleMacosTool("device_status", { deviceId: "macos-base-image" });
+        const baseAfterForceClone = JSON.parse(((baseStatusAfterForceClone?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string };
+        };
+        expect(baseAfterForceClone.device.status).toBe("stopped");
+
+        const unsupportedProvider = await handleMacosTool("device_image_create", {
+            backend: "macos-vm",
+            name: "Unsupported VZ Image",
+            sourceImage: "ghcr.io/example/macos-base:latest",
+            provider: "vz",
+        });
+        expect(unsupportedProvider?.isError).toBe(true);
+        expect((unsupportedProvider?.content as Array<{ text?: string }>)[0].text).toContain("Tart is currently required");
+
         const start = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
         expect(start?.isError).not.toBe(true);
         const started = JSON.parse(((start?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -605,6 +686,190 @@ esac
         };
         expect(started.device.status).toBe("running");
         expect(started.device.provider).toBe("tart");
+
+        const snapshotWhileRunning = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Before Install",
+        });
+        expect(snapshotWhileRunning?.isError).toBe(true);
+        expect((snapshotWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to snapshot");
+
+        const failingSnapshot = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Snapshot",
+            force: true,
+        });
+        expect(failingSnapshot?.isError).toBe(true);
+        const statusAfterFailingSnapshot = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const failingSnapshotStatus = JSON.parse(((statusAfterFailingSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; snapshots: unknown[] };
+        };
+        expect(failingSnapshotStatus.device.status).toBe("stopped");
+        expect(failingSnapshotStatus.device.snapshots || []).toEqual([]);
+
+        const restartAfterFailedSnapshot = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartAfterFailedSnapshot?.isError).not.toBe(true);
+
+        const snapshotCreate = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Before Install",
+            force: true,
+        });
+        expect(snapshotCreate?.isError).not.toBe(true);
+        const snapshotCreated = JSON.parse(((snapshotCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; snapshots: Array<{ id: string; name: string; providerInstance: string }> };
+            snapshot: { id: string; name: string; providerInstance: string };
+        };
+        expect(snapshotCreated.device.status).toBe("stopped");
+        expect(snapshotCreated.snapshot).toEqual(expect.objectContaining({
+            id: "snapshot-before-install",
+            name: "Before Install",
+        }));
+        expect(snapshotCreated.device.snapshots).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "snapshot-before-install", name: "Before Install" }),
+        ]));
+
+        const restartAfterSnapshot = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartAfterSnapshot?.isError).not.toBe(true);
+
+        const restoreWhileRunning = await handleMacosTool("device_snapshot_restore", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Before Install",
+        });
+        expect(restoreWhileRunning?.isError).toBe(true);
+        expect((restoreWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to restore");
+
+        const failingRestore = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Restore",
+            force: true,
+        });
+        expect(failingRestore?.isError).not.toBe(true);
+        const restartBeforeFailRestore = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartBeforeFailRestore?.isError).not.toBe(true);
+        const logBeforeFailedRestore = readFileSync(logPath, "utf-8");
+        const restoreCloneFailure = await handleMacosTool("device_snapshot_restore", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Restore",
+            force: true,
+        });
+        expect(restoreCloneFailure?.isError).toBe(true);
+        const failedRestoreLogDelta = readFileSync(logPath, "utf-8").slice(logBeforeFailedRestore.length);
+        expect(failedRestoreLogDelta).toContain("fail-restore");
+        expect(failedRestoreLogDelta).not.toContain(`tart delete ${started.device.providerInstance}`);
+        const statusAfterFailedRestore = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const failedRestoreStatus = JSON.parse(((statusAfterFailedRestore?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; snapshots: Array<{ name: string }> };
+        };
+        expect(failedRestoreStatus.device.status).toBe("stopped");
+        expect(failedRestoreStatus.device.snapshots).toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: "Fail Restore" }),
+        ]));
+
+        const activationFailureSnapshot = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Activate",
+            force: true,
+        });
+        expect(activationFailureSnapshot?.isError).not.toBe(true);
+        const activationSnapshotPayload = JSON.parse(((activationFailureSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            snapshot: { providerInstance: string };
+        };
+        const restartBeforeActivationFailure = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartBeforeActivationFailure?.isError).not.toBe(true);
+        const logBeforeActivationFailure = readFileSync(logPath, "utf-8");
+        const activationFailure = await handleMacosTool("device_snapshot_restore", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Activate",
+            force: true,
+        });
+        expect(activationFailure?.isError).toBe(true);
+        expect((activationFailure?.content as Array<{ text?: string }>)[0].text).toContain("Restore candidate preserved");
+        const activationFailureDelta = readFileSync(logPath, "utf-8").slice(logBeforeActivationFailure.length);
+        expect(activationFailureDelta).toContain(activationSnapshotPayload.snapshot.providerInstance);
+        expect(activationFailureDelta).toContain("fail-activate");
+        const preservedCandidate = activationFailureDelta
+            .split("\n")
+            .find((line) => line.includes("fail-activate"))?.split(" ").pop() || "";
+        expect(preservedCandidate).toContain("restore-");
+        expect(activationFailureDelta).not.toContain(`tart delete ${preservedCandidate}`);
+        const statusAfterActivationFailure = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const activationFailureStatus = JSON.parse(((statusAfterActivationFailure?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { restoreRecovery: { candidateProviderInstance: string; snapshotName: string } };
+        };
+        expect(activationFailureStatus.device.restoreRecovery).toEqual(expect.objectContaining({
+            candidateProviderInstance: preservedCandidate,
+            snapshotName: "Fail Activate",
+        }));
+
+        const snapshotRestore = await handleMacosTool("device_snapshot_restore", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Before Install",
+            force: true,
+        });
+        expect(snapshotRestore?.isError).not.toBe(true);
+        const restored = JSON.parse(((snapshotRestore?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { status: string; restoredFrom: { id: string; name: string } };
+        };
+        expect(restored.device.status).toBe("stopped");
+        expect(restored.device.restoredFrom).toEqual(expect.objectContaining({
+            id: "snapshot-before-install",
+            name: "Before Install",
+        }));
+
+        const snapshotDelete = await handleMacosTool("device_snapshot_delete", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Before Install",
+        });
+        expect(snapshotDelete?.isError).not.toBe(true);
+        const snapshotDeleted = JSON.parse(((snapshotDelete?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deleted: string;
+            device: { snapshots: unknown[] };
+        };
+        expect(snapshotDeleted.deleted).toBe("snapshot-before-install");
+        expect(snapshotDeleted.device.snapshots).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "snapshot-fail-restore" }),
+        ]));
+        expect(snapshotDeleted.device.snapshots).not.toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "snapshot-before-install" }),
+        ]));
+
+        const failRestoreSnapshotDeleted = await handleMacosTool("device_snapshot_delete", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Restore",
+        });
+        expect(failRestoreSnapshotDeleted?.isError).not.toBe(true);
+        const failRestoreDeleted = JSON.parse(((failRestoreSnapshotDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deleted: string;
+            device: { snapshots: unknown[] };
+        };
+        expect(failRestoreDeleted.deleted).toBe("snapshot-fail-restore");
+        expect(failRestoreDeleted.device.snapshots).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: "snapshot-fail-activate" }),
+        ]));
+
+        const failActivateSnapshotDeleted = await handleMacosTool("device_snapshot_delete", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Activate",
+        });
+        expect(failActivateSnapshotDeleted?.isError).not.toBe(true);
+        const failActivateDeleted = JSON.parse(((failActivateSnapshotDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            deleted: string;
+            device: { snapshots: unknown[] };
+        };
+        expect(failActivateDeleted.deleted).toBe("snapshot-fail-activate");
+        expect(failActivateDeleted.device.snapshots).toEqual([]);
+
+        const restartAfterRestore = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartAfterRestore?.isError).not.toBe(true);
+
+        const cloneWhileRunning = await handleMacosTool("device_image_clone", {
+            backend: "macos-vm",
+            name: "Running Clone",
+            sourceDeviceId: "macos-fake-tart",
+        });
+        expect(cloneWhileRunning?.isError).toBe(true);
+        expect((cloneWhileRunning?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to clone");
 
         const exec = await handleMacosTool("device_exec", { deviceId: "macos-fake-tart", command: "whoami" });
         expect(exec?.isError).not.toBe(true);
@@ -644,10 +909,28 @@ esac
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`tart run ${started.device.providerInstance}`);
         expect(log).toContain(`tart stop ${started.device.providerInstance}`);
+        expect(log).toContain(`tart clone ghcr.io/example/macos-base:latest ${imageCreated.device.providerInstance}`);
+        expect(log).toContain(`tart clone ${imageCreated.device.providerInstance} ${imageCloned.device.providerInstance}`);
+        expect(log).toContain(`tart clone ${imageCreated.device.providerInstance} `);
+        expect(log).toContain(`tart clone ${started.device.providerInstance} ${snapshotCreated.snapshot.providerInstance}`);
+        expect(log).toContain("tart clone ");
+        expect(log).toContain("fail-snapshot");
+        expect(log).toContain("fail-restore");
+        expect(log).toContain(`tart delete ${started.device.providerInstance}`);
+        expect(log).toContain(`tart clone ${snapshotCreated.snapshot.providerInstance} `);
+        expect(log).toContain(`tart clone ${started.device.providerInstance}-restore-`);
+        expect(log).toContain(`tart delete ${snapshotCreated.snapshot.providerInstance}`);
+        expect(log).not.toContain("vz clone");
         expect(log).toContain("ssh -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no ccc@127.0.0.1 whoami");
         expect(log).toContain("scp -P 2222 -o BatchMode=yes -o StrictHostKeyChecking=no");
         expect(log).toContain("screencapture -x /tmp/ccc-macos-fake-tart-screenshot.png");
 
+        const clonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-clone" });
+        expect(clonedDeleted?.isError).not.toBe(true);
+        const forcedClonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-forced-clone" });
+        expect(forcedClonedDeleted?.isError).not.toBe(true);
+        const imageDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-image" });
+        expect(imageDeleted?.isError).not.toBe(true);
         const deleted = await handleMacosTool("device_delete", { deviceId: "macos-fake-tart" });
         expect(deleted?.isError).not.toBe(true);
     });

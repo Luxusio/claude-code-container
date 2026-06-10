@@ -215,7 +215,19 @@ Required common tools:
 9. `device_screenshot`
    - Captures screen evidence to an owner-scoped artifact path.
 
-10. `device_record_video_start` / `device_record_video_stop` /
+10. `device_image_create` / `device_image_clone`
+    - Creates and clones owner-scoped VM images where supported.
+    - macOS Tart uses provider clone operations to create a stopped device
+      definition from a base image or existing owned provider instance.
+    - Unsupported macOS VM providers must return explicit diagnostics.
+
+11. `device_snapshot_create` / `device_snapshot_restore` /
+    `device_snapshot_delete`
+    - Manages owner-scoped VM snapshots where supported.
+    - macOS Tart represents snapshots as owner-scoped provider clones and
+      refuses running-device snapshot/restore operations unless `force` is set.
+
+12. `device_record_video_start` / `device_record_video_stop` /
     `device_record_video_status`
     - Starts, stops, and inspects owner-scoped video recording state.
     - Android uses `adb shell screenrecord`, with a bounded
@@ -224,20 +236,18 @@ Required common tools:
     - Windows Sandbox and macOS VM currently return explicit unsupported
       diagnostics until their guest-helper or SSH recording channel exists.
 
-11. `device_upload` / `device_download`
+13. `device_upload` / `device_download`
     - Transfers files through owner-scoped scratch paths.
 
-12. `device_install_app` / `device_launch_app`
+14. `device_install_app` / `device_launch_app`
     - Installs and launches APK, `.app`, `.ipa` where supported, or Windows/macOS
       app bundles where a backend supports it.
 
-13. `device_reset`
+15. `device_reset`
     - Resets owned device state without deleting the definition.
 
 Optional future tools:
 
-- `device_snapshot_create`
-- `device_snapshot_restore`
 - `device_network_set`
 - `device_artifacts`
 
