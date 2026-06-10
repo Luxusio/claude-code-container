@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { readFileSync, unlinkSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
+import { mkdirSync, readFileSync, unlinkSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { dirname, join } from "path";
 import { commandPath, localBinPath, run, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
@@ -58,6 +58,9 @@ export function iosBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_record_video_start",
+            "device_record_video_stop",
+            "device_record_video_status",
             "device_upload",
             "device_download",
             "device_reset",
@@ -88,6 +91,14 @@ function iosDeviceId(name) {
 
 function simctlTarget(device) {
     return device.udid || device.simulatorName || device.name || device.id;
+}
+
+function iosRecordingDir(device) {
+    return join(homedir(), ".ccc/devices/owners", ownerId(), "ios", device.id, "recordings");
+}
+
+function iosRecordingLocalPath(device) {
+    return join(iosRecordingDir(device), `recording-${Date.now()}.mp4`);
 }
 
 function appiumPortForIosDevice(id) {
@@ -131,6 +142,62 @@ function missingIosAppiumResult(discovery) {
 
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRecorderProcess(child, label) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => done(null), 150);
+        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
+        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
+    });
+}
+
+function processIsAlive(pid) {
+    if (!pid) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 3000) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        if (!processIsAlive(pid)) return true;
+        await sleep(50);
+    }
+    return !processIsAlive(pid);
+}
+
+function reconcileIosRecording(device) {
+    if (!device?.recording?.active || !device.recording.pid || processIsAlive(device.recording.pid)) return device;
+    return updateIosDevice(device.id, (item) => ({
+        ...item,
+        recording: null,
+        updatedAt: now(),
+    })) || { ...device, recording: null };
+}
+
+function monitorIosRecordingExit(deviceId, pid) {
+    return () => {
+        const current = findIosDevice(deviceId);
+        if (current?.recording?.active && current.recording.pid === pid) {
+            updateIosDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: now(),
+            }));
+        }
+    };
 }
 
 async function fetchJson(url, options = {}) {
@@ -477,6 +544,10 @@ export async function handleIosTool(name, args) {
             if (!device) return undefined;
 
             const discovery = iosDiscovery();
+            if (device.recording?.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+                await waitForProcessExit(device.recording.pid, 1000);
+            }
             if (discovery.available) {
                 run(discovery.xcrun, ["simctl", "shutdown", simctlTarget(device)]);
             }
@@ -488,6 +559,7 @@ export async function handleIosTool(name, args) {
                 ...item,
                 status: "stopped",
                 appium: null,
+                recording: null,
                 updatedAt: now(),
             }));
             return jsonResult({ device: updated });
@@ -521,6 +593,77 @@ export async function handleIosTool(name, args) {
             const base64 = readFileSync(ssPath).toString("base64");
             try { unlinkSync(ssPath); } catch { /* ignore */ }
             return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
+        }
+
+        case "device_record_video_status": {
+            const { deviceId } = args;
+            const found = findIosDevice(deviceId);
+            const device = reconcileIosRecording(found);
+            if (!device) return undefined;
+            return jsonResult({ deviceId, recording: device.recording || null, provider: "simctl-recordVideo" });
+        }
+
+        case "device_record_video_start": {
+            const { deviceId, localPath } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (device.recording?.active) return textResult(false, `iOS Simulator recording already active for ${deviceId}`);
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const resolvedLocalPath = localPath || iosRecordingLocalPath(device);
+            mkdirSync(iosRecordingDir(device), { recursive: true });
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const child = spawn(discovery.xcrun, ["simctl", "io", simctlTarget(device), "recordVideo", resolvedLocalPath], {
+                detached: true,
+                stdio: "ignore",
+                env: process.env,
+            });
+            const startError = await waitForRecorderProcess(child, "iOS Simulator recordVideo");
+            if (startError) return startError;
+            child.once("exit", monitorIosRecordingExit(deviceId, child.pid));
+            child.unref();
+            const recording = {
+                active: true,
+                provider: "simctl-recordVideo",
+                pid: child.pid,
+                localPath: resolvedLocalPath,
+                startedAt: now(),
+            };
+            const updated = updateIosDevice(deviceId, (item) => ({
+                ...item,
+                recording,
+                updatedAt: now(),
+            }));
+            return jsonResult({ deviceId, recording: updated.recording });
+        }
+
+        case "device_record_video_stop": {
+            const { deviceId, localPath } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (!device.recording?.active) return textResult(false, `No iOS Simulator recording active for ${deviceId}`);
+
+            if (device.recording.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+                const exited = await waitForProcessExit(device.recording.pid, 3000);
+                if (!exited) return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; state remains active.`);
+            }
+            const previous = device.recording;
+            const resolvedLocalPath = previous.localPath || localPath || iosRecordingLocalPath(device);
+            const updated = updateIosDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: now(),
+            }));
+            return jsonResult({
+                deviceId,
+                stopped: true,
+                provider: "simctl-recordVideo",
+                recording: { ...previous, active: false, localPath: resolvedLocalPath, stoppedAt: now() },
+                device: updated,
+            });
         }
 
         case "device_upload":

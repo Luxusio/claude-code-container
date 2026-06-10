@@ -37,6 +37,9 @@ export function windowsBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_record_video_start",
+            "device_record_video_stop",
+            "device_record_video_status",
             "device_upload",
             "device_download",
         ],
@@ -354,6 +357,15 @@ export async function handleWindowsTool(name, args) {
             const imagePath = result.response.hostImagePath || helperOutputPath(result.helper, result.response.imagePath, `${result.response.id}.png`);
             if (!existsSync(imagePath)) return textResult(false, `Windows helper screenshot output missing: ${imagePath}`);
             return { content: [{ type: "image", data: readFileSync(imagePath).toString("base64"), mimeType: "image/png" }] };
+        }
+
+        case "device_record_video_start":
+        case "device_record_video_stop":
+        case "device_record_video_status": {
+            const { deviceId } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            return textResult(false, "Windows Sandbox video recording is not supported yet; it requires a future guest helper screen-recording channel.");
         }
 
         case "device_upload": {

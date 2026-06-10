@@ -67,6 +67,9 @@ export function macosBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_record_video_start",
+            "device_record_video_stop",
+            "device_record_video_status",
             "device_upload",
             "device_download",
         ],
@@ -345,6 +348,15 @@ export async function handleMacosTool(name, args) {
             if (copy.status !== 0) return fail(copy);
             if (!existsSync(localPath)) return textResult(false, `macOS VM screenshot output missing: ${localPath}`);
             return { content: [{ type: "image", data: readFileSync(localPath).toString("base64"), mimeType: "image/png" }] };
+        }
+
+        case "device_record_video_start":
+        case "device_record_video_stop":
+        case "device_record_video_status": {
+            const { deviceId } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            return textResult(false, "macOS VM video recording is not supported yet; it requires a future SSH or guest-helper recording channel.");
         }
 
         default:

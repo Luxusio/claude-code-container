@@ -215,19 +215,27 @@ Required common tools:
 9. `device_screenshot`
    - Captures screen evidence to an owner-scoped artifact path.
 
-10. `device_upload` / `device_download`
+10. `device_record_video_start` / `device_record_video_stop` /
+    `device_record_video_status`
+    - Starts, stops, and inspects owner-scoped video recording state.
+    - Android uses `adb shell screenrecord`, with a bounded
+      `--time-limit` and an optional local artifact path.
+    - iOS Simulator uses `xcrun simctl io <target> recordVideo`.
+    - Windows Sandbox and macOS VM currently return explicit unsupported
+      diagnostics until their guest-helper or SSH recording channel exists.
+
+11. `device_upload` / `device_download`
     - Transfers files through owner-scoped scratch paths.
 
-11. `device_install_app` / `device_launch_app`
+12. `device_install_app` / `device_launch_app`
     - Installs and launches APK, `.app`, `.ipa` where supported, or Windows/macOS
       app bundles where a backend supports it.
 
-12. `device_reset`
+13. `device_reset`
     - Resets owned device state without deleting the definition.
 
 Optional future tools:
 
-- `device_record_video`
 - `device_snapshot_create`
 - `device_snapshot_restore`
 - `device_network_set`

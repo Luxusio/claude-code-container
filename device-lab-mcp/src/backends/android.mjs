@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, readdirSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { commandPath, localBinPath, run, runBuffer } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
@@ -100,6 +100,7 @@ export function androidBackend() {
         capabilities: [
             "device_inventory", "device_create", "device_delete", "device_start", "device_stop",
             "device_status", "device_exec", "device_screenshot",
+            "device_record_video_start", "device_record_video_stop", "device_record_video_status",
             "device_upload", "device_download", "device_reset",
             "device_install_app", "device_launch_app",
             "mobile_session_status", "mobile_dump_ui", "mobile_tap",
@@ -139,6 +140,14 @@ function appiumPortForDevice(id) {
 
 function androidSerial(device) {
     return device.serial || (device.port ? `emulator-${device.port}` : undefined);
+}
+
+function androidRecordingDir(device) {
+    return join(homedir(), ".ccc/devices/owners", ownerId(), "android", device.id, "recordings");
+}
+
+function androidRecordingLocalPath(device) {
+    return join(androidRecordingDir(device), `recording-${Date.now()}.mp4`);
 }
 
 function adbArgsForDevice(device, args) {
@@ -227,6 +236,62 @@ async function waitForAndroidBoot(discovery, device, timeoutMs) {
 
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRecorderProcess(child, label) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => done(null), 150);
+        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
+        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
+    });
+}
+
+function processIsAlive(pid) {
+    if (!pid) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 3000) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        if (!processIsAlive(pid)) return true;
+        await sleep(50);
+    }
+    return !processIsAlive(pid);
+}
+
+function reconcileAndroidRecording(device) {
+    if (!device?.recording?.active || !device.recording.pid || processIsAlive(device.recording.pid)) return device;
+    return updateAndroidDevice(device.id, (item) => ({
+        ...item,
+        recording: null,
+        updatedAt: new Date().toISOString(),
+    })) || { ...device, recording: null };
+}
+
+function monitorAndroidRecordingExit(deviceId, pid) {
+    return () => {
+        const current = findAndroidDevice(deviceId);
+        if (current?.recording?.active && current.recording.pid === pid) {
+            updateAndroidDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: new Date().toISOString(),
+            }));
+        }
+    };
 }
 
 async function fetchJson(url, options = {}) {
@@ -523,6 +588,15 @@ export async function handleAndroidTool(name, args) {
 
             const discovery = androidDiscovery();
             const serial = androidSerial(device);
+            if (device.recording?.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+            }
+            if (device.recording?.active && discovery.adb && serial) {
+                run(discovery.adb, ["-s", serial, "shell", "pkill", "-2", "screenrecord"]);
+            }
+            if (device.recording?.pid) {
+                await waitForProcessExit(device.recording.pid, 1000);
+            }
             if (discovery.adb && serial) run(discovery.adb, ["-s", serial, "emu", "kill"]);
             if (device.pid) {
                 try { process.kill(device.pid); } catch { /* ignore stale pid */ }
@@ -536,6 +610,7 @@ export async function handleAndroidTool(name, args) {
                 status: "stopped",
                 pid: null,
                 appium: null,
+                recording: null,
                 updatedAt: new Date().toISOString(),
             }));
             return jsonResult({ device: updated });
@@ -566,6 +641,96 @@ export async function handleAndroidTool(name, args) {
                 return textResult(false, `Error: ${r.stderr?.toString() || r.stdout?.toString() || `exit ${r.status}`}`);
             }
             return { content: [{ type: "image", data: Buffer.from(r.stdout).toString("base64"), mimeType: "image/png" }] };
+        }
+
+        case "device_record_video_status": {
+            const { deviceId } = args;
+            const found = findAndroidDevice(deviceId);
+            const device = reconcileAndroidRecording(found);
+            if (!device) return undefined;
+            return jsonResult({ deviceId, recording: device.recording || null, provider: "adb-screenrecord" });
+        }
+
+        case "device_record_video_start": {
+            const { deviceId, remotePath, localPath, timeLimitSec = 180 } = args;
+            const device = findAndroidDevice(deviceId);
+            if (!device) return undefined;
+            if (device.recording?.active) return textResult(false, `Android recording already active for ${deviceId}`);
+
+            const discovery = androidDiscovery();
+            if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
+
+            const resolvedRemotePath = remotePath || `/sdcard/ccc-${device.id}-recording.mp4`;
+            const resolvedLocalPath = localPath || androidRecordingLocalPath(device);
+            mkdirSync(androidRecordingDir(device), { recursive: true });
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const child = spawn(discovery.adb, adbArgsForDevice(device, ["shell", "screenrecord", "--time-limit", String(timeLimitSec), resolvedRemotePath]), {
+                detached: true,
+                stdio: "ignore",
+                env: process.env,
+            });
+            const startError = await waitForRecorderProcess(child, "Android screenrecord");
+            if (startError) return startError;
+            child.once("exit", monitorAndroidRecordingExit(deviceId, child.pid));
+            child.unref();
+            const recording = {
+                active: true,
+                provider: "adb-screenrecord",
+                pid: child.pid,
+                remotePath: resolvedRemotePath,
+                localPath: resolvedLocalPath,
+                timeLimitSec,
+                startedAt: new Date().toISOString(),
+            };
+            const updated = updateAndroidDevice(deviceId, (item) => ({
+                ...item,
+                recording,
+                updatedAt: new Date().toISOString(),
+            }));
+            return jsonResult({ deviceId, recording: updated.recording });
+        }
+
+        case "device_record_video_stop": {
+            const { deviceId, localPath } = args;
+            const device = findAndroidDevice(deviceId);
+            if (!device) return undefined;
+            if (!device.recording?.active) return textResult(false, `No Android recording active for ${deviceId}`);
+
+            const discovery = androidDiscovery();
+            if (!discovery.adb) return textResult(false, "Android backend missing prerequisites: adb");
+
+            if (device.recording.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+            }
+            run(discovery.adb, adbArgsForDevice(device, ["shell", "pkill", "-2", "screenrecord"]));
+            if (device.recording.pid) {
+                const exited = await waitForProcessExit(device.recording.pid, 3000);
+                if (!exited) return textResult(false, `Android recording did not exit within 3000ms for ${deviceId}; state remains active.`);
+            }
+            const resolvedLocalPath = localPath || device.recording.localPath || androidRecordingLocalPath(device);
+            mkdirSync(androidRecordingDir(device), { recursive: true });
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const pull = run(discovery.adb, adbArgsForDevice(device, ["pull", device.recording.remotePath, resolvedLocalPath]));
+            const previous = device.recording;
+            const updated = updateAndroidDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: new Date().toISOString(),
+            }));
+            run(discovery.adb, adbArgsForDevice(device, ["shell", "rm", "-f", device.recording.remotePath]));
+            if (pull.status !== 0) {
+                return textResult(false, `Error: ${pull.stderr || pull.stdout || `exit ${pull.status}`}. Android recording state cleared for ${deviceId}.`);
+            }
+            return jsonResult({
+                deviceId,
+                stopped: true,
+                provider: "adb-screenrecord",
+                recording: { ...previous, active: false, localPath: resolvedLocalPath, stoppedAt: new Date().toISOString() },
+                device: updated,
+                stdout: pull.stdout,
+                stderr: pull.stderr,
+                status: pull.status,
+            });
         }
 
         case "device_upload": {

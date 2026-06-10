@@ -55,6 +55,9 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_status");
         expect(names).toContain("device_exec");
         expect(names).toContain("device_screenshot");
+        expect(names).toContain("device_record_video_start");
+        expect(names).toContain("device_record_video_stop");
+        expect(names).toContain("device_record_video_status");
         expect(names).toContain("device_upload");
         expect(names).toContain("device_download");
         expect(names).toContain("device_reset");
@@ -207,6 +210,23 @@ describe("device-lab MCP", () => {
         expect(tap.isError).toBe(true);
         expect((tap.content as Array<{ text?: string }>)[0].text).toContain("Android backend missing prerequisites: adb");
 
+        const recordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-test" },
+        });
+        expect(recordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((recordStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            recording: null,
+            provider: "adb-screenrecord",
+        }));
+
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "android-pixel-test" },
+        });
+        expect(recordStart.isError).toBe(true);
+        expect((recordStart.content as Array<{ text?: string }>)[0].text).toContain("Android backend missing prerequisites: adb");
+
         const start = await client.callTool({
             name: "device_start",
             arguments: { deviceId: "android-pixel-test" },
@@ -284,6 +304,23 @@ describe("device-lab MCP", () => {
         });
         expect(screenshot.isError).toBe(true);
         expect((screenshot.content as Array<{ text?: string }>)[0].text).toContain("iOS Simulator backend missing prerequisites");
+
+        const recordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "ios-iphone-test" },
+        });
+        expect(recordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((recordStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            recording: null,
+            provider: "simctl-recordVideo",
+        }));
+
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "ios-iphone-test" },
+        });
+        expect(recordStart.isError).toBe(true);
+        expect((recordStart.content as Array<{ text?: string }>)[0].text).toContain("iOS Simulator backend missing prerequisites");
 
         const session = await client.callTool({
             name: "mobile_session_status",
@@ -381,6 +418,13 @@ describe("device-lab MCP", () => {
         expect(exec.isError).toBe(true);
         expect((exec.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox helper did not respond");
 
+        const recordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "windows-win-test" },
+        });
+        expect(recordStatus.isError).toBe(true);
+        expect((recordStatus.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox video recording is not supported yet");
+
         const deleted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "windows-win-test" },
@@ -458,6 +502,13 @@ describe("device-lab MCP", () => {
         });
         expect(exec.isError).toBe(true);
         expect((exec.content as Array<{ text?: string }>)[0].text).toContain("requires SSH bridge metadata");
+
+        const recordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "macos-mac-test" },
+        });
+        expect(recordStatus.isError).toBe(true);
+        expect((recordStatus.content as Array<{ text?: string }>)[0].text).toContain("macOS VM video recording is not supported yet");
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -583,6 +634,10 @@ esac
         const screenshot = await handleMacosTool("device_screenshot", { deviceId: "macos-fake-tart" });
         expect(screenshot?.isError).not.toBe(true);
         expect((screenshot?.content as Array<{ type: string }>)[0].type).toBe("image");
+
+        const recordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
+        expect(recordStatus?.isError).toBe(true);
+        expect((recordStatus?.content as Array<{ text?: string }>)[0].text).toContain("macOS VM video recording is not supported yet");
 
         const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
         expect(stop?.isError).not.toBe(true);
@@ -759,6 +814,13 @@ exit 0
         });
         expect(download.isError).not.toBe(true);
         expect(readFileSync(downloadTarget, "utf-8")).toBe("downloaded");
+
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper" },
+        });
+        expect(recordStart.isError).toBe(true);
+        expect((recordStart.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox video recording is not supported yet");
         clearInterval(responder);
 
         const stop = await client.callTool({
@@ -816,6 +878,19 @@ fi
 if [ "$1" = "shell" ] && [ "$2" = "cat" ]; then
   printf '%s\\n' '<hierarchy><node text="Hello" resource-id="com.example:id/title"/></hierarchy>'
   exit 0
+fi
+if [ "$1" = "shell" ] && [ "$2" = "screenrecord" ]; then
+  case "$5" in
+    *fail-immediate*) exit 9 ;;
+    *natural-exit*) exec /bin/sleep 0.3 ;;
+    *) exec /bin/sleep 20 ;;
+  esac
+fi
+if [ "$1" = "pull" ]; then
+  case "$2" in
+    *fail-pull*) exit 8 ;;
+    *) exit 0 ;;
+  esac
 fi
 if [ "$1" = "shell" ]; then
   echo "ok"
@@ -1034,6 +1109,155 @@ exit 0
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const initialRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(initialRecordStatus.isError).not.toBe(true);
+        const initialRecordPayload = JSON.parse(((initialRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: unknown;
+            provider: string;
+        };
+        expect(initialRecordPayload.recording).toBeNull();
+        expect(initialRecordPayload.provider).toBe("adb-screenrecord");
+
+        const stopWithoutRecording = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(stopWithoutRecording.isError).toBe(true);
+        expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No Android recording active");
+
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: {
+                deviceId: "android-pixel-owned",
+                remotePath: "/sdcard/custom-android-recording.mp4",
+                localPath: "/tmp/custom-android-recording.mp4",
+                timeLimitSec: 5,
+            },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string; remotePath: string; localPath: string; timeLimitSec: number };
+        };
+        expect(recordStartPayload.recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "adb-screenrecord",
+            remotePath: "/sdcard/custom-android-recording.mp4",
+            localPath: "/tmp/custom-android-recording.mp4",
+            timeLimitSec: 5,
+        }));
+
+        const duplicateRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(duplicateRecordStart.isError).toBe(true);
+        expect((duplicateRecordStart.content as Array<{ text?: string }>)[0].text).toContain("Android recording already active");
+
+        const activeRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        const activeRecordPayload = JSON.parse(((activeRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string };
+        };
+        expect(activeRecordPayload.recording).toEqual(expect.objectContaining({ active: true, provider: "adb-screenrecord" }));
+
+        const recordStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(recordStop.isError).not.toBe(true);
+        const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            stopped: boolean;
+            recording: { active: boolean; localPath: string };
+            device: { recording: unknown };
+        };
+        expect(recordStopPayload.stopped).toBe(true);
+        expect(recordStopPayload.recording).toEqual(expect.objectContaining({
+            active: false,
+            localPath: "/tmp/custom-android-recording.mp4",
+        }));
+        expect(recordStopPayload.device.recording).toBeNull();
+
+        const finalRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(JSON.parse(((finalRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            recording: null,
+            provider: "adb-screenrecord",
+        }));
+
+        const failedRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: {
+                deviceId: "android-pixel-owned",
+                remotePath: "/sdcard/fail-immediate-recording.mp4",
+                localPath: "/tmp/fail-immediate-android-recording.mp4",
+                timeLimitSec: 5,
+            },
+        });
+        expect(failedRecordStart.isError).toBe(true);
+        expect((failedRecordStart.content as Array<{ text?: string }>)[0].text).toContain("recorder exited before it was ready");
+        const statusAfterFailedStart = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(JSON.parse(((statusAfterFailedStart.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const naturalExitStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: {
+                deviceId: "android-pixel-owned",
+                remotePath: "/sdcard/natural-exit-recording.mp4",
+                localPath: "/tmp/natural-exit-android-recording.mp4",
+                timeLimitSec: 5,
+            },
+        });
+        expect(naturalExitStart.isError).not.toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const statusAfterNaturalExit = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(JSON.parse(((statusAfterNaturalExit.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const pullFailStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: {
+                deviceId: "android-pixel-owned",
+                remotePath: "/sdcard/fail-pull-recording.mp4",
+                localPath: "/tmp/fail-pull-android-recording.mp4",
+                timeLimitSec: 5,
+            },
+        });
+        expect(pullFailStart.isError).not.toBe(true);
+        const pullFailStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(pullFailStop.isError).toBe(true);
+        expect((pullFailStop.content as Array<{ text?: string }>)[0].text).toContain("Android recording state cleared");
+        const statusAfterPullFailure = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(JSON.parse(((statusAfterPullFailure.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const stopCleanupRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: {
+                deviceId: "android-pixel-owned",
+                remotePath: "/sdcard/stop-cleanup-recording.mp4",
+                localPath: "/tmp/stop-cleanup-android-recording.mp4",
+                timeLimitSec: 5,
+            },
+        });
+        expect(stopCleanupRecordStart.isError).not.toBe(true);
+
         const dumpUi = await client.callTool({
             name: "mobile_dump_ui",
             arguments: { deviceId: "android-pixel-owned" },
@@ -1077,6 +1301,17 @@ exit 0
             arguments: { deviceId: "android-pixel-owned" },
         });
         expect(stop.isError).not.toBe(true);
+        const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { recording: unknown; status: string };
+        };
+        expect(stoppedPayload.device.status).toBe("stopped");
+        expect(stoppedPayload.device.recording).toBeNull();
+
+        const statusAfterDeviceStop = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "android-pixel-owned" },
+        });
+        expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -1124,6 +1359,14 @@ exit 0
         expect(log).toContain("adb -s emulator-5582 shell pidof com.example.mobile");
         expect(log).toContain("adb -s emulator-5582 shell input tap 15 25");
         expect(log).toContain("adb -s emulator-5582 exec-out screencap -p");
+        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/custom-android-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 shell pkill -2 screenrecord");
+        expect(log).toContain("adb -s emulator-5582 pull /sdcard/custom-android-recording.mp4 /tmp/custom-android-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 shell rm -f /sdcard/custom-android-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/fail-immediate-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/natural-exit-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 pull /sdcard/fail-pull-recording.mp4 /tmp/fail-pull-android-recording.mp4");
+        expect(log).toContain("adb -s emulator-5582 shell screenrecord --time-limit 5 /sdcard/stop-cleanup-recording.mp4");
         expect(log).toContain("adb -s emulator-5582 shell uiautomator dump /sdcard/window-android-pixel-owned.xml");
         expect(log).toContain("adb -s emulator-5582 exec-out cat /sdcard/window-android-pixel-owned.xml");
         expect(log).toContain("adb -s emulator-5582 push /tmp/local.txt /sdcard/local.txt");
@@ -1262,6 +1505,13 @@ fi
 if [ "$1" = "simctl" ] && [ "$2" = "io" ] && [ "$4" = "screenshot" ]; then
   printf 'fakepng' > "$5"
   exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "io" ] && [ "$4" = "recordVideo" ]; then
+  case "$5" in
+    *fail-immediate*) exit 9 ;;
+    *natural-exit*) exec /bin/sleep 0.3 ;;
+    *) exec /bin/sleep 20 ;;
+  esac
 fi
 if [ "$1" = "simctl" ] && [ "$2" = "openurl" ]; then
   exit 0
@@ -1520,6 +1770,102 @@ exit 0
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const initialRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(initialRecordStatus.isError).not.toBe(true);
+        const initialRecordPayload = JSON.parse(((initialRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: unknown;
+            provider: string;
+        };
+        expect(initialRecordPayload.recording).toBeNull();
+        expect(initialRecordPayload.provider).toBe("simctl-recordVideo");
+
+        const stopWithoutRecording = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(stopWithoutRecording.isError).toBe(true);
+        expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No iOS Simulator recording active");
+
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/custom-ios-recording.mp4" },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string; localPath: string };
+        };
+        expect(recordStartPayload.recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "simctl-recordVideo",
+            localPath: "/tmp/custom-ios-recording.mp4",
+        }));
+
+        const duplicateRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(duplicateRecordStart.isError).toBe(true);
+        expect((duplicateRecordStart.content as Array<{ text?: string }>)[0].text).toContain("iOS Simulator recording already active");
+
+        const activeRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        const activeRecordPayload = JSON.parse(((activeRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string };
+        };
+        expect(activeRecordPayload.recording).toEqual(expect.objectContaining({ active: true, provider: "simctl-recordVideo" }));
+
+        const recordStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(recordStop.isError).not.toBe(true);
+        const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            stopped: boolean;
+            recording: { active: boolean; localPath: string };
+            device: { recording: unknown };
+        };
+        expect(recordStopPayload.stopped).toBe(true);
+        expect(recordStopPayload.recording).toEqual(expect.objectContaining({
+            active: false,
+            localPath: "/tmp/custom-ios-recording.mp4",
+        }));
+        expect(recordStopPayload.device.recording).toBeNull();
+
+        const failedRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/fail-immediate-ios-recording.mp4" },
+        });
+        expect(failedRecordStart.isError).toBe(true);
+        expect((failedRecordStart.content as Array<{ text?: string }>)[0].text).toContain("recorder exited before it was ready");
+        const statusAfterFailedStart = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(JSON.parse(((statusAfterFailedStart.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const naturalExitStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/natural-exit-ios-recording.mp4" },
+        });
+        expect(naturalExitStart.isError).not.toBe(true);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const statusAfterNaturalExit = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(JSON.parse(((statusAfterNaturalExit.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const stopCleanupRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/stop-cleanup-ios-recording.mp4" },
+        });
+        expect(stopCleanupRecordStart.isError).not.toBe(true);
+
         const session = await client.callTool({
             name: "mobile_session_status",
             arguments: { deviceId: ownedDeviceId },
@@ -1611,6 +1957,17 @@ exit 0
             arguments: { deviceId: ownedDeviceId },
         });
         expect(stop.isError).not.toBe(true);
+        const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { recording: unknown; status: string };
+        };
+        expect(stoppedPayload.device.status).toBe("stopped");
+        expect(stoppedPayload.device.recording).toBeNull();
+
+        const statusAfterDeviceStop = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -1639,6 +1996,10 @@ exit 0
         expect(log).toContain("xcrun simctl pbpaste CREATED-IOS-UDID");
         expect(log).toContain("xcrun simctl spawn CREATED-IOS-UDID pgrep -f com.example.Test");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
+        expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/custom-ios-recording.mp4");
+        expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/fail-immediate-ios-recording.mp4");
+        expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/natural-exit-ios-recording.mp4");
+        expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/stop-cleanup-ios-recording.mp4");
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
         expect(log).toContain("appium server --port ");
         expect(log).toContain("appium-http POST /session");
