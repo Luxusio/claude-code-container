@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
+import { spawn } from "child_process";
 import { commandPath, run } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
-import { jsonResult, textResult } from "../responses.mjs";
+import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findIosRealDevice, readIosRealDevices, updateIosRealDevice, writeIosRealDevices } from "../state/ios-device-state.mjs";
 import { claimPhysicalLease, releasePhysicalLease } from "../state/physical-lease-store.mjs";
 import { iosAppiumDiscovery, iosDiscovery } from "./ios-simulator.mjs";
@@ -122,6 +123,160 @@ function stopVolatileProcesses(device) {
     }
 }
 
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function processIsAlive(pid) {
+    if (!pid) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 3000) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        if (!processIsAlive(pid)) return true;
+        await sleep(50);
+    }
+    return !processIsAlive(pid);
+}
+
+async function fetchJson(url, options = {}) {
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {}),
+        },
+    });
+    const text = await response.text();
+    let payload = {};
+    if (text) {
+        try { payload = JSON.parse(text); } catch { payload = { raw: text }; }
+    }
+    if (!response.ok) throw new Error(`HTTP ${response.status}: ${text}`);
+    return payload;
+}
+
+async function waitForAppium(url) {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+        try {
+            await fetchJson(`${url}/status`, { method: "GET" });
+            return true;
+        } catch {
+            await sleep(250);
+        }
+    }
+    return false;
+}
+
+async function ensureIosRealAppiumSession(deviceId) {
+    const device = findIosRealDevice(deviceId);
+    if (!device) return { unknown: true };
+
+    const discovery = iosAppiumDiscovery();
+    if (!discovery.available) {
+        return { error: `iOS real-device Appium/XCUITest layer missing prerequisites: ${discovery.missing.join(", ")}` };
+    }
+
+    const port = device.appiumPort || appiumPortForDevice(device.id);
+    const serverUrl = `http://127.0.0.1:${port}`;
+
+    if (device.appium?.sessionId && device.appium?.serverUrl) {
+        try {
+            await fetchJson(`${device.appium.serverUrl}/status`, { method: "GET" });
+            await fetchJson(`${device.appium.serverUrl}/session/${device.appium.sessionId}`, { method: "GET" });
+            return { device, serverUrl: device.appium.serverUrl, sessionId: device.appium.sessionId };
+        } catch {
+            if (device.appium.serverPid) {
+                try { process.kill(device.appium.serverPid, "SIGINT"); } catch { /* ignore stale appium */ }
+                await waitForProcessExit(device.appium.serverPid, 1000);
+            }
+            updateIosRealDevice(deviceId, (item) => ({
+                ...item,
+                appium: null,
+                updatedAt: now(),
+            }));
+        }
+    }
+
+    const child = spawn(discovery.appium, ["server", "--port", String(port), "--base-path", "/"], {
+        detached: true,
+        stdio: "ignore",
+        env: process.env,
+    });
+    child.unref();
+
+    const cleanupChild = () => {
+        if (child.pid) {
+            try { process.kill(child.pid, "SIGINT"); } catch { /* ignore startup cleanup */ }
+        }
+    };
+
+    const ready = await waitForAppium(serverUrl);
+    if (!ready) {
+        cleanupChild();
+        return { error: `Appium server did not become ready on ${serverUrl}` };
+    }
+
+    let response;
+    try {
+        response = await fetchJson(`${serverUrl}/session`, {
+            method: "POST",
+            body: JSON.stringify({
+                capabilities: {
+                    alwaysMatch: {
+                        platformName: "iOS",
+                        "appium:automationName": "XCUITest",
+                        "appium:deviceName": device.name || device.id,
+                        "appium:udid": device.udid,
+                        "appium:realDevice": true,
+                    },
+                },
+            }),
+        });
+    } catch (error) {
+        cleanupChild();
+        return { error: `Appium session creation failed: ${error.message}` };
+    }
+    const sessionId = response?.value?.sessionId || response?.sessionId;
+    if (!sessionId) {
+        cleanupChild();
+        return { error: "Appium did not return a session id" };
+    }
+
+    const updated = updateIosRealDevice(deviceId, (item) => ({
+        ...item,
+        appiumPort: port,
+        appium: {
+            serverUrl,
+            serverPid: child.pid,
+            sessionId,
+            automationName: "XCUITest",
+            physical: true,
+            updatedAt: now(),
+        },
+        updatedAt: now(),
+    }));
+
+    return { device: updated, serverUrl, sessionId };
+}
+
+function requirePathArg(path, toolName) {
+    if (!path) return textResult(false, `iOS real-device ${toolName} requires path`);
+    return null;
+}
+
+function requireBundleIdArg(bundleId, toolName) {
+    if (!bundleId) return textResult(false, `iOS real-device ${toolName} requires bundleId`);
+    return null;
+}
+
 export function listIosRealDevices() {
     return readIosRealDevices().map((device) => ({ ...device, ownerId: ownerId() }));
 }
@@ -226,18 +381,78 @@ export async function handleIosRealTool(name, args) {
             return jsonResult(appiumStatus(device));
         }
 
-        case "device_exec":
-        case "device_screenshot":
-        case "device_install_app":
-        case "device_launch_app":
-        case "mobile_install_app":
-        case "mobile_launch_app":
-        case "mobile_screenshot":
-        case "mobile_dump_ui": {
+        case "device_exec": {
             const { deviceId } = args;
             const device = findIosRealDevice(deviceId);
             if (!device) return undefined;
             return unsupported(name);
+        }
+
+        case "mobile_dump_ui": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const session = await ensureIosRealAppiumSession(deviceId);
+            if (session.unknown) return undefined;
+            if (session.error) return textResult(false, session.error);
+            let source;
+            try {
+                source = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
+            } catch (error) {
+                return textResult(false, `Appium source request failed: ${error.message}`);
+            }
+            return jsonResult({
+                provider: "appium-xcuitest",
+                physical: true,
+                source: source?.value ?? source?.source ?? source,
+                sessionId: session.sessionId,
+                serverUrl: session.serverUrl,
+            });
+        }
+
+        case "device_screenshot":
+        case "mobile_screenshot": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const session = await ensureIosRealAppiumSession(deviceId);
+            if (session.unknown) return undefined;
+            if (session.error) return textResult(false, session.error);
+            let screenshot;
+            try {
+                screenshot = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/screenshot`, { method: "GET" });
+            } catch (error) {
+                return textResult(false, `Appium screenshot request failed: ${error.message}`);
+            }
+            const data = screenshot?.value || screenshot?.screenshot;
+            if (!data) return textResult(false, "Appium did not return screenshot data");
+            return { content: [{ type: "image", data, mimeType: "image/png" }] };
+        }
+
+        case "device_install_app":
+        case "mobile_install_app": {
+            const { deviceId, path } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const missing = requirePathArg(path, name);
+            if (missing) return missing;
+            const discovery = iosRealDiscovery();
+            if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
+            const r = run(discovery.xcrun, ["devicectl", "device", "install", "app", "--device", device.udid, path]);
+            return r.status === 0 ? jsonResult({ installed: path, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
+        }
+
+        case "device_launch_app":
+        case "mobile_launch_app": {
+            const { deviceId, bundleId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const missing = requireBundleIdArg(bundleId, name);
+            if (missing) return missing;
+            const discovery = iosRealDiscovery();
+            if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
+            const r = run(discovery.xcrun, ["devicectl", "device", "process", "launch", "--device", device.udid, bundleId]);
+            return r.status === 0 ? jsonResult({ launched: bundleId, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
         }
 
         default:

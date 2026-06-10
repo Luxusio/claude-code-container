@@ -2104,6 +2104,13 @@ if [ "$1" = "xctrace" ] && [ "$2" = "list" ] && [ "$3" = "devices" ]; then
   echo "iPhone 15 Simulator (17.0) (SIM-UDID)"
   exit 0
 fi
+if [ "$1" = "devicectl" ] && [ "$2" = "device" ] && [ "$3" = "install" ] && [ "$4" = "app" ]; then
+  exit 0
+fi
+if [ "$1" = "devicectl" ] && [ "$2" = "device" ] && [ "$3" = "process" ] && [ "$4" = "launch" ]; then
+  echo "launched $8"
+  exit 0
+fi
 if [ "$1" = "simctl" ] && [ "$2" = "create" ]; then
   echo "CREATED-IOS-UDID"
   exit 0
@@ -2198,14 +2205,21 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(stalePath)) {
       fs.unlinkSync(stalePath);
       send(res, 404, {value: {error: 'stale'}});
-      return setTimeout(() => server.close(() => process.exit(0)), 20);
+      return;
     }
     return send(res, 200, {value: {sessionId}});
   }
   if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId + '/source') {
     return send(res, 200, {value: '<AppiumAUT><XCUIElementTypeApplication name="Test"/></AppiumAUT>'});
   }
+  if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId + '/screenshot') {
+    return send(res, 200, {value: Buffer.from('fake-real-ios-png').toString('base64')});
+  }
   send(res, 404, {value: {error: 'unknown route'}});
+});
+process.on('SIGINT', () => {
+  fs.appendFileSync(log, 'appium-server-sigint ' + port + '\\n');
+  server.close(() => process.exit(0));
 });
 server.listen(port, '127.0.0.1');
 NODE
@@ -2801,12 +2815,131 @@ exit 0
         expect(statusPayload.hostDevice.udid).toBe("00008110-001C195E0E91801E");
         expect(statusPayload.appium).toEqual(expect.objectContaining({ automationName: "XCUITest", physical: true }));
 
-        const unsupported = await client.callTool({
+        const realSession = await client.callTool({
+            name: "mobile_session_status",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(realSession.isError).not.toBe(true);
+        const realSessionPayload = JSON.parse(((realSession.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            automationName: string;
+            physical: boolean;
+            session: unknown;
+            appium: { available: boolean; missing: string[] };
+        };
+        expect(realSessionPayload).toEqual(expect.objectContaining({
+            automationName: "XCUITest",
+            physical: true,
+            session: null,
+        }));
+        expect(realSessionPayload.appium.available).toBe(true);
+        expect(realSessionPayload.appium.missing).toEqual([]);
+
+        const realDump = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(realDump.isError).not.toBe(true);
+        const realDumpPayload = JSON.parse(((realDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            provider: string;
+            physical: boolean;
+            source: string;
+            sessionId: string;
+            serverUrl: string;
+        };
+        expect(realDumpPayload).toEqual(expect.objectContaining({
+            provider: "appium-xcuitest",
+            physical: true,
+            sessionId: "IOS-SESSION-1",
+        }));
+        expect(realDumpPayload.source).toContain("XCUIElementTypeApplication");
+
+        const statusAfterRealDump = await client.callTool({
+            name: "mobile_session_status",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        const statusAfterRealDumpPayload = JSON.parse(((statusAfterRealDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            session: { sessionId: string; serverUrl: string; physical: boolean };
+        };
+        expect(statusAfterRealDumpPayload.session).toEqual(expect.objectContaining({
+            sessionId: "IOS-SESSION-1",
+            serverUrl: realDumpPayload.serverUrl,
+            physical: true,
+        }));
+
+        const realScreenshot = await client.callTool({
             name: "device_screenshot",
             arguments: { deviceId: "ios-device-real-iphone" },
         });
-        expect(unsupported.isError).toBe(true);
-        expect((unsupported.content as Array<{ text?: string }>)[0].text).toContain("iOS real devices do not support device_screenshot through base simctl");
+        expect(realScreenshot.isError).not.toBe(true);
+        expect((realScreenshot.content as Array<{ type: string; mimeType: string }>)[0]).toEqual(expect.objectContaining({
+            type: "image",
+            mimeType: "image/png",
+        }));
+
+        const realMobileScreenshot = await client.callTool({
+            name: "mobile_screenshot",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(realMobileScreenshot.isError).not.toBe(true);
+        expect((realMobileScreenshot.content as Array<{ type: string }>)[0].type).toBe("image");
+
+        const realInstall = await client.callTool({
+            name: "mobile_install_app",
+            arguments: { deviceId: "ios-device-real-iphone", path: "/tmp/Real.app" },
+        });
+        expect(realInstall.isError).not.toBe(true);
+        const realInstallPayload = JSON.parse(((realInstall.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            installed: string;
+            udid: string;
+            provider: string;
+        };
+        expect(realInstallPayload).toEqual(expect.objectContaining({
+            installed: "/tmp/Real.app",
+            udid: "00008110-001C195E0E91801E",
+            provider: "xcrun-devicectl",
+        }));
+
+        const realLaunch = await client.callTool({
+            name: "device_launch_app",
+            arguments: { deviceId: "ios-device-real-iphone", bundleId: "com.example.Real" },
+        });
+        expect(realLaunch.isError).not.toBe(true);
+        const realLaunchPayload = JSON.parse(((realLaunch.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            launched: string;
+            udid: string;
+            provider: string;
+        };
+        expect(realLaunchPayload).toEqual(expect.objectContaining({
+            launched: "com.example.Real",
+            udid: "00008110-001C195E0E91801E",
+            provider: "xcrun-devicectl",
+        }));
+
+        const missingInstallPath = await client.callTool({
+            name: "device_install_app",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(missingInstallPath.isError).toBe(true);
+        expect((missingInstallPath.content as Array<{ text?: string }>)[0].text).toContain("requires path");
+
+        const missingLaunchBundle = await client.callTool({
+            name: "mobile_launch_app",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(missingLaunchBundle.isError).toBe(true);
+        expect((missingLaunchBundle.content as Array<{ text?: string }>)[0].text).toContain("requires bundleId");
+
+        writeFileSync(join(homeDir, "stale-ios-session"), "1");
+        const realRecoveredDump = await client.callTool({
+            name: "mobile_dump_ui",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(realRecoveredDump.isError).not.toBe(true);
+        const realRecoveredPayload = JSON.parse(((realRecoveredDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            sessionId: string;
+        };
+        expect(realRecoveredPayload.sessionId).toBe("IOS-SESSION-1");
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
         const stop = await client.callTool({
             name: "device_stop",
@@ -2829,6 +2962,12 @@ exit 0
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain("xcrun xctrace list devices");
+        expect(log).toContain("xcrun devicectl device install app --device 00008110-001C195E0E91801E /tmp/Real.app");
+        expect(log).toContain("xcrun devicectl device process launch --device 00008110-001C195E0E91801E com.example.Real");
+        expect(log).toContain('"appium:udid":"00008110-001C195E0E91801E"');
+        expect(log).toContain('"appium:realDevice":true');
+        expect(log).toContain("appium-server-sigint ");
+        expect(log.split("appium-http POST /session").length - 1).toBeGreaterThanOrEqual(2);
         expect(log).not.toContain("xcrun simctl shutdown 00008110-001C195E0E91801E");
     });
 

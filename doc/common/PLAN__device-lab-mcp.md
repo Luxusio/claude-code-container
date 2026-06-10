@@ -447,8 +447,8 @@ Foundation status:
 - `device_start`, `device_stop`, `device_exec`, and `device_screenshot` are
   wired to Android command-line tools when available, but MCP startup and
   discovery calls remain lazy and do not start emulator or adb processes.
-- Appium integration is intentionally deferred to the next mobile automation
-  slice.
+- Appium integration is implemented for high-level Android UI/app automation;
+  remaining Android work is provider hardening and broader action coverage.
 
 Appium Android layer status:
 
@@ -609,9 +609,15 @@ Physical iOS device attachment status:
   Teardown cleanup also marks the attachment detached and releases the
   host-wide hardware lock so later CCC owners can attach the same trusted
   device.
-- Base simctl-only actions such as screenshot/install/launch return explicit
-  diagnostics for physical iOS devices until routed through Appium/XCUITest or
-  a dedicated Xcode device-control adapter.
+- `mobile_session_status` reports lazy Appium/XCUITest discovery and current
+  session metadata for the attached physical device.
+- `mobile_dump_ui`, `device_screenshot`, and `mobile_screenshot` lazily start
+  an owner-scoped Appium/XCUITest session bound to the physical UDID and use
+  WebDriver `/source` and `/screenshot`.
+- `device_install_app`/`mobile_install_app` and
+  `device_launch_app`/`mobile_launch_app` use `xcrun devicectl` against the
+  attached UDID. These operations still depend on normal Apple trust, signing,
+  provisioning, and Xcode device-control availability.
 
 iOS Appium/XCUITest session status:
 
