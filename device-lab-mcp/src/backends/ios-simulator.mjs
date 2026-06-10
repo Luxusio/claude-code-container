@@ -1,8 +1,8 @@
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { mkdirSync, readFileSync, unlinkSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join, normalize } from "path";
 import { commandPath, localBinPath, run, runWithInput, runWithTimeout } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
@@ -313,6 +313,65 @@ async function ensureIosAppiumSession(deviceId) {
 
 function now() {
     return new Date().toISOString();
+}
+
+function iosContainerType(value) {
+    return value || "data";
+}
+
+function resolveIosAppContainer(xcrun, device, bundleId, containerType = "data") {
+    const r = run(xcrun, ["simctl", "get_app_container", simctlTarget(device), bundleId, containerType]);
+    if (r.status !== 0) return { error: r };
+    const containerRoot = r.stdout.trim();
+    if (!containerRoot) return { error: { ...r, status: 1, stderr: "simctl get_app_container returned an empty path" } };
+    return { containerRoot };
+}
+
+function pathInsideContainer(containerRoot, requestedPath) {
+    const stripped = String(requestedPath || "").replace(/^[/\\]+/, "");
+    const relativePath = normalize(stripped);
+    if (!relativePath || relativePath === "." || isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${"/"}`) || relativePath.startsWith(`..${"\\"}`)) {
+        return { error: `Refusing path outside iOS app container: ${requestedPath}` };
+    }
+    return { path: join(containerRoot, relativePath), relativePath };
+}
+
+function realPathIsInside(parent, child) {
+    return child === parent || child.startsWith(`${parent}/`);
+}
+
+function ensureContainerPathForWrite(containerRoot, targetPath) {
+    try {
+        const root = realpathSync(containerRoot);
+        mkdirSync(dirname(targetPath), { recursive: true });
+        const parent = realpathSync(dirname(targetPath));
+        if (!realPathIsInside(root, parent)) return { error: "Resolved iOS app container path escapes the container" };
+        if (existsSync(targetPath)) {
+            const existing = realpathSync(targetPath);
+            if (!realPathIsInside(root, existing)) return { error: "Resolved iOS app container path escapes the container" };
+        }
+        return { root };
+    } catch (error) {
+        return { error: `Unable to resolve iOS app container path: ${error.message}` };
+    }
+}
+
+function ensureContainerPathForRead(containerRoot, sourcePath) {
+    try {
+        const root = realpathSync(containerRoot);
+        const source = realpathSync(sourcePath);
+        if (!realPathIsInside(root, source)) return { error: "Resolved iOS app container path escapes the container" };
+        return { root, source };
+    } catch (error) {
+        return { error: `Unable to resolve iOS app container path: ${error.message}` };
+    }
+}
+
+function clearDirectoryContents(path) {
+    if (!existsSync(path)) return;
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+        rmSync(join(path, entry.name), { recursive: true, force: true });
+    }
 }
 
 function simctlJson(xcrun, args) {
@@ -666,19 +725,99 @@ export async function handleIosTool(name, args) {
             });
         }
 
-        case "device_upload":
-        case "device_download": {
-            const { deviceId } = args;
+        case "device_upload": {
+            const { deviceId, localPath, remotePath, bundleId, containerType } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
-            return unsupportedIosResult(name, "file transfer requires an app container target or a future guest/file channel");
+            if (!isOwnedSimulatorName(device.simulatorName)) return textResult(false, `Refusing iOS Simulator upload for non-owned simulator name: ${device.simulatorName}`);
+            if (!bundleId) return textResult(false, "iOS Simulator upload requires bundleId to resolve an app container");
+            if (!localPath || !remotePath) return textResult(false, "iOS Simulator upload requires localPath and remotePath");
+            if (!existsSync(localPath)) return textResult(false, `iOS Simulator upload localPath does not exist: ${localPath}`);
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const type = iosContainerType(containerType);
+            const container = resolveIosAppContainer(discovery.xcrun, device, bundleId, type);
+            if (container.error) return fail(container.error);
+            const target = pathInsideContainer(container.containerRoot, remotePath);
+            if (target.error) return textResult(false, target.error);
+            const containment = ensureContainerPathForWrite(container.containerRoot, target.path);
+            if (containment.error) return textResult(false, containment.error);
+            copyFileSync(localPath, target.path);
+            return jsonResult({
+                uploaded: { localPath, remotePath: target.relativePath, bundleId, containerType: type },
+                containerRoot: container.containerRoot,
+                provider: "simctl-app-container",
+            });
+        }
+
+        case "device_download": {
+            const { deviceId, remotePath, localPath, bundleId, containerType } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (!isOwnedSimulatorName(device.simulatorName)) return textResult(false, `Refusing iOS Simulator download for non-owned simulator name: ${device.simulatorName}`);
+            if (!bundleId) return textResult(false, "iOS Simulator download requires bundleId to resolve an app container");
+            if (!remotePath || !localPath) return textResult(false, "iOS Simulator download requires remotePath and localPath");
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            const type = iosContainerType(containerType);
+            const container = resolveIosAppContainer(discovery.xcrun, device, bundleId, type);
+            if (container.error) return fail(container.error);
+            const source = pathInsideContainer(container.containerRoot, remotePath);
+            if (source.error) return textResult(false, source.error);
+            if (!existsSync(source.path)) return textResult(false, `iOS Simulator download remotePath does not exist in app container: ${source.relativePath}`);
+            const containment = ensureContainerPathForRead(container.containerRoot, source.path);
+            if (containment.error) return textResult(false, containment.error);
+            mkdirSync(dirname(localPath), { recursive: true });
+            copyFileSync(source.path, localPath);
+            return jsonResult({
+                downloaded: { remotePath: source.relativePath, localPath, bundleId, containerType: type },
+                containerRoot: container.containerRoot,
+                provider: "simctl-app-container",
+            });
         }
 
         case "device_reset": {
-            const { deviceId } = args;
+            const { deviceId, bundleId, containerType, eraseSimulator = false } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
-            return unsupportedIosResult(name, "use a future explicit simulator erase or app-container reset flow");
+
+            const discovery = iosDiscovery();
+            if (!discovery.available) return missingPrereqResult(discovery);
+
+            if (eraseSimulator) {
+                if (!isOwnedSimulatorName(device.simulatorName)) {
+                    return textResult(false, `Refusing to erase non-owned iOS Simulator name: ${device.simulatorName}`);
+                }
+                const r = run(discovery.xcrun, ["simctl", "erase", simctlTarget(device)]);
+                if (r.status !== 0) return fail(r);
+                const updated = updateIosDevice(deviceId, (item) => ({
+                    ...item,
+                    status: "stopped",
+                    bootReady: false,
+                    lastReset: { eraseSimulator: true, resetAt: now(), stdout: r.stdout, stderr: r.stderr },
+                    updatedAt: now(),
+                }));
+                return jsonResult({ reset: { eraseSimulator: true }, device: updated, stdout: r.stdout, stderr: r.stderr, provider: "simctl" });
+            }
+
+            if (!bundleId) return textResult(false, "iOS Simulator reset requires bundleId or eraseSimulator=true");
+            if (!isOwnedSimulatorName(device.simulatorName)) return textResult(false, `Refusing iOS Simulator reset for non-owned simulator name: ${device.simulatorName}`);
+            const type = iosContainerType(containerType);
+            const container = resolveIosAppContainer(discovery.xcrun, device, bundleId, type);
+            if (container.error) return fail(container.error);
+            const containment = ensureContainerPathForRead(container.containerRoot, container.containerRoot);
+            if (containment.error) return textResult(false, containment.error);
+            clearDirectoryContents(container.containerRoot);
+            const updated = updateIosDevice(deviceId, (item) => ({
+                ...item,
+                lastReset: { bundleId, containerType: type, containerRoot: container.containerRoot, resetAt: now() },
+                updatedAt: now(),
+            }));
+            return jsonResult({ reset: { bundleId, containerType: type }, containerRoot: container.containerRoot, device: updated, provider: "simctl-app-container" });
         }
 
         case "mobile_screenshot": {

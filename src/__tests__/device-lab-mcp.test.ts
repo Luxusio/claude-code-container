@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -1920,6 +1920,7 @@ describe("device-lab MCP with fake iOS simctl", () => {
         homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-ios-home-"));
         binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-ios-bin-"));
         logPath = join(homeDir, "fake-ios.log");
+        const containerRoot = join(homeDir, "ios-app-container");
 
         const xcrunPath = join(binDir, "xcrun");
         writeFileSync(xcrunPath, `#!/bin/sh
@@ -1952,6 +1953,14 @@ if [ "$1" = "simctl" ] && [ "$2" = "shutdown" ]; then
   exit 0
 fi
 if [ "$1" = "simctl" ] && [ "$2" = "delete" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "erase" ]; then
+  exit 0
+fi
+if [ "$1" = "simctl" ] && [ "$2" = "get_app_container" ]; then
+  mkdir -p "$FAKE_IOS_CONTAINER_ROOT"
+  echo "$FAKE_IOS_CONTAINER_ROOT"
   exit 0
 fi
 if [ "$1" = "simctl" ] && [ "$2" = "spawn" ]; then
@@ -2065,6 +2074,7 @@ exit 0
                 PATH: binDir,
                 NODE_ENV: "test",
                 FAKE_IOS_LOG: logPath,
+                FAKE_IOS_CONTAINER_ROOT: containerRoot,
             },
         });
 
@@ -2209,26 +2219,93 @@ exit 0
             expect(action.isError).not.toBe(true);
         }
 
+        const iosContainerRoot = join(homeDir, "ios-app-container");
+        const localUploadPath = join(homeDir, "ios-upload.txt");
+        const localDownloadPath = join(homeDir, "ios-download.txt");
+        mkdirSync(iosContainerRoot, { recursive: true });
+        writeFileSync(localUploadPath, "ios upload content");
         const upload = await client.callTool({
             name: "device_upload",
-            arguments: { deviceId: ownedDeviceId, localPath: "/tmp/local.txt", remotePath: "/tmp/remote.txt" },
+            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "/Documents/uploaded.txt", bundleId: "com.example.Test" },
         });
-        expect(upload.isError).toBe(true);
-        expect((upload.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
+        expect(upload.isError, (upload.content as Array<{ text?: string }>)[0].text).not.toBe(true);
+        const uploadPayload = JSON.parse(((upload.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            uploaded: { remotePath: string; bundleId: string; containerType: string };
+            containerRoot: string;
+        };
+        expect(uploadPayload.uploaded).toEqual(expect.objectContaining({
+            remotePath: "Documents/uploaded.txt",
+            bundleId: "com.example.Test",
+            containerType: "data",
+        }));
+        expect(uploadPayload.containerRoot).toBe(iosContainerRoot);
+        expect(readFileSync(join(iosContainerRoot, "Documents/uploaded.txt"), "utf-8")).toBe("ios upload content");
 
         const download = await client.callTool({
             name: "device_download",
-            arguments: { deviceId: ownedDeviceId, remotePath: "/tmp/remote.txt", localPath: "/tmp/local.txt" },
+            arguments: { deviceId: ownedDeviceId, remotePath: "Documents/uploaded.txt", localPath: localDownloadPath, bundleId: "com.example.Test" },
         });
-        expect(download.isError).toBe(true);
-        expect((download.content as Array<{ text?: string }>)[0].text).toContain("file transfer requires an app container target");
+        expect(download.isError).not.toBe(true);
+        expect(readFileSync(localDownloadPath, "utf-8")).toBe("ios upload content");
+
+        const missingBundleUpload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "Documents/missing.txt" },
+        });
+        expect(missingBundleUpload.isError).toBe(true);
+        expect((missingBundleUpload.content as Array<{ text?: string }>)[0].text).toContain("upload requires bundleId");
+
+        const missingLocalUpload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: ownedDeviceId, localPath: join(homeDir, "missing-upload.txt"), remotePath: "Documents/missing.txt", bundleId: "com.example.Test" },
+        });
+        expect(missingLocalUpload.isError).toBe(true);
+        expect((missingLocalUpload.content as Array<{ text?: string }>)[0].text).toContain("localPath does not exist");
+
+        const escapingUpload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "../escape.txt", bundleId: "com.example.Test" },
+        });
+        expect(escapingUpload.isError).toBe(true);
+        expect((escapingUpload.content as Array<{ text?: string }>)[0].text).toContain("Refusing path outside iOS app container");
+
+        const outsideContainerDir = join(homeDir, "outside-ios-container");
+        mkdirSync(outsideContainerDir, { recursive: true });
+        writeFileSync(join(outsideContainerDir, "outside.txt"), "outside");
+        symlinkSync(outsideContainerDir, join(iosContainerRoot, "Links"));
+        const symlinkUpload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "Links/escape.txt", bundleId: "com.example.Test" },
+        });
+        expect(symlinkUpload.isError).toBe(true);
+        expect((symlinkUpload.content as Array<{ text?: string }>)[0].text).toContain("escapes the container");
+
+        const symlinkDownload = await client.callTool({
+            name: "device_download",
+            arguments: { deviceId: ownedDeviceId, remotePath: "Links/outside.txt", localPath: join(homeDir, "symlink-download.txt"), bundleId: "com.example.Test" },
+        });
+        expect(symlinkDownload.isError).toBe(true);
+        expect((symlinkDownload.content as Array<{ text?: string }>)[0].text).toContain("escapes the container");
 
         const reset = await client.callTool({
             name: "device_reset",
             arguments: { deviceId: ownedDeviceId, bundleId: "com.example.Test" },
         });
-        expect(reset.isError).toBe(true);
-        expect((reset.content as Array<{ text?: string }>)[0].text).toContain("future explicit simulator erase");
+        expect(reset.isError).not.toBe(true);
+        const resetPayload = JSON.parse(((reset.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            reset: { bundleId: string; containerType: string };
+            containerRoot: string;
+        };
+        expect(resetPayload.reset).toEqual({ bundleId: "com.example.Test", containerType: "data" });
+        expect(resetPayload.containerRoot).toBe(iosContainerRoot);
+        expect(() => readFileSync(join(iosContainerRoot, "Documents/uploaded.txt"), "utf-8")).toThrow();
+
+        const missingRemoteDownload = await client.callTool({
+            name: "device_download",
+            arguments: { deviceId: ownedDeviceId, remotePath: "Documents/uploaded.txt", localPath: join(homeDir, "missing-download.txt"), bundleId: "com.example.Test" },
+        });
+        expect(missingRemoteDownload.isError).toBe(true);
+        expect((missingRemoteDownload.content as Array<{ text?: string }>)[0].text).toContain("remotePath does not exist");
 
         const screenshot = await client.callTool({
             name: "mobile_screenshot",
@@ -2436,6 +2513,19 @@ exit 0
         });
         expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
+        const eraseReset = await client.callTool({
+            name: "device_reset",
+            arguments: { deviceId: ownedDeviceId, eraseSimulator: true },
+        });
+        expect(eraseReset.isError).not.toBe(true);
+        const erasePayload = JSON.parse(((eraseReset.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            reset: { eraseSimulator: boolean };
+            device: { status: string; bootReady: boolean };
+        };
+        expect(erasePayload.reset.eraseSimulator).toBe(true);
+        expect(erasePayload.device.status).toBe("stopped");
+        expect(erasePayload.device.bootReady).toBe(false);
+
         const deleted = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: ownedDeviceId, deleteSimulator: true },
@@ -2462,6 +2552,8 @@ exit 0
         expect(log).toContain("xcrun simctl pbcopy CREATED-IOS-UDID");
         expect(log).toContain("xcrun simctl pbpaste CREATED-IOS-UDID");
         expect(log).toContain("xcrun simctl spawn CREATED-IOS-UDID pgrep -f com.example.Test");
+        expect(log).toContain("xcrun simctl get_app_container CREATED-IOS-UDID com.example.Test data");
+        expect(log).toContain("xcrun simctl erase CREATED-IOS-UDID");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID screenshot ");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/custom-ios-recording.mp4");
         expect(log).toContain("xcrun simctl io CREATED-IOS-UDID recordVideo /tmp/fail-immediate-ios-recording.mp4");
@@ -2637,6 +2729,35 @@ exit 0
         expect(start.isError).toBe(true);
         expect((start.content as Array<{ text?: string }>)[0].text).toContain("Refusing to start non-owned iOS Simulator name");
 
+        writeFileSync(join(homeDir, "foreign-ios-upload.txt"), "foreign");
+        const foreignUpload = await client.callTool({
+            name: "device_upload",
+            arguments: { deviceId: "ios-foreign-ios-metadata", localPath: join(homeDir, "foreign-ios-upload.txt"), remotePath: "Documents/foreign.txt", bundleId: "com.example.Test" },
+        });
+        expect(foreignUpload.isError).toBe(true);
+        expect((foreignUpload.content as Array<{ text?: string }>)[0].text).toContain("Refusing iOS Simulator upload for non-owned simulator name");
+
+        const foreignDownload = await client.callTool({
+            name: "device_download",
+            arguments: { deviceId: "ios-foreign-ios-metadata", remotePath: "Documents/foreign.txt", localPath: join(homeDir, "foreign-download.txt"), bundleId: "com.example.Test" },
+        });
+        expect(foreignDownload.isError).toBe(true);
+        expect((foreignDownload.content as Array<{ text?: string }>)[0].text).toContain("Refusing iOS Simulator download for non-owned simulator name");
+
+        const foreignAppReset = await client.callTool({
+            name: "device_reset",
+            arguments: { deviceId: "ios-foreign-ios-metadata", bundleId: "com.example.Test" },
+        });
+        expect(foreignAppReset.isError).toBe(true);
+        expect((foreignAppReset.content as Array<{ text?: string }>)[0].text).toContain("Refusing iOS Simulator reset for non-owned simulator name");
+
+        const eraseSimulator = await client.callTool({
+            name: "device_reset",
+            arguments: { deviceId: "ios-foreign-ios-metadata", eraseSimulator: true },
+        });
+        expect(eraseSimulator.isError).toBe(true);
+        expect((eraseSimulator.content as Array<{ text?: string }>)[0].text).toContain("Refusing to erase non-owned iOS Simulator name");
+
         const deleteSimulator = await client.callTool({
             name: "device_delete",
             arguments: { deviceId: "ios-foreign-ios-metadata", deleteSimulator: true },
@@ -2653,6 +2774,8 @@ exit 0
         const log = readFileSync(logPath, "utf-8");
         expect(log).not.toContain(`xcrun simctl create ${metadataOnlyName}`);
         expect(log).not.toContain("xcrun simctl boot FOREIGN-UDID");
+        expect(log).not.toContain("xcrun simctl get_app_container FOREIGN-UDID");
+        expect(log).not.toContain("xcrun simctl erase FOREIGN-UDID");
         expect(log).not.toContain("xcrun simctl delete FOREIGN-UDID");
     });
 });

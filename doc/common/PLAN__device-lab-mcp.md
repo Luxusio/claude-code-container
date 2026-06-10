@@ -391,9 +391,10 @@ File and app primitive status:
   `mobile_uninstall_app`, `mobile_stop_app`, and `mobile_clear_app_data`) use
   the same direct ADB path and do not start Appium.
 - iOS Simulator keeps app install/launch on `simctl install` and
-  `simctl launch`. Base `simctl` file upload/download and generic reset remain
-  unsupported until an app-container file channel or explicit simulator erase
-  flow is implemented, and the MCP tools return clear diagnostics.
+  `simctl launch`. File upload/download resolve an app container through
+  `simctl get_app_container <target> <bundleId> <containerType>` and copy files
+  only inside that container. `device_reset` can clear app-container contents
+  by `bundleId` or erase an owner-prefixed simulator through `simctl erase`.
 - Tests use fake Android SDK and fake `xcrun` commands to verify command
   mapping without requiring real devices or SDK installations.
 
@@ -533,8 +534,10 @@ Foundation status:
 - `device_start`, `device_stop`, and `device_screenshot` are wired to
   `xcrun simctl` when available, but MCP startup, backend discovery, and device
   listing remain lazy and do not boot simulators.
-- Real `simctl create/delete` and iOS Appium/XCUITest integration are deferred
-  to later hardening/mobile automation slices.
+- Real `simctl create/delete`, app install/launch, screenshot, recording,
+  Appium/XCUITest UI dump, app-container file transfer, and reset flows are
+  implemented with fake-`xcrun` CI coverage so normal Linux tests do not
+  require macOS/Xcode.
 
 simctl provisioning hardening status:
 
@@ -551,6 +554,21 @@ simctl provisioning hardening status:
   bounded timeout.
 - Linux CI coverage uses fake `xcrun` commands, so the provisioning behavior is
   tested without requiring macOS or Xcode.
+
+iOS Simulator file transfer and reset status:
+
+- `device_upload` requires `bundleId`, resolves the requested app container
+  with `simctl get_app_container`, strips leading slashes from `remotePath`,
+  rejects path traversal, and copies the host file into the container.
+- `device_download` uses the same container resolution and path containment
+  checks before copying a container file back to the requested host path.
+- `device_reset` with `bundleId` clears the resolved app container contents.
+- `device_reset` with `eraseSimulator=true` calls `simctl erase` only for
+  owner-prefixed simulator definitions, marks the stored simulator stopped, and
+  clears boot readiness metadata.
+- Tests cover successful upload/download/reset, missing bundle diagnostics,
+  path traversal refusal, owner-guarded erase, and fake `xcrun`
+  `get_app_container`/`erase` command traces.
 
 iOS Appium/XCUITest foundation status:
 
