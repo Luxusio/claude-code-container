@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { basename, join } from "path";
+import { basename, dirname, join } from "path";
 import { commandPath, run } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
@@ -58,6 +58,14 @@ function windowsToolsDir(device) {
     return join(windowsScratchDir(device), "tools");
 }
 
+function windowsRecordingDir(device) {
+    return join(windowsScratchDir(device), "recordings");
+}
+
+function windowsRecordingLocalPath(device) {
+    return join(windowsRecordingDir(device), `recording-${Date.now()}.zip`);
+}
+
 function wsbConfigPath(device) {
     return join(windowsScratchDir(device), `${device.id}.wsb`);
 }
@@ -84,7 +92,7 @@ function windowsHelperMetadata(device) {
         guestUploadsDir: "C:\\ccc\\scratch\\uploads",
         guestDownloadsDir: "C:\\ccc\\scratch\\downloads",
         status: "file-channel",
-        requiredFor: ["device_exec", "device_screenshot", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
 
@@ -104,6 +112,7 @@ function windowsHelperScript(helper) {
         `$Outbox = '${helper.guestOutboxDir}'`,
         `$Uploads = '${helper.guestUploadsDir}'`,
         `$Downloads = '${helper.guestDownloadsDir}'`,
+        "$Recordings = @{}",
         "New-Item -ItemType Directory -Force -Path $Inbox,$Outbox,$Uploads,$Downloads | Out-Null",
         "while ($true) {",
         "  Get-ChildItem -Path $Inbox -Filter '*.json' -ErrorAction SilentlyContinue | ForEach-Object {",
@@ -142,6 +151,72 @@ function windowsHelperScript(helper) {
         "          Copy-Item -Force -Path $Request.remotePath -Destination $OutputPath",
         "          $Response.downloadPath = $OutputPath",
         "        }",
+        "        'record_start' {",
+        "          $SessionId = if ($Request.sessionId) { $Request.sessionId } else { $Request.id }",
+        "          if ($Recordings.ContainsKey($SessionId)) { throw \"Recording already active: $SessionId\" }",
+        "          $FrameDir = Join-Path $Downloads ($SessionId + '-frames')",
+        "          New-Item -ItemType Directory -Force -Path $FrameDir | Out-Null",
+        "          $IntervalMs = if ($Request.intervalMs) { [int]$Request.intervalMs } else { 1000 }",
+        "          $TimeLimitSec = if ($Request.timeLimitSec) { [int]$Request.timeLimitSec } else { 0 }",
+        "          $Job = Start-Job -ArgumentList $FrameDir,$IntervalMs,$TimeLimitSec -ScriptBlock {",
+        "            param($FrameDir,$IntervalMs,$TimeLimitSec)",
+        "            Add-Type -AssemblyName System.Windows.Forms",
+        "            Add-Type -AssemblyName System.Drawing",
+        "            $Index = 0",
+        "            $StopAt = if ($TimeLimitSec -gt 0) { [DateTime]::UtcNow.AddSeconds($TimeLimitSec) } else { $null }",
+        "            while ($true) {",
+        "              if ($StopAt -and [DateTime]::UtcNow -ge $StopAt) { break }",
+        "              $Bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds",
+        "              $Bitmap = New-Object System.Drawing.Bitmap $Bounds.Width, $Bounds.Height",
+        "              $Graphics = [System.Drawing.Graphics]::FromImage($Bitmap)",
+        "              $Graphics.CopyFromScreen($Bounds.Location, [System.Drawing.Point]::Empty, $Bounds.Size)",
+        "              $FramePath = Join-Path $FrameDir ('frame-{0:D6}.png' -f $Index)",
+        "              $Bitmap.Save($FramePath, [System.Drawing.Imaging.ImageFormat]::Png)",
+        "              $Graphics.Dispose(); $Bitmap.Dispose()",
+        "              $Index += 1",
+        "              Start-Sleep -Milliseconds $IntervalMs",
+        "            }",
+        "          }",
+        "          $Recordings[$SessionId] = @{ job = $Job; frameDir = $FrameDir; timeLimitSec = $TimeLimitSec; startedAt = (Get-Date).ToString('o') }",
+        "          $Response.recording = @{ sessionId = $SessionId; frameDir = $FrameDir; timeLimitSec = $TimeLimitSec; provider = 'windows-helper-frame-archive' }",
+        "        }",
+        "        'record_status' {",
+        "          $SessionId = $Request.sessionId",
+        "          if ($SessionId -and $Recordings.ContainsKey($SessionId)) {",
+        "            $Entry = $Recordings[$SessionId]",
+        "            if ($Entry.job.State -eq 'Running') {",
+        "              $Response.recording = @{ sessionId = $SessionId; active = $true; state = $Entry.job.State; frameDir = $Entry.frameDir; provider = 'windows-helper-frame-archive' }",
+        "            } else {",
+        "              $ArchivePath = Join-Path $Downloads ($SessionId + '.zip')",
+        "              if (Test-Path $ArchivePath) { Remove-Item -Force -Path $ArchivePath }",
+        "              if (-not (Get-ChildItem -Path $Entry.frameDir -ErrorAction SilentlyContinue | Select-Object -First 1)) {",
+        "                @{ sessionId = $SessionId; provider = 'windows-helper-frame-archive'; note = 'No frames captured before completion.' } | ConvertTo-Json | Set-Content -Path (Join-Path $Entry.frameDir 'metadata.json') -Encoding UTF8",
+        "              }",
+        "              Compress-Archive -Path (Join-Path $Entry.frameDir '*') -DestinationPath $ArchivePath -Force",
+        "              Remove-Job -Job $Entry.job -Force -ErrorAction SilentlyContinue | Out-Null",
+        "              $Recordings.Remove($SessionId)",
+        "              $Response.recording = @{ sessionId = $SessionId; active = $false; state = $Entry.job.State; archivePath = $ArchivePath; provider = 'windows-helper-frame-archive' }",
+        "            }",
+        "          } else {",
+        "            $Response.recording = $null",
+        "          }",
+        "        }",
+        "        'record_stop' {",
+        "          $SessionId = $Request.sessionId",
+        "          if (-not $SessionId -or -not $Recordings.ContainsKey($SessionId)) { throw \"No recording active: $SessionId\" }",
+        "          $Entry = $Recordings[$SessionId]",
+        "          Stop-Job -Job $Entry.job -ErrorAction SilentlyContinue | Out-Null",
+        "          Wait-Job -Job $Entry.job -Timeout 3 -ErrorAction SilentlyContinue | Out-Null",
+        "          Remove-Job -Job $Entry.job -Force -ErrorAction SilentlyContinue | Out-Null",
+        "          $ArchivePath = Join-Path $Downloads ($SessionId + '.zip')",
+        "          if (Test-Path $ArchivePath) { Remove-Item -Force -Path $ArchivePath }",
+        "          if (-not (Get-ChildItem -Path $Entry.frameDir -ErrorAction SilentlyContinue | Select-Object -First 1)) {",
+        "            @{ sessionId = $SessionId; provider = 'windows-helper-frame-archive'; note = 'No frames captured before stop.' } | ConvertTo-Json | Set-Content -Path (Join-Path $Entry.frameDir 'metadata.json') -Encoding UTF8",
+        "          }",
+        "          Compress-Archive -Path (Join-Path $Entry.frameDir '*') -DestinationPath $ArchivePath -Force",
+        "          $Recordings.Remove($SessionId)",
+        "          $Response.recording = @{ sessionId = $SessionId; active = $false; archivePath = $ArchivePath; provider = 'windows-helper-frame-archive' }",
+        "        }",
         "        default { throw \"Unknown request type: $($Request.type)\" }",
         "      }",
         "    } catch {",
@@ -159,7 +234,7 @@ function windowsHelperScript(helper) {
 
 function ensureHelperWorkspace(device) {
     const helper = windowsHelperMetadata(device);
-    for (const dir of [helper.scratchDir, helper.toolsDir, helper.inboxDir, helper.outboxDir, helper.uploadsDir, helper.downloadsDir]) {
+    for (const dir of [helper.scratchDir, helper.toolsDir, helper.inboxDir, helper.outboxDir, helper.uploadsDir, helper.downloadsDir, windowsRecordingDir(device)]) {
         mkdirSync(dir, { recursive: true });
     }
     writeFileSync(helper.hostHelperScript, windowsHelperScript(helper), { mode: 0o600 });
@@ -235,6 +310,29 @@ function helperOutputPath(helper, responseValue, fallbackName) {
     return join(helper.downloadsDir, windowsPathBasename(responseValue));
 }
 
+async function reconcileWindowsRecording(device, helperTimeoutMs = 1000) {
+    if (!device?.recording?.active) return { device, statusCheck: null };
+    const result = await windowsHelperRequest(device, "record_status", { sessionId: device.recording.sessionId }, helperTimeoutMs);
+    if (result.error || !result.response?.ok) return {
+        device,
+        statusCheck: result.error || result.response?.error || "Windows helper recording status failed",
+    };
+    if (!result.response.recording?.active) {
+        if (result.response.recording?.archivePath && device.recording?.localPath) {
+            const hostArchivePath = result.response.recording.hostArchivePath || helperOutputPath(result.helper, result.response.recording.archivePath, `${device.recording.sessionId}.zip`);
+            mkdirSync(dirname(device.recording.localPath), { recursive: true });
+            if (existsSync(hostArchivePath)) copyFileSync(hostArchivePath, device.recording.localPath);
+        }
+        const updated = updateWindowsDevice(device.id, (item) => ({
+            ...item,
+            recording: null,
+            updatedAt: new Date().toISOString(),
+        }));
+        return { device: updated || { ...device, recording: null }, statusCheck: result.response.recording || null };
+    }
+    return { device, statusCheck: result.response.recording };
+}
+
 export function listWindowsDevices() {
     return readWindowsDevices().map((device) => ({ ...device, ownerId: ownerId() }));
 }
@@ -263,6 +361,7 @@ export async function handleWindowsTool(name, args) {
                 vgpu: Boolean(vgpu),
                 memoryMb,
                 helper: ensureHelperWorkspace({ id }),
+                recording: null,
                 status: "stopped",
                 creatable: true,
                 createdAt: new Date().toISOString(),
@@ -327,6 +426,7 @@ export async function handleWindowsTool(name, args) {
             const updated = updateWindowsDevice(deviceId, (item) => ({
                 ...item,
                 status: "stopped",
+                recording: null,
                 updatedAt: new Date().toISOString(),
             }));
             return jsonResult({ device: updated });
@@ -359,13 +459,79 @@ export async function handleWindowsTool(name, args) {
             return { content: [{ type: "image", data: readFileSync(imagePath).toString("base64"), mimeType: "image/png" }] };
         }
 
-        case "device_record_video_start":
-        case "device_record_video_stop":
         case "device_record_video_status": {
-            const { deviceId } = args;
+            const { deviceId, helperTimeoutMs } = args;
             const device = findWindowsDevice(deviceId);
             if (!device) return undefined;
-            return textResult(false, "Windows Sandbox video recording is not supported yet; it requires a future guest helper screen-recording channel.");
+            const reconciled = await reconcileWindowsRecording(device, helperTimeoutMs || 1000);
+            return jsonResult({
+                deviceId,
+                recording: reconciled.device.recording || null,
+                provider: "windows-helper-frame-archive",
+                helper: reconciled.statusCheck || null,
+            });
+        }
+
+        case "device_record_video_start": {
+            const { deviceId, localPath, timeLimitSec, helperTimeoutMs } = args;
+            let device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (device.recording?.active) {
+                const reconciled = await reconcileWindowsRecording(device, helperTimeoutMs || 1000);
+                device = reconciled.device;
+                if (device.recording?.active) return textResult(false, `Windows Sandbox recording already active for ${deviceId}`);
+            }
+            const sessionId = `recording-${randomUUID()}`;
+            const resolvedLocalPath = localPath || windowsRecordingLocalPath(device);
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const intervalMs = timeLimitSec && timeLimitSec < 30 ? 500 : 1000;
+            const result = await windowsHelperRequest(device, "record_start", { sessionId, intervalMs, timeLimitSec: timeLimitSec || 0 }, helperTimeoutMs || 5000);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper recording start failed");
+            const recording = {
+                active: true,
+                provider: "windows-helper-frame-archive",
+                sessionId,
+                localPath: resolvedLocalPath,
+                remotePath: result.response.recording?.frameDir || null,
+                timeLimitSec: timeLimitSec || null,
+                startedAt: new Date().toISOString(),
+            };
+            const updated = updateWindowsDevice(deviceId, (item) => ({
+                ...item,
+                recording,
+                updatedAt: new Date().toISOString(),
+            }));
+            return jsonResult({ deviceId, recording: updated.recording, helper: result.response.recording || null });
+        }
+
+        case "device_record_video_stop": {
+            const { deviceId, localPath, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (!device.recording?.active) return textResult(false, `No Windows Sandbox recording active for ${deviceId}`);
+            const result = await windowsHelperRequest(device, "record_stop", { sessionId: device.recording.sessionId }, helperTimeoutMs || 10000);
+            const previous = device.recording;
+            const updated = updateWindowsDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: new Date().toISOString(),
+            }));
+            if (result.error) return textResult(false, `${result.error}. Windows Sandbox recording state cleared for ${deviceId}.`);
+            if (!result.response.ok) return textResult(false, `${result.response.error || "Windows helper recording stop failed"}. Windows Sandbox recording state cleared for ${deviceId}.`);
+            const hostArchivePath = result.response.recording?.hostArchivePath || helperOutputPath(result.helper, result.response.recording?.archivePath, `${previous.sessionId}.zip`);
+            const resolvedLocalPath = localPath || previous.localPath || windowsRecordingLocalPath(device);
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            if (existsSync(hostArchivePath)) copyFileSync(hostArchivePath, resolvedLocalPath);
+            if (!existsSync(resolvedLocalPath)) return textResult(false, `Windows helper recording output missing: ${hostArchivePath}. Windows Sandbox recording state cleared for ${deviceId}.`);
+            return jsonResult({
+                deviceId,
+                stopped: true,
+                provider: "windows-helper-frame-archive",
+                recording: { ...previous, active: false, localPath: resolvedLocalPath, stoppedAt: new Date().toISOString() },
+                device: updated,
+                helper: result.response.recording || null,
+            });
         }
 
         case "device_upload": {

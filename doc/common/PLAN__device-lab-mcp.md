@@ -257,8 +257,11 @@ Required common tools:
     - Android uses `adb shell screenrecord`, with a bounded
       `--time-limit` and an optional local artifact path.
     - iOS Simulator uses `xcrun simctl io <target> recordVideo`.
-    - Windows Sandbox and macOS VM currently return explicit unsupported
-      diagnostics until their guest-helper or SSH recording channel exists.
+    - Windows Sandbox uses the guest-helper file channel to produce an
+      owner-scoped frame archive artifact when a native guest encoder is not
+      guaranteed to exist.
+    - macOS VM uses the configured SSH bridge to start `screencapture` video
+      capture, stop it, and download the owner-scoped artifact.
 
 13. `device_upload` / `device_download`
     - Transfers files through owner-scoped scratch paths.
@@ -691,8 +694,9 @@ Foundation status:
 - `device_start` writes an owner-scoped `.wsb` configuration and runs
   `wsb start` only on explicit calls when available. `device_stop` calls
   `wsb stop` only on explicit calls.
-- Guest helper installation, command stdout/stderr capture, and richer
-  Windows automation are deferred to later hardening slices.
+- Guest helper installation, command stdout/stderr capture, screenshot,
+  upload/download, and frame-archive recording are implemented. Richer Windows
+  GUI automation is deferred to later hardening slices.
 
 Guest-helper foundation status:
 
@@ -700,7 +704,7 @@ Guest-helper foundation status:
   metadata under the current owner namespace.
 - `device_start` writes a conservative `.wsb` config only on explicit start,
   mapping a writable scratch folder and a read-only tools folder into the
-  sandbox and adding a LogonCommand placeholder for a future CCC guest helper.
+  sandbox and adding a LogonCommand that starts the CCC guest helper.
 - The generated PowerShell guest helper watches owner-scoped mapped
   `inbox/*.json` requests and writes `outbox/*.json` responses. The mapped
   scratch folder also contains owner-scoped `uploads/` and `downloads/`
@@ -708,7 +712,12 @@ Guest-helper foundation status:
 - `device_exec` writes an `exec` request and returns stdout/stderr/status from
   the helper response.
 - `device_screenshot` writes a `screenshot` request and returns PNG image
-  content from the mapped downloads folder.
+  content from the helper response.
+- `device_record_video_start`, `device_record_video_status`, and
+  `device_record_video_stop` write recording requests through the helper. The
+  zero-configuration provider returns a zip archive of captured frames as
+  `windows-helper-frame-archive`; native encoded video can be added later when
+  a guest encoder/helper is available.
 - `device_upload` copies the local file into the mapped uploads folder, writes
   an `upload` request, and returns helper response metadata.
 - `device_download` writes a `download` request, copies the mapped helper output
@@ -756,11 +765,11 @@ Foundation status:
   `utmctl start <providerInstance>`. Missing macOS host/provider prerequisites
   return explicit diagnostics without trying to boot anything.
 - `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
-  return explicit guest-helper-required diagnostics for macOS VM devices until a
-  guest helper or provider SSH bridge is implemented.
+  use configured SSH bridge metadata for macOS VM devices.
 - Tests verify Linux-host missing diagnostics and fake `tart` provider
   start/stop behavior without requiring a real macOS host or VM image.
-- Real VM image create/clone/snapshot and guest helper integration are deferred
+- Tart-backed VM image create/clone/snapshot operations are implemented through
+  owner-scoped provider clones. Guest-helper auto-provisioning remains deferred
   to later provider-specific hardening slices.
 
 macOS helper/SSH bridge status:
@@ -775,10 +784,14 @@ macOS helper/SSH bridge status:
 - `device_upload` and `device_download` use `scp` with the configured bridge.
 - `device_screenshot` runs `screencapture -x` through SSH, downloads the PNG via
   `scp` into the owner-scoped workspace, and returns MCP image content.
+- `device_record_video_start`, `device_record_video_status`, and
+  `device_record_video_stop` use the SSH bridge to run `screencapture` video
+  capture, track the local SSH process, interrupt the remote capture on stop,
+  download the artifact via `scp`, and clear state on stop/device shutdown.
 - Tests use fake `ssh` and `scp` commands with the fake `tart` provider, so
   bridge behavior is covered without a real macOS VM.
-- Automatic SSH credential provisioning, real VM image lifecycle, and real
-  macOS host smoke tests remain deferred.
+- Automatic SSH credential provisioning and real macOS host smoke tests remain
+  deferred.
 
 ## CLI support
 

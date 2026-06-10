@@ -433,8 +433,8 @@ describe("device-lab MCP", () => {
             name: "device_record_video_status",
             arguments: { deviceId: "windows-win-test" },
         });
-        expect(recordStatus.isError).toBe(true);
-        expect((recordStatus.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox video recording is not supported yet");
+        expect(recordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((recordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -518,8 +518,8 @@ describe("device-lab MCP", () => {
             name: "device_record_video_status",
             arguments: { deviceId: "macos-mac-test" },
         });
-        expect(recordStatus.isError).toBe(true);
-        expect((recordStatus.content as Array<{ text?: string }>)[0].text).toContain("macOS VM video recording is not supported yet");
+        expect(recordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((recordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
 
         const deleted = await client.callTool({
             name: "device_delete",
@@ -566,7 +566,10 @@ exit 0
 writeFileSync(sshPath, `#!/bin/sh
 echo "ssh $*" >> "$FAKE_TART_LOG"
 case "$*" in
-  *screencapture*) exit 0 ;;
+  *screencapture*"-v"*) exec /bin/sleep 20 ;;
+  *screencapture*"-x"*) exit 0 ;;
+  *pkill*) exit 0 ;;
+  *rm\\ -f*) exit 0 ;;
   *fail-command*) echo "ssh failure stdout"; echo "ssh failure stderr" >&2; exit 7 ;;
   *) echo "ssh output"; exit 0 ;;
 esac
@@ -906,9 +909,54 @@ esac
         expect(screenshot?.isError).not.toBe(true);
         expect((screenshot?.content as Array<{ type: string }>)[0].type).toBe("image");
 
-        const recordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
-        expect(recordStatus?.isError).toBe(true);
-        expect((recordStatus?.content as Array<{ text?: string }>)[0].text).toContain("macOS VM video recording is not supported yet");
+        const initialRecordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
+        expect(initialRecordStatus?.isError).not.toBe(true);
+        expect(JSON.parse(((initialRecordStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+
+        const stopWithoutRecording = await handleMacosTool("device_record_video_stop", { deviceId: "macos-fake-tart" });
+        expect(stopWithoutRecording?.isError).toBe(true);
+        expect((stopWithoutRecording?.content as Array<{ text?: string }>)[0].text).toContain("No macOS VM recording active");
+
+        const recordStart = await handleMacosTool("device_record_video_start", {
+            deviceId: "macos-fake-tart",
+            remotePath: "/tmp/custom-macos-recording.mov",
+            localPath: join(homeDir, "custom-macos-recording.mov"),
+            timeLimitSec: 3,
+        });
+        expect(recordStart?.isError).not.toBe(true);
+        const recordStartPayload = JSON.parse(((recordStart?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string; remotePath: string; localPath: string };
+        };
+        expect(recordStartPayload.recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "ssh-screencapture-video",
+            remotePath: "/tmp/custom-macos-recording.mov",
+            localPath: join(homeDir, "custom-macos-recording.mov"),
+        }));
+
+        const duplicateRecordStart = await handleMacosTool("device_record_video_start", { deviceId: "macos-fake-tart" });
+        expect(duplicateRecordStart?.isError).toBe(true);
+        expect((duplicateRecordStart?.content as Array<{ text?: string }>)[0].text).toContain("macOS VM recording already active");
+
+        const activeRecordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
+        expect(activeRecordStatus?.isError).not.toBe(true);
+        expect(JSON.parse(((activeRecordStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "ssh-screencapture-video",
+        }));
+
+        const recordStop = await handleMacosTool("device_record_video_stop", { deviceId: "macos-fake-tart" });
+        expect(recordStop?.isError).not.toBe(true);
+        const recordStopPayload = JSON.parse(((recordStop?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; localPath: string };
+            device: { recording: unknown };
+        };
+        expect(recordStopPayload.recording).toEqual(expect.objectContaining({
+            active: false,
+            localPath: join(homeDir, "custom-macos-recording.mov"),
+        }));
+        expect(recordStopPayload.device.recording).toBeNull();
+        expect(readFileSync(join(homeDir, "custom-macos-recording.mov"), "utf-8")).toBe("fakepng");
 
         const stop = await handleMacosTool("device_stop", { deviceId: "macos-fake-tart" });
         expect(stop?.isError).not.toBe(true);
@@ -930,6 +978,9 @@ esac
         expect(log).toContain("ssh -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no ccc@127.0.0.1 whoami");
         expect(log).toContain("scp -P 2222 -o BatchMode=yes -o StrictHostKeyChecking=no");
         expect(log).toContain("screencapture -x /tmp/ccc-macos-fake-tart-screenshot.png");
+        expect(log).toContain("screencapture -v '/tmp/custom-macos-recording.mov'");
+        expect(log).toContain("pkill -INT -f");
+        expect(log).toContain("ccc@127.0.0.1:/tmp/custom-macos-recording.mov");
 
         const clonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-clone" });
         expect(clonedDeleted?.isError).not.toBe(true);
@@ -1038,6 +1089,7 @@ exit 0
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`wsb start ${started.device.configPath}`);
 
+        let forceInactiveRecordStatus = false;
         const responder = setInterval(() => {
             let files: string[] = [];
             try {
@@ -1052,6 +1104,8 @@ exit 0
                     type: string;
                     command?: string;
                     remotePath?: string;
+                    sessionId?: string;
+                    timeLimitSec?: number;
                 };
                 const response: Record<string, unknown> = { id: request.id, ok: true, type: request.type };
                 if (request.type === "exec") {
@@ -1068,6 +1122,45 @@ exit 0
                     const downloadName = `${request.id}-${remoteName}`;
                     writeFileSync(join(started.device.helper.downloadsDir, downloadName), "downloaded");
                     response.downloadPath = `C:\\ccc\\scratch\\downloads\\${downloadName}`;
+                }
+                if (request.type === "record_start") {
+                    response.recording = {
+                        sessionId: request.sessionId,
+                        frameDir: `C:\\ccc\\scratch\\downloads\\${request.sessionId}-frames`,
+                        timeLimitSec: request.timeLimitSec,
+                        provider: "windows-helper-frame-archive",
+                    };
+                }
+                if (request.type === "record_status") {
+                    if (forceInactiveRecordStatus) {
+                        const archiveName = `${request.sessionId}.zip`;
+                        writeFileSync(join(started.device.helper.downloadsDir, archiveName), "boundedzip");
+                        response.recording = {
+                            sessionId: request.sessionId,
+                            active: false,
+                            state: "Completed",
+                            archivePath: `C:\\ccc\\scratch\\downloads\\${archiveName}`,
+                            provider: "windows-helper-frame-archive",
+                        };
+                    } else {
+                        response.recording = {
+                            sessionId: request.sessionId,
+                            active: true,
+                            state: "Running",
+                            frameDir: `C:\\ccc\\scratch\\downloads\\${request.sessionId}-frames`,
+                            provider: "windows-helper-frame-archive",
+                        };
+                    }
+                }
+                if (request.type === "record_stop") {
+                    const archiveName = `${request.id}.zip`;
+                    writeFileSync(join(started.device.helper.downloadsDir, archiveName), "fakezip");
+                    response.recording = {
+                        sessionId: request.id,
+                        active: false,
+                        archivePath: `C:\\ccc\\scratch\\downloads\\${archiveName}`,
+                        provider: "windows-helper-frame-archive",
+                    };
                 }
                 writeFileSync(join(started.device.helper.outboxDir, `${request.id}.json`), JSON.stringify(response));
                 rmSync(requestPath, { force: true });
@@ -1106,10 +1199,83 @@ exit 0
 
         const recordStart = await client.callTool({
             name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper", localPath: join(homeDir, "windows-recording.zip"), timeLimitSec: 2, helperTimeoutMs: 1000 },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recordStartPayload = JSON.parse(((recordStart.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; provider: string; localPath: string };
+        };
+        expect(recordStartPayload.recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "windows-helper-frame-archive",
+            localPath: join(homeDir, "windows-recording.zip"),
+            timeLimitSec: 2,
+        }));
+
+        const duplicateRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(duplicateRecordStart.isError).toBe(true);
+        expect((duplicateRecordStart.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox recording already active");
+
+        const activeRecordStatus = await client.callTool({
+            name: "device_record_video_status",
             arguments: { deviceId: "windows-win-helper" },
         });
-        expect(recordStart.isError).toBe(true);
-        expect((recordStart.content as Array<{ text?: string }>)[0].text).toContain("Windows Sandbox video recording is not supported yet");
+        expect(activeRecordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((activeRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({
+            active: true,
+            provider: "windows-helper-frame-archive",
+        }));
+
+        const recordStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(recordStop.isError).not.toBe(true);
+        const recordStopPayload = JSON.parse(((recordStop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            recording: { active: boolean; localPath: string };
+            device: { recording: unknown };
+        };
+        expect(recordStopPayload.recording).toEqual(expect.objectContaining({
+            active: false,
+            localPath: join(homeDir, "windows-recording.zip"),
+        }));
+        expect(recordStopPayload.device.recording).toBeNull();
+        expect(readFileSync(join(homeDir, "windows-recording.zip"), "utf-8")).toBe("fakezip");
+
+        const stopWithoutRecording = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(stopWithoutRecording.isError).toBe(true);
+        expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No Windows Sandbox recording active");
+
+        const boundedRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper", localPath: join(homeDir, "bounded-windows-recording.zip"), timeLimitSec: 1, helperTimeoutMs: 1000 },
+        });
+        expect(boundedRecordStart.isError).not.toBe(true);
+        forceInactiveRecordStatus = true;
+        const inactiveRecordStatus = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(inactiveRecordStatus.isError).not.toBe(true);
+        expect(JSON.parse(((inactiveRecordStatus.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+        expect(readFileSync(join(homeDir, "bounded-windows-recording.zip"), "utf-8")).toBe("boundedzip");
+        const restartAfterInactiveStatus = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper", localPath: join(homeDir, "restart-windows-recording.zip"), helperTimeoutMs: 1000 },
+        });
+        expect(restartAfterInactiveStatus.isError).not.toBe(true);
+        forceInactiveRecordStatus = false;
+        const restartStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(restartStop.isError).not.toBe(true);
         clearInterval(responder);
 
         const stop = await client.callTool({

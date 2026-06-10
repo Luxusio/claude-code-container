@@ -2,10 +2,11 @@ import { commandPath, run } from "../commands.mjs";
 import { ownerId, slug } from "../context.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findMacosDevice, readMacosDevices, updateMacosDevice, writeMacosDevices } from "../state/macos-state.mjs";
+import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 
 const PROVIDERS = [
     {
@@ -97,9 +98,18 @@ function macosToolsDir(device) {
     return join(macosWorkspaceDir(device), "tools");
 }
 
+function macosRecordingDir(device) {
+    return join(macosWorkspaceDir(device), "recordings");
+}
+
+function macosRecordingLocalPath(device) {
+    return join(macosRecordingDir(device), `recording-${Date.now()}.mov`);
+}
+
 function ensureMacosWorkspace(device) {
     mkdirSync(macosWorkspaceDir(device), { recursive: true });
     mkdirSync(macosToolsDir(device), { recursive: true });
+    mkdirSync(macosRecordingDir(device), { recursive: true });
 }
 
 function macosHelperMetadata(device) {
@@ -111,7 +121,7 @@ function macosHelperMetadata(device) {
         bridge: device.ssh ? "ssh" : "missing",
         ssh: device.ssh || null,
         status: device.ssh ? "ssh-configured" : "planned",
-        requiredFor: ["device_exec", "device_screenshot", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
 
@@ -204,6 +214,7 @@ function macosDeviceDefinition({ id, name, provider, image, memoryMb, cpus, ssh,
         status: "stopped",
         creatable: true,
         snapshots: [],
+        recording: null,
         ...extra,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -244,6 +255,70 @@ function sshBaseArgs(device) {
     if (device.ssh?.port) args.push("-p", String(device.ssh.port));
     args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no");
     return args;
+}
+
+function shellQuote(value) {
+    return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+async function sleep(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForRecorderProcess(child, label) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (result) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(result);
+        };
+        const timer = setTimeout(() => done(null), 150);
+        child.once("error", (error) => done(textResult(false, `${label} recorder failed to start: ${error.message}`)));
+        child.once("exit", (code, signal) => done(textResult(false, `${label} recorder exited before it was ready: ${signal || `exit ${code}`}`)));
+    });
+}
+
+function processIsAlive(pid) {
+    if (!pid) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 3000) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() <= deadline) {
+        if (!processIsAlive(pid)) return true;
+        await sleep(50);
+    }
+    return !processIsAlive(pid);
+}
+
+function reconcileMacosRecording(device) {
+    if (!device?.recording?.active || !device.recording.pid || processIsAlive(device.recording.pid)) return device;
+    return updateMacosDevice(device.id, (item) => ({
+        ...item,
+        recording: null,
+        updatedAt: new Date().toISOString(),
+    })) || { ...device, recording: null };
+}
+
+function monitorMacosRecordingExit(deviceId, pid) {
+    return () => {
+        const current = findMacosDevice(deviceId);
+        if (current?.recording?.active && current.recording.pid === pid) {
+            updateMacosDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: new Date().toISOString(),
+            }));
+        }
+    };
 }
 
 function scpBaseArgs(device) {
@@ -568,6 +643,19 @@ export async function handleMacosTool(name, args) {
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
 
+            if (device.recording?.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+            }
+            if (device.recording?.active) {
+                const bridge = sshBridge(device, "device_record_video_stop");
+                if (!bridge.error) {
+                    run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `pkill -INT -f ${shellQuote(`screencapture.*${device.recording.remotePath}`)} || true`]);
+                }
+            }
+            if (device.recording?.pid) {
+                await waitForProcessExit(device.recording.pid, 1000);
+            }
+
             const plan = macosProviderPlan(device);
             if (plan.stopCommand && device.providerInstance) {
                 const r = run(plan.stopCommand.command, plan.stopCommand.args);
@@ -577,6 +665,7 @@ export async function handleMacosTool(name, args) {
             const updated = updateMacosDevice(deviceId, (item) => ({
                 ...item,
                 status: "stopped",
+                recording: null,
                 updatedAt: new Date().toISOString(),
             }));
             return jsonResult({ device: deviceWithPlan(updated) });
@@ -629,13 +718,94 @@ export async function handleMacosTool(name, args) {
             return { content: [{ type: "image", data: readFileSync(localPath).toString("base64"), mimeType: "image/png" }] };
         }
 
-        case "device_record_video_start":
-        case "device_record_video_stop":
         case "device_record_video_status": {
             const { deviceId } = args;
+            const device = reconcileMacosRecording(findMacosDevice(deviceId));
+            if (!device) return undefined;
+            return jsonResult({ deviceId, recording: device.recording || null, provider: "ssh-screencapture-video" });
+        }
+
+        case "device_record_video_start": {
+            const { deviceId, remotePath, localPath, timeLimitSec } = args;
             const device = findMacosDevice(deviceId);
             if (!device) return undefined;
-            return textResult(false, "macOS VM video recording is not supported yet; it requires a future SSH or guest-helper recording channel.");
+            if (device.recording?.active) return textResult(false, `macOS VM recording already active for ${deviceId}`);
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            ensureMacosWorkspace(device);
+            const resolvedRemotePath = remotePath || `/tmp/ccc-${device.id}-recording.mov`;
+            const resolvedLocalPath = localPath || macosRecordingLocalPath(device);
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const limitPrefix = timeLimitSec ? `sleep ${Number(timeLimitSec)}; pkill -INT -f ${shellQuote(`screencapture.*${resolvedRemotePath}`)}` : "wait";
+            const command = [
+                `rm -f ${shellQuote(resolvedRemotePath)}`,
+                `(screencapture -v ${shellQuote(resolvedRemotePath)} &)`,
+                limitPrefix,
+            ].join("; ");
+            const child = spawn(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, command], {
+                detached: true,
+                stdio: "ignore",
+                env: process.env,
+            });
+            const startError = await waitForRecorderProcess(child, "macOS VM screencapture");
+            if (startError) return startError;
+            child.once("exit", monitorMacosRecordingExit(deviceId, child.pid));
+            child.unref();
+            const recording = {
+                active: true,
+                provider: "ssh-screencapture-video",
+                pid: child.pid,
+                remotePath: resolvedRemotePath,
+                localPath: resolvedLocalPath,
+                timeLimitSec: timeLimitSec || null,
+                startedAt: new Date().toISOString(),
+            };
+            const updated = updateMacosDevice(deviceId, (item) => ({
+                ...item,
+                recording,
+                updatedAt: new Date().toISOString(),
+            }));
+            return jsonResult({ deviceId, recording: updated.recording });
+        }
+
+        case "device_record_video_stop": {
+            const { deviceId, localPath } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            if (!device.recording?.active) return textResult(false, `No macOS VM recording active for ${deviceId}`);
+            const bridge = sshBridge(device, name);
+            if (bridge.error) return bridge.error;
+            if (device.recording.pid) {
+                try { process.kill(device.recording.pid, "SIGINT"); } catch { /* ignore stale recorder */ }
+            }
+            run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `pkill -INT -f ${shellQuote(`screencapture.*${device.recording.remotePath}`)} || true`]);
+            if (device.recording.pid) {
+                const exited = await waitForProcessExit(device.recording.pid, 3000);
+                if (!exited) return textResult(false, `macOS VM recording did not exit within 3000ms for ${deviceId}; state remains active.`);
+            }
+            const previous = device.recording;
+            const resolvedLocalPath = localPath || previous.localPath || macosRecordingLocalPath(device);
+            mkdirSync(dirname(resolvedLocalPath), { recursive: true });
+            const copy = run(bridge.discovery.scp, [...scpBaseArgs(device), `${bridge.target}:${previous.remotePath}`, resolvedLocalPath]);
+            const updated = updateMacosDevice(deviceId, (item) => ({
+                ...item,
+                recording: null,
+                updatedAt: new Date().toISOString(),
+            }));
+            run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, `rm -f ${shellQuote(previous.remotePath)}`]);
+            if (copy.status !== 0) {
+                return textResult(false, `Error: ${copy.stderr || copy.stdout || `exit ${copy.status}`}. macOS VM recording state cleared for ${deviceId}.`);
+            }
+            if (!existsSync(resolvedLocalPath)) return textResult(false, `macOS VM recording output missing: ${resolvedLocalPath}. macOS VM recording state cleared for ${deviceId}.`);
+            return jsonResult({
+                deviceId,
+                stopped: true,
+                provider: "ssh-screencapture-video",
+                recording: { ...previous, active: false, localPath: resolvedLocalPath, stoppedAt: new Date().toISOString() },
+                device: updated,
+                stdout: copy.stdout,
+                stderr: copy.stderr,
+            });
         }
 
         default:
