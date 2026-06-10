@@ -72,6 +72,19 @@ export function iosBackend() {
             "mobile_screenshot",
             "mobile_session_status",
             "mobile_dump_ui",
+            "mobile_tap",
+            "mobile_double_tap",
+            "mobile_long_press",
+            "mobile_swipe",
+            "mobile_drag",
+            "mobile_type_text",
+            "mobile_key",
+            "mobile_home",
+            "mobile_lock",
+            "mobile_unlock",
+            "mobile_rotate_left",
+            "mobile_rotate_right",
+            "mobile_set_orientation",
             "mobile_uninstall_app",
             "mobile_stop_app",
             "mobile_clear_app_data",
@@ -80,6 +93,7 @@ export function iosBackend() {
             "mobile_set_location",
             "mobile_set_clipboard",
             "mobile_get_clipboard",
+            "mobile_wait_for_text",
             "mobile_wait_for_app",
         ],
     };
@@ -178,6 +192,17 @@ async function waitForProcessExit(pid, timeoutMs = 3000) {
     return !processIsAlive(pid);
 }
 
+async function terminateProcess(pid, label, timeoutMs = 1000) {
+    if (!pid) return { exited: true };
+    try { process.kill(pid, "SIGINT"); } catch { return { exited: true }; }
+    if (await waitForProcessExit(pid, timeoutMs)) return { exited: true };
+    try { process.kill(pid, "SIGTERM"); } catch { /* ignore */ }
+    if (await waitForProcessExit(pid, timeoutMs)) return { exited: true };
+    try { process.kill(pid, "SIGKILL"); } catch { /* ignore */ }
+    const exited = await waitForProcessExit(pid, timeoutMs);
+    return exited ? { exited: true } : { exited: false, error: `${label} process did not exit after SIGINT/SIGTERM/SIGKILL: ${pid}` };
+}
+
 function reconcileIosRecording(device) {
     if (!device?.recording?.active || !device.recording.pid || processIsAlive(device.recording.pid)) return device;
     return updateIosDevice(device.id, (item) => ({
@@ -261,6 +286,10 @@ async function ensureIosAppiumSession(deviceId) {
             await fetchJson(`${device.appium.serverUrl}/session/${device.appium.sessionId}`, { method: "GET" });
             return { device, serverUrl: device.appium.serverUrl, sessionId: device.appium.sessionId };
         } catch {
+            if (device.appium.serverPid) {
+                const stopped = await terminateProcess(device.appium.serverPid, "iOS Simulator Appium");
+                if (!stopped.exited) return { error: stopped.error };
+            }
             updateIosDevice(deviceId, (item) => ({
                 ...item,
                 appium: null,
@@ -277,23 +306,42 @@ async function ensureIosAppiumSession(deviceId) {
     child.unref();
 
     const ready = await waitForAppium(serverUrl);
-    if (!ready) return { error: `Appium server did not become ready on ${serverUrl}` };
+    if (!ready) {
+        if (child.pid) {
+            const stopped = await terminateProcess(child.pid, "iOS Simulator Appium startup");
+            if (!stopped.exited) return { error: `${stopped.error}. Appium server did not become ready on ${serverUrl}` };
+        }
+        return { error: `Appium server did not become ready on ${serverUrl}` };
+    }
 
-    const response = await fetchJson(`${serverUrl}/session`, {
-        method: "POST",
-        body: JSON.stringify({
-            capabilities: {
-                alwaysMatch: {
-                    platformName: "iOS",
-                    "appium:automationName": "XCUITest",
-                    "appium:deviceName": device.simulatorName || device.name || device.id,
-                    ...(device.udid ? { "appium:udid": device.udid } : {}),
+    let response;
+    try {
+        response = await fetchJson(`${serverUrl}/session`, {
+            method: "POST",
+            body: JSON.stringify({
+                capabilities: {
+                    alwaysMatch: {
+                        platformName: "iOS",
+                        "appium:automationName": "XCUITest",
+                        "appium:deviceName": device.simulatorName || device.name || device.id,
+                        ...(device.udid ? { "appium:udid": device.udid } : {}),
+                    },
                 },
-            },
-        }),
-    });
+            }),
+        });
+    } catch (error) {
+        if (child.pid) {
+            await terminateProcess(child.pid, "iOS Simulator Appium startup");
+        }
+        return { error: `Appium session creation failed: ${error.message}` };
+    }
     const sessionId = response?.value?.sessionId || response?.sessionId;
-    if (!sessionId) return { error: "Appium did not return a session id" };
+    if (!sessionId) {
+        if (child.pid) {
+            await terminateProcess(child.pid, "iOS Simulator Appium startup");
+        }
+        return { error: "Appium did not return a session id" };
+    }
 
     const updated = updateIosDevice(deviceId, (item) => ({
         ...item,
@@ -309,6 +357,52 @@ async function ensureIosAppiumSession(deviceId) {
     }));
 
     return { device: updated, serverUrl, sessionId };
+}
+
+function appiumPointerActions(type, steps) {
+    return {
+        actions: [{
+            type: "pointer",
+            id: "finger1",
+            parameters: { pointerType: "touch" },
+            actions: steps,
+        }],
+        gesture: type,
+    };
+}
+
+async function iosAppiumSessionOrResult(deviceId) {
+    const session = await ensureIosAppiumSession(deviceId);
+    if (session.unknown) return { unknown: true };
+    if (session.error) return { result: textResult(false, session.error) };
+    return { session };
+}
+
+async function postIosAppium(deviceId, path, body, provider = "appium-xcuitest") {
+    const resolved = await iosAppiumSessionOrResult(deviceId);
+    if (resolved.unknown || resolved.result) return resolved;
+    const { session } = resolved;
+    try {
+        const response = await fetchJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        return { result: jsonResult({ provider, sessionId: session.sessionId, response: response?.value ?? response }) };
+    } catch (error) {
+        return { result: textResult(false, `iOS Simulator Appium request failed: ${error.message}`) };
+    }
+}
+
+async function iosAppiumSource(deviceId) {
+    const resolved = await iosAppiumSessionOrResult(deviceId);
+    if (resolved.unknown || resolved.result) return resolved;
+    const { session } = resolved;
+    try {
+        const source = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
+        return { session, source: source?.value ?? source?.source ?? source };
+    } catch (error) {
+        return { result: textResult(false, `iOS Simulator Appium source request failed: ${error.message}`) };
+    }
 }
 
 function now() {
@@ -837,16 +931,15 @@ export async function handleIosTool(name, args) {
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
 
-            const session = await ensureIosAppiumSession(deviceId);
-            if (session.unknown) return undefined;
-            if (session.error) return textResult(false, session.error);
+            const resolved = await iosAppiumSource(deviceId);
+            if (resolved.unknown) return undefined;
+            if (resolved.result) return resolved.result;
 
-            const source = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
             return jsonResult({
                 provider: "appium-xcuitest",
-                source: source?.value ?? source?.source ?? source,
-                sessionId: session.sessionId,
-                serverUrl: session.serverUrl,
+                source: resolved.source,
+                sessionId: resolved.session.sessionId,
+                serverUrl: resolved.session.serverUrl,
             });
         }
 
@@ -969,27 +1062,159 @@ export async function handleIosTool(name, args) {
             return jsonResult({ ...result, bundleId, provider: "simctl" });
         }
 
-        case "mobile_tap":
-        case "mobile_double_tap":
-        case "mobile_long_press":
+        case "mobile_tap": {
+            const { deviceId, x, y } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("tap", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ tapped: { x, y }, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_double_tap": {
+            const { deviceId, x, y } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("doubleTap", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+                { type: "pause", duration: 80 },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ doubleTapped: { x, y }, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_long_press": {
+            const { deviceId, x, y, durationMs = 700 } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions("longPress", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pause", duration: durationMs },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ longPressed: { x, y, durationMs }, provider: "appium-xcuitest" });
+        }
+
         case "mobile_swipe":
-        case "mobile_drag":
-        case "mobile_type_text":
-        case "mobile_key":
-        case "mobile_home":
+        case "mobile_drag": {
+            const { deviceId, x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/actions", appiumPointerActions(name === "mobile_drag" ? "drag" : "swipe", [
+                { type: "pointerMove", duration: 0, x: x1, y: y1 },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerMove", duration: durationMs, x: x2, y: y2 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ [name === "mobile_drag" ? "dragged" : "swiped"]: { x1, y1, x2, y2, durationMs }, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_type_text": {
+            const { deviceId, text } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/keys", { text: String(text), value: [...String(text)] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ typed: true, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_key": {
+            const { deviceId, key, keyCode } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const resolvedKey = key ?? keyCode;
+            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return textResult(false, "mobile_key requires key or keyCode");
+            const posted = await postIosAppium(deviceId, "/keys", { text: String(resolvedKey), value: [String(resolvedKey)] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ key: resolvedKey, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_home": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: pressButton", args: [{ name: "home" }] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ home: true, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_lock": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: lock", args: [] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ locked: true, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_unlock": {
+            const { deviceId } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosAppium(deviceId, "/execute/sync", { script: "mobile: unlock", args: [] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ unlocked: true, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_rotate_left": {
+            const { deviceId } = args;
+            return handleIosTool("mobile_set_orientation", { deviceId, orientation: "LANDSCAPE" });
+        }
+
+        case "mobile_rotate_right": {
+            const { deviceId } = args;
+            return handleIosTool("mobile_set_orientation", { deviceId, orientation: "PORTRAIT" });
+        }
+
+        case "mobile_set_orientation": {
+            const { deviceId, orientation } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            const resolved = String(orientation || "").toUpperCase();
+            if (!["PORTRAIT", "LANDSCAPE"].includes(resolved)) return textResult(false, "iOS Simulator mobile_set_orientation requires PORTRAIT or LANDSCAPE");
+            const posted = await postIosAppium(deviceId, "/orientation", { orientation: resolved });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ orientation: resolved, provider: "appium-xcuitest" });
+        }
+
+        case "mobile_wait_for_text": {
+            const { deviceId, text, timeoutMs = 10000, intervalMs = 500 } = args;
+            const device = findIosDevice(deviceId);
+            if (!device) return undefined;
+            if (!text) return textResult(false, "iOS Simulator wait-for-text requires text");
+            const deadline = Date.now() + Math.max(0, timeoutMs);
+            let lastSource = "";
+            while (Date.now() <= deadline) {
+                const resolved = await iosAppiumSource(deviceId);
+                if (resolved.unknown) return undefined;
+                if (resolved.result) return resolved.result;
+                if (!resolved.result) {
+                    lastSource = String(resolved.source || "");
+                    if (lastSource.includes(text)) return jsonResult({ found: true, text, source: lastSource, provider: "appium-xcuitest" });
+                }
+                await sleep(Math.max(50, intervalMs));
+            }
+            return jsonResult({ found: false, text, source: lastSource, timeoutMs, provider: "appium-xcuitest" });
+        }
+
         case "mobile_back":
         case "mobile_forward":
         case "mobile_recents":
         case "mobile_power":
-        case "mobile_lock":
-        case "mobile_unlock":
-        case "mobile_rotate_left":
-        case "mobile_rotate_right":
-        case "mobile_set_orientation":
         case "mobile_set_battery":
         case "mobile_set_network":
-        case "mobile_toggle_airplane_mode":
-        case "mobile_wait_for_text": {
+        case "mobile_toggle_airplane_mode": {
             const { deviceId } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;

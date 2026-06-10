@@ -116,7 +116,7 @@ describe("device-lab MCP", () => {
         const content = result.content as Array<{ type: string; text?: string }>;
         const payload = JSON.parse(content[0].text ?? "{}") as {
             ownerId?: string;
-            backends?: Array<{ name: string; available: boolean; status?: string }>;
+            backends?: Array<{ name: string; available: boolean; status?: string; capabilities?: string[] }>;
         };
 
         expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
@@ -131,7 +131,22 @@ describe("device-lab MCP", () => {
         ]);
         expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "android-device")?.status).toBe("missing-prerequisites");
-        expect(payload.backends?.find((backend) => backend.name === "ios-simulator")?.status).toBe("missing-prerequisites");
+        const iosSimulatorBackend = payload.backends?.find((backend) => backend.name === "ios-simulator");
+        expect(iosSimulatorBackend?.status).toBe("missing-prerequisites");
+        expect(iosSimulatorBackend?.capabilities).toEqual(expect.arrayContaining([
+            "mobile_tap",
+            "mobile_double_tap",
+            "mobile_long_press",
+            "mobile_swipe",
+            "mobile_drag",
+            "mobile_type_text",
+            "mobile_key",
+            "mobile_home",
+            "mobile_lock",
+            "mobile_unlock",
+            "mobile_set_orientation",
+            "mobile_wait_for_text",
+        ]));
         expect(payload.backends?.find((backend) => backend.name === "ios-device")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "windows-sandbox")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "macos-vm")?.status).toBe("missing-prerequisites");
@@ -2210,10 +2225,27 @@ const server = http.createServer((req, res) => {
     return send(res, 200, {value: {sessionId}});
   }
   if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId + '/source') {
+    if (fs.existsSync(stalePath + '-source-fail')) {
+      return send(res, 500, {value: {error: 'source failed'}});
+    }
     return send(res, 200, {value: '<AppiumAUT><XCUIElementTypeApplication name="Test"/></AppiumAUT>'});
   }
   if (req.method === 'GET' && sessionId && req.url === '/session/' + sessionId + '/screenshot') {
     return send(res, 200, {value: Buffer.from('fake-real-ios-png').toString('base64')});
+  }
+  if (req.method === 'POST' && sessionId && (
+    req.url === '/session/' + sessionId + '/actions' ||
+    req.url === '/session/' + sessionId + '/keys' ||
+    req.url === '/session/' + sessionId + '/execute/sync' ||
+    req.url === '/session/' + sessionId + '/orientation'
+  )) {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      fs.appendFileSync(log, 'appium-command-body ' + req.url + ' ' + body + '\\n');
+      send(res, 200, {value: null});
+    });
+    return;
   }
   send(res, 404, {value: {error: 'unknown route'}});
 });
@@ -2654,14 +2686,53 @@ exit 0
         const staleRecoveredPayload = JSON.parse(((staleRecoveredDump.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             sessionId: string;
         };
-        expect(staleRecoveredPayload.sessionId).not.toBe("IOS-SESSION-1");
+        expect(staleRecoveredPayload.sessionId).toBe("IOS-SESSION-1");
+        await new Promise((resolve) => setTimeout(resolve, 100));
 
-        const unsupportedTap = await client.callTool({
-            name: "mobile_tap",
-            arguments: { deviceId: ownedDeviceId, x: 10, y: 20 },
+        const iosAppiumActions = [
+            ["mobile_tap", { deviceId: ownedDeviceId, x: 10, y: 20 }],
+            ["mobile_double_tap", { deviceId: ownedDeviceId, x: 11, y: 21 }],
+            ["mobile_long_press", { deviceId: ownedDeviceId, x: 12, y: 22, durationMs: 900 }],
+            ["mobile_swipe", { deviceId: ownedDeviceId, x1: 10, y1: 20, x2: 30, y2: 40, durationMs: 250 }],
+            ["mobile_drag", { deviceId: ownedDeviceId, x1: 15, y1: 25, x2: 35, y2: 45, durationMs: 800 }],
+            ["mobile_type_text", { deviceId: ownedDeviceId, text: "hello ios" }],
+            ["mobile_key", { deviceId: ownedDeviceId, key: "Return" }],
+            ["mobile_home", { deviceId: ownedDeviceId }],
+            ["mobile_lock", { deviceId: ownedDeviceId }],
+            ["mobile_unlock", { deviceId: ownedDeviceId }],
+            ["mobile_rotate_left", { deviceId: ownedDeviceId }],
+            ["mobile_rotate_right", { deviceId: ownedDeviceId }],
+            ["mobile_set_orientation", { deviceId: ownedDeviceId, orientation: "LANDSCAPE" }],
+            ["mobile_wait_for_text", { deviceId: ownedDeviceId, text: "Test", timeoutMs: 1000, intervalMs: 50 }],
+        ] as const;
+        for (const [name, callArgs] of iosAppiumActions) {
+            const action = await client.callTool({ name, arguments: callArgs });
+            expect(action.isError, `${name}: ${(action.content as Array<{ text?: string }>)[0]?.text ?? ""}`).not.toBe(true);
+        }
+
+        const sourceFailMarker = join(homeDir, "stale-ios-session-source-fail");
+        writeFileSync(sourceFailMarker, "1");
+        const failedWaitForText = await client.callTool({
+            name: "mobile_wait_for_text",
+            arguments: { deviceId: ownedDeviceId, text: "Never", timeoutMs: 200, intervalMs: 50 },
         });
-        expect(unsupportedTap.isError).toBe(true);
-        expect((unsupportedTap.content as Array<{ text?: string }>)[0].text).toContain("does not support mobile_tap through base simctl");
+        expect(failedWaitForText.isError).toBe(true);
+        expect((failedWaitForText.content as Array<{ text?: string }>)[0].text).toContain("Appium source request failed");
+        rmSync(sourceFailMarker, { force: true });
+
+        const missingIosKey = await client.callTool({
+            name: "mobile_key",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(missingIosKey.isError).toBe(true);
+        expect((missingIosKey.content as Array<{ text?: string }>)[0].text).toContain("mobile_key requires key or keyCode");
+
+        const invalidOrientation = await client.callTool({
+            name: "mobile_set_orientation",
+            arguments: { deviceId: ownedDeviceId, orientation: "SIDEWAYS" },
+        });
+        expect(invalidOrientation.isError).toBe(true);
+        expect((invalidOrientation.content as Array<{ text?: string }>)[0].text).toContain("requires PORTRAIT or LANDSCAPE");
 
         const unsupportedBattery = await client.callTool({
             name: "mobile_set_battery",
@@ -2742,6 +2813,19 @@ exit 0
         expect(log).toContain("xcrun simctl delete CREATED-IOS-UDID");
         expect(log).toContain("appium server --port ");
         expect(log).toContain("appium-http POST /session");
+        expect(log).toContain("appium-server-sigint ");
+        expect(log).toContain("appium-command-body /session/IOS-SESSION-1/actions");
+        expect(log).toContain('"gesture":"tap"');
+        expect(log).toContain('"gesture":"doubleTap"');
+        expect(log).toContain('"gesture":"longPress"');
+        expect(log).toContain('"gesture":"swipe"');
+        expect(log).toContain('"gesture":"drag"');
+        expect(log).toContain("appium-command-body /session/IOS-SESSION-1/keys");
+        expect(log).toContain('"text":"hello ios"');
+        expect(log).toContain("mobile: pressButton");
+        expect(log).toContain("mobile: lock");
+        expect(log).toContain("mobile: unlock");
+        expect(log).toContain("appium-command-body /session/IOS-SESSION-1/orientation");
         expect(log).toContain('"appium:automationName":"XCUITest"');
         expect(log).not.toContain("Android backend missing prerequisites");
     });

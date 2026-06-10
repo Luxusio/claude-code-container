@@ -376,11 +376,10 @@ iOS simctl mobile action status:
 - iOS Simulator supports `mobile_open_url`, `mobile_install_app`,
   `mobile_launch_app`, and `mobile_screenshot` through direct `simctl`
   commands.
-- Base `simctl` does not support coordinate gestures or keyboard-style mobile
-  controls. Those iOS tools return explicit unsupported-capability messages
-  until Appium/XCUITest or a host UI bridge is added.
-- Tests use fake `xcrun` commands to verify iOS mobile action routing and
-  command mapping without requiring macOS or Xcode.
+- Coordinate gestures and keyboard-style mobile controls are routed through the
+  lazy Appium/XCUITest layer when direct `simctl` does not provide the action.
+- Tests use fake `xcrun` commands and a fake Appium HTTP server to verify iOS
+  mobile action routing and command mapping without requiring macOS or Xcode.
 
 File and app primitive status:
 
@@ -634,24 +633,30 @@ iOS Appium/XCUITest session status:
   the simulator definition, and UDID when available.
 - `mobile_dump_ui` returns Appium source output through
   `GET /session/<id>/source` with provider `appium-xcuitest`.
+- Appium/XCUITest also handles iOS Simulator `mobile_tap`,
+  `mobile_double_tap`, `mobile_long_press`, `mobile_swipe`, `mobile_drag`,
+  `mobile_type_text`, `mobile_key`, `mobile_home`, `mobile_lock`,
+  `mobile_unlock`, rotation/orientation commands, and bounded
+  `mobile_wait_for_text`.
 - Linux CI coverage uses a fake Appium HTTP server plus fake `xcrun`,
   `appium-xcuitest-driver`, and `xcodebuild`, so lazy start, session reuse,
-  stale session clearing, and UI source retrieval are tested without real
-  macOS/Xcode/Appium.
+  stale session cleanup, UI source retrieval, and Appium command payloads are
+  tested without real macOS/Xcode/Appium.
 
 iOS advanced mobile action status:
 
-- iOS Simulator now handles base `simctl` advanced actions for permission
-  grant/revoke, location, clipboard set/get, and wait-for-app.
+- iOS Simulator handles base `simctl` advanced actions for permission
+  grant/revoke, location, clipboard set/get, and wait-for-app, and handles
+  coordinate/system UI controls through Appium/XCUITest.
 - These actions remain lazy and require only an owner-scoped iOS Simulator
-  definition plus `xcrun`; they do not start Appium or boot a simulator
-  implicitly.
-- Base `simctl` still does not provide coordinate gestures, Android-style
-  hardware keys, orientation forcing, battery/network controls, or UI text
-  polling. Those tools return explicit unsupported-capability diagnostics for
-  iOS until Appium/XCUITest or a host UI bridge provides a reliable path.
-- Tests use fake `xcrun` command logs to verify the supported simctl mappings
-  and unsupported diagnostics without requiring macOS or Xcode.
+  definition plus `xcrun` for direct simctl paths; Appium-backed paths lazily
+  start the owner-scoped XCUITest server only when needed.
+- iOS Simulator still returns explicit unsupported diagnostics for actions
+  without a reliable iOS Simulator mapping in this backend, including Android
+  style back/forward/recents/power and battery/network/airplane controls.
+- Tests use fake `xcrun` command logs and fake Appium request logs to verify
+  supported mappings and remaining diagnostics without requiring macOS or
+  Xcode.
 
 Batched mobile flow status:
 
