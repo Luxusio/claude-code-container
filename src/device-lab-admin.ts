@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir, hostname } from "os";
 import { dirname, join } from "path";
 import { spawnSync } from "child_process";
@@ -19,6 +19,8 @@ type CommandResult = { command: string; status: number | null; stderr?: string; 
 type OwnerDeviceMatch = { backend: Backend; devices: DeviceRecord[]; index: number; device: DeviceRecord };
 type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
 type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped"; commands: CommandResult[] };
+type AdminBackendSnapshot = { stateKey: string; name: string; devices: DeviceRecord[] };
+type AdminOwnerSnapshot = { ownerId: string; backends: AdminBackendSnapshot[] };
 
 export function deviceLabOwnerId(cwd = process.cwd()): string {
     return createHash("sha256").update(`${hostname()}:${cwd || "/project"}`).digest("hex").slice(0, 16);
@@ -28,8 +30,25 @@ function ownerDevicesFile(ownerId: string, stateKey: string): string {
     return join(homedir(), ".ccc/devices/owners", ownerId, stateKey, "devices.json");
 }
 
+function ownersRoot(): string {
+    return join(homedir(), ".ccc/devices/owners");
+}
+
 function physicalLeaseLockFile(stateKey: string, hardwareId: string): string {
     return join(homedir(), ".ccc/devices/physical-leases", stateKey, "locks", `${encodeURIComponent(hardwareId)}.json`);
+}
+
+function allOwnerIds(): string[] {
+    const root = ownersRoot();
+    if (!existsSync(root)) return [];
+    try {
+        return readdirSync(root, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort();
+    } catch {
+        return [];
+    }
 }
 
 function readDevices(ownerId: string, stateKey: string): DeviceRecord[] {
@@ -354,6 +373,18 @@ export function deviceLabSnapshot(cwd = process.cwd()) {
     return { ownerId, backends };
 }
 
+export function deviceLabAllOwnersSnapshot(): { owners: AdminOwnerSnapshot[] } {
+    const owners = allOwnerIds().map((ownerId) => ({
+        ownerId,
+        backends: DEVICE_BACKENDS.map((backend) => ({
+            stateKey: backend.stateKey,
+            name: backend.name,
+            devices: readDevices(ownerId, backend.stateKey),
+        })),
+    }));
+    return { owners };
+}
+
 function deviceLabel(device: unknown): string {
     if (!device || typeof device !== "object") return "(unknown)";
     const d = device as Record<string, unknown>;
@@ -421,6 +452,61 @@ export function pruneOwnerDevices(cwd = process.cwd()): { ok: boolean; text: str
     return { ok: true, text: `${lines.join("\n")}\n` };
 }
 
+export function stopAllOwnerDevices(timeoutMs = 5000): { ok: boolean; text: string } {
+    const lines = ["admin: stop --all"];
+    let stopped = 0;
+    let skipped = 0;
+    for (const ownerId of allOwnerIds()) {
+        lines.push(`owner: ${ownerId}`);
+        for (const backend of DEVICE_BACKENDS) {
+            const devices = readDevices(ownerId, backend.stateKey);
+            let changed = false;
+            const updated = devices.map((device, index) => {
+                if (!device.id || !shouldCleanupDevice(backend, device)) {
+                    skipped += 1;
+                    lines.push(`skipped: ${device.id || "(unknown)"}  backend=${backend.name}  status=${device.status || "unknown"}`);
+                    return device;
+                }
+
+                const commands = stopOwnedDevice({ backend, devices, index, device }, timeoutMs);
+                releasePhysicalLeaseForOwner(ownerId, backend, device);
+                stopped += 1;
+                changed = true;
+                lines.push(`stopped: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}`);
+                for (const result of commands) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
+                return cleanedDevice(backend, device);
+            });
+            if (changed) writeDevices(ownerId, backend.stateKey, updated);
+        }
+    }
+    if (stopped === 0) lines.push("stopped: 0");
+    lines.push(`skipped: ${skipped}`);
+    return { ok: true, text: `${lines.join("\n")}\n` };
+}
+
+export function pruneAllOwnerDevices(): { ok: boolean; text: string } {
+    const lines = ["admin: prune"];
+    let deleted = 0;
+    for (const ownerId of allOwnerIds()) {
+        lines.push(`owner: ${ownerId}`);
+        for (const backend of DEVICE_BACKENDS) {
+            const devices = readDevices(ownerId, backend.stateKey);
+            const remaining = devices.filter((device) => {
+                const prune = device.status === "stopped" || device.status === "detached";
+                if (prune) {
+                    releasePhysicalLeaseForOwner(ownerId, backend, device);
+                    deleted += 1;
+                    lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);
+                }
+                return !prune;
+            });
+            if (remaining.length !== devices.length) writeDevices(ownerId, backend.stateKey, remaining);
+        }
+    }
+    if (deleted === 0) lines.push("pruned: 0");
+    return { ok: true, text: `${lines.join("\n")}\n` };
+}
+
 export function formatDevicesStatus(cwd = process.cwd()): string {
     const snapshot = deviceLabSnapshot(cwd);
     const lines = [
@@ -453,6 +539,31 @@ export function formatDevicesList(cwd = process.cwd()): string {
         }
     }
     return `${lines.join("\n")}\n`;
+}
+
+export function formatDevicesAdminListAll(): string {
+    const snapshot = deviceLabAllOwnersSnapshot();
+    const lines = [
+        "=== CCC Devices Admin: All Owners ===",
+        "",
+    ];
+    if (snapshot.owners.length === 0) {
+        lines.push("(none)");
+        return `${lines.join("\n")}\n`;
+    }
+    for (const owner of snapshot.owners) {
+        lines.push(`owner: ${owner.ownerId}`);
+        for (const backend of owner.backends) {
+            lines.push(`${backend.name}:`);
+            if (backend.devices.length === 0) {
+                lines.push("  (none)");
+            } else {
+                for (const device of backend.devices) lines.push(`  ${deviceLabel(device)}`);
+            }
+        }
+        lines.push("");
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
 }
 
 export function formatDevicesBackends(cwd = process.cwd()): string {
@@ -555,8 +666,27 @@ export function devicesCli(args: string[], cwd = process.cwd()): number {
             console.log(result.text);
             return 0;
         }
+        case "admin": {
+            const adminCommand = args[1];
+            if (adminCommand === "list" && args[2] === "--all" && args.length === 3) {
+                console.log(formatDevicesAdminListAll());
+                return 0;
+            }
+            if (adminCommand === "stop" && args[2] === "--all" && args.length === 3) {
+                const result = stopAllOwnerDevices();
+                console.log(result.text);
+                return 0;
+            }
+            if (adminCommand === "prune" && args.length === 2) {
+                const result = pruneAllOwnerDevices();
+                console.log(result.text);
+                return 0;
+            }
+            console.error("Usage: ccc devices admin <list --all|stop --all|prune>");
+            return 1;
+        }
         default:
-            console.error("Usage: ccc devices <status|list|backends|doctor|smoke|stop|delete|prune>");
+            console.error("Usage: ccc devices <status|list|backends|doctor|smoke|stop|delete|prune|admin>");
             return 1;
     }
 }

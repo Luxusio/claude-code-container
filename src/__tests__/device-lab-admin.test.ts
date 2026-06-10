@@ -4,14 +4,19 @@ import { dirname, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     cleanupOwnerDevices,
+    deviceLabAllOwnersSnapshot,
     deviceLabOwnerId,
     deleteOwnerDevice,
+    devicesCli,
+    formatDevicesAdminListAll,
     formatDevicesBackends,
     formatDevicesDoctor,
     formatDevicesList,
     formatDevicesSmoke,
     formatDevicesStatus,
+    pruneAllOwnerDevices,
     pruneOwnerDevices,
+    stopAllOwnerDevices,
     stopOwnerDevice,
 } from "../device-lab-admin.js";
 
@@ -157,6 +162,25 @@ describe("device-lab admin CLI formatters", () => {
         expect(output).toContain("ios-real  name=Real iPhone  status=attached  platform=ios");
         expect(output).toContain("windows-sandbox:");
         expect(output).not.toContain("android-foreign");
+    });
+
+    it("admin list reads all owner namespaces without mutating state", () => {
+        const cwd = "/project/admin-list-all-test";
+        const { owner, androidFile, otherOwnerFile } = setupFixture(cwd);
+        const beforeOwned = readFileSync(androidFile, "utf-8");
+        const beforeForeign = readFileSync(otherOwnerFile, "utf-8");
+
+        const snapshot = deviceLabAllOwnersSnapshot();
+        const output = formatDevicesAdminListAll();
+
+        expect(snapshot.owners.map((entry) => entry.ownerId).sort()).toEqual(["other-owner", owner].sort());
+        expect(output).toContain("=== CCC Devices Admin: All Owners ===");
+        expect(output).toContain(`owner: ${owner}`);
+        expect(output).toContain("owner: other-owner");
+        expect(output).toContain("android-running  name=Pixel Running  status=running  platform=android");
+        expect(output).toContain("android-foreign  name=Foreign  status=running  platform=android");
+        expect(readFileSync(androidFile, "utf-8")).toBe(beforeOwned);
+        expect(readFileSync(otherOwnerFile, "utf-8")).toBe(beforeForeign);
     });
 
     it("reports backend prerequisites as diagnostics without requiring devices", () => {
@@ -482,6 +506,56 @@ describe("device-lab admin CLI formatters", () => {
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
     });
 
+    it("admin stop --all cleans active devices and matching physical leases across all owners", () => {
+        const cwd = "/project/admin-stop-all-test";
+        const { androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
+        const otherPhysicalDir = join(homeDir!, ".ccc/devices/owners", "other-owner", "android-device");
+        mkdirSync(otherPhysicalDir, { recursive: true });
+        const otherPhysicalFile = join(otherPhysicalDir, "devices.json");
+        writeFileSync(otherPhysicalFile, JSON.stringify({
+            devices: [{ id: "foreign-real", name: "Foreign Real", status: "attached", platform: "android", physical: true, serial: "FOREIGN-REAL" }],
+        }));
+        const matchingForeignLock = physicalLeaseLockPath("android-device", "FOREIGN-REAL");
+        writeFileSync(matchingForeignLock, JSON.stringify({ backend: "android-device", hardwareId: "FOREIGN-REAL", ownerId: "other-owner", deviceId: "foreign-real" }));
+        const binDir = join(homeDir!, "bin");
+        const logPath = join(homeDir!, "admin-stop-all.log");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", `echo "adb $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "xcrun", `echo "xcrun $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "wsb", `echo "wsb $*" >> "${logPath}"; exit 0`);
+        writeTool(binDir, "tart", `echo "tart $*" >> "${logPath}"; exit 0`);
+
+        const result = stopAllOwnerDevices();
+
+        expect(result.ok).toBe(true);
+        expect(result.text).toContain("admin: stop --all");
+        expect(result.text).toContain("owner: other-owner");
+        expect(result.text).toContain("stopped: android-running  backend=android-emulator");
+        expect(result.text).toContain("stopped: android-foreign  backend=android-emulator");
+        expect(result.text).toContain("stopped: foreign-real  backend=android-device");
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(readDeviceIds(androidDeviceFile)).toEqual(["android-real:detached", "android-real-recording:detached"]);
+        expect(readDeviceIds(iosFile)).toEqual(["ios-owned:stopped", "ios-stopped:stopped"]);
+        expect(readDeviceIds(iosDeviceFile)).toEqual(["ios-real:detached"]);
+        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:stopped"]);
+        expect(readDeviceIds(macosFile)).toEqual(["macos-owned:stopped", "macos-stopped:stopped"]);
+        expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:stopped"]);
+        expect(readDeviceIds(otherPhysicalFile)).toEqual(["foreign-real:detached"]);
+        const log = readFileSync(logPath, "utf-8");
+        expect(log).toContain("adb -s emulator-5582 emu kill");
+        expect(log).toContain("adb -s R5CREAL456 shell pkill -2 screenrecord");
+        expect(log).not.toContain("adb -s R5CREAL123 emu kill");
+        expect(log).not.toContain("adb -s FOREIGN-REAL emu kill");
+        expect(log).toContain("xcrun simctl shutdown IOS-UDID");
+        expect(log).toContain("wsb stop");
+        expect(log).toContain("tart stop ccc-mac");
+        expect(() => readFileSync(physicalLeaseLockPath("android-device", "R5CREAL123"), "utf-8")).toThrow();
+        expect(() => readFileSync(physicalLeaseLockPath("android-device", "R5CREAL456"), "utf-8")).toThrow();
+        expect(() => readFileSync(physicalLeaseLockPath("ios-device", "REAL-IOS-UDID"), "utf-8")).toThrow();
+        expect(() => readFileSync(matchingForeignLock, "utf-8")).toThrow();
+    });
+
     it("bounds cleanup stop command execution with a timeout", () => {
         const cwd = "/project/admin-cleanup-timeout-test";
         const { androidFile, otherOwnerFile } = setupFixture(cwd);
@@ -537,5 +611,54 @@ describe("device-lab admin CLI formatters", () => {
         expect(readDeviceIds(androidFile)).toEqual(["android-running:running"]);
         expect(readDeviceIds(iosFile)).toEqual(["ios-owned:booted"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
+    });
+
+    it("admin prune removes stopped and detached definitions across all owners only", () => {
+        const cwd = "/project/admin-prune-all-test";
+        const { androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
+        const otherPhysicalDir = join(homeDir!, ".ccc/devices/owners", "other-owner", "android-device");
+        mkdirSync(otherPhysicalDir, { recursive: true });
+        const otherPhysicalFile = join(otherPhysicalDir, "devices.json");
+        writeFileSync(otherPhysicalFile, JSON.stringify({
+            devices: [
+                { id: "foreign-real-detached", name: "Foreign Real", status: "detached", platform: "android", physical: true, serial: "FOREIGN-REAL" },
+                { id: "foreign-real-attached", name: "Foreign Attached", status: "attached", platform: "android", physical: true, serial: "FOREIGN-ATTACHED" },
+            ],
+        }));
+        const matchingForeignLock = physicalLeaseLockPath("android-device", "FOREIGN-REAL");
+        writeFileSync(matchingForeignLock, JSON.stringify({ backend: "android-device", hardwareId: "FOREIGN-REAL", ownerId: "other-owner", deviceId: "foreign-real-detached" }));
+
+        const result = pruneAllOwnerDevices();
+
+        expect(result.ok).toBe(true);
+        expect(result.text).toContain("admin: prune");
+        expect(result.text).toContain("owner: other-owner");
+        expect(result.text).toContain("pruned: android-owned  backend=android-emulator");
+        expect(result.text).toContain("pruned: foreign-real-detached  backend=android-device");
+        expect(readDeviceIds(androidFile)).toEqual(["android-running:running"]);
+        expect(readDeviceIds(androidDeviceFile)).toEqual(["android-real:attached", "android-real-recording:attached"]);
+        expect(readDeviceIds(iosFile)).toEqual(["ios-owned:booted"]);
+        expect(readDeviceIds(iosDeviceFile)).toEqual(["ios-real:attached"]);
+        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:running"]);
+        expect(readDeviceIds(macosFile)).toEqual(["macos-owned:running"]);
+        expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
+        expect(readDeviceIds(otherPhysicalFile)).toEqual(["foreign-real-attached:attached"]);
+        expect(() => readFileSync(matchingForeignLock, "utf-8")).toThrow();
+    });
+
+    it("devices CLI exposes explicit admin commands and rejects implicit all-owner usage", () => {
+        const cwd = "/project/admin-cli-test";
+        setupFixture(cwd);
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+        expect(devicesCli(["admin", "list", "--all"], cwd)).toBe(0);
+        expect(logSpy).toHaveBeenLastCalledWith(expect.stringContaining("android-foreign"));
+        expect(devicesCli(["admin", "prune"], cwd)).toBe(0);
+        expect(logSpy).toHaveBeenLastCalledWith(expect.stringContaining("admin: prune"));
+        expect(devicesCli(["admin", "list"], cwd)).toBe(1);
+        expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc devices admin <list --all|stop --all|prune>");
+        expect(devicesCli(["admin", "stop"], cwd)).toBe(1);
+        expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc devices admin <list --all|stop --all|prune>");
     });
 });

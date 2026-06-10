@@ -848,9 +848,12 @@ CLI foundation status:
   details and does not start emulators, simulators, sandboxes, VMs, Appium, or
   brokers. Each smoke command is bounded by a timeout so a hanging host tool
   reports FAIL instead of blocking the CLI indefinitely.
-- Host-broker admin commands such as all-owner list/stop/prune remain deferred
-  until a dedicated broker owns cross-owner locking and cleanup. Regular
-  in-container CLI commands intentionally stay owner-scoped.
+- `ccc devices admin list --all` explicitly scans every owner namespace without
+  mutating state. `ccc devices admin stop --all` applies the same conservative
+  backend stop and physical lease release semantics across every owner namespace
+  for host/container teardown. `ccc devices admin prune` removes stopped or
+  detached definitions across every owner while preserving active definitions.
+  Regular non-admin CLI commands intentionally stay owner-scoped.
 
 Container cleanup hook status:
 
@@ -923,7 +926,8 @@ Container cleanup hook status:
    - Implement provider abstraction and one supported provider path.
 
 7. Admin UX and cleanup
-   - Add `ccc devices` commands, stale lock cleanup, and owner-scoped prune.
+   - Add `ccc devices` commands, stale lock cleanup, owner-scoped prune, and
+     explicit all-owner admin list/stop/prune.
 
 8. Hardening
    - Add security review for folder mappings, network presets, port allocation,
@@ -952,7 +956,10 @@ Container cleanup hook status:
 7. `ccc devices smoke` reports macOS VM smoke PASS only when an available
    provider command (`tart`, `vz`, or `utmctl`) responds to `--version`;
    otherwise it reports SKIP or FAIL without starting a VM.
-8. `ccc devices admin prune` removes stale stopped resources without touching
-   running resources from active owners.
+8. `ccc devices admin list --all`, `ccc devices admin stop --all`, and
+   `ccc devices admin prune` operate only through explicit admin subcommands;
+   list is read-only, stop uses backend-safe cleanup semantics across owners,
+   and prune removes stale stopped/detached resources without touching active
+   resources.
 9. X11 display tools remain available without creating a device definition and
    without starting a host broker.

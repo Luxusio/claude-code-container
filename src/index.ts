@@ -980,6 +980,9 @@ CONTAINER MANAGEMENT:
     ccc devices stop <id>   Stop an owner-scoped device definition
     ccc devices delete <id> Delete an owner-scoped stopped device definition
     ccc devices prune       Remove stopped owner-scoped device definitions
+    ccc devices admin list --all
+    ccc devices admin stop --all
+    ccc devices admin prune
     ccc runtime             Show detected container runtime
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
