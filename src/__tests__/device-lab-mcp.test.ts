@@ -3,7 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleMacosTool } from "../../device-lab-mcp/src/backends/macos-vm.mjs";
@@ -48,6 +48,7 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_backends");
         expect(names).toContain("device_broker_status");
         expect(names).toContain("device_broker_rpc");
+        expect(names).toContain("device_broker_lease");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
         expect(names).toContain("display_current");
@@ -124,6 +125,16 @@ describe("device-lab MCP", () => {
             required: ["method"],
             properties: expect.objectContaining({
                 method: expect.objectContaining({ enum: ["broker.status", "broker.inventory", "broker.echo"] }),
+                hostCandidates: expect.objectContaining({ maxItems: 8 }),
+                timeoutMs: expect.objectContaining({ maximum: 2000 }),
+            }),
+        }));
+        const brokerLeaseTool = result.tools.find((tool) => tool.name === "device_broker_lease");
+        expect(brokerLeaseTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["action", "backend"],
+            properties: expect.objectContaining({
+                action: expect.objectContaining({ enum: ["claim", "list", "release"] }),
+                backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
             }),
@@ -396,6 +407,203 @@ describe("device-lab MCP", () => {
             error: "request-too-large",
             attempts: [],
         }));
+
+        const unsupportedLeaseRpc = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.lease.claim",
+                params: { backend: "android-device", hardwareId: "x" },
+                hostCandidates: ["127.0.0.1"],
+                port: 9,
+                timeoutMs: 50,
+            },
+        });
+        expect(unsupportedLeaseRpc.isError).not.toBe(true);
+        expect(JSON.parse(((unsupportedLeaseRpc.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "unsupported-public-broker-rpc-method",
+            attempts: [],
+        }));
+    });
+
+    it("claims, lists, and releases a physical lease through an explicitly supplied host broker", { timeout: TIMEOUT }, async () => {
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const claim = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "claim",
+                    backend: "android-device",
+                    hardwareId: "10.0.0.8:5555",
+                    deviceId: "android-wifi-phone",
+                    connection: "wifi",
+                    transport: { host: "10.0.0.8", port: 5555 },
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(claim.isError).not.toBe(true);
+            const claimPayload = JSON.parse(((claim.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                result: { lease: { ownerId: string; backend: string; hardwareId: string; connection: string; transport: { host: string; port: number } }; created: boolean };
+            };
+            expect(claimPayload.ok).toBe(true);
+            expect(claimPayload.result).toEqual(expect.objectContaining({
+                created: true,
+                lease: expect.objectContaining({
+                    backend: "android-device",
+                    hardwareId: "10.0.0.8:5555",
+                    connection: "wifi",
+                    transport: { host: "10.0.0.8", port: 5555 },
+                }),
+            }));
+
+            const list = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "list",
+                    backend: "android-device",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(list.isError).not.toBe(true);
+            const listPayload = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                result: { leases: Array<{ hardwareId: string }> };
+            };
+            expect(listPayload.ok).toBe(true);
+            expect(listPayload.result.leases).toEqual([expect.objectContaining({ hardwareId: "10.0.0.8:5555" })]);
+
+            const release = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "release",
+                    backend: "android-device",
+                    hardwareId: "10.0.0.8:5555",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(release.isError).not.toBe(true);
+            expect(JSON.parse(((release.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({ released: true }),
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            rmSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent("10.0.0.8:5555")}.json`), { force: true });
+        }
+    });
+
+    it("reports broker lease validation and unavailable broker failures without autolaunch", { timeout: TIMEOUT }, async () => {
+        const invalidAction = await client.callTool({
+            name: "device_broker_lease",
+            arguments: { action: "steal", backend: "android-device" },
+        });
+        expect(invalidAction.isError).not.toBe(true);
+        expect(JSON.parse(((invalidAction.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "invalid-lease-action",
+            attempts: [],
+        }));
+
+        const unavailable = await client.callTool({
+            name: "device_broker_lease",
+            arguments: {
+                action: "list",
+                backend: "ios-device",
+                hostCandidates: ["127.0.0.1"],
+                port: 9,
+                timeoutMs: 50,
+            },
+        });
+        expect(unavailable.isError).not.toBe(true);
+        expect(JSON.parse(((unavailable.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "broker-rpc-unavailable",
+            attempts: [expect.objectContaining({ ok: false, status: null })],
+        }));
+    });
+
+    it("preserves live broker lease errors at the top level", { timeout: TIMEOUT }, async () => {
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        const serial = "10.0.0.9:5555";
+        try {
+            const claim = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "claim",
+                    backend: "android-device",
+                    hardwareId: serial,
+                    deviceId: "owner-device",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(claim.isError).not.toBe(true);
+            expect(JSON.parse(((claim.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({ ok: true }));
+
+            const duplicate = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "release",
+                    backend: "android-device",
+                    hardwareId: serial,
+                    deviceId: "different-device",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(duplicate.isError).not.toBe(true);
+            expect(JSON.parse(((duplicate.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: false,
+                error: "physical-lease-device-mismatch",
+                status: 409,
+                selected: expect.objectContaining({ status: 409 }),
+            }));
+
+            const invalid = await client.callTool({
+                name: "device_broker_lease",
+                arguments: {
+                    action: "claim",
+                    backend: "android-device",
+                    hardwareId: "",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(invalid.isError).not.toBe(true);
+            expect(JSON.parse(((invalid.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: false,
+                error: "invalid-hardware-id",
+                status: 400,
+                selected: expect.objectContaining({ status: 400 }),
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            rmSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent(serial)}.json`), { force: true });
+        }
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {

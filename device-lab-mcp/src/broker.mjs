@@ -14,6 +14,7 @@ const MAX_PROBE_CANDIDATES = 8;
 const MAX_PROBE_TIMEOUT_MS = 2000;
 const MAX_RPC_BODY_BYTES = 64 * 1024;
 const BROKER_NAME = "ccc-device-broker";
+const PUBLIC_BROKER_RPC_METHODS = new Set(["broker.status", "broker.inventory", "broker.echo"]);
 
 export function brokerStateRoot() {
     return join(homedir(), ".ccc/devices");
@@ -86,6 +87,10 @@ function summarizeBody(body) {
 }
 
 export async function brokerRpc(options = {}) {
+    return brokerRpcRequest({ ...options, publicTool: true });
+}
+
+async function brokerRpcRequest(options = {}) {
     const owner = ownerId();
     const probeOptions = normalizeProbeOptions({ ...options, probe: true });
     const method = typeof options.method === "string" ? options.method : "";
@@ -94,6 +99,16 @@ export async function brokerRpc(options = {}) {
             ok: false,
             ownerId: owner,
             error: "missing-method",
+            attempts: [],
+        };
+    }
+    if (options.publicTool === true && !PUBLIC_BROKER_RPC_METHODS.has(method)) {
+        return {
+            ok: false,
+            ownerId: owner,
+            method,
+            error: "unsupported-public-broker-rpc-method",
+            allowed: [...PUBLIC_BROKER_RPC_METHODS],
             attempts: [],
         };
     }
@@ -156,6 +171,17 @@ export async function brokerRpc(options = {}) {
                     attempts,
                 };
             }
+            return {
+                ok: false,
+                ownerId: owner,
+                method,
+                selected: attempt,
+                error: body?.error || "broker-rpc-failed",
+                status: response.status,
+                result: body?.result ?? null,
+                body: summarizeBody(body),
+                attempts,
+            };
         } catch (error) {
             attempts.push({
                 host,
@@ -178,6 +204,37 @@ export async function brokerRpc(options = {}) {
         error: "broker-rpc-unavailable",
         attempts,
     };
+}
+
+export async function brokerLease(options = {}) {
+    const action = typeof options.action === "string" ? options.action : "";
+    const methodByAction = {
+        claim: "broker.lease.claim",
+        list: "broker.lease.list",
+        release: "broker.lease.release",
+    };
+    const method = methodByAction[action];
+    if (!method) {
+        return {
+            ok: false,
+            ownerId: ownerId(),
+            error: "invalid-lease-action",
+            allowed: Object.keys(methodByAction),
+            attempts: [],
+        };
+    }
+    return brokerRpcRequest({
+        ...options,
+        method,
+        params: {
+            backend: options.backend,
+            hardwareId: options.hardwareId,
+            deviceId: options.deviceId,
+            connection: options.connection,
+            transport: options.transport,
+            all: options.all,
+        },
+    });
 }
 
 export async function brokerStatus(options = {}) {
@@ -218,6 +275,7 @@ export async function brokerStatus(options = {}) {
             "broker contract inspection",
             "broker health probe",
             "explicit broker RPC diagnostic transport",
+            "explicit broker physical lease diagnostics",
         ],
         deferred: [
             "host broker daemon launcher",

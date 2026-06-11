@@ -198,16 +198,23 @@ Broker contract status:
 - `device_backends` includes the same broker diagnostics so agents can decide
   whether they are in direct-provider mode or future host-broker mode before
   requesting lifecycle work.
-- `device_broker_rpc` provides an explicit read-only diagnostic transport to an
+- `device_broker_rpc` provides an explicit diagnostic transport to an
   already-running host broker. It posts to
   `/v1/owners/<owner-id>/rpc` with a deterministic owner token, supports
-  `broker.status`, `broker.inventory`, and `broker.echo`, and reports structured
-  per-candidate attempts. It does not auto-launch the daemon and does not proxy
-  mutating lifecycle or device commands.
-- Environment variables are not required for broker discovery or read-only RPC.
+  diagnostic `broker.status`, `broker.inventory`, and `broker.echo` methods,
+  and reports structured per-candidate attempts. It does not auto-launch the
+  daemon and does not expose physical lease or mutating lifecycle methods.
+- `device_broker_lease` explicitly claims, lists, and releases host-wide
+  physical hardware leases for `android-device` and `ios-device` through an
+  already-running broker. Claims are owner-scoped and backed by atomic lock
+  files under `~/.ccc/devices/physical-leases/<backend>/locks`, so one CCC
+  owner cannot overwrite or release another owner's USB/Wi-Fi real-device
+  reservation.
+- Environment variables are not required for broker discovery, RPC, or physical
+  lease operations.
   The daemon auto-launcher, mutating command execution through the broker,
-  strong authentication token handshake, physical-device lease API, and daemon
-  supervision remain deferred.
+  real `adb connect`/Apple device pairing through the broker, strong
+  authentication token handshake, and daemon supervision remain deferred.
 
 Host broker daemon skeleton status:
 
@@ -218,9 +225,11 @@ Host broker daemon skeleton status:
 - `ccc devices broker serve [--host HOST] [--port PORT]` starts a small
   host-side HTTP server. The server currently exposes `GET /health`,
   `GET /status`, and owner-scoped `POST /v1/owners/<owner-id>/rpc` for
-  read-only broker methods. It returns JSON errors for unsupported
-  methods/routes and rejects missing owner tokens, owner mismatches, invalid
-  JSON, oversized requests, unknown methods, and mutating lifecycle methods.
+  broker status/inventory/echo plus physical lease claim/list/release methods.
+  It returns JSON errors for unsupported methods/routes and rejects missing
+  owner tokens, owner mismatches, invalid JSON, oversized requests, invalid
+  lease params, cross-owner lease operations, unknown methods, and mutating
+  lifecycle methods.
 - MCP still does not auto-launch this daemon. The current in-container MCP
   remains in direct-provider mode for device lifecycle work until the broker
   launcher, strong authentication handshake, backend command proxy, and daemon
@@ -558,6 +567,9 @@ Physical Android device attachment status:
 - Physical serials are additionally protected by host-wide hardware lock files
   under `~/.ccc/devices/physical-leases/android-device/locks`, so two CCC
   owners cannot attach and command the same phone at the same time.
+- The host broker exposes this same Android physical lease namespace through
+  `device_broker_lease`; actual `adb connect` and attach execution through the
+  broker remain deferred to the lifecycle command proxy slice.
 - `device_start` is a no-op readiness acknowledgement for physical Android
   devices; `device_stop` clears Appium/recording/pid metadata and leaves the
   phone attached; `device_detach` removes only the CCC owner lease.
@@ -670,6 +682,9 @@ Physical iOS device attachment status:
 - Physical UDIDs are additionally protected by host-wide hardware lock files
   under `~/.ccc/devices/physical-leases/ios-device/locks`, so two CCC owners
   cannot attach and command the same iPhone/iPad at the same time.
+- The host broker exposes this same iOS physical lease namespace through
+  `device_broker_lease`; actual Apple pairing/device attach execution through
+  the broker remains deferred to the lifecycle command proxy slice.
 - `device_start` is a no-op readiness acknowledgement; `device_stop` and
   teardown cleanup clear owner-scoped Appium/recording/pid metadata but never
   call `simctl shutdown`, erase, power off, or disconnect the physical device.

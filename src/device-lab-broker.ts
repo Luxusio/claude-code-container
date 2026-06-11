@@ -1,5 +1,5 @@
 import { createHash } from "crypto";
-import { existsSync, readFileSync, statSync } from "fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname } from "os";
 import { join } from "path";
@@ -11,6 +11,7 @@ export const DEVICE_BROKER_RPC_BODY_LIMIT = 64 * 1024;
 export const DEVICE_BROKER_INVENTORY_FILE_LIMIT = 256 * 1024;
 export const DEVICE_BROKER_INVENTORY_DEVICE_LIMIT = 200;
 const DEVICE_BROKER_BACKEND_STATE_KEYS = ["android", "android-device", "ios", "ios-device", "windows", "macos"];
+const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
 const LIFECYCLE_METHOD_RE = /^(device|mobile)\./;
 
 export interface DeviceBrokerOptions {
@@ -20,6 +21,17 @@ export interface DeviceBrokerOptions {
     startedAt?: string;
     ownerId?: string;
 }
+
+type BrokerRpcResult = { status: number; payload: unknown };
+type LeaseParamError = { ok: false; status: number; error: string; allowed?: string[] };
+type LeaseParamSuccess = {
+    ok: true;
+    backend: string;
+    hardwareId: string;
+    deviceId: string | null;
+    connection: string;
+    transport: object;
+};
 
 function brokerRoot(): string {
     return join(homedir(), ".ccc/devices");
@@ -68,6 +80,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "http-status",
             "http-owner-rpc",
             "owner-token-guard",
+            "http-physical-lease-api",
             "owner-state-path-reporting",
             "zero-config-default-port",
         ],
@@ -75,7 +88,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "mcp-auto-launch",
             "mutating-backend-command-proxy",
             "strong-authentication-token-handshake",
-            "physical-device-lease-api",
+            "real-device-connect-proxy",
             "daemon pidfile supervision",
         ],
     };
@@ -164,7 +177,145 @@ function ownerInventory(ownerId: string) {
     };
 }
 
-function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>, startedAt: string) {
+function physicalLeaseLocksDir(backend: string) {
+    return join(brokerRoot(), "physical-leases", backend, "locks");
+}
+
+function physicalLeaseLockFile(backend: string, hardwareId: string) {
+    return join(physicalLeaseLocksDir(backend), `${encodeURIComponent(hardwareId)}.json`);
+}
+
+function validateLeaseParams(params: unknown, action: "claim" | "list" | "release"): LeaseParamError | LeaseParamSuccess {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+        return { ok: false, status: 400, error: "invalid-lease-params" };
+    }
+    const input = params as Record<string, unknown>;
+    const backend = typeof input.backend === "string" ? input.backend : "";
+    if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(backend)) {
+        return { ok: false, status: 400, error: "invalid-lease-backend", allowed: [...DEVICE_BROKER_PHYSICAL_BACKENDS] };
+    }
+    if (input.all === true) {
+        return { ok: false, status: 403, error: "all-owner-lease-list-requires-admin" };
+    }
+    const hardwareId = typeof input.hardwareId === "string" ? input.hardwareId.trim() : "";
+    if (action !== "list" && (!hardwareId || hardwareId.length > 256 || /[\u0000-\u001f]/.test(hardwareId))) {
+        return { ok: false, status: 400, error: "invalid-hardware-id" };
+    }
+    const deviceId = typeof input.deviceId === "string" ? input.deviceId.trim() : null;
+    if (deviceId !== null && (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId))) {
+        return { ok: false, status: 400, error: "invalid-device-id" };
+    }
+    const connection = typeof input.connection === "string" ? input.connection : "unknown";
+    if (!["usb", "wifi", "unknown"].includes(connection)) {
+        return { ok: false, status: 400, error: "invalid-connection" };
+    }
+    const transport = input.transport && typeof input.transport === "object" && !Array.isArray(input.transport)
+        ? input.transport
+        : {};
+    return { ok: true, backend, hardwareId, deviceId, connection, transport };
+}
+
+function leaseParamError(parsed: LeaseParamError) {
+    return {
+        status: parsed.status,
+        payload: {
+            ok: false,
+            error: parsed.error,
+            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+        },
+    };
+}
+
+function readLeaseFile(file: string) {
+    try {
+        return JSON.parse(readFileSync(file, "utf8"));
+    } catch {
+        return null;
+    }
+}
+
+function listPhysicalLeases(ownerId: string, backend: string) {
+    const locksDir = physicalLeaseLocksDir(backend);
+    if (!existsSync(locksDir)) return [];
+    return readdirSync(locksDir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => readLeaseFile(join(locksDir, name)))
+        .filter((lease) => lease && lease.ownerId === ownerId);
+}
+
+function claimPhysicalLease(ownerId: string, params: unknown) {
+    const parsed = validateLeaseParams(params, "claim");
+    if (!parsed.ok) return leaseParamError(parsed);
+    const now = new Date().toISOString();
+    const lease = {
+        backend: parsed.backend,
+        hardwareId: parsed.hardwareId,
+        ownerId,
+        deviceId: parsed.deviceId,
+        connection: parsed.connection,
+        transport: parsed.transport,
+        claimedAt: now,
+        updatedAt: now,
+    };
+    mkdirSync(physicalLeaseLocksDir(parsed.backend), { recursive: true });
+    const file = physicalLeaseLockFile(parsed.backend, parsed.hardwareId);
+    try {
+        const fd = openSync(file, "wx", 0o600);
+        try {
+            writeFileSync(fd, JSON.stringify(lease, null, 2));
+        } finally {
+            closeSync(fd);
+        }
+        return { status: 200, payload: { ok: true, result: { lease, created: true } } };
+    } catch (error) {
+        const existing = readLeaseFile(file);
+        if (existing?.ownerId === ownerId) {
+            return { status: 200, payload: { ok: true, result: { lease: existing, created: false, reused: true } } };
+        }
+        return {
+            status: 409,
+            payload: {
+                ok: false,
+                error: "physical-lease-conflict",
+                conflict: existing || { backend: parsed.backend, hardwareId: parsed.hardwareId, ownerId: "unknown" },
+            },
+        };
+    }
+}
+
+function releasePhysicalBrokerLease(ownerId: string, params: unknown) {
+    const parsed = validateLeaseParams(params, "release");
+    if (!parsed.ok) return leaseParamError(parsed);
+    const file = physicalLeaseLockFile(parsed.backend, parsed.hardwareId);
+    const existing = existsSync(file) ? readLeaseFile(file) : null;
+    if (!existing) return { status: 404, payload: { ok: false, error: "physical-lease-not-found" } };
+    if (existing.ownerId !== ownerId) {
+        return { status: 403, payload: { ok: false, error: "physical-lease-owned-by-another-owner", conflict: existing } };
+    }
+    if (parsed.deviceId && existing.deviceId && existing.deviceId !== parsed.deviceId) {
+        return { status: 409, payload: { ok: false, error: "physical-lease-device-mismatch", lease: existing } };
+    }
+    unlinkSync(file);
+    return { status: 200, payload: { ok: true, result: { released: true, lease: existing } } };
+}
+
+function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
+    const parsed = validateLeaseParams(params, "list");
+    if (!parsed.ok) return leaseParamError(parsed);
+    return {
+        status: 200,
+        payload: {
+            ok: true,
+            result: {
+                ownerId,
+                backend: parsed.backend,
+                leases: listPhysicalLeases(ownerId, parsed.backend),
+            },
+        },
+    };
+}
+
+function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>, startedAt: string): BrokerRpcResult {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
         return { status: 400, payload: { ok: false, error: "invalid-rpc-body" } };
     }
@@ -194,6 +345,9 @@ function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<
     if (method === "broker.echo") {
         return { status: 200, payload: { ok: true, result: { ownerId, params: rpc.params ?? null } } };
     }
+    if (method === "broker.lease.claim") return claimPhysicalLease(ownerId, rpc.params);
+    if (method === "broker.lease.list") return listPhysicalBrokerLeases(ownerId, rpc.params);
+    if (method === "broker.lease.release") return releasePhysicalBrokerLease(ownerId, rpc.params);
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
 }
 
