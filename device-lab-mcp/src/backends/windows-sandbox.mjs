@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join } from "path";
 import { commandPath, run } from "../commands.mjs";
@@ -78,6 +78,10 @@ function windowsRecordingLocalPath(device) {
 
 function wsbConfigPath(device) {
     return join(windowsScratchDir(device), `${device.id}.wsb`);
+}
+
+function removeWindowsScratch(device) {
+    rmSync(windowsScratchDir(device), { recursive: true, force: true });
 }
 
 function windowsHelperMetadata(device) {
@@ -343,6 +347,39 @@ async function reconcileWindowsRecording(device, helperTimeoutMs = 1000) {
     return { device, statusCheck: result.response.recording };
 }
 
+function stopWindowsSandboxDevice(device) {
+    if (device.status === "stopped") {
+        const updated = updateWindowsDevice(device.id, (item) => ({
+            ...item,
+            status: "stopped",
+            recording: null,
+            updatedAt: new Date().toISOString(),
+        }));
+        return { ok: true, device: updated || { ...device, status: "stopped", recording: null } };
+    }
+
+    const discovery = windowsDiscovery();
+    if (!discovery.available) {
+        return {
+            ok: false,
+            error: `Windows Sandbox backend missing prerequisites: ${discovery.missing.join(", ")}`,
+        };
+    }
+
+    const r = run(discovery.wsb, ["stop"]);
+    if (r.status !== 0) {
+        return { ok: false, result: r };
+    }
+
+    const updated = updateWindowsDevice(device.id, (item) => ({
+        ...item,
+        status: "stopped",
+        recording: null,
+        updatedAt: new Date().toISOString(),
+    }));
+    return { ok: true, device: updated || { ...device, status: "stopped", recording: null } };
+}
+
 export function listWindowsDevices() {
     return readWindowsDevices().map((device) => ({ ...device, ownerId: ownerId() }));
 }
@@ -410,8 +447,16 @@ export async function handleWindowsTool(name, args) {
             if (!force && device.status !== "stopped") {
                 return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
             }
-            writeWindowsDevices(devices.filter((item) => item.id !== deviceId));
-            return jsonResult({ deleted: deviceId });
+            if (device.status !== "stopped") {
+                const stopped = stopWindowsSandboxDevice(device);
+                if (!stopped.ok) {
+                    if (stopped.result) return fail(stopped.result);
+                    return textResult(false, stopped.error || `Failed to stop Windows Sandbox before deleting ${deviceId}`);
+                }
+            }
+            removeWindowsScratch(device);
+            writeWindowsDevices(readWindowsDevices().filter((item) => item.id !== deviceId));
+            return jsonResult({ deleted: deviceId, scratchRemoved: windowsScratchDir(device) });
         }
 
         case "device_status": {
@@ -450,16 +495,12 @@ export async function handleWindowsTool(name, args) {
             const device = findWindowsDevice(deviceId);
             if (!device) return undefined;
 
-            const discovery = windowsDiscovery();
-            if (discovery.available) run(discovery.wsb, ["stop"]);
-
-            const updated = updateWindowsDevice(deviceId, (item) => ({
-                ...item,
-                status: "stopped",
-                recording: null,
-                updatedAt: new Date().toISOString(),
-            }));
-            return jsonResult({ device: updated });
+            const stopped = stopWindowsSandboxDevice(device);
+            if (!stopped.ok) {
+                if (stopped.result) return fail(stopped.result);
+                return textResult(false, stopped.error || `Failed to stop Windows Sandbox device ${deviceId}`);
+            }
+            return jsonResult({ device: stopped.device });
         }
 
         case "device_exec": {

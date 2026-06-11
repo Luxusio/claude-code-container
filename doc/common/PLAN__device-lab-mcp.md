@@ -728,7 +728,13 @@ Foundation status:
   sandbox or helper.
 - `device_start` writes an owner-scoped `.wsb` configuration and runs
   `wsb start` only on explicit calls when available. `device_stop` calls
-  `wsb stop` only on explicit calls.
+  `wsb stop` only on explicit calls and reports stop failures instead of
+  marking a still-running sandbox as stopped.
+- `device_delete` removes the owner-scoped scratch/helper workspace for stopped
+  definitions. Running definitions are refused unless `force: true`; forced
+  delete first performs the same `wsb stop` path, clears recording metadata,
+  and only removes state/workspace after stop succeeds. Stop failure preserves
+  state and scratch so cleanup can be retried.
 - Guest helper installation, command stdout/stderr capture, screenshot,
   upload/download, and frame-archive recording are implemented. Richer Windows
   GUI automation is deferred to later hardening slices.

@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -1200,15 +1200,21 @@ describe("device-lab MCP with fake Windows Sandbox CLI", () => {
     let homeDir: string;
     let binDir: string;
     let logPath: string;
+    let failStopPath: string;
 
     beforeAll(async () => {
         homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-windows-home-"));
         binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-windows-bin-"));
         logPath = join(homeDir, "fake-windows.log");
+        failStopPath = join(homeDir, "fail-stop");
 
         const wsbPath = join(binDir, "wsb");
         writeFileSync(wsbPath, `#!/bin/sh
 echo "wsb $*" >> "$FAKE_WINDOWS_LOG"
+if [ "$1" = "stop" ] && [ -f "$FAKE_WINDOWS_FAIL_STOP" ]; then
+  echo "forced stop failure" >&2
+  exit 7
+fi
 exit 0
 `);
         chmodSync(wsbPath, 0o755);
@@ -1221,6 +1227,7 @@ exit 0
                 PATH: binDir,
                 NODE_ENV: "test",
                 FAKE_WINDOWS_LOG: logPath,
+                FAKE_WINDOWS_FAIL_STOP: failStopPath,
             },
         });
 
@@ -1505,6 +1512,123 @@ exit 0
             arguments: { deviceId: "windows-win-helper" },
         });
         expect(stop.isError).not.toBe(true);
+    });
+
+    it("cleans Windows Sandbox scratch on delete and preserves state when forced stop fails", { timeout: TIMEOUT }, async () => {
+        const stoppedCreate = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "windows-sandbox",
+                name: "Win Delete Stopped",
+                deviceId: "windows-delete-stopped",
+            },
+        });
+        expect(stoppedCreate.isError).not.toBe(true);
+        const stoppedCreated = JSON.parse(((stoppedCreate.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; helper: { scratchDir: string } };
+        };
+        expect(existsSync(stoppedCreated.device.helper.scratchDir)).toBe(true);
+
+        const stoppedDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "windows-delete-stopped" },
+        });
+        expect(stoppedDelete.isError).not.toBe(true);
+        expect(existsSync(stoppedCreated.device.helper.scratchDir)).toBe(false);
+
+        const runningCreate = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "windows-sandbox",
+                name: "Win Delete Running",
+                deviceId: "windows-delete-running",
+            },
+        });
+        expect(runningCreate.isError).not.toBe(true);
+        const runningCreated = JSON.parse(((runningCreate.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { helper: { scratchDir: string } };
+        };
+        const runningStart = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "windows-delete-running" },
+        });
+        expect(runningStart.isError).not.toBe(true);
+
+        const logBeforeRefusal = readFileSync(logPath, "utf-8");
+        const runningDeleteRefused = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "windows-delete-running" },
+        });
+        expect(runningDeleteRefused.isError).toBe(true);
+        expect((runningDeleteRefused.content as Array<{ text?: string }>)[0].text).toContain("Refusing to delete windows-delete-running while status is running");
+        expect(readFileSync(logPath, "utf-8")).toBe(logBeforeRefusal);
+        expect(existsSync(runningCreated.device.helper.scratchDir)).toBe(true);
+        const statusAfterRefusedDelete = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "windows-delete-running" },
+        });
+        expect(statusAfterRefusedDelete.isError).not.toBe(true);
+        expect(JSON.parse(((statusAfterRefusedDelete.content as Array<{ text?: string }>)[0].text ?? "{}")).device.status).toBe("running");
+
+        const logBeforeForceDelete = readFileSync(logPath, "utf-8");
+        const runningForceDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "windows-delete-running", force: true },
+        });
+        expect(runningForceDelete.isError).not.toBe(true);
+        const logAfterForceDelete = readFileSync(logPath, "utf-8");
+        expect(logAfterForceDelete.slice(logBeforeForceDelete.length)).toContain("wsb stop");
+        expect(existsSync(runningCreated.device.helper.scratchDir)).toBe(false);
+        const inventoryAfterDelete = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "windows-sandbox" },
+        });
+        expect(inventoryAfterDelete.isError).not.toBe(true);
+        const inventoryAfterDeletePayload = JSON.parse(((inventoryAfterDelete.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string }>;
+        };
+        expect(inventoryAfterDeletePayload.devices.some((device) => device.id === "windows-delete-running")).toBe(false);
+
+        const failCreate = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "windows-sandbox",
+                name: "Win Delete Stop Failure",
+                deviceId: "windows-delete-stop-failure",
+            },
+        });
+        expect(failCreate.isError).not.toBe(true);
+        const failCreated = JSON.parse(((failCreate.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { helper: { scratchDir: string } };
+        };
+        const failStart = await client.callTool({
+            name: "device_start",
+            arguments: { deviceId: "windows-delete-stop-failure" },
+        });
+        expect(failStart.isError).not.toBe(true);
+
+        writeFileSync(failStopPath, "fail");
+        const failedForceDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "windows-delete-stop-failure", force: true },
+        });
+        expect(failedForceDelete.isError).toBe(true);
+        expect((failedForceDelete.content as Array<{ text?: string }>)[0].text).toContain("forced stop failure");
+        expect(existsSync(failCreated.device.helper.scratchDir)).toBe(true);
+        const statusAfterFailedDelete = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "windows-delete-stop-failure" },
+        });
+        expect(statusAfterFailedDelete.isError).not.toBe(true);
+        expect(JSON.parse(((statusAfterFailedDelete.content as Array<{ text?: string }>)[0].text ?? "{}")).device.status).toBe("running");
+
+        rmSync(failStopPath, { force: true });
+        const retryForceDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId: "windows-delete-stop-failure", force: true },
+        });
+        expect(retryForceDelete.isError).not.toBe(true);
+        expect(existsSync(failCreated.device.helper.scratchDir)).toBe(false);
     });
 });
 
