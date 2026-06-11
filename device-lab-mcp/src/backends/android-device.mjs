@@ -66,9 +66,25 @@ function parseAdbDevices(text) {
                 const index = part.indexOf(":");
                 return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, true];
             }));
-            return { serial, state: state || "unknown", details, emulator: serial?.startsWith("emulator-") || false };
+            const emulator = serial?.startsWith("emulator-") || false;
+            const connection = !emulator && /^[^:]+:\d+$/.test(serial || "") ? "wifi" : "usb";
+            return { serial, state: state || "unknown", details, emulator, connection };
         })
         .filter((device) => device.serial);
+}
+
+function androidWifiSerial(host, port = 5555) {
+    if (!host) return null;
+    return `${host}:${port || 5555}`;
+}
+
+function androidWifiTransport(serial, host, port) {
+    const [serialHost, serialPort] = String(serial || "").split(":");
+    return {
+        type: "wifi",
+        host: host || serialHost || null,
+        port: Number(serialPort || port || 5555),
+    };
 }
 
 function hostAndroidDevices(discovery = androidDiscovery()) {
@@ -229,36 +245,69 @@ export async function handleAndroidRealTool(name, args) {
         }
 
         case "device_attach": {
-            const { backend, name: deviceName, deviceId, serial } = args;
+            const { backend, name: deviceName, deviceId, serial, connection = "usb", host, port = 5555 } = args;
             if (backend !== "android-device") return undefined;
-            if (!serial) return textResult(false, "Android real-device attach requires serial");
-            if (String(serial).startsWith("emulator-")) return textResult(false, `Refusing to attach emulator serial through android-device backend: ${serial}`);
+            let resolvedSerial = serial;
 
             const discovery = androidDiscovery();
             if (!discovery.adb) return textResult(false, "Android real-device backend missing prerequisites: adb");
-            const inventory = hostAndroidDevices(discovery);
-            const hostDevice = inventory.devices.find((device) => device.serial === serial);
-            if (!hostDevice) return textResult(false, `Android device is not visible to adb: ${serial}`);
-            if (hostDevice.state !== "device") return textResult(false, `Android device ${serial} is not attachable; adb state is ${hostDevice.state}`);
-
-            const id = deviceId || androidRealDeviceId(deviceName || serial);
             const devices = readAndroidRealDevices();
-            if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
-            if (devices.some((device) => device.serial === serial)) return textResult(false, `Android serial already attached for this owner: ${serial}`);
-            const lease = claimPhysicalLease("android-device", serial, id);
-            if (!lease.ok) {
-                return textResult(false, `Android serial is already attached by another CCC owner: ${serial}`);
+            if (connection === "wifi") {
+                resolvedSerial = serial || androidWifiSerial(host, port);
+                if (!host && !serial) return textResult(false, "Android Wi-Fi attach requires host or serial in host:port form");
+                const connectTarget = resolvedSerial.includes(":") ? resolvedSerial : androidWifiSerial(host || resolvedSerial, port);
+                const id = deviceId || androidRealDeviceId(deviceName || connectTarget);
+                if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
+                if (devices.some((device) => device.serial === connectTarget)) return textResult(false, `Android serial already attached for this owner: ${connectTarget}`);
+                const lease = claimPhysicalLease("android-device", connectTarget, id);
+                if (!lease.ok) {
+                    return textResult(false, `Android serial is already attached by another CCC owner: ${connectTarget}`);
+                }
+                const connect = run(discovery.adb, ["connect", connectTarget]);
+                if (connect.status !== 0) {
+                    releasePhysicalLease("android-device", connectTarget, id);
+                    return fail(connect);
+                }
+                resolvedSerial = connectTarget;
             }
+            if (!resolvedSerial) return textResult(false, "Android real-device attach requires serial");
+            if (String(resolvedSerial).startsWith("emulator-")) return textResult(false, `Refusing to attach emulator serial through android-device backend: ${resolvedSerial}`);
+            const inventory = hostAndroidDevices(discovery);
+            const hostDevice = inventory.devices.find((device) => device.serial === resolvedSerial);
+            if (!hostDevice) {
+                if (connection === "wifi") releasePhysicalLease("android-device", resolvedSerial, deviceId || androidRealDeviceId(deviceName || resolvedSerial));
+                return textResult(false, `Android device is not visible to adb: ${resolvedSerial}`);
+            }
+            if (hostDevice.state !== "device") {
+                if (connection === "wifi") releasePhysicalLease("android-device", resolvedSerial, deviceId || androidRealDeviceId(deviceName || resolvedSerial));
+                return textResult(false, `Android device ${resolvedSerial} is not attachable; adb state is ${hostDevice.state}`);
+            }
+
+            const id = deviceId || androidRealDeviceId(deviceName || resolvedSerial);
+            if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
+            if (devices.some((device) => device.serial === resolvedSerial)) return textResult(false, `Android serial already attached for this owner: ${resolvedSerial}`);
+            let lease = { ok: true };
+            if (connection !== "wifi") {
+                lease = claimPhysicalLease("android-device", resolvedSerial, id);
+                if (!lease.ok) {
+                    return textResult(false, `Android serial is already attached by another CCC owner: ${resolvedSerial}`);
+                }
+            }
+            const resolvedConnection = hostDevice.connection || connection;
 
             const device = {
                 id,
-                name: deviceName || serial,
+                name: deviceName || resolvedSerial,
                 backend,
                 kind: "mobile",
                 platform: "android",
                 physical: true,
                 ownerId: ownerId(),
-                serial,
+                serial: resolvedSerial,
+                connection: resolvedConnection,
+                transport: resolvedConnection === "wifi"
+                    ? androidWifiTransport(resolvedSerial, host, port)
+                    : { type: "usb", host: null, port: null },
                 hostDetails: hostDevice.details,
                 appiumPort: appiumPortForDevice(id),
                 appium: null,

@@ -214,8 +214,13 @@ Required common tools:
 
 6. `device_attach`
    - Attaches a host-connected physical device to the current owner namespace.
-   - Android requires a visible `adb devices -l` serial in `device` state.
-   - iOS requires a visible `xcrun xctrace list devices` UDID on a macOS host.
+   - Android USB attach requires a visible `adb devices -l` serial in `device`
+     state. Android Wi-Fi attach accepts `connection: "wifi"` with `host` and
+     optional `port`, runs `adb connect <host>:<port>`, then requires the
+     resulting `host:port` serial to be visible in `device` state.
+   - iOS USB or Wi-Fi attach requires a visible `xcrun xctrace list devices`
+     UDID on a macOS host. Wi-Fi attach records network transport metadata only
+     after Xcode/network pairing and trust already make that UDID visible.
    - Does not create, power on, or globally lock physical hardware outside the
      current CCC owner state.
 
@@ -491,8 +496,15 @@ Physical Android device attachment status:
 - Users connect the device to the host, enable Developer Options and USB
   debugging, approve the RSA trust prompt, and CCC verifies that
   `adb devices -l` reports the serial in `device` state.
+- For Android Wi-Fi debugging, callers may pass `connection: "wifi"`, `host`,
+  and optional `port` to `device_attach`; the backend runs `adb connect` and
+  stores the `host:port` ADB serial plus owner-scoped Wi-Fi transport metadata.
+  The owner/lease checks run before `adb connect` when the target `host:port`
+  is known, so an already-leased device cannot trigger a host-global ADB
+  connection attempt. Android pairing/authorization must already be accepted by
+  Android/ADB.
 - `device_inventory` reports host ADB devices, including unauthorized/offline
-  states, without claiming or starting anything.
+  states and Wi-Fi ADB transports, without claiming or starting anything.
 - `device_attach` stores an owner-scoped lease for a real serial and refuses
   `emulator-*`, unauthorized, offline, missing, duplicate, or already-owned
   serials in the current owner namespace.
@@ -596,13 +608,16 @@ iOS Appium/XCUITest foundation status:
 Physical iOS device attachment status:
 
 - `ios-device` is a separate non-creatable backend for real iPhones/iPads
-  connected to a macOS host over USB and trusted through the iOS
-  "Trust This Computer" prompt.
+  connected to a macOS host over USB or already paired for Xcode network use
+  and trusted through the iOS "Trust This Computer" prompt.
 - Host prerequisites are `xcrun` and `xcodebuild`; full automation still relies
   on the Appium/XCUITest layer and normal Apple signing/provisioning
   requirements.
 - `device_inventory` parses `xcrun xctrace list devices` and excludes simulator
   entries so agents see only physical-device UDIDs.
+- `device_attach` accepts `connection: "wifi"` for iOS only when the UDID is
+  already visible to `xctrace` as a network device; it records network transport
+  metadata but does not attempt to create or bypass Apple network pairing.
 - `device_attach` stores an owner-scoped lease for a visible UDID and refuses
   missing or duplicate UDIDs in the current owner namespace.
 - Physical UDIDs are additionally protected by host-wide hardware lock files

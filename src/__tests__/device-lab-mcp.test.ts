@@ -1543,11 +1543,19 @@ fi
 if [ "$1" = "devices" ] && [ "$2" = "-l" ]; then
   echo "List of devices attached"
   echo "R5CREAL123 device usb:1-1 product:oriole model:Pixel_6 device:oriole transport_id:7"
+  echo "192.168.1.50:5555 device product:oriole model:Pixel_6 device:oriole transport_id:9"
+  echo "192.168.1.60:5555 device product:oriole model:Pixel_6 device:oriole transport_id:10"
   echo "R5LEASED999 device usb:1-4 product:oriole model:Pixel_6 device:oriole transport_id:8"
   echo "UNAUTHORIZED unauthorized usb:1-2 model:Pixel_5"
   echo "OFFLINE offline usb:1-3 model:Pixel_4"
   echo "emulator-5554 device product:sdk_gphone"
   exit 0
+fi
+if [ "$1" = "connect" ]; then
+  case "$2" in
+    192.168.1.50:5555) echo "connected to $2"; exit 0 ;;
+    *) echo "failed to connect to $2" >&2; exit 1 ;;
+  esac
 fi
 if [ "$1" = "get-state" ]; then
   echo "device"
@@ -2081,10 +2089,12 @@ exit 0
         });
         expect(inventory.isError).not.toBe(true);
         const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            hostDevices: { devices: Array<{ serial: string; state: string; emulator: boolean; details: { model?: string } }> };
+            hostDevices: { devices: Array<{ serial: string; state: string; emulator: boolean; connection: string; details: { model?: string } }> };
         };
         expect(inventoryPayload.hostDevices.devices).toEqual(expect.arrayContaining([
-            expect.objectContaining({ serial: "R5CREAL123", state: "device", emulator: false, details: expect.objectContaining({ model: "Pixel_6" }) }),
+            expect.objectContaining({ serial: "R5CREAL123", state: "device", emulator: false, connection: "usb", details: expect.objectContaining({ model: "Pixel_6" }) }),
+            expect.objectContaining({ serial: "192.168.1.50:5555", state: "device", emulator: false, connection: "wifi" }),
+            expect.objectContaining({ serial: "192.168.1.60:5555", state: "device", emulator: false, connection: "wifi" }),
             expect.objectContaining({ serial: "R5LEASED999", state: "device" }),
             expect.objectContaining({ serial: "UNAUTHORIZED", state: "unauthorized" }),
             expect.objectContaining({ serial: "emulator-5554", emulator: true }),
@@ -2098,12 +2108,24 @@ exit 0
             ownerId: "other-owner",
             deviceId: "android-device-foreign",
         }));
+        writeFileSync(join(androidLeaseDir, `${encodeURIComponent("192.168.1.52:5555")}.json`), JSON.stringify({
+            backend: "android-device",
+            hardwareId: "192.168.1.52:5555",
+            ownerId: "other-owner",
+            deviceId: "android-device-wifi-foreign",
+        }));
         const rejectLeased = await client.callTool({
             name: "device_attach",
             arguments: { backend: "android-device", name: "Already Leased", serial: "R5LEASED999" },
         });
         expect(rejectLeased.isError).toBe(true);
         expect((rejectLeased.content as Array<{ text?: string }>)[0].text).toContain("already attached by another CCC owner");
+        const rejectWifiLeased = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "Already Leased WiFi", connection: "wifi", host: "192.168.1.52" },
+        });
+        expect(rejectWifiLeased.isError).toBe(true);
+        expect((rejectWifiLeased.content as Array<{ text?: string }>)[0].text).toContain("already attached by another CCC owner");
 
         const rejectEmulator = await client.callTool({
             name: "device_attach",
@@ -2119,6 +2141,20 @@ exit 0
         expect(rejectUnauthorized.isError).toBe(true);
         expect((rejectUnauthorized.content as Array<{ text?: string }>)[0].text).toContain("adb state is unauthorized");
 
+        const rejectWifiMissingHost = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "WiFi Missing Host", connection: "wifi" },
+        });
+        expect(rejectWifiMissingHost.isError).toBe(true);
+        expect((rejectWifiMissingHost.content as Array<{ text?: string }>)[0].text).toContain("Android Wi-Fi attach requires host");
+
+        const rejectWifiConnect = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "WiFi Bad", connection: "wifi", host: "192.168.1.51" },
+        });
+        expect(rejectWifiConnect.isError).toBe(true);
+        expect((rejectWifiConnect.content as Array<{ text?: string }>)[0].text).toContain("failed to connect");
+
         const attach = await client.callTool({
             name: "device_attach",
             arguments: { backend: "android-device", name: "Real Pixel", serial: "R5CREAL123" },
@@ -2131,9 +2167,39 @@ exit 0
             id: "android-device-real-pixel",
             backend: "android-device",
             serial: "R5CREAL123",
+            connection: "usb",
             status: "attached",
             creatable: false,
             physical: true,
+        }));
+
+        const wifiAttach = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "WiFi Pixel", connection: "wifi", host: "192.168.1.50", port: 5555 },
+        });
+        expect(wifiAttach.isError).not.toBe(true);
+        const wifiAttached = JSON.parse(((wifiAttach.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; serial: string; connection: string; transport: { type: string; host: string; port: number } };
+        };
+        expect(wifiAttached.device).toEqual(expect.objectContaining({
+            id: "android-device-wifi-pixel",
+            serial: "192.168.1.50:5555",
+            connection: "wifi",
+            transport: expect.objectContaining({ type: "wifi", host: "192.168.1.50", port: 5555 }),
+        }));
+        const wifiSerialAttach = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", name: "WiFi Serial Pixel", serial: "192.168.1.60:5555" },
+        });
+        expect(wifiSerialAttach.isError).not.toBe(true);
+        const wifiSerialAttached = JSON.parse(((wifiSerialAttach.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; serial: string; connection: string; transport: { type: string; host: string; port: number } };
+        };
+        expect(wifiSerialAttached.device).toEqual(expect.objectContaining({
+            id: "android-device-wifi-serial-pixel",
+            serial: "192.168.1.60:5555",
+            connection: "wifi",
+            transport: expect.objectContaining({ type: "wifi", host: "192.168.1.60", port: 5555 }),
         }));
 
         const duplicate = await client.callTool({
@@ -2200,6 +2266,18 @@ exit 0
         });
         expect(detach.isError).not.toBe(true);
         expect(() => readFileSync(join(androidLeaseDir, `${encodeURIComponent("R5CREAL123")}.json`), "utf-8")).toThrow();
+        const wifiDetach = await client.callTool({
+            name: "device_detach",
+            arguments: { deviceId: "android-device-wifi-pixel" },
+        });
+        expect(wifiDetach.isError).not.toBe(true);
+        expect(() => readFileSync(join(androidLeaseDir, `${encodeURIComponent("192.168.1.50:5555")}.json`), "utf-8")).toThrow();
+        const wifiSerialDetach = await client.callTool({
+            name: "device_detach",
+            arguments: { deviceId: "android-device-wifi-serial-pixel" },
+        });
+        expect(wifiSerialDetach.isError).not.toBe(true);
+        expect(() => readFileSync(join(androidLeaseDir, `${encodeURIComponent("192.168.1.60:5555")}.json`), "utf-8")).toThrow();
 
         const list = await client.callTool({ name: "device_list", arguments: {} });
         const listed = JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
@@ -2209,6 +2287,10 @@ exit 0
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain("adb devices -l");
+        expect(log).toContain("adb connect 192.168.1.50:5555");
+        expect(log).toContain("adb connect 192.168.1.51:5555");
+        expect(log).not.toContain("adb connect 192.168.1.52:5555");
+        expect(log).not.toContain("adb connect 192.168.1.60:5555");
         expect(log).toContain("adb -s R5CREAL123 get-state");
         expect(log).toContain("adb -s R5CREAL123 shell echo ok");
         expect(log).toContain("adb -s R5CREAL123 shell input tap 10 20");
@@ -2321,6 +2403,7 @@ if [ "$1" = "xctrace" ] && [ "$2" = "list" ] && [ "$3" = "devices" ]; then
   echo "Devices:"
   echo "Build Mac (15.0) (AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE)"
   echo "Real iPhone (17.5) (00008110-001C195E0E91801E)"
+  echo "Network iPhone (17.5) (00008120-00AA00BB00CC00DD) (Network)"
   echo "Other iPhone (16.7) (00008101-00DEADBEEFCAFE00)"
   echo "Simulators:"
   echo "iPhone 15 Simulator (17.0) (SIM-UDID)"
@@ -3044,12 +3127,13 @@ exit 0
         });
         expect(inventory.isError).not.toBe(true);
         const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            hostDevices: { devices: Array<{ name: string; udid: string; version: string }> };
+            hostDevices: { devices: Array<{ name: string; udid: string; version: string; connection: string }> };
             discovery: { available: boolean };
         };
         expect(inventoryPayload.discovery.available).toBe(true);
         expect(inventoryPayload.hostDevices.devices).toEqual(expect.arrayContaining([
-            expect.objectContaining({ name: "Real iPhone", udid: "00008110-001C195E0E91801E", version: "17.5" }),
+            expect.objectContaining({ name: "Real iPhone", udid: "00008110-001C195E0E91801E", version: "17.5", connection: "usb" }),
+            expect.objectContaining({ name: "Network iPhone", udid: "00008120-00AA00BB00CC00DD", version: "17.5", connection: "wifi" }),
         ]));
         expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Simulator"))).toBe(false);
         expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Mac"))).toBe(false);
@@ -3069,6 +3153,13 @@ exit 0
         expect(rejectLeased.isError).toBe(true);
         expect((rejectLeased.content as Array<{ text?: string }>)[0].text).toContain("already attached by another CCC owner");
 
+        const rejectWifiNotNetworkVisible = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "ios-device", name: "USB As WiFi", udid: "00008110-001C195E0E91801E", connection: "wifi" },
+        });
+        expect(rejectWifiNotNetworkVisible.isError).toBe(true);
+        expect((rejectWifiNotNetworkVisible.content as Array<{ text?: string }>)[0].text).toContain("requires the device to be paired for network use");
+
         const attach = await client.callTool({
             name: "device_attach",
             arguments: { backend: "ios-device", name: "Real iPhone", udid: "00008110-001C195E0E91801E" },
@@ -3081,8 +3172,29 @@ exit 0
             id: "ios-device-real-iphone",
             backend: "ios-device",
             physical: true,
+            connection: "usb",
             status: "attached",
             creatable: false,
+        }));
+
+        const wifiAttach = await client.callTool({
+            name: "device_attach",
+            arguments: {
+                backend: "ios-device",
+                name: "Network iPhone",
+                udid: "00008120-00AA00BB00CC00DD",
+                connection: "wifi",
+                host: "network-iphone.local",
+            },
+        });
+        expect(wifiAttach.isError).not.toBe(true);
+        const wifiAttached = JSON.parse(((wifiAttach.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; connection: string; transport: { type: string; host: string; visibleVia: string } };
+        };
+        expect(wifiAttached.device).toEqual(expect.objectContaining({
+            id: "ios-device-network-iphone",
+            connection: "wifi",
+            transport: expect.objectContaining({ type: "wifi", host: "network-iphone.local", visibleVia: "xctrace" }),
         }));
 
         const duplicate = await client.callTool({
@@ -3249,7 +3361,13 @@ exit 0
             arguments: { deviceId: "ios-device-real-iphone" },
         });
         expect(detach.isError).not.toBe(true);
+        const wifiDetach = await client.callTool({
+            name: "device_detach",
+            arguments: { deviceId: "ios-device-network-iphone" },
+        });
+        expect(wifiDetach.isError).not.toBe(true);
         expect(() => readFileSync(join(iosLeaseDir, `${encodeURIComponent("00008110-001C195E0E91801E")}.json`), "utf-8")).toThrow();
+        expect(() => readFileSync(join(iosLeaseDir, `${encodeURIComponent("00008120-00AA00BB00CC00DD")}.json`), "utf-8")).toThrow();
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain("xcrun xctrace list devices");

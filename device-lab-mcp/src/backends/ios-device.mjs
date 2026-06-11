@@ -68,7 +68,8 @@ function parseXctraceDevices(text) {
             const version = matches.find((value) => value !== udid && /\d/.test(value)) || null;
             const name = line.split(" (")[0].trim();
             if (!/\b(iPhone|iPad|iPod)\b/i.test(name)) return null;
-            return { name, udid, version, raw: line };
+            const connection = /\b(network|wifi|wi-fi)\b/i.test(line) ? "wifi" : "usb";
+            return { name, udid, version, connection, raw: line };
         })
         .filter(Boolean);
 }
@@ -297,7 +298,7 @@ export async function handleIosRealTool(name, args) {
         }
 
         case "device_attach": {
-            const { backend, name: deviceName, deviceId, udid } = args;
+            const { backend, name: deviceName, deviceId, udid, connection, host, port } = args;
             if (backend !== "ios-device") return undefined;
             if (!udid) return textResult(false, "iOS real-device attach requires udid");
             const discovery = iosRealDiscovery();
@@ -305,6 +306,10 @@ export async function handleIosRealTool(name, args) {
             const inventory = hostIosDevices(discovery);
             const hostDevice = inventory.devices.find((device) => device.udid === udid);
             if (!hostDevice) return textResult(false, `iOS device is not visible to xctrace: ${udid}`);
+            if (connection === "wifi" && hostDevice.connection !== "wifi") {
+                return textResult(false, `iOS Wi-Fi attach requires the device to be paired for network use and visible to xctrace as a network device: ${udid}`);
+            }
+            const resolvedConnection = connection || hostDevice.connection || "usb";
 
             const id = deviceId || iosRealDeviceId(deviceName || hostDevice.name || udid);
             const devices = readIosRealDevices();
@@ -324,6 +329,13 @@ export async function handleIosRealTool(name, args) {
                 physical: true,
                 ownerId: ownerId(),
                 udid,
+                connection: resolvedConnection,
+                transport: {
+                    type: resolvedConnection,
+                    host: resolvedConnection === "wifi" ? host || null : null,
+                    port: resolvedConnection === "wifi" ? port || null : null,
+                    visibleVia: "xctrace",
+                },
                 hostDetails: hostDevice,
                 appiumPort: appiumPortForDevice(id),
                 appium: null,
