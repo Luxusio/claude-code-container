@@ -237,6 +237,35 @@ export async function brokerLease(options = {}) {
     });
 }
 
+export async function brokerCommand(options = {}) {
+    const action = typeof options.action === "string" ? options.action : "";
+    const methodByAction = {
+        plan: "broker.command.plan",
+        invoke: "broker.command.invoke",
+    };
+    const method = methodByAction[action];
+    if (!method) {
+        return {
+            ok: false,
+            ownerId: ownerId(),
+            error: "invalid-command-action",
+            allowed: Object.keys(methodByAction),
+            attempts: [],
+        };
+    }
+    return brokerRpcRequest({
+        ...options,
+        method,
+        params: {
+            backend: options.backend,
+            command: options.command,
+            deviceId: options.deviceId,
+            force: options.force,
+            dryRun: options.dryRun,
+        },
+    });
+}
+
 export async function brokerStatus(options = {}) {
     const owner = ownerId();
     const root = brokerStateRoot();
@@ -276,6 +305,7 @@ export async function brokerStatus(options = {}) {
             "broker health probe",
             "explicit broker RPC diagnostic transport",
             "explicit broker physical lease diagnostics",
+            "explicit broker lifecycle command dry-run diagnostics",
         ],
         deferred: [
             "host broker daemon launcher",

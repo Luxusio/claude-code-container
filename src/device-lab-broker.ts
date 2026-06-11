@@ -12,6 +12,15 @@ export const DEVICE_BROKER_INVENTORY_FILE_LIMIT = 256 * 1024;
 export const DEVICE_BROKER_INVENTORY_DEVICE_LIMIT = 200;
 const DEVICE_BROKER_BACKEND_STATE_KEYS = ["android", "android-device", "ios", "ios-device", "windows", "macos"];
 const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
+const DEVICE_BROKER_COMMAND_BACKENDS = new Map([
+    ["android-emulator", "android"],
+    ["android-device", "android-device"],
+    ["ios-simulator", "ios"],
+    ["ios-device", "ios-device"],
+    ["windows-sandbox", "windows"],
+    ["macos-vm", "macos"],
+]);
+const DEVICE_BROKER_LIFECYCLE_COMMANDS = new Set(["device_status", "device_start", "device_stop", "device_delete"]);
 const LIFECYCLE_METHOD_RE = /^(device|mobile)\./;
 
 export interface DeviceBrokerOptions {
@@ -31,6 +40,16 @@ type LeaseParamSuccess = {
     deviceId: string | null;
     connection: string;
     transport: object;
+};
+type CommandParamError = { ok: false; status: number; error: string; allowed?: string[] };
+type CommandParamSuccess = {
+    ok: true;
+    backend: string;
+    stateKey: string;
+    command: string;
+    deviceId: string;
+    force: boolean;
+    dryRun: boolean;
 };
 
 function brokerRoot(): string {
@@ -81,12 +100,13 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "http-owner-rpc",
             "owner-token-guard",
             "http-physical-lease-api",
+            "http-lifecycle-command-plan",
             "owner-state-path-reporting",
             "zero-config-default-port",
         ],
         deferred: [
             "mcp-auto-launch",
-            "mutating-backend-command-proxy",
+            "real-provider-command-execution",
             "strong-authentication-token-handshake",
             "real-device-connect-proxy",
             "daemon pidfile supervision",
@@ -175,6 +195,21 @@ function ownerInventory(ownerId: string) {
         ownerRoot: join(root, "owners", ownerId),
         backends,
     };
+}
+
+function ownerDevicesFile(ownerId: string, stateKey: string) {
+    return join(brokerRoot(), "owners", ownerId, stateKey, "devices.json");
+}
+
+function readOwnerDevices(ownerId: string, stateKey: string) {
+    const file = ownerDevicesFile(ownerId, stateKey);
+    if (!existsSync(file)) return [];
+    const stat = statSync(file);
+    if (stat.size > DEVICE_BROKER_INVENTORY_FILE_LIMIT) {
+        throw new Error("owner-devices-file-too-large");
+    }
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { devices?: unknown[] };
+    return Array.isArray(parsed.devices) ? parsed.devices : [];
 }
 
 function physicalLeaseLocksDir(backend: string) {
@@ -315,6 +350,116 @@ function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
     };
 }
 
+function validateCommandParams(params: unknown, requireDryRun: boolean): CommandParamError | CommandParamSuccess {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+        return { ok: false, status: 400, error: "invalid-command-params" };
+    }
+    const input = params as Record<string, unknown>;
+    const backend = typeof input.backend === "string" ? input.backend : "";
+    const stateKey = DEVICE_BROKER_COMMAND_BACKENDS.get(backend);
+    if (!stateKey) {
+        return { ok: false, status: 400, error: "invalid-command-backend", allowed: [...DEVICE_BROKER_COMMAND_BACKENDS.keys()] };
+    }
+    const command = typeof input.command === "string" ? input.command : "";
+    if (!DEVICE_BROKER_LIFECYCLE_COMMANDS.has(command)) {
+        return { ok: false, status: 400, error: "unsupported-lifecycle-command", allowed: [...DEVICE_BROKER_LIFECYCLE_COMMANDS] };
+    }
+    const deviceId = typeof input.deviceId === "string" ? input.deviceId.trim() : "";
+    if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
+        return { ok: false, status: 400, error: "invalid-device-id" };
+    }
+    const dryRun = input.dryRun === true;
+    if (requireDryRun && !dryRun) {
+        return { ok: false, status: 501, error: "provider-command-execution-deferred" };
+    }
+    return { ok: true, backend, stateKey, command, deviceId, force: input.force === true, dryRun };
+}
+
+function commandParamError(parsed: CommandParamError) {
+    return {
+        status: parsed.status,
+        payload: {
+            ok: false,
+            error: parsed.error,
+            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+            ...(parsed.error === "provider-command-execution-deferred" ? {
+                deferred: "real provider command execution through the broker is not implemented in this slice; call with dryRun=true for a validated plan",
+            } : {}),
+        },
+    };
+}
+
+function lifecycleCommandPlan(ownerId: string, params: unknown) {
+    const parsed = validateCommandParams(params, false);
+    if (!parsed.ok) return commandParamError(parsed);
+    let devices: unknown[];
+    try {
+        devices = readOwnerDevices(ownerId, parsed.stateKey);
+    } catch (error) {
+        return { status: 413, payload: { ok: false, error: "owner-devices-file-too-large", backend: parsed.backend, stateKey: parsed.stateKey } };
+    }
+    const device = devices.find((candidate) => {
+        return candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId;
+    });
+    if (!device) {
+        return {
+            status: 404,
+            payload: {
+                ok: false,
+                error: "owner-device-not-found",
+                ownerId,
+                backend: parsed.backend,
+                deviceId: parsed.deviceId,
+            },
+        };
+    }
+    return {
+        status: 200,
+        payload: {
+            ok: true,
+            result: {
+                ownerId,
+                backend: parsed.backend,
+                stateKey: parsed.stateKey,
+                command: parsed.command,
+                deviceId: parsed.deviceId,
+                force: parsed.force,
+                dryRun: parsed.dryRun,
+                device,
+                execution: {
+                    mode: "planned",
+                    providerExecution: "deferred",
+                    mutatesHost: false,
+                },
+            },
+        },
+    };
+}
+
+function lifecycleCommandInvoke(ownerId: string, params: unknown) {
+    const parsed = validateCommandParams(params, true);
+    if (!parsed.ok) return commandParamError(parsed);
+    const plan = lifecycleCommandPlan(ownerId, params);
+    if (plan.status !== 200) return plan;
+    const payload = plan.payload as { result?: object };
+    return {
+        status: 200,
+        payload: {
+            ok: true,
+            result: {
+                ...(payload.result || {}),
+                invoked: false,
+                dryRun: true,
+                execution: {
+                    mode: "dry-run",
+                    providerExecution: "deferred",
+                    mutatesHost: false,
+                },
+            },
+        },
+    };
+}
+
 function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>, startedAt: string): BrokerRpcResult {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
         return { status: 400, payload: { ok: false, error: "invalid-rpc-body" } };
@@ -348,6 +493,8 @@ function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<
     if (method === "broker.lease.claim") return claimPhysicalLease(ownerId, rpc.params);
     if (method === "broker.lease.list") return listPhysicalBrokerLeases(ownerId, rpc.params);
     if (method === "broker.lease.release") return releasePhysicalBrokerLease(ownerId, rpc.params);
+    if (method === "broker.command.plan") return lifecycleCommandPlan(ownerId, rpc.params);
+    if (method === "broker.command.invoke") return lifecycleCommandInvoke(ownerId, rpc.params);
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
 }
 

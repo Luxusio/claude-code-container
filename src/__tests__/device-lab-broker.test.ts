@@ -48,7 +48,7 @@ describe("device-lab host broker daemon", () => {
             lazy: true,
             startupPolicy: expect.stringContaining("MCP auto-launch remains deferred"),
             implemented: expect.arrayContaining(["http-health", "http-status", "owner-state-path-reporting"]),
-            deferred: expect.arrayContaining(["mcp-auto-launch", "mutating-backend-command-proxy", "strong-authentication-token-handshake"]),
+            deferred: expect.arrayContaining(["mcp-auto-launch", "real-provider-command-execution", "strong-authentication-token-handshake"]),
         }));
         expect(status.ownerId).toMatch(/^[a-f0-9]{16}$/);
         expect(status.state.ownerRoot).toContain(status.ownerId);
@@ -77,7 +77,7 @@ describe("device-lab host broker daemon", () => {
             const statusPayload = await status.json() as { ok: boolean; broker: { ownerId: string; deferred: string[] } };
             expect(statusPayload.ok).toBe(true);
             expect(statusPayload.broker.ownerId).toMatch(/^[a-f0-9]{16}$/);
-            expect(statusPayload.broker.deferred).toContain("mutating-backend-command-proxy");
+            expect(statusPayload.broker.deferred).toContain("real-provider-command-execution");
 
             const post = await fetch(`${baseUrl}/status`, { method: "POST" });
             expect(post.status).toBe(405);
@@ -130,7 +130,7 @@ describe("device-lab host broker daemon", () => {
             expect(statusBody.result.ownerId).toBe(ownerId);
             expect(statusBody.result.state.ownerRoot).toContain(ownerId);
             expect(statusBody.result.implemented).toContain("http-owner-rpc");
-            expect(statusBody.result.deferred).toContain("mutating-backend-command-proxy");
+            expect(statusBody.result.deferred).toContain("real-provider-command-execution");
         } finally {
             await close(server);
         }
@@ -433,6 +433,153 @@ describe("device-lab host broker daemon", () => {
         } finally {
             await close(server);
             rmSync(leaseFile, { force: true });
+        }
+    });
+
+    it("plans lifecycle commands and dry-run invokes without provider execution", async () => {
+        const ownerId = "5555666677778888";
+        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
+        const androidRoot = join(ownerRoot, "android");
+        const server = createDeviceBrokerServer({ cwd: "/project/broker-command-test", host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
+        const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+        try {
+            mkdirSync(androidRoot, { recursive: true });
+            writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
+                devices: [{ id: "android-owned", status: "stopped", backend: "android-emulator" }],
+            }));
+
+            const plan = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: { backend: "android-emulator", command: "device_start", deviceId: "android-owned" },
+                }),
+            });
+            expect(plan.status).toBe(200);
+            expect(await plan.json()).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    ownerId,
+                    backend: "android-emulator",
+                    stateKey: "android",
+                    command: "device_start",
+                    deviceId: "android-owned",
+                    execution: expect.objectContaining({
+                        mode: "planned",
+                        providerExecution: "deferred",
+                        mutatesHost: false,
+                    }),
+                }),
+            }));
+
+            const invoke = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "android-emulator", command: "device_start", deviceId: "android-owned", dryRun: true },
+                }),
+            });
+            expect(invoke.status).toBe(200);
+            expect(await invoke.json()).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    invoked: false,
+                    dryRun: true,
+                    execution: expect.objectContaining({ mode: "dry-run", mutatesHost: false }),
+                }),
+            }));
+
+            const realInvoke = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "android-emulator", command: "device_start", deviceId: "android-owned", dryRun: false },
+                }),
+            });
+            expect(realInvoke.status).toBe(501);
+            expect(await realInvoke.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "provider-command-execution-deferred",
+            }));
+        } finally {
+            await close(server);
+            rmSync(ownerRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("validates lifecycle command params and keeps plans owner scoped", async () => {
+        const ownerA = "6666777788889999";
+        const ownerB = "777788889999aaaa";
+        const ownerARoot = join(homedir(), ".ccc/devices/owners", ownerA);
+        const ownerBRoot = join(homedir(), ".ccc/devices/owners", ownerB);
+        const server = createDeviceBrokerServer({ cwd: "/project/broker-command-guard-test", host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const endpointA = `${baseUrl}/v1/owners/${ownerA}/rpc`;
+        const endpointB = `${baseUrl}/v1/owners/${ownerB}/rpc`;
+        const headersA = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerA) };
+        const headersB = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerB) };
+        try {
+            mkdirSync(join(ownerARoot, "windows"), { recursive: true });
+            writeFileSync(join(ownerARoot, "windows", "devices.json"), JSON.stringify({
+                devices: [{ id: "win-owned", status: "stopped", backend: "windows-sandbox" }],
+            }));
+
+            const foreignPlan = await fetch(endpointB, {
+                method: "POST",
+                headers: headersB,
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: { backend: "windows-sandbox", command: "device_delete", deviceId: "win-owned" },
+                }),
+            });
+            expect(foreignPlan.status).toBe(404);
+            expect(await foreignPlan.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "owner-device-not-found",
+                ownerId: ownerB,
+            }));
+
+            const invalidBackend = await fetch(endpointA, {
+                method: "POST",
+                headers: headersA,
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: { backend: "unknown", command: "device_start", deviceId: "win-owned" },
+                }),
+            });
+            expect(invalidBackend.status).toBe(400);
+            expect(await invalidBackend.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-command-backend" }));
+
+            const invalidCommand = await fetch(endpointA, {
+                method: "POST",
+                headers: headersA,
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: { backend: "windows-sandbox", command: "device_exec", deviceId: "win-owned" },
+                }),
+            });
+            expect(invalidCommand.status).toBe(400);
+            expect(await invalidCommand.json()).toEqual(expect.objectContaining({ ok: false, error: "unsupported-lifecycle-command" }));
+
+            const invalidDeviceId = await fetch(endpointA, {
+                method: "POST",
+                headers: headersA,
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: { backend: "windows-sandbox", command: "device_start", deviceId: "../win-owned" },
+                }),
+            });
+            expect(invalidDeviceId.status).toBe(400);
+            expect(await invalidDeviceId.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-device-id" }));
+        } finally {
+            await close(server);
+            rmSync(ownerARoot, { recursive: true, force: true });
+            rmSync(ownerBRoot, { recursive: true, force: true });
         }
     });
 

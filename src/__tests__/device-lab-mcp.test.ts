@@ -49,6 +49,7 @@ describe("device-lab MCP", () => {
         expect(names).toContain("device_broker_status");
         expect(names).toContain("device_broker_rpc");
         expect(names).toContain("device_broker_lease");
+        expect(names).toContain("device_broker_command");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
         expect(names).toContain("display_current");
@@ -135,6 +136,16 @@ describe("device-lab MCP", () => {
             properties: expect.objectContaining({
                 action: expect.objectContaining({ enum: ["claim", "list", "release"] }),
                 backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
+                hostCandidates: expect.objectContaining({ maxItems: 8 }),
+                timeoutMs: expect.objectContaining({ maximum: 2000 }),
+            }),
+        }));
+        const brokerCommandTool = result.tools.find((tool) => tool.name === "device_broker_command");
+        expect(brokerCommandTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["action", "backend", "command", "deviceId"],
+            properties: expect.objectContaining({
+                action: expect.objectContaining({ enum: ["plan", "invoke"] }),
+                command: expect.objectContaining({ enum: ["device_status", "device_start", "device_stop", "device_delete"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
             }),
@@ -604,6 +615,127 @@ describe("device-lab MCP", () => {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
             rmSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent(serial)}.json`), { force: true });
         }
+    });
+
+    it("plans and dry-runs lifecycle commands through an explicitly supplied host broker", { timeout: TIMEOUT }, async () => {
+        const status = await client.callTool({ name: "device_broker_status", arguments: {} });
+        const owner = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string };
+        const ownerRoot = join(homedir(), ".ccc/devices/owners", owner.ownerId);
+        mkdirSync(join(ownerRoot, "windows"), { recursive: true });
+        writeFileSync(join(ownerRoot, "windows", "devices.json"), JSON.stringify({
+            devices: [{ id: "win-broker-plan", backend: "windows-sandbox", status: "stopped" }],
+        }));
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const plan = await client.callTool({
+                name: "device_broker_command",
+                arguments: {
+                    action: "plan",
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-plan",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(plan.isError).not.toBe(true);
+            expect(JSON.parse(((plan.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    ownerId: owner.ownerId,
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-plan",
+                    execution: expect.objectContaining({ mode: "planned", providerExecution: "deferred" }),
+                }),
+            }));
+
+            const dryRun = await client.callTool({
+                name: "device_broker_command",
+                arguments: {
+                    action: "invoke",
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-plan",
+                    dryRun: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(dryRun.isError).not.toBe(true);
+            expect(JSON.parse(((dryRun.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    invoked: false,
+                    dryRun: true,
+                    execution: expect.objectContaining({ mode: "dry-run", mutatesHost: false }),
+                }),
+            }));
+
+            const realRun = await client.callTool({
+                name: "device_broker_command",
+                arguments: {
+                    action: "invoke",
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-plan",
+                    dryRun: false,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(realRun.isError).not.toBe(true);
+            expect(JSON.parse(((realRun.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: false,
+                error: "provider-command-execution-deferred",
+                status: 501,
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            rmSync(ownerRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("reports broker command validation and unavailable broker failures without autolaunch", { timeout: TIMEOUT }, async () => {
+        const invalidAction = await client.callTool({
+            name: "device_broker_command",
+            arguments: { action: "run", backend: "android-emulator", command: "device_start", deviceId: "android-x" },
+        });
+        expect(invalidAction.isError).not.toBe(true);
+        expect(JSON.parse(((invalidAction.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "invalid-command-action",
+            attempts: [],
+        }));
+
+        const unavailable = await client.callTool({
+            name: "device_broker_command",
+            arguments: {
+                action: "plan",
+                backend: "ios-simulator",
+                command: "device_start",
+                deviceId: "ios-x",
+                hostCandidates: ["127.0.0.1"],
+                port: 9,
+                timeoutMs: 50,
+            },
+        });
+        expect(unavailable.isError).not.toBe(true);
+        expect(JSON.parse(((unavailable.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "broker-rpc-unavailable",
+            attempts: [expect.objectContaining({ ok: false, status: null })],
+        }));
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {
