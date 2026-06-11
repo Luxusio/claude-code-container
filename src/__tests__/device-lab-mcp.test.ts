@@ -3890,6 +3890,10 @@ const server = http.createServer((req, res) => {
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       fs.appendFileSync(log, 'appium-command-body ' + req.url + ' ' + body + '\\n');
+      if (body.includes('mobile: activeAppInfo')) {
+        send(res, 200, {value: {bundleId: 'com.example.Real', name: 'Real'}});
+        return;
+      }
       send(res, 200, {value: null});
     });
     return;
@@ -4701,6 +4705,50 @@ exit 0
         expect(realRecoveredPayload.sessionId).toBe("IOS-SESSION-1");
         await new Promise((resolve) => setTimeout(resolve, 100));
 
+        const iosRealActions = [
+            ["mobile_tap", { deviceId: "ios-device-real-iphone", x: 10, y: 20 }],
+            ["mobile_double_tap", { deviceId: "ios-device-real-iphone", x: 11, y: 21 }],
+            ["mobile_long_press", { deviceId: "ios-device-real-iphone", x: 12, y: 22, durationMs: 900 }],
+            ["mobile_swipe", { deviceId: "ios-device-real-iphone", x1: 10, y1: 20, x2: 30, y2: 40, durationMs: 250 }],
+            ["mobile_drag", { deviceId: "ios-device-real-iphone", x1: 15, y1: 25, x2: 35, y2: 45, durationMs: 800 }],
+            ["mobile_type_text", { deviceId: "ios-device-real-iphone", text: "hello real ios" }],
+            ["mobile_key", { deviceId: "ios-device-real-iphone", key: "Return" }],
+            ["mobile_home", { deviceId: "ios-device-real-iphone" }],
+            ["mobile_lock", { deviceId: "ios-device-real-iphone" }],
+            ["mobile_unlock", { deviceId: "ios-device-real-iphone" }],
+            ["mobile_rotate_left", { deviceId: "ios-device-real-iphone" }],
+            ["mobile_rotate_right", { deviceId: "ios-device-real-iphone" }],
+            ["mobile_set_orientation", { deviceId: "ios-device-real-iphone", orientation: "LANDSCAPE" }],
+            ["mobile_wait_for_text", { deviceId: "ios-device-real-iphone", text: "Test", timeoutMs: 1000, intervalMs: 50 }],
+            ["mobile_wait_for_app", { deviceId: "ios-device-real-iphone", bundleId: "com.example.Real", timeoutMs: 1000, intervalMs: 50 }],
+            ["mobile_stop_app", { deviceId: "ios-device-real-iphone", bundleId: "com.example.Real" }],
+        ] as const;
+        for (const [name, callArgs] of iosRealActions) {
+            const action = await client.callTool({ name, arguments: callArgs });
+            expect(action.isError, `${name}: ${(action.content as Array<{ text?: string }>)[0]?.text ?? ""}`).not.toBe(true);
+        }
+
+        const missingRealIosKey = await client.callTool({
+            name: "mobile_key",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(missingRealIosKey.isError).toBe(true);
+        expect((missingRealIosKey.content as Array<{ text?: string }>)[0].text).toContain("mobile_key requires key or keyCode");
+
+        const invalidRealIosOrientation = await client.callTool({
+            name: "mobile_set_orientation",
+            arguments: { deviceId: "ios-device-real-iphone", orientation: "upside-down" },
+        });
+        expect(invalidRealIosOrientation.isError).toBe(true);
+        expect((invalidRealIosOrientation.content as Array<{ text?: string }>)[0].text).toContain("requires PORTRAIT or LANDSCAPE");
+
+        const unsupportedRealIosPower = await client.callTool({
+            name: "mobile_power",
+            arguments: { deviceId: "ios-device-real-iphone" },
+        });
+        expect(unsupportedRealIosPower.isError).toBe(true);
+        expect((unsupportedRealIosPower.content as Array<{ text?: string }>)[0].text).toContain("unavailable or unsafe for physical devices");
+
         const stop = await client.callTool({
             name: "device_stop",
             arguments: { deviceId: "ios-device-real-iphone" },
@@ -4732,6 +4780,12 @@ exit 0
         expect(log).toContain("xcrun devicectl device process launch --device 00008110-001C195E0E91801E com.example.Real");
         expect(log).toContain('"appium:udid":"00008110-001C195E0E91801E"');
         expect(log).toContain('"appium:realDevice":true');
+        expect(log).toContain("appium-command-body /session/IOS-SESSION-1/actions");
+        expect(log).toContain('"gesture":"tap"');
+        expect(log).toContain("hello real ios");
+        expect(log).toContain('"script":"mobile: pressButton"');
+        expect(log).toContain('"script":"mobile: activeAppInfo"');
+        expect(log).toContain('"script":"mobile: terminateApp"');
         expect(log).toContain("appium-server-sigint ");
         expect(log.split("appium-http POST /session").length - 1).toBeGreaterThanOrEqual(2);
         expect(log).not.toContain("xcrun simctl shutdown 00008110-001C195E0E91801E");

@@ -12,6 +12,11 @@ const IOS_REAL_CAPABILITIES = [
     "device_status", "mobile_session_status", "mobile_dump_ui",
     "device_exec", "device_screenshot", "device_install_app", "device_launch_app",
     "mobile_install_app", "mobile_launch_app", "mobile_screenshot",
+    "mobile_tap", "mobile_double_tap", "mobile_long_press", "mobile_swipe",
+    "mobile_drag", "mobile_type_text", "mobile_key", "mobile_home",
+    "mobile_lock", "mobile_unlock", "mobile_rotate_left", "mobile_rotate_right",
+    "mobile_set_orientation", "mobile_wait_for_text", "mobile_wait_for_app",
+    "mobile_stop_app",
 ];
 
 export function iosRealBackend() {
@@ -90,6 +95,10 @@ function hostIosDevices(discovery = iosRealDiscovery()) {
 
 function unsupported(tool) {
     return textResult(false, `iOS real devices do not support ${tool} through base simctl; use Appium/XCUITest or Xcode device tooling where available.`);
+}
+
+function unsupportedRealControl(tool) {
+    return textResult(false, `iOS real devices do not support ${tool} through CCC because the action is unavailable or unsafe for physical devices.`);
 }
 
 function appiumStatus(device) {
@@ -266,6 +275,52 @@ async function ensureIosRealAppiumSession(deviceId) {
     }));
 
     return { device: updated, serverUrl, sessionId };
+}
+
+function appiumPointerActions(type, steps) {
+    return {
+        actions: [{
+            type: "pointer",
+            id: "finger1",
+            parameters: { pointerType: "touch" },
+            actions: steps,
+        }],
+        gesture: type,
+    };
+}
+
+async function iosRealAppiumSessionOrResult(deviceId) {
+    const session = await ensureIosRealAppiumSession(deviceId);
+    if (session.unknown) return { unknown: true };
+    if (session.error) return { result: textResult(false, session.error) };
+    return { session };
+}
+
+async function postIosRealAppium(deviceId, path, body, provider = "appium-xcuitest") {
+    const resolved = await iosRealAppiumSessionOrResult(deviceId);
+    if (resolved.unknown || resolved.result) return resolved;
+    const { session } = resolved;
+    try {
+        const response = await fetchJson(`${session.serverUrl}/session/${session.sessionId}${path}`, {
+            method: "POST",
+            body: JSON.stringify(body),
+        });
+        return { result: jsonResult({ provider, physical: true, sessionId: session.sessionId, response: response?.value ?? response }) };
+    } catch (error) {
+        return { result: textResult(false, `iOS real-device Appium request failed: ${error.message}`) };
+    }
+}
+
+async function iosRealAppiumSource(deviceId) {
+    const resolved = await iosRealAppiumSessionOrResult(deviceId);
+    if (resolved.unknown || resolved.result) return resolved;
+    const { session } = resolved;
+    try {
+        const response = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/source`, { method: "GET" });
+        return { session, source: response?.value ?? response?.source ?? response };
+    } catch (error) {
+        return { result: textResult(false, `Appium source request failed: ${error.message}`) };
+    }
 }
 
 function requirePathArg(path, toolName) {
@@ -465,6 +520,211 @@ export async function handleIosRealTool(name, args) {
             if (!discovery.xcrun) return textResult(false, "iOS real-device backend missing prerequisites: xcrun");
             const r = run(discovery.xcrun, ["devicectl", "device", "process", "launch", "--device", device.udid, bundleId]);
             return r.status === 0 ? jsonResult({ launched: bundleId, udid: device.udid, provider: "xcrun-devicectl", stdout: r.stdout, stderr: r.stderr }) : fail(r);
+        }
+
+        case "mobile_tap": {
+            const { deviceId, x, y } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("tap", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ tapped: { x, y }, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_double_tap": {
+            const { deviceId, x, y } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("doubleTap", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+                { type: "pause", duration: 80 },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ doubleTapped: { x, y }, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_long_press": {
+            const { deviceId, x, y, durationMs = 700 } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions("longPress", [
+                { type: "pointerMove", duration: 0, x, y },
+                { type: "pointerDown", button: 0 },
+                { type: "pause", duration: durationMs },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ longPressed: { x, y, durationMs }, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_swipe":
+        case "mobile_drag": {
+            const { deviceId, x1, y1, x2, y2, durationMs = name === "mobile_drag" ? 700 : 300 } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/actions", appiumPointerActions(name === "mobile_drag" ? "drag" : "swipe", [
+                { type: "pointerMove", duration: 0, x: x1, y: y1 },
+                { type: "pointerDown", button: 0 },
+                { type: "pointerMove", duration: durationMs, x: x2, y: y2 },
+                { type: "pointerUp", button: 0 },
+            ]));
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ [name === "mobile_drag" ? "dragged" : "swiped"]: { x1, y1, x2, y2, durationMs }, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_type_text": {
+            const { deviceId, text } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/keys", { text: String(text), value: [...String(text)] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ typed: true, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_key": {
+            const { deviceId, key, keyCode } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const resolvedKey = key ?? keyCode;
+            if (resolvedKey === undefined || resolvedKey === null || resolvedKey === "") return textResult(false, "mobile_key requires key or keyCode");
+            const posted = await postIosRealAppium(deviceId, "/keys", { text: String(resolvedKey), value: [String(resolvedKey)] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ key: resolvedKey, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_home": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: pressButton", args: [{ name: "home" }] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ home: true, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_lock": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: lock", args: [] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ locked: true, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_unlock": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: unlock", args: [] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ unlocked: true, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_rotate_left": {
+            const { deviceId } = args;
+            return handleIosRealTool("mobile_set_orientation", { deviceId, orientation: "LANDSCAPE" });
+        }
+
+        case "mobile_rotate_right": {
+            const { deviceId } = args;
+            return handleIosRealTool("mobile_set_orientation", { deviceId, orientation: "PORTRAIT" });
+        }
+
+        case "mobile_set_orientation": {
+            const { deviceId, orientation } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const resolved = String(orientation || "").toUpperCase();
+            if (!["PORTRAIT", "LANDSCAPE"].includes(resolved)) return textResult(false, "iOS real-device mobile_set_orientation requires PORTRAIT or LANDSCAPE");
+            const posted = await postIosRealAppium(deviceId, "/orientation", { orientation: resolved });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ orientation: resolved, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_wait_for_text": {
+            const { deviceId, text, timeoutMs = 10000, intervalMs = 500 } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            if (!text) return textResult(false, "iOS real-device wait-for-text requires text");
+            const deadline = Date.now() + Math.max(0, timeoutMs);
+            let lastSource = "";
+            while (Date.now() <= deadline) {
+                const resolved = await iosRealAppiumSource(deviceId);
+                if (resolved.unknown) return undefined;
+                if (resolved.result) return resolved.result;
+                lastSource = String(resolved.source || "");
+                if (lastSource.includes(text)) return jsonResult({ found: true, text, source: lastSource, provider: "appium-xcuitest", physical: true });
+                await sleep(Math.max(50, intervalMs));
+            }
+            return jsonResult({ found: false, text, source: lastSource, timeoutMs, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_wait_for_app": {
+            const { deviceId, bundleId, timeoutMs = 10000, intervalMs = 500 } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            if (!bundleId) return textResult(false, "iOS real-device wait-for-app requires bundleId");
+            const resolved = await iosRealAppiumSessionOrResult(deviceId);
+            if (resolved.unknown) return undefined;
+            if (resolved.result) return resolved.result;
+            const { session } = resolved;
+            const deadline = Date.now() + Math.max(0, timeoutMs);
+            let lastActiveApp = null;
+            while (Date.now() <= deadline) {
+                try {
+                    const response = await fetchJson(`${session.serverUrl}/session/${session.sessionId}/execute/sync`, {
+                        method: "POST",
+                        body: JSON.stringify({ script: "mobile: activeAppInfo", args: [] }),
+                    });
+                    lastActiveApp = response?.value ?? response;
+                    if (lastActiveApp?.bundleId === bundleId || lastActiveApp?.bundleID === bundleId) {
+                        return jsonResult({ found: true, bundleId, activeApp: lastActiveApp, provider: "appium-xcuitest", physical: true });
+                    }
+                } catch (error) {
+                    return textResult(false, `iOS real-device Appium active app request failed: ${error.message}`);
+                }
+                await sleep(Math.max(50, intervalMs));
+            }
+            return jsonResult({ found: false, bundleId, activeApp: lastActiveApp, timeoutMs, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_stop_app": {
+            const { deviceId, bundleId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            const missing = requireBundleIdArg(bundleId, name);
+            if (missing) return missing;
+            const posted = await postIosRealAppium(deviceId, "/execute/sync", { script: "mobile: terminateApp", args: [{ bundleId }] });
+            if (posted.unknown || posted.result?.isError) return posted.result;
+            return jsonResult({ stopped: bundleId, provider: "appium-xcuitest", physical: true });
+        }
+
+        case "mobile_back":
+        case "mobile_forward":
+        case "mobile_recents":
+        case "mobile_power":
+        case "mobile_uninstall_app":
+        case "mobile_clear_app_data":
+        case "mobile_grant_permission":
+        case "mobile_revoke_permission":
+        case "mobile_set_location":
+        case "mobile_set_battery":
+        case "mobile_set_network":
+        case "mobile_toggle_airplane_mode":
+        case "mobile_set_clipboard":
+        case "mobile_get_clipboard":
+        case "mobile_open_url": {
+            const { deviceId } = args;
+            const device = findIosRealDevice(deviceId);
+            if (!device) return undefined;
+            return unsupportedRealControl(name);
         }
 
         default:

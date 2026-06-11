@@ -753,11 +753,13 @@ iOS Appium/XCUITest session status:
   the simulator definition, and UDID when available.
 - `mobile_dump_ui` returns Appium source output through
   `GET /session/<id>/source` with provider `appium-xcuitest`.
-- Appium/XCUITest also handles iOS Simulator `mobile_tap`,
-  `mobile_double_tap`, `mobile_long_press`, `mobile_swipe`, `mobile_drag`,
-  `mobile_type_text`, `mobile_key`, `mobile_home`, `mobile_lock`,
-  `mobile_unlock`, rotation/orientation commands, and bounded
-  `mobile_wait_for_text`.
+- Appium/XCUITest also handles iOS Simulator and physical iOS
+  `mobile_tap`, `mobile_double_tap`, `mobile_long_press`, `mobile_swipe`,
+  `mobile_drag`, `mobile_type_text`, `mobile_key`, `mobile_home`,
+  `mobile_lock`, `mobile_unlock`, rotation/orientation commands, and bounded
+  `mobile_wait_for_text`. Physical iOS additionally supports
+  `mobile_wait_for_app` through Appium active-app inspection and
+  `mobile_stop_app` through the owner-scoped XCUITest session.
 - Linux CI coverage uses a fake Appium HTTP server plus fake `xcrun`,
   `appium-xcuitest-driver`, and `xcodebuild`, so lazy start, session reuse,
   stale session cleanup, UI source retrieval, and Appium command payloads are
@@ -774,6 +776,11 @@ iOS advanced mobile action status:
 - iOS Simulator still returns explicit unsupported diagnostics for actions
   without a reliable iOS Simulator mapping in this backend, including Android
   style back/forward/recents/power and battery/network/airplane controls.
+- Physical iOS devices return explicit unsupported diagnostics for controls
+  that are unavailable or unsafe on real hardware through CCC, including
+  back/forward/recents/power, battery/network/airplane simulation, clipboard
+  simulation, location simulation, permission mutation, app data clear,
+  open-url, and uninstall.
 - Tests use fake `xcrun` command logs and fake Appium request logs to verify
   supported mappings and remaining diagnostics without requiring macOS or
   Xcode.
