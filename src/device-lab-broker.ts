@@ -124,7 +124,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
         hostId: hostname(),
         mode: "host-broker-daemon",
         lazy: true,
-        startupPolicy: "manual CLI serve in this slice; MCP auto-launch remains deferred",
+        startupPolicy: "manual CLI serve or explicit MCP autolaunch; never starts device providers on daemon startup",
         startedAt: normalized.startedAt,
         state: {
             root,
@@ -141,15 +141,15 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "http-physical-lease-api",
             "http-lifecycle-command-plan",
             "bounded-provider-command-execution",
+            "explicit-mcp-autolaunch-compatible",
             "owner-state-path-reporting",
             "zero-config-default-port",
         ],
         deferred: [
-            "mcp-auto-launch",
             "full-provider-routing-parity",
             "strong-authentication-token-handshake",
             "real-device-connect-proxy",
-            "daemon pidfile supervision",
+            "permanent-service-manager-supervision",
         ],
     };
 }

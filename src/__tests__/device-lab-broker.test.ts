@@ -46,10 +46,11 @@ describe("device-lab host broker daemon", () => {
             url: "http://127.0.0.1:17373",
             mode: "host-broker-daemon",
             lazy: true,
-            startupPolicy: expect.stringContaining("MCP auto-launch remains deferred"),
+            startupPolicy: expect.stringContaining("explicit MCP autolaunch"),
             implemented: expect.arrayContaining(["http-health", "http-status", "owner-state-path-reporting"]),
-            deferred: expect.arrayContaining(["mcp-auto-launch", "full-provider-routing-parity", "strong-authentication-token-handshake"]),
+            deferred: expect.arrayContaining(["full-provider-routing-parity", "strong-authentication-token-handshake"]),
         }));
+        expect(status.implemented).toContain("explicit-mcp-autolaunch-compatible");
         expect(status.ownerId).toMatch(/^[a-f0-9]{16}$/);
         expect(status.state.ownerRoot).toContain(status.ownerId);
         expect(status.state.locksRoot).toContain(".ccc/devices/broker/locks");
@@ -912,7 +913,7 @@ describe("device-lab host broker daemon", () => {
         const direct = formatDeviceBrokerStatus({ cwd: "/project/broker-cli-test" });
         expect(direct).toContain("=== CCC Device Broker ===");
         expect(direct).toContain("mode: host-broker-daemon");
-        expect(direct).toContain("deferred: mcp-auto-launch");
+        expect(direct).toContain("explicit-mcp-autolaunch-compatible");
 
         const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
         const exitCode = deviceBrokerCli(["status"], "/project/broker-cli-test");

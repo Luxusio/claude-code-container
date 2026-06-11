@@ -1,5 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { spawn } from "child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
@@ -12,18 +13,52 @@ import { createDeviceBrokerServer } from "../device-lab-broker.js";
 const repoRoot = join(__dirname, "../..");
 const TIMEOUT = 30000;
 
+async function freePort(): Promise<number> {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    return port;
+}
+
+function pidAlive(pid: number) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function waitForHealthUnavailable(port: number, timeoutMs = 3000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() <= deadline) {
+        try {
+            const response = await fetch(`http://127.0.0.1:${port}/health`);
+            if (!response.ok) return true;
+        } catch {
+            return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return false;
+}
+
 describe("device-lab MCP", () => {
     let client: Client;
     let homeDir: string;
+    let pathDir: string;
 
     beforeAll(async () => {
         homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-test-"));
+        pathDir = join(homeDir, "bin");
+        mkdirSync(pathDir, { recursive: true });
         const transport = new StdioClientTransport({
             command: process.execPath,
             args: [join(repoRoot, "device-lab-mcp/server.mjs")],
             env: {
                 HOME: homeDir,
-                PATH: "/tmp/ccc-device-lab-empty-path",
+                PATH: pathDir,
                 NODE_ENV: "test",
             },
         });
@@ -41,12 +76,72 @@ describe("device-lab MCP", () => {
         if (homeDir) rmSync(homeDir, { recursive: true, force: true });
     }, TIMEOUT);
 
+    function installFakeCccBroker(logPath: string) {
+        const fakeCcc = join(pathDir, "ccc");
+        writeFileSync(fakeCcc, `#!${process.execPath}
+const http = require("http");
+const fs = require("fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
+const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
+const port = Number(args[args.indexOf("--port") + 1] || 17373);
+function send(res, status, body) {
+  res.writeHead(status, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+const server = http.createServer((req, res) => {
+  if (req.url === "/health") return send(res, 200, { ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" });
+  if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", host, port } });
+  const match = /^\\/v1\\/owners\\/([^/]+)\\/rpc$/.exec(req.url || "");
+  if (!match || req.method !== "POST") return send(res, 404, { ok: false, error: "not-found" });
+  let raw = "";
+  req.on("data", (chunk) => { raw += chunk; });
+  req.on("end", () => {
+    const body = raw ? JSON.parse(raw) : {};
+    if (body.method === "broker.echo") return send(res, 200, { ok: true, result: { echo: body.params || {}, ownerId: match[1] } });
+    if (body.method === "broker.status") return send(res, 200, { ok: true, result: { ownerId: match[1], fake: true } });
+    if (body.method === "broker.lease.list") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, leases: [] } });
+    if (body.method === "broker.command.plan") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, command: body.params.command, deviceId: body.params.deviceId, device: { id: body.params.deviceId, status: "stopped" }, execution: { mode: "planned", providerExecution: "fake", mutatesHost: false } } });
+    return send(res, 418, { ok: false, error: "fake-broker-error", method: body.method });
+  });
+});
+server.listen(port, host);
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
+process.on("SIGINT", () => server.close(() => process.exit(0)));
+`);
+        chmodSync(fakeCcc, 0o755);
+        return fakeCcc;
+    }
+
+    function installIgnoringCccBroker(logPath: string) {
+        const fakeCcc = join(pathDir, "ccc");
+        writeFileSync(fakeCcc, `#!${process.execPath}
+const http = require("http");
+const fs = require("fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
+const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
+const port = Number(args[args.indexOf("--port") + 1] || 17373);
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  if (req.url === "/health") return res.end(JSON.stringify({ ok: true, name: "ccc-device-broker" }));
+  res.end(JSON.stringify({ ok: true, result: {} }));
+});
+server.listen(port, host);
+process.on("SIGTERM", () => {});
+process.on("SIGINT", () => {});
+`);
+        chmodSync(fakeCcc, 0o755);
+        return fakeCcc;
+    }
+
     it("lists foundation device-lab and current display tools", { timeout: TIMEOUT }, async () => {
         const result = await client.listTools();
         const names = result.tools.map((tool) => tool.name);
 
         expect(names).toContain("device_backends");
         expect(names).toContain("device_broker_status");
+        expect(names).toContain("device_broker_shutdown");
         expect(names).toContain("device_broker_rpc");
         expect(names).toContain("device_broker_lease");
         expect(names).toContain("device_broker_command");
@@ -119,7 +214,13 @@ describe("device-lab MCP", () => {
             properties: expect.objectContaining({
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
+                launchTimeoutMs: expect.objectContaining({ maximum: 5000 }),
             }),
+        }));
+        const brokerShutdownTool = result.tools.find((tool) => tool.name === "device_broker_shutdown");
+        expect(brokerShutdownTool?.inputSchema).toEqual(expect.objectContaining({
+            properties: expect.objectContaining({ force: expect.objectContaining({ type: "boolean" }) }),
         }));
         const brokerRpcTool = result.tools.find((tool) => tool.name === "device_broker_rpc");
         expect(brokerRpcTool?.inputSchema).toEqual(expect.objectContaining({
@@ -128,6 +229,7 @@ describe("device-lab MCP", () => {
                 method: expect.objectContaining({ enum: ["broker.status", "broker.inventory", "broker.echo"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
             }),
         }));
         const brokerLeaseTool = result.tools.find((tool) => tool.name === "device_broker_lease");
@@ -138,6 +240,7 @@ describe("device-lab MCP", () => {
                 backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
             }),
         }));
         const brokerCommandTool = result.tools.find((tool) => tool.name === "device_broker_command");
@@ -148,6 +251,7 @@ describe("device-lab MCP", () => {
                 command: expect.objectContaining({ enum: ["device_status", "device_start", "device_stop", "device_delete"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
             }),
         }));
     });
@@ -159,7 +263,7 @@ describe("device-lab MCP", () => {
         const content = result.content as Array<{ type: string; text?: string }>;
         const payload = JSON.parse(content[0].text ?? "{}") as {
             ownerId?: string;
-            broker?: { mode: string; lazy: boolean; transport: { environmentRequired: boolean }; deferred: string[] };
+            broker?: { mode: string; lazy: boolean; transport: { environmentRequired: boolean }; implemented: string[]; deferred: string[] };
             backends?: Array<{ name: string; available: boolean; status?: string; capabilities?: string[] }>;
         };
 
@@ -168,7 +272,8 @@ describe("device-lab MCP", () => {
             mode: "direct-provider",
             lazy: true,
             transport: expect.objectContaining({ environmentRequired: false }),
-            deferred: expect.arrayContaining(["host broker daemon launcher"]),
+            implemented: expect.arrayContaining(["lazy host broker autolaunch"]),
+            deferred: expect.not.arrayContaining(["host broker daemon launcher"]),
         }));
         expect(payload.backends?.map((backend) => backend.name)).toEqual([
             "x11-current-display",
@@ -237,8 +342,328 @@ describe("device-lab MCP", () => {
         }));
         expect(payload.state.ownerRoot).toContain(payload.ownerId);
         expect(payload.state.locksRoot).toContain(".ccc/devices/broker/locks");
+        expect(payload.state).toEqual(expect.objectContaining({ runtimeFile: expect.stringContaining(".ccc/devices/broker/runtime.json") }));
         expect(payload.implemented).toContain("broker contract inspection");
-        expect(payload.deferred).toContain("host broker daemon launcher");
+        expect(payload.implemented).toContain("lazy host broker autolaunch");
+        expect(payload.deferred).not.toContain("host broker daemon launcher");
+    });
+
+    it("autolaunches, reuses, routes RPC/lease/command, and shuts down an MCP-owned broker", { timeout: TIMEOUT }, async () => {
+        const port = await freePort();
+        const logPath = join(homeDir, "fake-ccc-broker.log");
+        installFakeCccBroker(logPath);
+
+        const first = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                params: { hello: "broker" },
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+                launchTimeoutMs: 3000,
+            },
+        });
+        expect(first.isError).not.toBe(true);
+        const firstPayload = JSON.parse(((first.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            result: { echo: { hello: string } };
+            launch: { launched: boolean; reused: boolean; runtime: { pid: number; ownerId: string; logPath: string; command: string; args: string[] } };
+        };
+        expect(firstPayload.ok).toBe(true);
+        expect(firstPayload.result.echo).toEqual({ hello: "broker" });
+        expect(firstPayload.launch).toEqual(expect.objectContaining({ launched: true, reused: false }));
+        expect(firstPayload.launch.runtime).toEqual(expect.objectContaining({
+            pid: expect.any(Number),
+            ownerId: expect.stringMatching(/^[a-f0-9]{16}$/),
+            logPath: expect.stringContaining("broker-"),
+            command: "ccc",
+            args: ["devices", "broker", "serve", "--host", "127.0.0.1", "--port", String(port)],
+        }));
+
+        const status = await client.callTool({
+            name: "device_broker_status",
+            arguments: { probe: true, hostCandidates: ["127.0.0.1"], port, timeoutMs: 300 },
+        });
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            available: boolean;
+            runtime: { pid: number; port: number; managedBy: string };
+            state: { runtimeFile: string };
+        };
+        expect(statusPayload.available).toBe(true);
+        expect(statusPayload.runtime).toEqual(expect.objectContaining({
+            pid: firstPayload.launch.runtime.pid,
+            port,
+            managedBy: "device-lab-mcp",
+        }));
+        expect(existsSync(statusPayload.state.runtimeFile)).toBe(true);
+
+        const second = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                params: { reuse: true },
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+                launchTimeoutMs: 3000,
+            },
+        });
+        const secondPayload = JSON.parse(((second.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            launch: { launched: boolean; reused: boolean };
+        };
+        expect(secondPayload.ok).toBe(true);
+        expect(secondPayload.launch).toEqual(expect.objectContaining({ launched: false, reused: true }));
+        expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(1);
+
+        const lease = await client.callTool({
+            name: "device_broker_lease",
+            arguments: { action: "list", backend: "android-device", autolaunch: true, hostCandidates: ["127.0.0.1"], port, timeoutMs: 300 },
+        });
+        expect(JSON.parse(((lease.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({ backend: "android-device", leases: [] }),
+        }));
+
+        const command = await client.callTool({
+            name: "device_broker_command",
+            arguments: {
+                action: "plan",
+                backend: "windows-sandbox",
+                command: "device_start",
+                deviceId: "win-autolaunch",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+            },
+        });
+        expect(JSON.parse(((command.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({
+                backend: "windows-sandbox",
+                deviceId: "win-autolaunch",
+                execution: expect.objectContaining({ mode: "planned" }),
+            }),
+        }));
+
+        const shutdown = await client.callTool({ name: "device_broker_shutdown", arguments: {} });
+        expect(JSON.parse(((shutdown.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            stopped: true,
+            runtime: expect.objectContaining({ pid: firstPayload.launch.runtime.pid }),
+        }));
+        expect(existsSync(statusPayload.state.runtimeFile)).toBe(false);
+    });
+
+    it("preserves runtime metadata when explicit broker shutdown times out", { timeout: TIMEOUT }, async () => {
+        const port = await freePort();
+        const logPath = join(homeDir, "fake-ccc-broker-ignore.log");
+        installIgnoringCccBroker(logPath);
+        const launched = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+                launchTimeoutMs: 3000,
+            },
+        });
+        const launchedPayload = JSON.parse(((launched.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            launch: { runtime: { pid: number } };
+        };
+        expect(launchedPayload.ok).toBe(true);
+        const status = await client.callTool({
+            name: "device_broker_status",
+            arguments: { probe: true, hostCandidates: ["127.0.0.1"], port, timeoutMs: 300 },
+        });
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as { state: { runtimeFile: string } };
+
+        const shutdown = await client.callTool({ name: "device_broker_shutdown", arguments: {} });
+        expect(JSON.parse(((shutdown.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "broker-shutdown-timeout",
+            stopped: false,
+            runtime: expect.objectContaining({ pid: launchedPayload.launch.runtime.pid }),
+        }));
+        expect(existsSync(statusPayload.state.runtimeFile)).toBe(true);
+        process.kill(launchedPayload.launch.runtime.pid, "SIGKILL");
+        rmSync(statusPayload.state.runtimeFile, { force: true });
+    });
+
+    it("cleans an MCP-owned broker child on MCP process SIGTERM", { timeout: TIMEOUT }, async () => {
+        const signalHome = mkdtempSync(join(tmpdir(), "ccc-device-lab-signal-"));
+        const signalBin = join(signalHome, "bin");
+        mkdirSync(signalBin, { recursive: true });
+        const port = await freePort();
+        const fakeCcc = join(signalBin, "ccc");
+        writeFileSync(fakeCcc, `#!${process.execPath}
+const http = require("http");
+const args = process.argv.slice(2);
+const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
+const port = Number(args[args.indexOf("--port") + 1] || 17373);
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "content-type": "application/json" });
+  if (req.url === "/health") return res.end(JSON.stringify({ ok: true, name: "ccc-device-broker" }));
+  res.end(JSON.stringify({ ok: true, result: {} }));
+});
+server.listen(port, host);
+process.on("SIGTERM", () => {});
+`);
+        chmodSync(fakeCcc, 0o755);
+        const script = join(signalHome, "launch-broker.mjs");
+        writeFileSync(script, `
+import { brokerRpc } from ${JSON.stringify(join(repoRoot, "device-lab-mcp/src/broker.mjs"))};
+const result = await brokerRpc({ method: "broker.echo", autolaunch: true, hostCandidates: ["127.0.0.1"], port: ${port}, timeoutMs: 300, launchTimeoutMs: 3000 });
+process.stdout.write(JSON.stringify(result.launch.runtime) + "\\n");
+setInterval(() => {}, 1000);
+`);
+        const child = spawn(process.execPath, [script], {
+            cwd: repoRoot,
+            env: { ...process.env, HOME: signalHome, PATH: signalBin },
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        try {
+            let stdout = "";
+            const runtime = await new Promise<{ pid: number }>((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error(`timeout waiting for signal child stdout: ${stdout}`)), 5000);
+                child.stdout?.on("data", (chunk) => {
+                    stdout += chunk.toString();
+                    const line = stdout.trim().split("\n").find(Boolean);
+                    if (line) {
+                        clearTimeout(timer);
+                        resolve(JSON.parse(line));
+                    }
+                });
+                child.once("error", reject);
+                child.once("exit", (code) => {
+                    if (!stdout.trim()) {
+                        clearTimeout(timer);
+                        reject(new Error(`signal child exited before reporting runtime: ${code}`));
+                    }
+                });
+            });
+            expect(pidAlive(runtime.pid)).toBe(true);
+            child.kill("SIGTERM");
+            await new Promise<void>((resolve) => child.once("exit", () => resolve()));
+            expect(await waitForHealthUnavailable(port)).toBe(true);
+            expect(existsSync(join(signalHome, ".ccc/devices/broker/runtime.json"))).toBe(false);
+        } finally {
+            if (child.exitCode === null) child.kill("SIGKILL");
+            rmSync(signalHome, { recursive: true, force: true });
+        }
+    });
+
+    it("cleans stale broker runtime metadata and reports launch failures", { timeout: TIMEOUT }, async () => {
+        const status = await client.callTool({ name: "device_broker_status", arguments: {} });
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ownerId: string;
+            state: { runtimeFile: string };
+        };
+        mkdirSync(join(homeDir, ".ccc/devices/broker"), { recursive: true });
+        writeFileSync(statusPayload.state.runtimeFile, JSON.stringify({
+            ownerId: statusPayload.ownerId,
+            pid: 99999999,
+            host: "127.0.0.1",
+            port: 65530,
+            managedBy: "device-lab-mcp",
+        }));
+        rmSync(join(pathDir, "ccc"), { force: true });
+        const result = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port: 65530,
+                timeoutMs: 20,
+                launchTimeoutMs: 50,
+            },
+        });
+        expect(result.isError).not.toBe(true);
+        const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            error: string;
+            launch: { error: string; attempts: Array<{ reason?: string }> };
+        };
+        expect(payload.ok).toBe(false);
+        expect(payload.error).toBe("broker-launch-failed");
+        expect(payload.launch.error).toBe("broker-launch-failed");
+        expect(payload.launch.attempts).toEqual(expect.arrayContaining([
+            expect.objectContaining({ reason: "runtime-pid-not-alive" }),
+        ]));
+        expect(existsSync(statusPayload.state.runtimeFile)).toBe(false);
+    });
+
+    it("refuses to autolaunch over another owner's broker runtime metadata", { timeout: TIMEOUT }, async () => {
+        const status = await client.callTool({ name: "device_broker_status", arguments: {} });
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            state: { runtimeFile: string };
+        };
+        mkdirSync(join(homeDir, ".ccc/devices/broker"), { recursive: true });
+        const foreignRuntime = {
+            ownerId: "0000000000000000",
+            pid: 99999999,
+            host: "127.0.0.1",
+            port: 65529,
+            managedBy: "device-lab-mcp",
+        };
+        writeFileSync(statusPayload.state.runtimeFile, JSON.stringify(foreignRuntime));
+        const result = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port: 65529,
+                timeoutMs: 20,
+                launchTimeoutMs: 50,
+            },
+        });
+        const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            error: string;
+            launch: { error: string; runtime: { ownerId: string } };
+        };
+        expect(payload.ok).toBe(false);
+        expect(payload.error).toBe("runtime-owned-by-another-owner");
+        expect(payload.launch).toEqual(expect.objectContaining({
+            error: "runtime-owned-by-another-owner",
+            runtime: expect.objectContaining({ ownerId: "0000000000000000" }),
+        }));
+        expect(JSON.parse(readFileSync(statusPayload.state.runtimeFile, "utf8"))).toEqual(foreignRuntime);
+        rmSync(statusPayload.state.runtimeFile, { force: true });
+    });
+
+    it("refuses to shut down broker runtime metadata not managed by device-lab-mcp", { timeout: TIMEOUT }, async () => {
+        const status = await client.callTool({ name: "device_broker_status", arguments: {} });
+        const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ownerId: string;
+            state: { runtimeFile: string };
+        };
+        mkdirSync(join(homeDir, ".ccc/devices/broker"), { recursive: true });
+        const unmanagedRuntime = {
+            ownerId: statusPayload.ownerId,
+            pid: 99999999,
+            host: "127.0.0.1",
+            port: 65528,
+            managedBy: "external-service-manager",
+        };
+        writeFileSync(statusPayload.state.runtimeFile, JSON.stringify(unmanagedRuntime));
+        const shutdown = await client.callTool({ name: "device_broker_shutdown", arguments: {} });
+        expect(JSON.parse(((shutdown.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "runtime-not-managed-by-device-lab-mcp",
+            runtime: expect.objectContaining({ managedBy: "external-service-manager" }),
+        }));
+        expect(JSON.parse(readFileSync(statusPayload.state.runtimeFile, "utf8"))).toEqual(unmanagedRuntime);
+        rmSync(statusPayload.state.runtimeFile, { force: true });
     });
 
     it("clamps explicit broker probe candidate count and timeout", { timeout: TIMEOUT }, async () => {

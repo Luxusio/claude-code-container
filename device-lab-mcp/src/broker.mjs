@@ -1,4 +1,6 @@
 import { createHash } from "crypto";
+import { spawn } from "child_process";
+import { accessSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { ownerId } from "./context.mjs";
@@ -15,9 +17,92 @@ const MAX_PROBE_TIMEOUT_MS = 2000;
 const MAX_RPC_BODY_BYTES = 64 * 1024;
 const BROKER_NAME = "ccc-device-broker";
 const PUBLIC_BROKER_RPC_METHODS = new Set(["broker.status", "broker.inventory", "broker.echo"]);
+const MAX_LAUNCH_TIMEOUT_MS = 5000;
+const ownedBrokerChildren = new Map();
+let cleanupRegistered = false;
+let exitingFromSignal = false;
 
 export function brokerStateRoot() {
     return join(homedir(), ".ccc/devices");
+}
+
+function brokerRuntimeFile() {
+    return join(brokerStateRoot(), "broker", "runtime.json");
+}
+
+function brokerLogsRoot() {
+    return join(brokerStateRoot(), "broker", "logs");
+}
+
+function readBrokerRuntime() {
+    try {
+        if (!existsSync(brokerRuntimeFile())) return null;
+        const parsed = JSON.parse(readFileSync(brokerRuntimeFile(), "utf8"));
+        return parsed && typeof parsed === "object" ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeBrokerRuntime(runtime) {
+    mkdirSync(join(brokerStateRoot(), "broker"), { recursive: true });
+    writeFileSync(brokerRuntimeFile(), JSON.stringify(runtime, null, 2), { mode: 0o600 });
+}
+
+function removeBrokerRuntime() {
+    try {
+        unlinkSync(brokerRuntimeFile());
+    } catch {
+        // Stale metadata is best-effort cleanup.
+    }
+}
+
+function pidAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function executableExists(executable) {
+    if (executable.includes("/")) {
+        try {
+            accessSync(executable, fsConstants.X_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+    for (const pathEntry of (process.env.PATH || "").split(":").filter(Boolean)) {
+        try {
+            accessSync(join(pathEntry, executable), fsConstants.X_OK);
+            return true;
+        } catch {
+            // Continue PATH lookup without invoking a shell.
+        }
+    }
+    return false;
+}
+
+function normalizeLaunchOptions(options = {}) {
+    const probeOptions = normalizeProbeOptions({ ...options, probe: true });
+    const launchTimeoutMs = Number.isFinite(options.launchTimeoutMs)
+        ? Math.min(MAX_LAUNCH_TIMEOUT_MS, Math.max(1, Number(options.launchTimeoutMs)))
+        : 2500;
+    const host = typeof options.launchHost === "string" && options.launchHost
+        ? options.launchHost
+        : (probeOptions.hostCandidates.includes("127.0.0.1") ? "127.0.0.1" : probeOptions.hostCandidates[0] || "127.0.0.1");
+    return {
+        ...probeOptions,
+        host,
+        port: probeOptions.port,
+        launchTimeoutMs,
+        command: "ccc",
+        args: ["devices", "broker", "serve", "--host", host, "--port", String(probeOptions.port)],
+    };
 }
 
 function normalizeProbeOptions(options = {}) {
@@ -75,6 +160,248 @@ async function probeBrokerHealth({ hostCandidates, port, timeoutMs }) {
     return { requested: true, available: false, selected: null, attempts };
 }
 
+async function waitForBrokerHealth({ host, port, timeoutMs }) {
+    const deadline = Date.now() + timeoutMs;
+    const attempts = [];
+    while (Date.now() <= deadline) {
+        const remaining = Math.max(1, Math.min(250, deadline - Date.now()));
+        const probe = await probeBrokerHealth({ hostCandidates: [host], port, timeoutMs: remaining });
+        attempts.push(...probe.attempts);
+        if (probe.available) return { ...probe, attempts };
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { requested: true, available: false, selected: null, attempts };
+}
+
+function cleanupOwnedBrokerChildren() {
+    for (const [pid, child] of ownedBrokerChildren.entries()) {
+        try {
+            process.kill(pid, "SIGTERM");
+        } catch {
+            // Already gone.
+        }
+        try {
+            child.kill?.("SIGTERM");
+        } catch {
+            // Already gone.
+        }
+        try {
+            process.kill(pid, "SIGKILL");
+        } catch {
+            // Already gone.
+        }
+        try {
+            child.kill?.("SIGKILL");
+        } catch {
+            // Already gone.
+        }
+        ownedBrokerChildren.delete(pid);
+    }
+    const runtime = readBrokerRuntime();
+    if (runtime?.managedBy === "device-lab-mcp" && runtime.ownerId === ownerId()) {
+        removeBrokerRuntime();
+    }
+}
+
+function registerBrokerCleanup() {
+    if (cleanupRegistered) return;
+    cleanupRegistered = true;
+    process.once("exit", cleanupOwnedBrokerChildren);
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+        process.once(signal, () => {
+            cleanupOwnedBrokerChildren();
+            if (!exitingFromSignal) {
+                exitingFromSignal = true;
+                process.kill(process.pid, signal);
+            }
+        });
+    }
+}
+
+async function waitForProcessExit(pid, timeoutMs = 1500) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() <= deadline) {
+        if (!pidAlive(pid)) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return !pidAlive(pid);
+}
+
+async function ensureBroker(options = {}) {
+    const owner = ownerId();
+    const launch = normalizeLaunchOptions(options);
+    const before = await probeBrokerHealth(launch);
+    if (before.available) {
+        return {
+            ok: true,
+            ownerId: owner,
+            launched: false,
+            reused: true,
+            runtime: readBrokerRuntime(),
+            host: before.selected.host,
+            port: before.selected.port,
+            attempts: before.attempts,
+        };
+    }
+
+    const existing = readBrokerRuntime();
+    const stale = [];
+    if (existing) {
+        if (existing.ownerId !== owner) {
+            return {
+                ok: false,
+                ownerId: owner,
+                error: "runtime-owned-by-another-owner",
+                runtime: existing,
+                attempts: [...before.attempts, { reason: "runtime-owned-by-another-owner", runtime: existing }],
+            };
+        } else if (!pidAlive(existing.pid)) {
+            stale.push({ reason: "runtime-pid-not-alive", runtime: existing });
+            removeBrokerRuntime();
+        } else {
+            const existingProbe = await probeBrokerHealth({
+                hostCandidates: [existing.host || launch.host],
+                port: existing.port || launch.port,
+                timeoutMs: launch.timeoutMs,
+            });
+            if (existingProbe.available) {
+                return {
+                    ok: true,
+                    ownerId: owner,
+                    launched: false,
+                    reused: true,
+                    runtime: existing,
+                    host: existingProbe.selected.host,
+                    port: existingProbe.selected.port,
+                    attempts: [...before.attempts, ...existingProbe.attempts],
+                };
+            }
+            stale.push({ reason: "runtime-health-check-failed", runtime: existing, attempts: existingProbe.attempts });
+            removeBrokerRuntime();
+        }
+    }
+
+    mkdirSync(brokerLogsRoot(), { recursive: true });
+    const startedAt = new Date().toISOString();
+    const logPath = join(brokerLogsRoot(), `broker-${owner}-${Date.now()}.log`);
+    let logFd = null;
+    try {
+        if (!executableExists(launch.command)) {
+            return {
+                ok: false,
+                ownerId: owner,
+                error: "broker-launch-failed",
+                detail: "executable-not-found",
+                command: launch.command,
+                args: launch.args,
+                logPath,
+                attempts: [...before.attempts, ...stale],
+            };
+        }
+        logFd = openSync(logPath, "a", 0o600);
+        const child = spawn(launch.command, launch.args, {
+            stdio: ["ignore", logFd, logFd],
+            detached: false,
+        });
+        child.once("exit", () => {
+            ownedBrokerChildren.delete(child.pid);
+        });
+        child.once("error", () => {
+            ownedBrokerChildren.delete(child.pid);
+        });
+        if (child.pid) ownedBrokerChildren.set(child.pid, child);
+        registerBrokerCleanup();
+        const runtime = {
+            name: BROKER_NAME,
+            ownerId: owner,
+            pid: child.pid || null,
+            host: launch.host,
+            port: launch.port,
+            command: launch.command,
+            args: launch.args,
+            logPath,
+            startedAt,
+            managedBy: "device-lab-mcp",
+        };
+        writeBrokerRuntime(runtime);
+        const ready = await waitForBrokerHealth({ host: launch.host, port: launch.port, timeoutMs: launch.launchTimeoutMs });
+        if (ready.available) {
+            return {
+                ok: true,
+                ownerId: owner,
+                launched: true,
+                reused: false,
+                runtime,
+                host: launch.host,
+                port: launch.port,
+                attempts: [...before.attempts, ...stale, ...ready.attempts],
+            };
+        }
+        try {
+            if (child.pid) process.kill(child.pid, "SIGTERM");
+        } catch {
+            // Already gone.
+        }
+        if (child.pid) ownedBrokerChildren.delete(child.pid);
+        removeBrokerRuntime();
+        return {
+            ok: false,
+            ownerId: owner,
+            error: "broker-launch-health-timeout",
+            runtime,
+            attempts: [...before.attempts, ...stale, ...ready.attempts],
+        };
+    } catch (error) {
+        removeBrokerRuntime();
+        return {
+            ok: false,
+            ownerId: owner,
+            error: "broker-launch-failed",
+            detail: error?.message || String(error),
+            command: launch.command,
+            args: launch.args,
+            logPath,
+            attempts: [...before.attempts, ...stale],
+        };
+    } finally {
+        if (logFd !== null) {
+            try {
+                closeSync(logFd);
+            } catch {
+                // Ignore log close failures.
+            }
+        }
+    }
+}
+
+export async function brokerShutdown(options = {}) {
+    const owner = ownerId();
+    const runtime = readBrokerRuntime();
+    if (!runtime) return { ok: true, ownerId: owner, stopped: false, reason: "no-runtime" };
+    if (runtime.ownerId !== owner) {
+        return { ok: false, ownerId: owner, error: "runtime-owned-by-another-owner", runtime };
+    }
+    if (runtime.managedBy !== "device-lab-mcp") {
+        return { ok: false, ownerId: owner, error: "runtime-not-managed-by-device-lab-mcp", runtime };
+    }
+    let signaled = false;
+    if (pidAlive(runtime.pid)) {
+        try {
+            process.kill(runtime.pid, options.force === true ? "SIGKILL" : "SIGTERM");
+            signaled = true;
+        } catch (error) {
+            return { ok: false, ownerId: owner, error: "broker-shutdown-failed", detail: error?.message || String(error), runtime };
+        }
+        const exited = await waitForProcessExit(runtime.pid, options.force === true ? 500 : 1500);
+        if (!exited) {
+            return { ok: false, ownerId: owner, error: "broker-shutdown-timeout", stopped: false, runtime };
+        }
+    }
+    ownedBrokerChildren.delete(runtime.pid);
+    removeBrokerRuntime();
+    return { ok: true, ownerId: owner, stopped: signaled, runtime };
+}
+
 function ownerToken(owner) {
     return createHash("sha256").update(`${BROKER_NAME}:owner:${owner}`).digest("hex");
 }
@@ -92,7 +419,7 @@ export async function brokerRpc(options = {}) {
 
 async function brokerRpcRequest(options = {}) {
     const owner = ownerId();
-    const probeOptions = normalizeProbeOptions({ ...options, probe: true });
+    let probeOptions = normalizeProbeOptions({ ...options, probe: true });
     const method = typeof options.method === "string" ? options.method : "";
     if (!method) {
         return {
@@ -126,6 +453,23 @@ async function brokerRpcRequest(options = {}) {
             maxBytes: MAX_RPC_BODY_BYTES,
             attempts: [],
         };
+    }
+
+    let launch = null;
+    if (options.autolaunch === true) {
+        launch = await ensureBroker(options);
+        if (!launch.ok) {
+            return {
+                ok: false,
+                ownerId: owner,
+                method,
+                selected: null,
+                error: launch.error,
+                launch,
+                attempts: launch.attempts || [],
+            };
+        }
+        probeOptions = { ...probeOptions, hostCandidates: [launch.host], port: launch.port };
     }
 
     const attempts = [];
@@ -168,6 +512,7 @@ async function brokerRpcRequest(options = {}) {
                     method,
                     selected: attempt,
                     result: body?.result ?? body,
+                    launch,
                     attempts,
                 };
             }
@@ -180,6 +525,7 @@ async function brokerRpcRequest(options = {}) {
                 status: response.status,
                 result: body?.result ?? null,
                 body: summarizeBody(body),
+                launch,
                 attempts,
             };
         } catch (error) {
@@ -202,6 +548,7 @@ async function brokerRpcRequest(options = {}) {
         method,
         selected: null,
         error: "broker-rpc-unavailable",
+        launch,
         attempts,
     };
 }
@@ -269,32 +616,51 @@ export async function brokerCommand(options = {}) {
 export async function brokerStatus(options = {}) {
     const owner = ownerId();
     const root = brokerStateRoot();
+    let launch = null;
+    if (options.shutdown === true) {
+        return {
+            ownerId: owner,
+            mode: "broker-shutdown",
+            lazy: true,
+            available: false,
+            shutdown: await brokerShutdown(options),
+        };
+    }
+    if (options.autolaunch === true) {
+        launch = await ensureBroker(options);
+    }
     const probeOptions = normalizeProbeOptions(options);
-    const probe = probeOptions.probe
-        ? await probeBrokerHealth(probeOptions)
+    const effectiveProbeOptions = launch?.ok ? { ...probeOptions, probe: true, hostCandidates: [launch.host], port: launch.port } : probeOptions;
+    const probe = effectiveProbeOptions.probe
+        ? await probeBrokerHealth(effectiveProbeOptions)
         : { requested: false, available: false, selected: null, attempts: [] };
+    const runtime = readBrokerRuntime();
     return {
         ownerId: owner,
         mode: probe.available ? "host-broker-detected" : "direct-provider",
         lazy: true,
         available: probe.available,
-        startupPolicy: "no daemon is started by status, inventory, or backend discovery calls",
+        startupPolicy: "status/backend discovery do not start devices; broker autolaunch starts only on explicit autolaunch=true",
         transport: {
             preferred: "http",
-            hostCandidates: probeOptions.hostCandidates,
-            defaultPort: probeOptions.port,
+            hostCandidates: effectiveProbeOptions.hostCandidates,
+            defaultPort: effectiveProbeOptions.port,
             zeroConfig: true,
             environmentRequired: false,
-            probeTimeoutMs: probeOptions.timeoutMs,
+            probeTimeoutMs: effectiveProbeOptions.timeoutMs,
             maxProbeCandidates: MAX_PROBE_CANDIDATES,
             maxProbeTimeoutMs: MAX_PROBE_TIMEOUT_MS,
+            maxLaunchTimeoutMs: MAX_LAUNCH_TIMEOUT_MS,
         },
         probe,
+        launch,
+        runtime,
         state: {
             root,
             ownerRoot: join(root, "owners", owner),
             locksRoot: join(root, "broker", "locks"),
             logsRoot: join(root, "broker", "logs"),
+            runtimeFile: brokerRuntimeFile(),
         },
         implemented: [
             "owner-scoped direct provider adapters",
@@ -306,13 +672,15 @@ export async function brokerStatus(options = {}) {
             "explicit broker RPC diagnostic transport",
             "explicit broker physical lease diagnostics",
             "explicit broker lifecycle command dry-run diagnostics",
+            "lazy host broker autolaunch",
+            "mcp-owned broker shutdown",
+            "broker runtime pid metadata",
         ],
         deferred: [
-            "host broker daemon launcher",
-            "broker lifecycle command transport",
-            "broker-managed backend command execution",
             "strong broker authentication token handshake",
+            "permanent host service manager integration",
+            "full direct-provider routing parity through broker",
         ],
-        note: "Device backends currently run in direct-provider mode. The broker contract is exposed so agents can detect the current host-control mode before requesting lifecycle work.",
+        note: "Device backends remain lazy. Broker autolaunch starts only the broker process and does not start emulators, simulators, sandboxes, VMs, Appium, or provider tools.",
     };
 }

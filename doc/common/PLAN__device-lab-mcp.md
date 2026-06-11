@@ -122,10 +122,11 @@ Patterns to avoid as defaults:
    - Owns device inventory, locking, lifecycle, and backend adapters.
    - Runs only when a device MCP call needs host control.
    - Stores state under `~/.ccc/devices`.
-   - Current implementation exposes the broker contract through
-     `device_broker_status` and `device_backends.broker` without starting a
-     daemon. Backends still use direct-provider mode until the host broker
-     daemon launcher and HTTP transport are added.
+  - Current implementation exposes the broker contract through
+    `device_broker_status` and `device_backends.broker` without starting a
+    daemon by default. Broker tools can explicitly autolaunch the HTTP broker
+    and record MCP-owned runtime metadata; normal backend lifecycle tools still
+    use direct-provider mode until full broker routing parity is added.
 
 3. Backend adapters
    - `android-emulator`: Android SDK emulator and `adb`.
@@ -195,41 +196,56 @@ Broker contract status:
   reports structured success/failure attempts. The default call path and
   `device_backends` still do not probe or start anything. Explicit probes are
   capped at eight host candidates and 2000ms per candidate.
+- When called with `autolaunch: true`, `device_broker_status`,
+  `device_broker_rpc`, `device_broker_lease`, and `device_broker_command`
+  first reuse a healthy broker if one is reachable, then check owner-scoped
+  runtime metadata, and finally start `ccc devices broker serve --host
+  <host> --port <port>` only for the broker process. This does not start
+  emulators, simulators, sandboxes, VMs, Appium, or provider tools.
+- MCP-owned broker launches write runtime metadata under
+  `~/.ccc/devices/broker/runtime.json`, including `pid`, `ownerId`, `host`,
+  `port`, command/args, log path, `startedAt`, and `managedBy:
+  device-lab-mcp`. Stale metadata is removed when the recorded pid is gone or
+  health checks fail.
+- `device_broker_shutdown` stops the MCP-owned broker recorded for the current
+  owner and removes runtime metadata. The MCP process also registers a
+  best-effort exit cleanup hook for broker children it launched.
 - `device_backends` includes the same broker diagnostics so agents can decide
   whether they are in direct-provider mode or future host-broker mode before
   requesting lifecycle work.
 - `device_broker_rpc` provides an explicit diagnostic transport to an
-  already-running host broker. It posts to
+  already-running or explicitly autolaunched host broker. It posts to
   `/v1/owners/<owner-id>/rpc` with a deterministic owner token, supports
   diagnostic `broker.status`, `broker.inventory`, and `broker.echo` methods,
-  and reports structured per-candidate attempts. It does not auto-launch the
-  daemon and does not expose physical lease or mutating lifecycle methods.
+  and reports structured per-candidate attempts. The public RPC tool still does
+  not expose physical lease or mutating lifecycle methods; those remain behind
+  dedicated tools.
 - `device_broker_lease` explicitly claims, lists, and releases host-wide
-  physical hardware leases for `android-device` and `ios-device` through an
-  already-running broker. Claims are owner-scoped and backed by atomic lock
-  files under `~/.ccc/devices/physical-leases/<backend>/locks`, so one CCC
-  owner cannot overwrite or release another owner's USB/Wi-Fi real-device
-  reservation.
+  physical hardware leases for `android-device` and `ios-device` through a
+  running or explicitly autolaunched broker. Claims are owner-scoped and backed
+  by atomic lock files under
+  `~/.ccc/devices/physical-leases/<backend>/locks`, so one CCC owner cannot
+  overwrite or release another owner's USB/Wi-Fi real-device reservation.
 - `device_broker_command` explicitly plans, dry-runs, or invokes owner-scoped
-  lifecycle commands through an already-running broker. It supports allowlisted
-  `device_status`, `device_start`, `device_stop`, and `device_delete` command
-  envelopes for existing owner device definitions across Android, iOS, Windows,
-  and macOS backends. Non-dry-run invoke builds bounded provider commands
-  without shell interpolation, applies timeout/output caps, handles emulator
-  starts as detached launches, and reports structured missing-metadata/provider
-  failures. Physical Android/iOS stop/delete commands are safety no-ops rather
-  than host power/disconnect operations.
+  lifecycle commands through a running or explicitly autolaunched broker. It
+  supports allowlisted `device_status`, `device_start`, `device_stop`, and
+  `device_delete` command envelopes for existing owner device definitions
+  across Android, iOS, Windows, and macOS backends. Non-dry-run invoke builds
+  bounded provider commands without shell interpolation, applies timeout/output
+  caps, handles emulator starts as detached launches, and reports structured
+  missing-metadata/provider failures. Physical Android/iOS stop/delete commands
+  are safety no-ops rather than host power/disconnect operations.
 - Environment variables are not required for broker discovery, RPC, or physical
-  lease/lifecycle command operations. The daemon auto-launcher, full provider
-  routing parity with the direct in-container MCP path, real `adb connect`/Apple
-  device pairing through the broker, strong authentication token handshake, and
-  daemon supervision remain deferred.
+  lease/lifecycle command operations. Full provider routing parity with the
+  direct in-container MCP path, real `adb connect`/Apple device pairing through
+  the broker, strong authentication token handshake, and permanent host service
+  manager integration remain deferred.
 
 Host broker daemon skeleton status:
 
 - `ccc devices broker status` prints the host broker's default bind address,
   port, current owner namespace, state roots, implemented HTTP status/health
-  surface, and deferred command-proxy/auth/supervision work without starting
+  surface, and deferred full-routing/auth/service-manager work without starting
   any devices.
 - `ccc devices broker serve [--host HOST] [--port PORT]` starts a small
   host-side HTTP server. The server currently exposes `GET /health`,
@@ -240,10 +256,11 @@ Host broker daemon skeleton status:
   invalid JSON, oversized requests, invalid lease or command params,
   cross-owner lease operations, unknown methods, missing provider metadata, and
   failed provider commands.
-- MCP still does not auto-launch this daemon. The current in-container MCP
-  remains in direct-provider mode for actual device lifecycle work until the
-  broker launcher, full provider routing parity, strong authentication
-  handshake, and daemon supervision are implemented.
+- MCP can now explicitly autolaunch and shut down this broker for broker tools.
+  The current in-container MCP remains in direct-provider mode for normal
+  backend lifecycle tools until full provider routing parity, strong
+  authentication handshake, and permanent host service-manager integration are
+  implemented.
 
 ## MCP tools
 
