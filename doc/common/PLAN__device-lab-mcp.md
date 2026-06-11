@@ -226,6 +226,14 @@ Broker contract status:
   by atomic lock files under
   `~/.ccc/devices/physical-leases/<backend>/locks`, so one CCC owner cannot
   overwrite or release another owner's USB/Wi-Fi real-device reservation.
+- `device_broker_attach` explicitly attaches, detaches, or lists physical
+  Android/iOS devices through a running or explicitly autolaunched broker.
+  Android Wi-Fi attach claims the host-wide lease before `adb connect`, verifies
+  `adb devices -l` reports the target in `device` state, and writes owner state.
+  iOS attach validates visibility through `xcrun xctrace list devices`; Wi-Fi
+  attach is accepted only for devices already visible as network/Wi-Fi devices.
+  Detach removes only owner state and owner leases, never powering off, erasing,
+  globally disconnecting, or pairing the real device.
 - `device_broker_command` explicitly plans, dry-runs, or invokes owner-scoped
   lifecycle commands through a running or explicitly autolaunched broker. It
   supports allowlisted `device_status`, `device_start`, `device_stop`, and
@@ -237,8 +245,8 @@ Broker contract status:
   are safety no-ops rather than host power/disconnect operations.
 - Environment variables are not required for broker discovery, RPC, or physical
   lease/lifecycle command operations. Full provider routing parity with the
-  direct in-container MCP path, real `adb connect`/Apple device pairing through
-  the broker, strong authentication token handshake, and permanent host service
+  direct in-container MCP path, Apple device pairing/trust bootstrap through the
+  broker, strong authentication token handshake, and permanent host service
   manager integration remain deferred.
 
 Host broker daemon skeleton status:
@@ -594,9 +602,10 @@ Physical Android device attachment status:
 - Physical serials are additionally protected by host-wide hardware lock files
   under `~/.ccc/devices/physical-leases/android-device/locks`, so two CCC
   owners cannot attach and command the same phone at the same time.
-- The host broker exposes this same Android physical lease namespace through
-  `device_broker_lease`; actual `adb connect` and attach execution through the
-  broker remain deferred to the lifecycle command proxy slice.
+- The host broker exposes Android physical leases through `device_broker_lease`
+  and physical attach/detach/list through `device_broker_attach`. Broker Wi-Fi
+  attach performs lease-before-`adb connect`, verifies `adb devices -l`, and
+  records owner-scoped attached-device state.
 - `device_start` is a no-op readiness acknowledgement for physical Android
   devices; `device_stop` clears Appium/recording/pid metadata and leaves the
   phone attached; `device_detach` removes only the CCC owner lease.
@@ -709,9 +718,10 @@ Physical iOS device attachment status:
 - Physical UDIDs are additionally protected by host-wide hardware lock files
   under `~/.ccc/devices/physical-leases/ios-device/locks`, so two CCC owners
   cannot attach and command the same iPhone/iPad at the same time.
-- The host broker exposes this same iOS physical lease namespace through
-  `device_broker_lease`; actual Apple pairing/device attach execution through
-  the broker remains deferred to the lifecycle command proxy slice.
+- The host broker exposes iOS physical leases through `device_broker_lease` and
+  physical attach/detach/list through `device_broker_attach`. Broker attach
+  validates the UDID through `xcrun xctrace list devices`; Apple network pairing
+  and trust bootstrap remain outside CCC and must already be satisfied.
 - `device_start` is a no-op readiness acknowledgement; `device_stop` and
   teardown cleanup clear owner-scoped Appium/recording/pid metadata but never
   call `simctl shutdown`, erase, power off, or disconnect the physical device.

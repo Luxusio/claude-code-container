@@ -584,6 +584,39 @@ export async function brokerLease(options = {}) {
     });
 }
 
+export async function brokerPhysical(options = {}) {
+    const action = typeof options.action === "string" ? options.action : "";
+    const methodByAction = {
+        attach: "broker.physical.attach",
+        detach: "broker.physical.detach",
+        list: "broker.physical.list",
+    };
+    const method = methodByAction[action];
+    if (!method) {
+        return {
+            ok: false,
+            ownerId: ownerId(),
+            error: "invalid-physical-action",
+            allowed: Object.keys(methodByAction),
+            attempts: [],
+        };
+    }
+    return brokerRpcRequest({
+        ...options,
+        method,
+        params: {
+            backend: options.backend,
+            name: options.name,
+            deviceId: options.deviceId,
+            serial: options.serial,
+            udid: options.udid,
+            connection: options.connection,
+            host: options.host,
+            port: options.devicePort,
+        },
+    });
+}
+
 export async function brokerCommand(options = {}) {
     const action = typeof options.action === "string" ? options.action : "";
     const methodByAction = {

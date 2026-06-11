@@ -101,6 +101,9 @@ const server = http.createServer((req, res) => {
     if (body.method === "broker.echo") return send(res, 200, { ok: true, result: { echo: body.params || {}, ownerId: match[1] } });
     if (body.method === "broker.status") return send(res, 200, { ok: true, result: { ownerId: match[1], fake: true } });
     if (body.method === "broker.lease.list") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, leases: [] } });
+    if (body.method === "broker.physical.attach") return send(res, 200, { ok: true, result: { ownerId: match[1], device: { id: body.params.deviceId, backend: body.params.backend, serial: body.params.serial || null, udid: body.params.udid || null, connection: body.params.connection || "usb" } } });
+    if (body.method === "broker.physical.detach") return send(res, 200, { ok: true, result: { ownerId: match[1], detached: body.params.deviceId, physicalDevicePoweredOff: false } });
+    if (body.method === "broker.physical.list") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, devices: [], leases: [] } });
     if (body.method === "broker.command.plan") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, command: body.params.command, deviceId: body.params.deviceId, device: { id: body.params.deviceId, status: "stopped" }, execution: { mode: "planned", providerExecution: "fake", mutatesHost: false } } });
     return send(res, 418, { ok: false, error: "fake-broker-error", method: body.method });
   });
@@ -144,6 +147,7 @@ process.on("SIGINT", () => {});
         expect(names).toContain("device_broker_shutdown");
         expect(names).toContain("device_broker_rpc");
         expect(names).toContain("device_broker_lease");
+        expect(names).toContain("device_broker_attach");
         expect(names).toContain("device_broker_command");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
@@ -240,6 +244,16 @@ process.on("SIGINT", () => {});
                 backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
+            }),
+        }));
+        const brokerAttachTool = result.tools.find((tool) => tool.name === "device_broker_attach");
+        expect(brokerAttachTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["action", "backend"],
+            properties: expect.objectContaining({
+                action: expect.objectContaining({ enum: ["attach", "detach", "list"] }),
+                backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
+                devicePort: expect.objectContaining({ type: "number" }),
                 autolaunch: expect.objectContaining({ type: "boolean" }),
             }),
         }));
@@ -426,6 +440,45 @@ process.on("SIGINT", () => {});
         expect(JSON.parse(((lease.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
             ok: true,
             result: expect.objectContaining({ backend: "android-device", leases: [] }),
+        }));
+
+        const attach = await client.callTool({
+            name: "device_broker_attach",
+            arguments: {
+                action: "attach",
+                backend: "android-device",
+                deviceId: "android-broker-real",
+                serial: "USB123",
+                connection: "usb",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+            },
+        });
+        expect(JSON.parse(((attach.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({
+                device: expect.objectContaining({ id: "android-broker-real", backend: "android-device", serial: "USB123" }),
+            }),
+        }));
+
+        const attachList = await client.callTool({
+            name: "device_broker_attach",
+            arguments: { action: "list", backend: "android-device", autolaunch: true, hostCandidates: ["127.0.0.1"], port, timeoutMs: 300 },
+        });
+        expect(JSON.parse(((attachList.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({ backend: "android-device", devices: [], leases: [] }),
+        }));
+
+        const detach = await client.callTool({
+            name: "device_broker_attach",
+            arguments: { action: "detach", backend: "android-device", deviceId: "android-broker-real", autolaunch: true, hostCandidates: ["127.0.0.1"], port, timeoutMs: 300 },
+        });
+        expect(JSON.parse(((detach.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({ detached: "android-broker-real", physicalDevicePoweredOff: false }),
         }));
 
         const command = await client.callTool({
@@ -939,6 +992,106 @@ setInterval(() => {}, 1000);
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
             rmSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent("10.0.0.8:5555")}.json`), { force: true });
+        }
+    });
+
+    it("attaches and detaches physical devices through an explicitly supplied host broker", { timeout: TIMEOUT }, async () => {
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "adb" && command.args?.[0] === "connect") {
+                return { mode: "exec", provider: "adb", executable: command.executable, args: command.args, status: 0, stdout: `connected to ${command.args[1]}`, stderr: "" };
+            }
+            if (command.provider === "adb" && command.args?.join(" ") === "devices -l") {
+                return { mode: "exec", provider: "adb", executable: command.executable, args: command.args, status: 0, stdout: "List of devices attached\n10.0.0.10:5555 device product:pixel model:Pixel_Real\n", stderr: "" };
+            }
+            if (command.provider === "xcrun") {
+                return { mode: "exec", provider: "xcrun", executable: command.executable, args: command.args, status: 0, stdout: "== Devices ==\nBroker Network iPhone (17.5) (00008130-00AA00BB00CC00EE) (Network)\n", stderr: "" };
+            }
+            return { mode: "exec", provider: command.provider, executable: command.executable, args: command.args, status: 1, stdout: "", stderr: "unexpected" };
+        });
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+            providerPaths: { adb: "/fake/adb", xcrun: "/fake/xcrun" },
+            commandRunner,
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const androidAttach = await client.callTool({
+                name: "device_broker_attach",
+                arguments: {
+                    action: "attach",
+                    backend: "android-device",
+                    deviceId: "android-broker-wifi",
+                    name: "Broker WiFi Pixel",
+                    connection: "wifi",
+                    host: "10.0.0.10",
+                    devicePort: 5555,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(androidAttach.isError).not.toBe(true);
+            expect(JSON.parse(((androidAttach.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    device: expect.objectContaining({
+                        id: "android-broker-wifi",
+                        serial: "10.0.0.10:5555",
+                        connection: "wifi",
+                    }),
+                }),
+            }));
+
+            const iosAttach = await client.callTool({
+                name: "device_broker_attach",
+                arguments: {
+                    action: "attach",
+                    backend: "ios-device",
+                    deviceId: "ios-broker-wifi",
+                    connection: "wifi",
+                    udid: "00008130-00AA00BB00CC00EE",
+                    host: "network-iphone.local",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(JSON.parse(((iosAttach.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    device: expect.objectContaining({
+                        id: "ios-broker-wifi",
+                        udid: "00008130-00AA00BB00CC00EE",
+                        connection: "wifi",
+                    }),
+                }),
+            }));
+
+            const list = await client.callTool({
+                name: "device_broker_attach",
+                arguments: { action: "list", backend: "android-device", hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 },
+            });
+            expect(JSON.parse(((list.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({ devices: [expect.objectContaining({ id: "android-broker-wifi" })] }),
+            }));
+
+            const detach = await client.callTool({
+                name: "device_broker_attach",
+                arguments: { action: "detach", backend: "android-device", deviceId: "android-broker-wifi", hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 },
+            });
+            expect(JSON.parse(((detach.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({ detached: "android-broker-wifi", physicalDevicePoweredOff: false }),
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            rmSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks", `${encodeURIComponent("10.0.0.10:5555")}.json`), { force: true });
+            rmSync(join(homedir(), ".ccc/devices/physical-leases/ios-device/locks", `${encodeURIComponent("00008130-00AA00BB00CC00EE")}.json`), { force: true });
         }
     });
 

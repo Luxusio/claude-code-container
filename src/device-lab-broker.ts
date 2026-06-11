@@ -58,6 +58,20 @@ type CommandParamSuccess = {
     force: boolean;
     dryRun: boolean;
 };
+type AttachParamError = { ok: false; status: number; error: string; allowed?: string[] };
+type AttachParamSuccess = {
+    ok: true;
+    backend: string;
+    stateKey: string;
+    deviceId: string;
+    name: string | null;
+    serial: string | null;
+    udid: string | null;
+    connection: string;
+    connectionProvided: boolean;
+    host: string | null;
+    port: number | null;
+};
 type ProviderCommand = {
     mode: "exec" | "detached" | "noop";
     provider: string;
@@ -139,6 +153,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "http-owner-rpc",
             "owner-token-guard",
             "http-physical-lease-api",
+            "http-physical-attach-api",
             "http-lifecycle-command-plan",
             "bounded-provider-command-execution",
             "explicit-mcp-autolaunch-compatible",
@@ -148,7 +163,6 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
         deferred: [
             "full-provider-routing-parity",
             "strong-authentication-token-handshake",
-            "real-device-connect-proxy",
             "permanent-service-manager-supervision",
         ],
     };
@@ -394,6 +408,249 @@ function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
             },
         },
     };
+}
+
+function validateAttachParams(params: unknown): AttachParamError | AttachParamSuccess {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+        return { ok: false, status: 400, error: "invalid-attach-params" };
+    }
+    const input = params as Record<string, unknown>;
+    const backend = typeof input.backend === "string" ? input.backend : "";
+    if (!DEVICE_BROKER_PHYSICAL_BACKENDS.has(backend)) {
+        return { ok: false, status: 400, error: "invalid-attach-backend", allowed: [...DEVICE_BROKER_PHYSICAL_BACKENDS] };
+    }
+    const stateKey = backend;
+    const name = typeof input.name === "string" && input.name.trim() ? input.name.trim() : null;
+    const serial = typeof input.serial === "string" && input.serial.trim() ? input.serial.trim() : null;
+    const udid = typeof input.udid === "string" && input.udid.trim() ? input.udid.trim() : null;
+    const identity = backend === "android-device" ? serial || (typeof input.host === "string" ? input.host : null) : udid;
+    const deviceId = typeof input.deviceId === "string" && input.deviceId.trim()
+        ? input.deviceId.trim()
+        : `${backend}-${createHash("sha256").update(String(identity || name || "real-device")).digest("hex").slice(0, 10)}`;
+    if (!deviceId || deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) {
+        return { ok: false, status: 400, error: "invalid-device-id" };
+    }
+    const connectionProvided = typeof input.connection === "string";
+    const connection = connectionProvided ? String(input.connection) : "usb";
+    if (!["usb", "wifi"].includes(connection)) return { ok: false, status: 400, error: "invalid-connection" };
+    const host = typeof input.host === "string" && input.host.trim() ? input.host.trim() : null;
+    const port = Number.isFinite(input.port) ? Number(input.port) : null;
+    return { ok: true, backend, stateKey, deviceId, name, serial, udid, connection, connectionProvided, host, port };
+}
+
+function attachParamError(parsed: AttachParamError) {
+    return {
+        status: parsed.status,
+        payload: {
+            ok: false,
+            error: parsed.error,
+            ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+        },
+    };
+}
+
+function parseAdbDevices(text: string) {
+    return String(text || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("List of devices"))
+        .map((line) => {
+            const [serial, state, ...detailParts] = line.split(/\s+/);
+            const details = Object.fromEntries(detailParts.map((part) => {
+                const index = part.indexOf(":");
+                return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, true];
+            }));
+            return { serial, state: state || "unknown", details };
+        })
+        .filter((device) => device.serial);
+}
+
+function parseXctraceDevices(text: string) {
+    return String(text || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.endsWith(":") && !line.includes("Simulator"))
+        .map((line) => {
+            const matches = [...line.matchAll(/\(([^()]*)\)/g)].map((match) => match[1]);
+            const udid = matches.find((value) => /^[A-Fa-f0-9-]{8,}$/.test(value));
+            if (!udid) return null;
+            const version = matches.find((value) => value !== udid && /\d/.test(value)) || null;
+            const name = line.split(" (")[0].trim();
+            if (!/\b(iPhone|iPad|iPod)\b/i.test(name)) return null;
+            const connection = /\b(network|wifi|wi-fi)\b/i.test(line) ? "wifi" : "usb";
+            return { name, udid, version, connection, raw: line };
+        })
+        .filter(Boolean) as Array<{ name: string; udid: string; version: string | null; connection: string; raw: string }>;
+}
+
+function existingPhysicalDevice(ownerId: string, stateKey: string, deviceId: string, hardwareId: string, hardwareField: "serial" | "udid") {
+    return readOwnerDevices(ownerId, stateKey).find((device) => {
+        if (!device || typeof device !== "object") return false;
+        const candidate = device as Record<string, unknown>;
+        return candidate.id === deviceId || candidate[hardwareField] === hardwareId;
+    });
+}
+
+function brokerAttachAndroid(ownerId: string, parsed: AttachParamSuccess, normalized: ReturnType<typeof normalizeBrokerOptions>) {
+    const adb = executableFor("adb", normalized);
+    if (parsed.connection === "wifi" && !parsed.host && !parsed.serial) {
+        return { status: 400, payload: { ok: false, error: "missing-android-wifi-target" } };
+    }
+    const target = parsed.connection === "wifi"
+        ? (parsed.serial?.includes(":") ? parsed.serial : `${parsed.host || parsed.serial}:${parsed.port || 5555}`)
+        : parsed.serial;
+    if (!target || target.startsWith("emulator-")) {
+        return { status: 400, payload: { ok: false, error: target?.startsWith("emulator-") ? "android-emulator-not-physical-device" : "missing-android-serial" } };
+    }
+    if (existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, target, "serial")) {
+        return { status: 409, payload: { ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: target } };
+    }
+    const lease = claimPhysicalLease(ownerId, {
+        backend: parsed.backend,
+        hardwareId: target,
+        deviceId: parsed.deviceId,
+        connection: parsed.connection,
+        transport: parsed.connection === "wifi" ? { type: "wifi", host: parsed.host || target.split(":")[0], port: Number(target.split(":")[1] || parsed.port || 5555) } : { type: "usb" },
+    });
+    if (lease.status !== 200) return lease;
+    const leasePayload = lease.payload as { result?: { lease?: unknown } };
+    if (parsed.connection === "wifi") {
+        const connect = normalized.commandRunner({ mode: "exec", provider: "adb", executable: adb, args: ["connect", target] }, {
+            timeoutMs: normalized.commandTimeoutMs,
+            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        });
+        if (!commandSucceeded(connect)) {
+            releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: target, deviceId: parsed.deviceId });
+            return { status: 502, payload: { ok: false, error: "adb-connect-failed", command: connect } };
+        }
+    }
+    const inventory = normalized.commandRunner({ mode: "exec", provider: "adb", executable: adb, args: ["devices", "-l"] }, {
+        timeoutMs: normalized.commandTimeoutMs,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (!commandSucceeded(inventory)) {
+        releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: target, deviceId: parsed.deviceId });
+        return { status: 502, payload: { ok: false, error: "adb-inventory-failed", command: inventory } };
+    }
+    const hostDevice = parseAdbDevices(inventory.stdout || "").find((device) => device.serial === target);
+    if (!hostDevice) {
+        releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: target, deviceId: parsed.deviceId });
+        return { status: 404, payload: { ok: false, error: "android-device-not-visible", hardwareId: target, command: inventory } };
+    }
+    if (hostDevice.state !== "device") {
+        releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: target, deviceId: parsed.deviceId });
+        return { status: 409, payload: { ok: false, error: "android-device-not-attachable", hardwareId: target, state: hostDevice.state } };
+    }
+    const now = new Date().toISOString();
+    const device = {
+        id: parsed.deviceId,
+        name: parsed.name || target,
+        backend: "android-device",
+        kind: "mobile",
+        platform: "android",
+        physical: true,
+        ownerId,
+        serial: target,
+        connection: parsed.connection,
+        transport: parsed.connection === "wifi" ? { type: "wifi", host: parsed.host || target.split(":")[0], port: Number(target.split(":")[1] || parsed.port || 5555) } : { type: "usb", host: null, port: null },
+        hostDetails: hostDevice.details,
+        status: "attached",
+        creatable: false,
+        attachable: true,
+        attachedAt: now,
+        updatedAt: now,
+    };
+    try {
+        writeOwnerDevices(ownerId, parsed.stateKey, [...readOwnerDevices(ownerId, parsed.stateKey), device]);
+    } catch (error) {
+        releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: target, deviceId: parsed.deviceId });
+        return { status: 500, payload: { ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error) } };
+    }
+    return { status: 200, payload: { ok: true, result: { device, lease: leasePayload.result?.lease, provider: "adb", inventory } } };
+}
+
+function brokerAttachIos(ownerId: string, parsed: AttachParamSuccess, normalized: ReturnType<typeof normalizeBrokerOptions>) {
+    if (!parsed.udid) return { status: 400, payload: { ok: false, error: "missing-ios-udid" } };
+    if (existingPhysicalDevice(ownerId, parsed.stateKey, parsed.deviceId, parsed.udid, "udid")) {
+        return { status: 409, payload: { ok: false, error: "owner-device-already-attached", deviceId: parsed.deviceId, hardwareId: parsed.udid } };
+    }
+    const xcrun = executableFor("xcrun", normalized);
+    const inventory = normalized.commandRunner({ mode: "exec", provider: "xcrun", executable: xcrun, args: ["xctrace", "list", "devices"] }, {
+        timeoutMs: normalized.commandTimeoutMs,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (!commandSucceeded(inventory)) return { status: 502, payload: { ok: false, error: "xctrace-inventory-failed", command: inventory } };
+    const hostDevice = parseXctraceDevices(inventory.stdout || "").find((device) => device.udid === parsed.udid);
+    if (!hostDevice) return { status: 404, payload: { ok: false, error: "ios-device-not-visible", hardwareId: parsed.udid, command: inventory } };
+    if (parsed.connection === "wifi" && hostDevice.connection !== "wifi") {
+        return { status: 409, payload: { ok: false, error: "ios-wifi-device-not-network-visible", hardwareId: parsed.udid } };
+    }
+    const connection = parsed.connectionProvided ? parsed.connection : hostDevice.connection;
+    const lease = claimPhysicalLease(ownerId, {
+        backend: parsed.backend,
+        hardwareId: parsed.udid,
+        deviceId: parsed.deviceId,
+        connection,
+        transport: { type: connection, host: connection === "wifi" ? parsed.host : null, port: connection === "wifi" ? parsed.port : null, visibleVia: "xctrace" },
+    });
+    if (lease.status !== 200) return lease;
+    const leasePayload = lease.payload as { result?: { lease?: unknown } };
+    const now = new Date().toISOString();
+    const device = {
+        id: parsed.deviceId,
+        name: parsed.name || hostDevice.name || parsed.udid,
+        backend: "ios-device",
+        kind: "mobile",
+        platform: "ios",
+        physical: true,
+        ownerId,
+        udid: parsed.udid,
+        connection,
+        transport: { type: connection, host: connection === "wifi" ? parsed.host : null, port: connection === "wifi" ? parsed.port : null, visibleVia: "xctrace" },
+        hostDetails: hostDevice,
+        status: "attached",
+        creatable: false,
+        attachable: true,
+        attachedAt: now,
+        updatedAt: now,
+    };
+    try {
+        writeOwnerDevices(ownerId, parsed.stateKey, [...readOwnerDevices(ownerId, parsed.stateKey), device]);
+    } catch (error) {
+        releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId: parsed.udid, deviceId: parsed.deviceId });
+        return { status: 500, payload: { ok: false, error: "owner-state-write-failed", detail: error instanceof Error ? error.message : String(error) } };
+    }
+    return { status: 200, payload: { ok: true, result: { device, lease: leasePayload.result?.lease, provider: "xcrun", inventory } } };
+}
+
+function attachPhysicalDevice(ownerId: string, params: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>) {
+    const parsed = validateAttachParams(params);
+    if (!parsed.ok) return attachParamError(parsed);
+    return parsed.backend === "android-device"
+        ? brokerAttachAndroid(ownerId, parsed, normalized)
+        : brokerAttachIos(ownerId, parsed, normalized);
+}
+
+function detachPhysicalDevice(ownerId: string, params: unknown) {
+    const parsed = validateAttachParams(params);
+    if (!parsed.ok) return attachParamError(parsed);
+    const input = params as Record<string, unknown>;
+    if (typeof input.deviceId !== "string" || !input.deviceId.trim()) {
+        return { status: 400, payload: { ok: false, error: "invalid-device-id" } };
+    }
+    const devices = readOwnerDevices(ownerId, parsed.stateKey);
+    const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId) as Record<string, unknown> | undefined;
+    if (!device) return { status: 404, payload: { ok: false, error: "owner-device-not-found", deviceId: parsed.deviceId } };
+    const hardwareId = parsed.backend === "android-device" ? String(device.serial || "") : String(device.udid || "");
+    if (hardwareId) releasePhysicalBrokerLease(ownerId, { backend: parsed.backend, hardwareId, deviceId: parsed.deviceId });
+    writeOwnerDevices(ownerId, parsed.stateKey, devices.filter((candidate) => !(candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId)));
+    return { status: 200, payload: { ok: true, result: { detached: parsed.deviceId, device, physicalDevicePoweredOff: false, disconnected: false } } };
+}
+
+function listAttachedPhysicalDevices(ownerId: string, params: unknown) {
+    const parsed = validateLeaseParams(params, "list");
+    if (!parsed.ok) return leaseParamError(parsed);
+    return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, devices: readOwnerDevices(ownerId, parsed.backend), leases: listPhysicalLeases(ownerId, parsed.backend) } } };
 }
 
 function validateCommandParams(params: unknown): CommandParamError | CommandParamSuccess {
@@ -762,6 +1019,9 @@ function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<
     if (method === "broker.lease.claim") return claimPhysicalLease(ownerId, rpc.params);
     if (method === "broker.lease.list") return listPhysicalBrokerLeases(ownerId, rpc.params);
     if (method === "broker.lease.release") return releasePhysicalBrokerLease(ownerId, rpc.params);
+    if (method === "broker.physical.attach") return attachPhysicalDevice(ownerId, rpc.params, normalized);
+    if (method === "broker.physical.detach") return detachPhysicalDevice(ownerId, rpc.params);
+    if (method === "broker.physical.list") return listAttachedPhysicalDevices(ownerId, rpc.params);
     if (method === "broker.command.plan") return lifecycleCommandPlan(ownerId, rpc.params, normalized);
     if (method === "broker.command.invoke") return lifecycleCommandInvoke(ownerId, rpc.params, normalized);
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
