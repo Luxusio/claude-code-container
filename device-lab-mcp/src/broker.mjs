@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
 import { ownerId } from "./context.mjs";
@@ -11,6 +12,8 @@ const HOST_CANDIDATES = [
 ];
 const MAX_PROBE_CANDIDATES = 8;
 const MAX_PROBE_TIMEOUT_MS = 2000;
+const MAX_RPC_BODY_BYTES = 64 * 1024;
+const BROKER_NAME = "ccc-device-broker";
 
 export function brokerStateRoot() {
     return join(homedir(), ".ccc/devices");
@@ -71,6 +74,112 @@ async function probeBrokerHealth({ hostCandidates, port, timeoutMs }) {
     return { requested: true, available: false, selected: null, attempts };
 }
 
+function ownerToken(owner) {
+    return createHash("sha256").update(`${BROKER_NAME}:owner:${owner}`).digest("hex");
+}
+
+function summarizeBody(body) {
+    if (body === undefined) return null;
+    if (body === null) return null;
+    if (typeof body === "object") return body;
+    return { raw: String(body) };
+}
+
+export async function brokerRpc(options = {}) {
+    const owner = ownerId();
+    const probeOptions = normalizeProbeOptions({ ...options, probe: true });
+    const method = typeof options.method === "string" ? options.method : "";
+    if (!method) {
+        return {
+            ok: false,
+            ownerId: owner,
+            error: "missing-method",
+            attempts: [],
+        };
+    }
+    const requestBody = JSON.stringify({
+        ownerId: owner,
+        method,
+        params: options.params ?? {},
+    });
+    if (Buffer.byteLength(requestBody) > MAX_RPC_BODY_BYTES) {
+        return {
+            ok: false,
+            ownerId: owner,
+            method,
+            error: "request-too-large",
+            maxBytes: MAX_RPC_BODY_BYTES,
+            attempts: [],
+        };
+    }
+
+    const attempts = [];
+    for (const host of probeOptions.hostCandidates) {
+        const endpoint = `http://${host}:${probeOptions.port}/v1/owners/${encodeURIComponent(owner)}/rpc`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), probeOptions.timeoutMs);
+        const startedAt = Date.now();
+        try {
+            const response = await fetch(endpoint, {
+                method: "POST",
+                signal: controller.signal,
+                headers: {
+                    "content-type": "application/json",
+                    "x-ccc-device-token": ownerToken(owner),
+                },
+                body: requestBody,
+            });
+            const text = await response.text();
+            let body = null;
+            try {
+                body = text ? JSON.parse(text) : null;
+            } catch {
+                body = { raw: text };
+            }
+            const attempt = {
+                host,
+                port: probeOptions.port,
+                endpoint,
+                ok: response.ok,
+                status: response.status,
+                durationMs: Date.now() - startedAt,
+                body: summarizeBody(body),
+            };
+            attempts.push(attempt);
+            if (response.ok) {
+                return {
+                    ok: true,
+                    ownerId: owner,
+                    method,
+                    selected: attempt,
+                    result: body?.result ?? body,
+                    attempts,
+                };
+            }
+        } catch (error) {
+            attempts.push({
+                host,
+                port: probeOptions.port,
+                endpoint,
+                ok: false,
+                status: null,
+                durationMs: Date.now() - startedAt,
+                error: error?.name === "AbortError" ? "timeout" : error?.message || String(error),
+            });
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+    return {
+        ok: false,
+        ownerId: owner,
+        method,
+        selected: null,
+        error: "broker-rpc-unavailable",
+        attempts,
+    };
+}
+
 export async function brokerStatus(options = {}) {
     const owner = ownerId();
     const root = brokerStateRoot();
@@ -108,12 +217,13 @@ export async function brokerStatus(options = {}) {
             "explicit all-owner admin cleanup commands",
             "broker contract inspection",
             "broker health probe",
+            "explicit broker RPC diagnostic transport",
         ],
         deferred: [
             "host broker daemon launcher",
-            "broker HTTP transport",
+            "broker lifecycle command transport",
             "broker-managed backend command execution",
-            "broker authentication token handshake",
+            "strong broker authentication token handshake",
         ],
         note: "Device backends currently run in direct-provider mode. The broker contract is exposed so agents can detect the current host-control mode before requesting lifecycle work.",
     };

@@ -7,6 +7,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleMacosTool } from "../../device-lab-mcp/src/backends/macos-vm.mjs";
+import { createDeviceBrokerServer } from "../device-lab-broker.js";
 
 const repoRoot = join(__dirname, "../..");
 const TIMEOUT = 30000;
@@ -46,6 +47,7 @@ describe("device-lab MCP", () => {
 
         expect(names).toContain("device_backends");
         expect(names).toContain("device_broker_status");
+        expect(names).toContain("device_broker_rpc");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
         expect(names).toContain("display_current");
@@ -113,6 +115,15 @@ describe("device-lab MCP", () => {
         const brokerTool = result.tools.find((tool) => tool.name === "device_broker_status");
         expect(brokerTool?.inputSchema).toEqual(expect.objectContaining({
             properties: expect.objectContaining({
+                hostCandidates: expect.objectContaining({ maxItems: 8 }),
+                timeoutMs: expect.objectContaining({ maximum: 2000 }),
+            }),
+        }));
+        const brokerRpcTool = result.tools.find((tool) => tool.name === "device_broker_rpc");
+        expect(brokerRpcTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["method"],
+            properties: expect.objectContaining({
+                method: expect.objectContaining({ enum: ["broker.status", "broker.inventory", "broker.echo"] }),
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
             }),
@@ -300,6 +311,91 @@ describe("device-lab MCP", () => {
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }
+    });
+
+    it("calls an explicitly supplied host broker RPC endpoint with owner token guard", { timeout: TIMEOUT }, async () => {
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_broker_rpc",
+                arguments: {
+                    method: "broker.echo",
+                    params: { wifiRealDevice: true },
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                ok: boolean;
+                ownerId: string;
+                method: string;
+                selected: { endpoint: string; status: number; body: { ok: boolean } };
+                result: { ownerId: string; params: { wifiRealDevice: boolean } };
+                attempts: Array<{ ok: boolean; status: number }>;
+            };
+            expect(payload.ok).toBe(true);
+            expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+            expect(payload.method).toBe("broker.echo");
+            expect(payload.selected).toEqual(expect.objectContaining({
+                endpoint: `http://127.0.0.1:${address.port}/v1/owners/${payload.ownerId}/rpc`,
+                status: 200,
+                body: expect.objectContaining({ ok: true }),
+            }));
+            expect(payload.result).toEqual({
+                ownerId: payload.ownerId,
+                params: { wifiRealDevice: true },
+            });
+            expect(payload.attempts).toEqual([expect.objectContaining({ ok: true, status: 200 })]);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("reports broker RPC failures as structured diagnostics without starting a broker", { timeout: TIMEOUT }, async () => {
+        const unavailable = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port: 9,
+                timeoutMs: 50,
+            },
+        });
+        expect(unavailable.isError).not.toBe(true);
+        const unavailablePayload = JSON.parse(((unavailable.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            error: string;
+            attempts: Array<{ ok: boolean; status: null; error: string }>;
+        };
+        expect(unavailablePayload.ok).toBe(false);
+        expect(unavailablePayload.error).toBe("broker-rpc-unavailable");
+        expect(unavailablePayload.attempts).toEqual([expect.objectContaining({ ok: false, status: null })]);
+
+        const tooLarge = await client.callTool({
+            name: "device_broker_rpc",
+            arguments: {
+                method: "broker.echo",
+                params: { payload: "x".repeat(70 * 1024) },
+                hostCandidates: ["127.0.0.1"],
+                port: 9,
+                timeoutMs: 50,
+            },
+        });
+        expect(tooLarge.isError).not.toBe(true);
+        expect(JSON.parse(((tooLarge.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "request-too-large",
+            attempts: [],
+        }));
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {

@@ -1,8 +1,14 @@
 import { AddressInfo } from "net";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
     createDeviceBrokerServer,
+    DEVICE_BROKER_INVENTORY_DEVICE_LIMIT,
+    DEVICE_BROKER_INVENTORY_FILE_LIMIT,
     deviceBrokerCli,
+    deviceBrokerOwnerToken,
     deviceBrokerStatus,
     formatDeviceBrokerStatus,
     parseBrokerServeArgs,
@@ -42,7 +48,7 @@ describe("device-lab host broker daemon", () => {
             lazy: true,
             startupPolicy: expect.stringContaining("MCP auto-launch remains deferred"),
             implemented: expect.arrayContaining(["http-health", "http-status", "owner-state-path-reporting"]),
-            deferred: expect.arrayContaining(["mcp-auto-launch", "backend-command-proxy", "authentication-token-handshake"]),
+            deferred: expect.arrayContaining(["mcp-auto-launch", "mutating-backend-command-proxy", "strong-authentication-token-handshake"]),
         }));
         expect(status.ownerId).toMatch(/^[a-f0-9]{16}$/);
         expect(status.state.ownerRoot).toContain(status.ownerId);
@@ -71,7 +77,7 @@ describe("device-lab host broker daemon", () => {
             const statusPayload = await status.json() as { ok: boolean; broker: { ownerId: string; deferred: string[] } };
             expect(statusPayload.ok).toBe(true);
             expect(statusPayload.broker.ownerId).toMatch(/^[a-f0-9]{16}$/);
-            expect(statusPayload.broker.deferred).toContain("backend-command-proxy");
+            expect(statusPayload.broker.deferred).toContain("mutating-backend-command-proxy");
 
             const post = await fetch(`${baseUrl}/status`, { method: "POST" });
             expect(post.status).toBe(405);
@@ -83,6 +89,165 @@ describe("device-lab host broker daemon", () => {
             expect(await missing.json()).toEqual(expect.objectContaining({ ok: false, error: "not-found", path: "/missing" }));
         } finally {
             await close(server);
+        }
+    });
+
+    it("serves owner-scoped read-only RPC with deterministic local owner token", async () => {
+        const ownerId = "0123456789abcdef";
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-rpc-test",
+            host: "127.0.0.1",
+            port: 0,
+            startedAt: "2026-01-01T00:00:00.000Z",
+        });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "x-ccc-device-token": deviceBrokerOwnerToken(ownerId),
+                },
+                body: JSON.stringify({ ownerId, method: "broker.echo", params: { hello: "world" } }),
+            });
+            expect(response.status).toBe(200);
+            expect(await response.json()).toEqual({
+                ok: true,
+                result: { ownerId, params: { hello: "world" } },
+            });
+
+            const status = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "x-ccc-device-token": deviceBrokerOwnerToken(ownerId),
+                },
+                body: JSON.stringify({ method: "broker.status" }),
+            });
+            expect(status.status).toBe(200);
+            const statusBody = await status.json() as { ok: boolean; result: { ownerId: string; state: { ownerRoot: string }; implemented: string[]; deferred: string[] } };
+            expect(statusBody.ok).toBe(true);
+            expect(statusBody.result.ownerId).toBe(ownerId);
+            expect(statusBody.result.state.ownerRoot).toContain(ownerId);
+            expect(statusBody.result.implemented).toContain("http-owner-rpc");
+            expect(statusBody.result.deferred).toContain("mutating-backend-command-proxy");
+        } finally {
+            await close(server);
+        }
+    });
+
+    it("guards broker RPC auth, owner mismatches, methods, and body parsing", async () => {
+        const ownerId = "fedcba9876543210";
+        const server = createDeviceBrokerServer({ cwd: "/project/broker-rpc-guard-test", host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
+        const token = deviceBrokerOwnerToken(ownerId);
+        try {
+            const missingToken = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ method: "broker.echo" }),
+            });
+            expect(missingToken.status).toBe(401);
+            expect(await missingToken.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-owner-token" }));
+
+            const ownerMismatch = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ ownerId: "0123456789abcdef", method: "broker.echo" }),
+            });
+            expect(ownerMismatch.status).toBe(403);
+            expect(await ownerMismatch.json()).toEqual(expect.objectContaining({ ok: false, error: "owner-mismatch" }));
+
+            const lifecycle = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ method: "device.start" }),
+            });
+            expect(lifecycle.status).toBe(501);
+            expect(await lifecycle.json()).toEqual(expect.objectContaining({ ok: false, error: "method-not-implemented" }));
+
+            const unknown = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ method: "broker.missing" }),
+            });
+            expect(unknown.status).toBe(404);
+            expect(await unknown.json()).toEqual(expect.objectContaining({ ok: false, error: "unknown-method" }));
+
+            const invalidJson = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: "{not-json",
+            });
+            expect(invalidJson.status).toBe(400);
+            expect(await invalidJson.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-json" }));
+
+            const oversized = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": token },
+                body: JSON.stringify({ method: "broker.echo", params: { payload: "x".repeat(70 * 1024) } }),
+            });
+            expect(oversized.status).toBe(413);
+            expect(await oversized.json()).toEqual(expect.objectContaining({ ok: false, error: "request-too-large" }));
+
+            const get = await fetch(endpoint);
+            expect(get.status).toBe(405);
+            expect(get.headers.get("allow")).toBe("POST");
+        } finally {
+            await close(server);
+        }
+    });
+
+    it("bounds owner inventory state reads and returned device arrays", async () => {
+        const ownerId = "1111222233334444";
+        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
+        const androidRoot = join(ownerRoot, "android");
+        const iosRoot = join(ownerRoot, "ios");
+        const server = createDeviceBrokerServer({ cwd: "/project/broker-inventory-bound-test", host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        try {
+            mkdirSync(androidRoot, { recursive: true });
+            mkdirSync(iosRoot, { recursive: true });
+            writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
+                devices: Array.from({ length: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5 }, (_, index) => ({ id: `android-${index}` })),
+            }));
+            writeFileSync(join(iosRoot, "devices.json"), JSON.stringify({
+                devices: [{ id: "ios-large", payload: "x".repeat(DEVICE_BROKER_INVENTORY_FILE_LIMIT + 1) }],
+            }));
+
+            const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: {
+                    "content-type": "application/json",
+                    "x-ccc-device-token": deviceBrokerOwnerToken(ownerId),
+                },
+                body: JSON.stringify({ method: "broker.inventory" }),
+            });
+            expect(response.status).toBe(200);
+            const body = await response.json() as {
+                ok: boolean;
+                result: { backends: Array<{ stateKey: string; devices: unknown[]; truncated?: boolean; error?: string; maxBytes?: number; maxDevices?: number; totalDevices?: number }> };
+            };
+            expect(body.ok).toBe(true);
+            const android = body.result.backends.find((backend) => backend.stateKey === "android");
+            expect(android).toEqual(expect.objectContaining({
+                truncated: true,
+                maxDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT,
+                totalDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5,
+            }));
+            expect(android?.devices).toHaveLength(DEVICE_BROKER_INVENTORY_DEVICE_LIMIT);
+
+            const ios = body.result.backends.find((backend) => backend.stateKey === "ios");
+            expect(ios).toEqual(expect.objectContaining({
+                truncated: true,
+                error: "inventory-file-too-large",
+                maxBytes: DEVICE_BROKER_INVENTORY_FILE_LIMIT,
+            }));
+            expect(ios?.devices).toEqual([]);
+        } finally {
+            await close(server);
+            rmSync(ownerRoot, { recursive: true, force: true });
         }
     });
 

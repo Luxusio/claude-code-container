@@ -198,9 +198,16 @@ Broker contract status:
 - `device_backends` includes the same broker diagnostics so agents can decide
   whether they are in direct-provider mode or future host-broker mode before
   requesting lifecycle work.
-- Environment variables are not required for broker discovery. The daemon
-  auto-launcher, MCP-to-broker HTTP transport, command execution through the
-  broker, authentication token handshake, and supervision remain deferred.
+- `device_broker_rpc` provides an explicit read-only diagnostic transport to an
+  already-running host broker. It posts to
+  `/v1/owners/<owner-id>/rpc` with a deterministic owner token, supports
+  `broker.status`, `broker.inventory`, and `broker.echo`, and reports structured
+  per-candidate attempts. It does not auto-launch the daemon and does not proxy
+  mutating lifecycle or device commands.
+- Environment variables are not required for broker discovery or read-only RPC.
+  The daemon auto-launcher, mutating command execution through the broker,
+  strong authentication token handshake, physical-device lease API, and daemon
+  supervision remain deferred.
 
 Host broker daemon skeleton status:
 
@@ -209,13 +216,15 @@ Host broker daemon skeleton status:
   surface, and deferred command-proxy/auth/supervision work without starting
   any devices.
 - `ccc devices broker serve [--host HOST] [--port PORT]` starts a small
-  host-side HTTP server. The server currently exposes `GET /health` and
-  `GET /status`, returns JSON errors for unsupported methods/routes, and does
-  not proxy backend commands yet.
+  host-side HTTP server. The server currently exposes `GET /health`,
+  `GET /status`, and owner-scoped `POST /v1/owners/<owner-id>/rpc` for
+  read-only broker methods. It returns JSON errors for unsupported
+  methods/routes and rejects missing owner tokens, owner mismatches, invalid
+  JSON, oversized requests, unknown methods, and mutating lifecycle methods.
 - MCP still does not auto-launch this daemon. The current in-container MCP
-  remains in direct-provider mode until the broker HTTP transport,
-  authentication token handshake, backend command proxy, and daemon supervision
-  are implemented.
+  remains in direct-provider mode for device lifecycle work until the broker
+  launcher, strong authentication handshake, backend command proxy, and daemon
+  supervision are implemented.
 
 ## MCP tools
 
