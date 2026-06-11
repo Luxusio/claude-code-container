@@ -30,6 +30,7 @@ export function windowsBackend() {
         missing: discovery.missing,
         tools: { wsb: discovery.wsb },
         capabilities: [
+            "device_inventory",
             "device_create",
             "device_delete",
             "device_start",
@@ -43,6 +44,15 @@ export function windowsBackend() {
             "device_upload",
             "device_download",
         ],
+    };
+}
+
+function windowsInventoryDevice(device) {
+    return {
+        ...device,
+        ownerId: ownerId(),
+        helper: windowsHelperMetadata(device),
+        configPath: wsbConfigPath(device),
     };
 }
 
@@ -339,6 +349,26 @@ export function listWindowsDevices() {
 
 export async function handleWindowsTool(name, args) {
     switch (name) {
+        case "device_inventory": {
+            const { backend = "windows-sandbox" } = args;
+            if (backend !== "windows-sandbox") return undefined;
+            const discovery = windowsDiscovery();
+            return jsonResult({
+                ownerId: ownerId(),
+                backend,
+                devices: readWindowsDevices().map(windowsInventoryDevice),
+                discovery,
+                hostSandboxes: {
+                    provider: "wsb",
+                    available: discovery.available,
+                    command: discovery.wsb,
+                    missing: discovery.missing,
+                    lazy: true,
+                    note: "Windows Sandbox does not expose a stable all-sandbox inventory through the baseline wsb CLI; owner definitions are listed without starting sandboxes.",
+                },
+            });
+        }
+
         case "device_create": {
             const { backend, name: deviceName, deviceId, networking = false, clipboard = false, vgpu = false, memoryMb = 4096 } = args;
             if (backend !== "windows-sandbox") return undefined;

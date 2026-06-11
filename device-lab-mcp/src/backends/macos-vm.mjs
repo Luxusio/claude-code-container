@@ -64,6 +64,7 @@ export function macosBackend() {
         missing: discovery.missing,
         providers: discovery.providers,
         capabilities: [
+            "device_inventory",
             "device_create",
             "device_delete",
             "device_start",
@@ -383,6 +384,28 @@ export function listMacosDevices() {
 
 export async function handleMacosTool(name, args) {
     switch (name) {
+        case "device_inventory": {
+            const { backend = "macos-vm" } = args;
+            if (backend !== "macos-vm") return undefined;
+            const discovery = macosDiscovery();
+            return jsonResult({
+                ownerId: ownerId(),
+                backend,
+                devices: readMacosDevices().map((device) => ({ ...device, ownerId: ownerId(), providerPlan: macosProviderPlan(device, discovery) })),
+                discovery,
+                hostVms: {
+                    providers: discovery.providers.map((provider) => ({
+                        name: provider.name,
+                        command: provider.command,
+                    })),
+                    available: discovery.available,
+                    missing: discovery.missing,
+                    lazy: true,
+                    note: "Provider discovery checks command availability only; VM list/start operations are not run by inventory.",
+                },
+            });
+        }
+
         case "device_image_create": {
             const { backend = "macos-vm", name: deviceName, deviceId, sourceImage, provider = "auto", memoryMb = 4096, cpus = 4, sshHost, sshPort = 22, sshUser, sshKeyPath } = args;
             if (backend !== "macos-vm") return undefined;

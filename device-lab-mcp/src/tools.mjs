@@ -1,7 +1,7 @@
 export const TOOLS = [
     { name: "device_backends", description: "List device-lab backends, availability, and capabilities without starting devices", inputSchema: { type: "object", properties: {}, required: [] } },
     { name: "device_list", description: "List devices and current display targets owned by this CCC container", inputSchema: { type: "object", properties: {}, required: [] } },
-    { name: "device_inventory", description: "List owner-scoped device definitions and backend host inventory without starting devices", inputSchema: { type: "object", properties: { backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device"] } }, required: [] } },
+    { name: "device_inventory", description: "List owner-scoped device definitions and backend host inventory without starting devices", inputSchema: { type: "object", properties: { backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm"] } }, required: [] } },
     { name: "display_current", description: "Return the current non-creatable display target for this CCC container", inputSchema: { type: "object", properties: {}, required: [] } },
     { name: "display_screenshot", description: "Take a screenshot of the current CCC X11 display", inputSchema: { type: "object", properties: {}, required: [] } },
     { name: "display_click", description: "Click at coordinates on the current CCC X11 display", inputSchema: { type: "object", properties: { x: { type: "number" }, y: { type: "number" }, button: { type: "string", enum: ["left", "right"] } }, required: ["x", "y"] } },

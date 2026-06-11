@@ -198,60 +198,66 @@ Required common tools:
    - Includes current non-creatable targets, such as X11, with
      `creatable=false`.
 
-3. `device_create`
+3. `device_inventory`
+   - Lists owner-scoped device definitions and backend host/provider inventory
+     without starting heavy resources.
+   - Supports Android Emulator, physical Android, iOS Simulator, physical iOS,
+     Windows Sandbox, and macOS VM backends.
+
+4. `device_create`
    - Creates a device definition in the current owner namespace.
    - Inputs: backend, name, image/runtime, device type, preset.
 
-4. `device_delete`
+5. `device_delete`
    - Deletes an owned stopped device definition.
    - Refuses running devices unless `force` is true.
 
-5. `device_attach`
+6. `device_attach`
    - Attaches a host-connected physical device to the current owner namespace.
    - Android requires a visible `adb devices -l` serial in `device` state.
    - iOS requires a visible `xcrun xctrace list devices` UDID on a macOS host.
    - Does not create, power on, or globally lock physical hardware outside the
      current CCC owner state.
 
-6. `device_detach`
+7. `device_detach`
    - Removes an owned physical-device attachment and clears local volatile
      session metadata.
    - Does not power off, erase, disconnect, or otherwise mutate the physical
      device.
 
-7. `device_start`
+8. `device_start`
    - Starts or attaches to an owned device instance.
    - Returns readiness state, endpoint metadata, and next useful actions.
 
-8. `device_stop`
+9. `device_stop`
    - Stops an owned running instance.
    - For physical devices, this is metadata/session cleanup only and leaves the
      device attached to the host.
 
-9. `device_status`
+10. `device_status`
    - Reports lifecycle, boot readiness, logs, ports, and known errors.
 
-10. `device_exec`
+11. `device_exec`
    - Runs a command where supported.
    - Android uses `adb shell`; iOS uses `simctl spawn` where supported; Windows
      and macOS VM may use a guest helper for stdout/stderr.
 
-11. `device_screenshot`
+12. `device_screenshot`
    - Captures screen evidence to an owner-scoped artifact path.
 
-12. `device_image_create` / `device_image_clone`
+13. `device_image_create` / `device_image_clone`
     - Creates and clones owner-scoped VM images where supported.
     - macOS Tart uses provider clone operations to create a stopped device
       definition from a base image or existing owned provider instance.
     - Unsupported macOS VM providers must return explicit diagnostics.
 
-11. `device_snapshot_create` / `device_snapshot_restore` /
+14. `device_snapshot_create` / `device_snapshot_restore` /
     `device_snapshot_delete`
     - Manages owner-scoped VM snapshots where supported.
     - macOS Tart represents snapshots as owner-scoped provider clones and
       refuses running-device snapshot/restore operations unless `force` is set.
 
-12. `device_record_video_start` / `device_record_video_stop` /
+15. `device_record_video_start` / `device_record_video_stop` /
     `device_record_video_status`
     - Starts, stops, and inspects owner-scoped video recording state.
     - Android uses `adb shell screenrecord`, with a bounded
@@ -263,14 +269,14 @@ Required common tools:
     - macOS VM uses the configured SSH bridge to start `screencapture` video
       capture, stop it, and download the owner-scoped artifact.
 
-13. `device_upload` / `device_download`
+16. `device_upload` / `device_download`
     - Transfers files through owner-scoped scratch paths.
 
-14. `device_install_app` / `device_launch_app`
+17. `device_install_app` / `device_launch_app`
     - Installs and launches APK, `.app`, `.ipa` where supported, or Windows/macOS
       app bundles where a backend supports it.
 
-15. `device_reset`
+18. `device_reset`
     - Resets owned device state without deleting the definition.
 
 Optional future tools:
@@ -702,6 +708,9 @@ Foundation status:
   `device_status`, and `device_delete` tools.
 - `windows-sandbox` backend discovery reports `wsb` availability and missing
   prerequisites without requiring Windows in normal Linux CI.
+- `device_inventory` reports owner-scoped Windows Sandbox definitions,
+  helper/config paths, and `wsb` discovery metadata without starting the
+  sandbox or helper.
 - `device_start` writes an owner-scoped `.wsb` configuration and runs
   `wsb start` only on explicit calls when available. `device_stop` calls
   `wsb stop` only on explicit calls.
@@ -764,6 +773,9 @@ Foundation status:
   `device_status`, and `device_delete` tools.
 - `macos-vm` backend discovery reports whether the host is macOS and whether a
   practical provider command such as `tart`, `vz`, or `utmctl` is available.
+- `device_inventory` reports owner-scoped macOS VM definitions, per-device
+  provider plans, and provider command discovery metadata without running VM
+  list/start commands.
 - macOS VM definitions now include provider plan metadata: requested provider,
   selected provider, owner-scoped provider instance, owner-scoped workspace,
   helper metadata, start/stop command plans, missing prerequisites, and deferred

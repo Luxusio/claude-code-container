@@ -148,8 +148,12 @@ describe("device-lab MCP", () => {
             "mobile_wait_for_text",
         ]));
         expect(payload.backends?.find((backend) => backend.name === "ios-device")?.status).toBe("missing-prerequisites");
-        expect(payload.backends?.find((backend) => backend.name === "windows-sandbox")?.status).toBe("missing-prerequisites");
-        expect(payload.backends?.find((backend) => backend.name === "macos-vm")?.status).toBe("missing-prerequisites");
+        const windowsBackend = payload.backends?.find((backend) => backend.name === "windows-sandbox");
+        expect(windowsBackend?.status).toBe("missing-prerequisites");
+        expect(windowsBackend?.capabilities).toContain("device_inventory");
+        const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
+        expect(macosBackend?.status).toBe("missing-prerequisites");
+        expect(macosBackend?.capabilities).toContain("device_inventory");
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {
@@ -430,6 +434,26 @@ describe("device-lab MCP", () => {
         expect(inspected.backend.status).toBe("missing-prerequisites");
         expect(inspected.backend.missing).toEqual(["wsb"]);
 
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "windows-sandbox" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string; helper: { status: string }; configPath: string }>;
+            discovery: { available: boolean; missing: string[] };
+            hostSandboxes: { lazy: boolean; missing: string[] };
+        };
+        expect(inventoryPayload.discovery).toEqual(expect.objectContaining({ available: false, missing: ["wsb"] }));
+        expect(inventoryPayload.hostSandboxes).toEqual(expect.objectContaining({ lazy: true, missing: ["wsb"] }));
+        expect(inventoryPayload.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: "windows-win-test",
+                helper: expect.objectContaining({ status: "file-channel" }),
+                configPath: expect.stringContaining("windows-win-test.wsb"),
+            }),
+        ]));
+
         const start = await client.callTool({
             name: "device_start",
             arguments: { deviceId: "windows-win-test" },
@@ -514,6 +538,28 @@ describe("device-lab MCP", () => {
         expect(inspected.device.id).toBe("macos-mac-test");
         expect(inspected.backend.status).toBe("missing-prerequisites");
         expect(inspected.backend.missing).toEqual(["macos-host"]);
+
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "macos-vm" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string; providerPlan: { missing: string[]; deferred: string[] } }>;
+            discovery: { available: boolean; missing: string[] };
+            hostVms: { lazy: boolean; missing: string[] };
+        };
+        expect(inventoryPayload.discovery).toEqual(expect.objectContaining({ available: false, missing: ["macos-host"] }));
+        expect(inventoryPayload.hostVms).toEqual(expect.objectContaining({ lazy: true, missing: ["macos-host"] }));
+        expect(inventoryPayload.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: "macos-mac-test",
+                providerPlan: expect.objectContaining({
+                    missing: ["macos-host"],
+                    deferred: ["guest-helper-auto-provisioning"],
+                }),
+            }),
+        ]));
 
         const start = await client.callTool({
             name: "device_start",
@@ -648,6 +694,27 @@ esac
         expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
         expect(created.device.providerPlan.implemented).toEqual(expect.arrayContaining(["image-clone", "snapshot-clone", "provider-delete"]));
         expect(created.device.providerPlan.deferred).toEqual(["guest-helper-auto-provisioning"]);
+        expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
+
+        const inventory = await handleMacosTool("device_inventory", { backend: "macos-vm" });
+        expect(inventory?.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string; providerPlan: { selectedProvider: string; startCommand: { args: string[] } } }>;
+            discovery: { available: boolean; providers: Array<{ name: string }> };
+            hostVms: { lazy: boolean; providers: Array<{ name: string }> };
+        };
+        expect(inventoryPayload.discovery.available).toBe(true);
+        expect(inventoryPayload.discovery.providers.map((provider) => provider.name)).toEqual(expect.arrayContaining(["tart", "vz"]));
+        expect(inventoryPayload.hostVms).toEqual(expect.objectContaining({ lazy: true }));
+        expect(inventoryPayload.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: "macos-fake-tart",
+                providerPlan: expect.objectContaining({
+                    selectedProvider: "tart",
+                    startCommand: expect.objectContaining({ args: ["run", created.device.providerPlan.providerInstance] }),
+                }),
+            }),
+        ]));
         expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
 
         const imageCreate = await handleMacosTool("device_image_create", {
@@ -1190,6 +1257,26 @@ exit 0
         expect(created.device.id).toBe("windows-win-helper");
         expect(created.device.helper.scratchDir).toContain("windows-win-helper");
 
+        expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("wsb start");
+        const inventory = await client.callTool({
+            name: "device_inventory",
+            arguments: { backend: "windows-sandbox" },
+        });
+        expect(inventory.isError).not.toBe(true);
+        const inventoryPayload = JSON.parse(((inventory.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ id: string; helper: { scratchDir: string }; configPath: string }>;
+            discovery: { available: boolean; wsb: string };
+            hostSandboxes: { lazy: boolean; provider: string };
+        };
+        expect(inventoryPayload.discovery.available).toBe(true);
+        expect(inventoryPayload.hostSandboxes).toEqual(expect.objectContaining({ lazy: true, provider: "wsb" }));
+        expect(inventoryPayload.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: "windows-win-helper",
+                helper: expect.objectContaining({ scratchDir: expect.stringContaining("windows-win-helper") }),
+                configPath: expect.stringContaining("windows-win-helper.wsb"),
+            }),
+        ]));
         expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("wsb start");
 
         const start = await client.callTool({
