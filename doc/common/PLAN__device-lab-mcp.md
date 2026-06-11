@@ -210,17 +210,20 @@ Broker contract status:
   files under `~/.ccc/devices/physical-leases/<backend>/locks`, so one CCC
   owner cannot overwrite or release another owner's USB/Wi-Fi real-device
   reservation.
-- `device_broker_command` explicitly plans or dry-runs owner-scoped lifecycle
-  commands through an already-running broker. It supports allowlisted
+- `device_broker_command` explicitly plans, dry-runs, or invokes owner-scoped
+  lifecycle commands through an already-running broker. It supports allowlisted
   `device_status`, `device_start`, `device_stop`, and `device_delete` command
   envelopes for existing owner device definitions across Android, iOS, Windows,
-  and macOS backends. In this slice `invoke` requires `dryRun: true`; real
-  provider command execution is rejected with a structured deferred diagnostic.
+  and macOS backends. Non-dry-run invoke builds bounded provider commands
+  without shell interpolation, applies timeout/output caps, handles emulator
+  starts as detached launches, and reports structured missing-metadata/provider
+  failures. Physical Android/iOS stop/delete commands are safety no-ops rather
+  than host power/disconnect operations.
 - Environment variables are not required for broker discovery, RPC, or physical
-  lease/command planning operations. The daemon auto-launcher, real provider
-  command execution through the broker, real `adb connect`/Apple device pairing
-  through the broker, strong authentication token handshake, and daemon
-  supervision remain deferred.
+  lease/lifecycle command operations. The daemon auto-launcher, full provider
+  routing parity with the direct in-container MCP path, real `adb connect`/Apple
+  device pairing through the broker, strong authentication token handshake, and
+  daemon supervision remain deferred.
 
 Host broker daemon skeleton status:
 
@@ -232,15 +235,15 @@ Host broker daemon skeleton status:
   host-side HTTP server. The server currently exposes `GET /health`,
   `GET /status`, and owner-scoped `POST /v1/owners/<owner-id>/rpc` for
   broker status/inventory/echo, physical lease claim/list/release, and
-  lifecycle command plan/dry-run methods. It returns JSON errors for
+  lifecycle command plan/invoke methods. It returns JSON errors for
   unsupported methods/routes and rejects missing owner tokens, owner mismatches,
   invalid JSON, oversized requests, invalid lease or command params,
-  cross-owner lease operations, unknown methods, and real provider command
-  execution.
+  cross-owner lease operations, unknown methods, missing provider metadata, and
+  failed provider commands.
 - MCP still does not auto-launch this daemon. The current in-container MCP
   remains in direct-provider mode for actual device lifecycle work until the
-  broker launcher, strong authentication handshake, real provider command
-  execution, and daemon supervision are implemented.
+  broker launcher, full provider routing parity, strong authentication
+  handshake, and daemon supervision are implemented.
 
 ## MCP tools
 

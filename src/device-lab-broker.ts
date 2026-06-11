@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
+import { spawn, spawnSync } from "child_process";
+import { accessSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname } from "os";
 import { join } from "path";
@@ -10,8 +11,11 @@ export const DEVICE_BROKER_NAME = "ccc-device-broker";
 export const DEVICE_BROKER_RPC_BODY_LIMIT = 64 * 1024;
 export const DEVICE_BROKER_INVENTORY_FILE_LIMIT = 256 * 1024;
 export const DEVICE_BROKER_INVENTORY_DEVICE_LIMIT = 200;
+export const DEVICE_BROKER_COMMAND_TIMEOUT_MS = 5000;
+export const DEVICE_BROKER_COMMAND_OUTPUT_LIMIT = 32 * 1024;
 const DEVICE_BROKER_BACKEND_STATE_KEYS = ["android", "android-device", "ios", "ios-device", "windows", "macos"];
 const DEVICE_BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
+const DEVICE_BROKER_MACOS_PROVIDERS = new Set(["tart", "vz", "utmctl"]);
 const DEVICE_BROKER_COMMAND_BACKENDS = new Map([
     ["android-emulator", "android"],
     ["android-device", "android-device"],
@@ -29,6 +33,9 @@ export interface DeviceBrokerOptions {
     port?: number;
     startedAt?: string;
     ownerId?: string;
+    providerPaths?: Record<string, string>;
+    commandTimeoutMs?: number;
+    commandRunner?: ProviderCommandRunner;
 }
 
 type BrokerRpcResult = { status: number; payload: unknown };
@@ -51,6 +58,27 @@ type CommandParamSuccess = {
     force: boolean;
     dryRun: boolean;
 };
+type ProviderCommand = {
+    mode: "exec" | "detached" | "noop";
+    provider: string;
+    executable?: string;
+    args?: string[];
+    reason?: string;
+};
+type ProviderCommandResult = {
+    mode: string;
+    provider: string;
+    executable?: string;
+    args?: string[];
+    status?: number | null;
+    signal?: string | null;
+    stdout?: string;
+    stderr?: string;
+    error?: string;
+    pid?: number;
+    timedOut?: boolean;
+};
+type ProviderCommandRunner = (command: ProviderCommand, options: { timeoutMs: number; outputLimit: number }) => ProviderCommandResult;
 
 function brokerRoot(): string {
     return join(homedir(), ".ccc/devices");
@@ -69,7 +97,18 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}) {
     const host = options.host || DEVICE_BROKER_DEFAULT_HOST;
     const port = Number.isInteger(options.port) ? Number(options.port) : DEVICE_BROKER_DEFAULT_PORT;
     const startedAt = options.startedAt || new Date().toISOString();
-    return { cwd, host, port, startedAt };
+    const commandTimeoutMs = Number.isFinite(options.commandTimeoutMs)
+        ? Math.min(30000, Math.max(1, Number(options.commandTimeoutMs)))
+        : DEVICE_BROKER_COMMAND_TIMEOUT_MS;
+    return {
+        cwd,
+        host,
+        port,
+        startedAt,
+        providerPaths: options.providerPaths || {},
+        commandTimeoutMs,
+        commandRunner: options.commandRunner || defaultProviderCommandRunner,
+    };
 }
 
 export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
@@ -101,12 +140,13 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             "owner-token-guard",
             "http-physical-lease-api",
             "http-lifecycle-command-plan",
+            "bounded-provider-command-execution",
             "owner-state-path-reporting",
             "zero-config-default-port",
         ],
         deferred: [
             "mcp-auto-launch",
-            "real-provider-command-execution",
+            "full-provider-routing-parity",
             "strong-authentication-token-handshake",
             "real-device-connect-proxy",
             "daemon pidfile supervision",
@@ -210,6 +250,12 @@ function readOwnerDevices(ownerId: string, stateKey: string) {
     }
     const parsed = JSON.parse(readFileSync(file, "utf8")) as { devices?: unknown[] };
     return Array.isArray(parsed.devices) ? parsed.devices : [];
+}
+
+function writeOwnerDevices(ownerId: string, stateKey: string, devices: unknown[]) {
+    const file = ownerDevicesFile(ownerId, stateKey);
+    mkdirSync(join(brokerRoot(), "owners", ownerId, stateKey), { recursive: true });
+    writeFileSync(file, JSON.stringify({ devices }, null, 2), { mode: 0o600 });
 }
 
 function physicalLeaseLocksDir(backend: string) {
@@ -350,7 +396,7 @@ function listPhysicalBrokerLeases(ownerId: string, params: unknown) {
     };
 }
 
-function validateCommandParams(params: unknown, requireDryRun: boolean): CommandParamError | CommandParamSuccess {
+function validateCommandParams(params: unknown): CommandParamError | CommandParamSuccess {
     if (!params || typeof params !== "object" || Array.isArray(params)) {
         return { ok: false, status: 400, error: "invalid-command-params" };
     }
@@ -369,9 +415,6 @@ function validateCommandParams(params: unknown, requireDryRun: boolean): Command
         return { ok: false, status: 400, error: "invalid-device-id" };
     }
     const dryRun = input.dryRun === true;
-    if (requireDryRun && !dryRun) {
-        return { ok: false, status: 501, error: "provider-command-execution-deferred" };
-    }
     return { ok: true, backend, stateKey, command, deviceId, force: input.force === true, dryRun };
 }
 
@@ -382,15 +425,201 @@ function commandParamError(parsed: CommandParamError) {
             ok: false,
             error: parsed.error,
             ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
-            ...(parsed.error === "provider-command-execution-deferred" ? {
-                deferred: "real provider command execution through the broker is not implemented in this slice; call with dryRun=true for a validated plan",
-            } : {}),
         },
     };
 }
 
-function lifecycleCommandPlan(ownerId: string, params: unknown) {
-    const parsed = validateCommandParams(params, false);
+function field(device: unknown, name: string): string | null {
+    if (!device || typeof device !== "object") return null;
+    const value = (device as Record<string, unknown>)[name];
+    return typeof value === "string" && value ? value : null;
+}
+
+function numberField(device: unknown, name: string): number | null {
+    if (!device || typeof device !== "object") return null;
+    const value = (device as Record<string, unknown>)[name];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function executableFor(provider: string, normalized: ReturnType<typeof normalizeBrokerOptions>) {
+    return normalized.providerPaths[provider] || provider;
+}
+
+function androidSerial(device: unknown) {
+    return field(device, "serial") || (numberField(device, "port") ? `emulator-${numberField(device, "port")}` : null);
+}
+
+function providerCommandFor(parsed: CommandParamSuccess, device: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>): ProviderCommand | { error: string; missing: string[] } {
+    if (parsed.backend === "android-emulator") {
+        const adb = executableFor("adb", normalized);
+        const emulator = executableFor("emulator", normalized);
+        const avdmanager = executableFor("avdmanager", normalized);
+        const serial = androidSerial(device);
+        const avdName = field(device, "avdName");
+        if (parsed.command === "device_status") {
+            if (!serial) return { error: "missing-provider-metadata", missing: ["serial or port"] };
+            return { mode: "exec", provider: "adb", executable: adb, args: ["-s", serial, "get-state"] };
+        }
+        if (parsed.command === "device_stop") {
+            if (!serial) return { error: "missing-provider-metadata", missing: ["serial or port"] };
+            return { mode: "exec", provider: "adb", executable: adb, args: ["-s", serial, "emu", "kill"] };
+        }
+        if (parsed.command === "device_delete") {
+            if (!avdName) return { error: "missing-provider-metadata", missing: ["avdName"] };
+            return { mode: "exec", provider: "avdmanager", executable: avdmanager, args: ["delete", "avd", "--name", avdName] };
+        }
+        if (!avdName) return { error: "missing-provider-metadata", missing: ["avdName"] };
+        const port = numberField(device, "port");
+        return { mode: "detached", provider: "emulator", executable: emulator, args: ["-avd", avdName, ...(port ? ["-port", String(port)] : [])] };
+    }
+
+    if (parsed.backend === "android-device") {
+        const serial = field(device, "serial");
+        if ((parsed.command === "device_status" || parsed.command === "device_start") && serial) {
+            return { mode: "exec", provider: "adb", executable: executableFor("adb", normalized), args: ["-s", serial, "get-state"] };
+        }
+        if (parsed.command === "device_status" || parsed.command === "device_start") return { error: "missing-provider-metadata", missing: ["serial"] };
+        return { mode: "noop", provider: "android-device", reason: "physical Android stop/delete does not power off or disconnect the real device" };
+    }
+
+    if (parsed.backend === "ios-simulator") {
+        const target = field(device, "udid") || field(device, "simulatorName");
+        if (!target) return { error: "missing-provider-metadata", missing: ["udid or simulatorName"] };
+        const xcrun = executableFor("xcrun", normalized);
+        if (parsed.command === "device_status") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "list", "devices", target] };
+        if (parsed.command === "device_start") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "boot", target] };
+        if (parsed.command === "device_stop") return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "shutdown", target] };
+        return { mode: "exec", provider: "xcrun", executable: xcrun, args: ["simctl", "delete", target] };
+    }
+
+    if (parsed.backend === "ios-device") {
+        const udid = field(device, "udid");
+        if (parsed.command === "device_status" || parsed.command === "device_start") {
+            if (!udid) return { error: "missing-provider-metadata", missing: ["udid"] };
+            return { mode: "exec", provider: "xcrun", executable: executableFor("xcrun", normalized), args: ["devicectl", "device", "info", "details", "--device", udid] };
+        }
+        return { mode: "noop", provider: "ios-device", reason: "physical iOS stop/delete does not power off, erase, or disconnect the real device" };
+    }
+
+    if (parsed.backend === "windows-sandbox") {
+        if (parsed.command === "device_status" || parsed.command === "device_delete") {
+            return { mode: "noop", provider: "wsb", reason: "Windows Sandbox status/delete is represented by owner state in this broker layer" };
+        }
+        const wsb = executableFor("wsb", normalized);
+        if (parsed.command === "device_stop") return { mode: "exec", provider: "wsb", executable: wsb, args: ["stop"] };
+        const configPath = field(device, "configPath") || field(device, "wsbConfigPath");
+        if (!configPath) return { error: "missing-provider-metadata", missing: ["configPath"] };
+        return { mode: "exec", provider: "wsb", executable: wsb, args: ["start", configPath] };
+    }
+
+    if (parsed.backend === "macos-vm") {
+        const provider = field(device, "provider") === "auto" || !field(device, "provider") ? "tart" : field(device, "provider") || "tart";
+        if (!DEVICE_BROKER_MACOS_PROVIDERS.has(provider)) {
+            return { error: "unsupported-provider-command", missing: ["provider"] };
+        }
+        const instance = field(device, "providerInstance");
+        if (!instance) return { error: "missing-provider-metadata", missing: ["providerInstance"] };
+        const executable = executableFor(provider, normalized);
+        if (parsed.command === "device_status") return { mode: "exec", provider, executable, args: provider === "tart" ? ["get", instance] : ["status", instance] };
+        if (parsed.command === "device_start") return { mode: "exec", provider, executable, args: ["start", instance] };
+        if (parsed.command === "device_stop") return { mode: "exec", provider, executable, args: ["stop", instance] };
+        return { mode: "exec", provider, executable, args: ["delete", instance] };
+    }
+
+    return { error: "unsupported-provider-command", missing: [] };
+}
+
+function truncateOutput(value: unknown, limit: number) {
+    const text = Buffer.isBuffer(value) ? value.toString("utf8") : String(value || "");
+    return text.length > limit ? text.slice(0, limit) : text;
+}
+
+function executableExists(executable: string) {
+    if (executable.includes("/")) {
+        try {
+            accessSync(executable, fsConstants.X_OK);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+    for (const pathEntry of (process.env.PATH || "").split(":").filter(Boolean)) {
+        try {
+            accessSync(join(pathEntry, executable), fsConstants.X_OK);
+            return true;
+        } catch {
+            // Continue PATH lookup without invoking a shell.
+        }
+    }
+    return false;
+}
+
+function defaultProviderCommandRunner(command: ProviderCommand, options: { timeoutMs: number; outputLimit: number }): ProviderCommandResult {
+    if (command.mode === "noop") {
+        return { mode: "noop", provider: command.provider, stdout: command.reason || "", stderr: "", status: 0 };
+    }
+    if (!command.executable) {
+        return { mode: command.mode, provider: command.provider, error: "missing-executable", status: null };
+    }
+    if (command.mode === "detached") {
+        if (!executableExists(command.executable)) {
+            return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: "executable-not-found" };
+        }
+        try {
+            const child = spawn(command.executable, command.args || [], { detached: true, stdio: "ignore" });
+            child.once("error", () => undefined);
+            child.unref();
+            return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], pid: child.pid, status: 0 };
+        } catch (error) {
+            return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: error instanceof Error ? error.message : String(error) };
+        }
+    }
+    const result = spawnSync(command.executable, command.args || [], {
+        encoding: "utf8",
+        timeout: options.timeoutMs,
+        maxBuffer: options.outputLimit,
+    });
+    return {
+        mode: "exec",
+        provider: command.provider,
+        executable: command.executable,
+        args: command.args || [],
+        status: result.status,
+        signal: result.signal,
+        stdout: truncateOutput(result.stdout, options.outputLimit),
+        stderr: truncateOutput(result.stderr, options.outputLimit),
+        error: result.error ? result.error.message : undefined,
+        timedOut: result.error?.message?.includes("ETIMEDOUT"),
+    };
+}
+
+function commandSucceeded(result: ProviderCommandResult) {
+    return result.status === 0 && !result.error;
+}
+
+function mutateDeviceAfterCommand(ownerId: string, parsed: CommandParamSuccess, device: unknown) {
+    if (parsed.command === "device_status") return device;
+    const devices = readOwnerDevices(ownerId, parsed.stateKey);
+    if (parsed.command === "device_delete") {
+        writeOwnerDevices(ownerId, parsed.stateKey, devices.filter((candidate) => {
+            return !(candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId);
+        }));
+        return null;
+    }
+    const status = parsed.command === "device_start" ? "running" : "stopped";
+    let updated: unknown = null;
+    writeOwnerDevices(ownerId, parsed.stateKey, devices.map((candidate) => {
+        if (candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId) {
+            updated = { ...(candidate as object), status, updatedAt: new Date().toISOString() };
+            return updated;
+        }
+        return candidate;
+    }));
+    return updated || device;
+}
+
+function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: ReturnType<typeof normalizeBrokerOptions>) {
+    const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
     let devices: unknown[];
     try {
@@ -426,9 +655,10 @@ function lifecycleCommandPlan(ownerId: string, params: unknown) {
                 force: parsed.force,
                 dryRun: parsed.dryRun,
                 device,
+                providerCommand: normalized ? providerCommandFor(parsed, device, normalized) : null,
                 execution: {
                     mode: "planned",
-                    providerExecution: "deferred",
+                    providerExecution: normalized ? "available" : "deferred",
                     mutatesHost: false,
                 },
             },
@@ -436,24 +666,63 @@ function lifecycleCommandPlan(ownerId: string, params: unknown) {
     };
 }
 
-function lifecycleCommandInvoke(ownerId: string, params: unknown) {
-    const parsed = validateCommandParams(params, true);
+function lifecycleCommandInvoke(ownerId: string, params: unknown, normalized: ReturnType<typeof normalizeBrokerOptions>) {
+    const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
-    const plan = lifecycleCommandPlan(ownerId, params);
+    const plan = lifecycleCommandPlan(ownerId, params, normalized);
     if (plan.status !== 200) return plan;
-    const payload = plan.payload as { result?: object };
+    const payload = plan.payload as { result?: { device?: unknown; providerCommand?: ProviderCommand | { error: string; missing: string[] } } };
+    if (parsed.dryRun) {
+        return {
+            status: 200,
+            payload: {
+                ok: true,
+                result: {
+                    ...(payload.result || {}),
+                    invoked: false,
+                    dryRun: true,
+                    execution: {
+                        mode: "dry-run",
+                        providerExecution: "available",
+                        mutatesHost: false,
+                    },
+                },
+            },
+        };
+    }
+    const providerCommand = payload.result?.providerCommand;
+    if (!providerCommand || "error" in providerCommand) {
+        return {
+            status: 400,
+            payload: {
+                ok: false,
+                error: providerCommand?.error || "missing-provider-command",
+                missing: providerCommand?.missing || [],
+                plan: payload.result || null,
+            },
+        };
+    }
+    const execution = normalized.commandRunner(providerCommand, {
+        timeoutMs: normalized.commandTimeoutMs,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    const success = commandSucceeded(execution);
+    const updatedDevice = success ? mutateDeviceAfterCommand(ownerId, parsed, payload.result?.device) : payload.result?.device;
     return {
-        status: 200,
+        status: success ? 200 : 502,
         payload: {
-            ok: true,
+            ok: success,
+            ...(success ? {} : { error: "provider-command-failed" }),
             result: {
                 ...(payload.result || {}),
-                invoked: false,
-                dryRun: true,
+                device: updatedDevice,
+                invoked: true,
+                dryRun: false,
                 execution: {
-                    mode: "dry-run",
-                    providerExecution: "deferred",
-                    mutatesHost: false,
+                    mode: execution.mode,
+                    providerExecution: "executed",
+                    mutatesHost: success && parsed.command !== "device_status",
+                    command: execution,
                 },
             },
         },
@@ -493,8 +762,8 @@ function handleBrokerRpc(ownerId: string, body: unknown, normalized: ReturnType<
     if (method === "broker.lease.claim") return claimPhysicalLease(ownerId, rpc.params);
     if (method === "broker.lease.list") return listPhysicalBrokerLeases(ownerId, rpc.params);
     if (method === "broker.lease.release") return releasePhysicalBrokerLease(ownerId, rpc.params);
-    if (method === "broker.command.plan") return lifecycleCommandPlan(ownerId, rpc.params);
-    if (method === "broker.command.invoke") return lifecycleCommandInvoke(ownerId, rpc.params);
+    if (method === "broker.command.plan") return lifecycleCommandPlan(ownerId, rpc.params, normalized);
+    if (method === "broker.command.invoke") return lifecycleCommandInvoke(ownerId, rpc.params, normalized);
     return { status: 404, payload: { ok: false, error: "unknown-method", method } };
 }
 

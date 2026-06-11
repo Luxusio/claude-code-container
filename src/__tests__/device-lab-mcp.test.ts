@@ -621,15 +621,23 @@ describe("device-lab MCP", () => {
         const status = await client.callTool({ name: "device_broker_status", arguments: {} });
         const owner = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}")) as { ownerId: string };
         const ownerRoot = join(homedir(), ".ccc/devices/owners", owner.ownerId);
+        const fakeWsb = join(homeDir, "fake-wsb");
+        writeFileSync(fakeWsb, "#!/bin/sh\ncase \"$2\" in\n  *fail*) echo broker failure >&2; exit 7 ;;\n  *) echo wsb \"$@\"; exit 0 ;;\nesac\n");
+        chmodSync(fakeWsb, 0o755);
         mkdirSync(join(ownerRoot, "windows"), { recursive: true });
         writeFileSync(join(ownerRoot, "windows", "devices.json"), JSON.stringify({
-            devices: [{ id: "win-broker-plan", backend: "windows-sandbox", status: "stopped" }],
+            devices: [
+                { id: "win-broker-plan", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/win-broker-plan.wsb" },
+                { id: "win-broker-fail", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/fail.wsb" },
+                { id: "win-broker-missing", backend: "windows-sandbox", status: "stopped" },
+            ],
         }));
         const server = createDeviceBrokerServer({
             cwd: repoRoot,
             host: "127.0.0.1",
             port: 0,
             startedAt: "2026-01-01T00:00:00.000Z",
+            providerPaths: { wsb: fakeWsb },
         });
         await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
         const address = server.address() as AddressInfo;
@@ -654,7 +662,7 @@ describe("device-lab MCP", () => {
                     backend: "windows-sandbox",
                     command: "device_start",
                     deviceId: "win-broker-plan",
-                    execution: expect.objectContaining({ mode: "planned", providerExecution: "deferred" }),
+                    execution: expect.objectContaining({ mode: "planned", providerExecution: "available" }),
                 }),
             }));
 
@@ -696,9 +704,74 @@ describe("device-lab MCP", () => {
             });
             expect(realRun.isError).not.toBe(true);
             expect(JSON.parse(((realRun.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    invoked: true,
+                    dryRun: false,
+                    device: expect.objectContaining({ status: "running" }),
+                    execution: expect.objectContaining({
+                        mode: "exec",
+                        providerExecution: "executed",
+                        mutatesHost: true,
+                        command: expect.objectContaining({
+                            provider: "wsb",
+                            executable: fakeWsb,
+                            args: ["start", "C:/ccc/win-broker-plan.wsb"],
+                            status: 0,
+                            stdout: expect.stringContaining("wsb start C:/ccc/win-broker-plan.wsb"),
+                        }),
+                    }),
+                }),
+            }));
+
+            const failedRun = await client.callTool({
+                name: "device_broker_command",
+                arguments: {
+                    action: "invoke",
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-fail",
+                    dryRun: false,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(failedRun.isError).not.toBe(true);
+            expect(JSON.parse(((failedRun.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 ok: false,
-                error: "provider-command-execution-deferred",
-                status: 501,
+                error: "provider-command-failed",
+                status: 502,
+                result: expect.objectContaining({
+                    device: expect.objectContaining({ id: "win-broker-fail", status: "stopped" }),
+                    execution: expect.objectContaining({
+                        command: expect.objectContaining({
+                            status: 7,
+                            stderr: expect.stringContaining("broker failure"),
+                        }),
+                    }),
+                }),
+            }));
+
+            const missingMetadata = await client.callTool({
+                name: "device_broker_command",
+                arguments: {
+                    action: "invoke",
+                    backend: "windows-sandbox",
+                    command: "device_start",
+                    deviceId: "win-broker-missing",
+                    dryRun: false,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(missingMetadata.isError).not.toBe(true);
+            expect(JSON.parse(((missingMetadata.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: false,
+                error: "missing-provider-metadata",
+                status: 400,
+                body: expect.objectContaining({ missing: ["configPath"] }),
             }));
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
