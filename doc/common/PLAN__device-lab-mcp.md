@@ -194,8 +194,23 @@ Broker contract status:
   whether they are in direct-provider mode or future host-broker mode before
   requesting lifecycle work.
 - Environment variables are not required for broker discovery. The daemon
-  launcher, broker HTTP transport, command execution through the broker,
-  authentication token handshake, and health probe remain deferred.
+  auto-launcher, MCP-to-broker HTTP transport, command execution through the
+  broker, authentication token handshake, and supervision remain deferred.
+
+Host broker daemon skeleton status:
+
+- `ccc devices broker status` prints the host broker's default bind address,
+  port, current owner namespace, state roots, implemented HTTP status/health
+  surface, and deferred command-proxy/auth/supervision work without starting
+  any devices.
+- `ccc devices broker serve [--host HOST] [--port PORT]` starts a small
+  host-side HTTP server. The server currently exposes `GET /health` and
+  `GET /status`, returns JSON errors for unsupported methods/routes, and does
+  not proxy backend commands yet.
+- MCP still does not auto-launch this daemon. The current in-container MCP
+  remains in direct-provider mode until the broker HTTP transport,
+  authentication token handshake, backend command proxy, and daemon supervision
+  are implemented.
 
 ## MCP tools
 

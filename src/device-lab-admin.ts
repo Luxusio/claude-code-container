@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { homedir, hostname } from "os";
 import { dirname, join } from "path";
 import { spawnSync } from "child_process";
+import { deviceBrokerCli } from "./device-lab-broker.js";
 
 export const DEVICE_BACKENDS = [
     { stateKey: "android", name: "android-emulator", tools: ["adb", "emulator", "avdmanager"] },
@@ -726,8 +727,10 @@ export function devicesCli(args: string[], cwd = process.cwd()): number {
             console.error("Usage: ccc devices admin <list --all|stop --all|prune>");
             return 1;
         }
+        case "broker":
+            return deviceBrokerCli(args.slice(1), cwd);
         default:
-            console.error("Usage: ccc devices <status|list|backends|doctor|smoke|stop|delete|prune|admin>");
+            console.error("Usage: ccc devices <status|list|backends|doctor|smoke|stop|delete|prune|admin|broker>");
             return 1;
     }
 }

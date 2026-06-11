@@ -980,6 +980,8 @@ CONTAINER MANAGEMENT:
     ccc devices stop <id>   Stop an owner-scoped device definition
     ccc devices delete <id> Delete an owner-scoped stopped device definition
     ccc devices prune       Remove stopped owner-scoped device definitions
+    ccc devices broker status
+    ccc devices broker serve [--host 127.0.0.1] [--port 17373]
     ccc devices admin list --all
     ccc devices admin stop --all
     ccc devices admin prune
