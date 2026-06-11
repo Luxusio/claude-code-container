@@ -138,7 +138,7 @@ export async function startServer() {
                 case "device_backends":
                     return jsonResult({
                         ownerId: ownerId(),
-                        broker: brokerStatus(),
+                        broker: await brokerStatus(),
                         backends: [
                             {
                                 name: "x11-current-display",
@@ -158,7 +158,7 @@ export async function startServer() {
                     });
 
                 case "device_broker_status":
-                    return jsonResult(brokerStatus());
+                    return jsonResult(await brokerStatus(args));
 
                 case "device_list":
                     return jsonResult({

@@ -190,6 +190,11 @@ Broker contract status:
   (`host.docker.internal`, `host.containers.internal`, `gateway.docker.internal`,
   `172.17.0.1`, `10.0.2.2`), default broker port, and owner/broker state
   roots without starting a daemon, emulator, simulator, sandbox, or VM.
+- When called with `probe: true`, `device_broker_status` performs bounded
+  HTTP `GET /health` checks against the supplied or default host candidates and
+  reports structured success/failure attempts. The default call path and
+  `device_backends` still do not probe or start anything. Explicit probes are
+  capped at eight host candidates and 2000ms per candidate.
 - `device_backends` includes the same broker diagnostics so agents can decide
   whether they are in direct-provider mode or future host-broker mode before
   requesting lifecycle work.

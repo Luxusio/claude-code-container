@@ -1,6 +1,6 @@
 export const TOOLS = [
     { name: "device_backends", description: "List device-lab backends, availability, and capabilities without starting devices", inputSchema: { type: "object", properties: {}, required: [] } },
-    { name: "device_broker_status", description: "Inspect zero-configuration host broker contract and current host-control mode without starting devices", inputSchema: { type: "object", properties: {}, required: [] } },
+    { name: "device_broker_status", description: "Inspect zero-configuration host broker contract and optionally probe an already-running host broker without starting devices", inputSchema: { type: "object", properties: { probe: { type: "boolean" }, hostCandidates: { type: "array", items: { type: "string" }, maxItems: 8 }, port: { type: "number" }, timeoutMs: { type: "number", minimum: 1, maximum: 2000 } }, required: [] } },
     { name: "device_list", description: "List devices and current display targets owned by this CCC container", inputSchema: { type: "object", properties: {}, required: [] } },
     { name: "device_inventory", description: "List owner-scoped device definitions and backend host inventory without starting devices", inputSchema: { type: "object", properties: { backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm"] } }, required: [] } },
     { name: "display_current", description: "Return the current non-creatable display target for this CCC container", inputSchema: { type: "object", properties: {}, required: [] } },

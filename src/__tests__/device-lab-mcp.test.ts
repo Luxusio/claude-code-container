@@ -1,6 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { createServer } from "http";
+import { AddressInfo } from "net";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -108,6 +110,13 @@ describe("device-lab MCP", () => {
         expect(names).toContain("mobile_wait_for_app");
         expect(names).toContain("mobile_screenshot");
         expect(names).toContain("mobile_run_flow");
+        const brokerTool = result.tools.find((tool) => tool.name === "device_broker_status");
+        expect(brokerTool?.inputSchema).toEqual(expect.objectContaining({
+            properties: expect.objectContaining({
+                hostCandidates: expect.objectContaining({ maxItems: 8 }),
+                timeoutMs: expect.objectContaining({ maximum: 2000 }),
+            }),
+        }));
     });
 
     it("reports backends without starting heavyweight devices", { timeout: TIMEOUT }, async () => {
@@ -176,6 +185,7 @@ describe("device-lab MCP", () => {
             lazy: boolean;
             available: boolean;
             transport: { hostCandidates: string[]; defaultPort: number; zeroConfig: boolean; environmentRequired: boolean };
+            probe: { requested: boolean; available: boolean; attempts: unknown[] };
             state: { root: string; ownerRoot: string; locksRoot: string; logsRoot: string };
             implemented: string[];
             deferred: string[];
@@ -185,6 +195,7 @@ describe("device-lab MCP", () => {
         expect(payload.mode).toBe("direct-provider");
         expect(payload.lazy).toBe(true);
         expect(payload.available).toBe(false);
+        expect(payload.probe).toEqual(expect.objectContaining({ requested: false, available: false, attempts: [] }));
         expect(payload.transport).toEqual(expect.objectContaining({
             hostCandidates: expect.arrayContaining(["host.docker.internal", "172.17.0.1"]),
             defaultPort: 17373,
@@ -195,6 +206,100 @@ describe("device-lab MCP", () => {
         expect(payload.state.locksRoot).toContain(".ccc/devices/broker/locks");
         expect(payload.implemented).toContain("broker contract inspection");
         expect(payload.deferred).toContain("host broker daemon launcher");
+    });
+
+    it("clamps explicit broker probe candidate count and timeout", { timeout: TIMEOUT }, async () => {
+        const candidates = Array.from({ length: 12 }, (_, index) => `127.0.0.${index + 1}`);
+        const result = await client.callTool({
+            name: "device_broker_status",
+            arguments: { probe: false, hostCandidates: candidates, timeoutMs: 999999 },
+        });
+        expect(result.isError).not.toBe(true);
+        const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            transport: { hostCandidates: string[]; probeTimeoutMs: number; maxProbeCandidates: number; maxProbeTimeoutMs: number };
+        };
+        expect(payload.transport.hostCandidates).toHaveLength(8);
+        expect(payload.transport.hostCandidates).toEqual(candidates.slice(0, 8));
+        expect(payload.transport.probeTimeoutMs).toBe(2000);
+        expect(payload.transport.maxProbeCandidates).toBe(8);
+        expect(payload.transport.maxProbeTimeoutMs).toBe(2000);
+    });
+
+    it("probes an explicitly requested running broker health endpoint without auto-starting one", { timeout: TIMEOUT }, async () => {
+        const server = createServer((req, res) => {
+            if (req.url === "/health") {
+                const body = JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" });
+                res.writeHead(200, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
+                res.end(body);
+                return;
+            }
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end(JSON.stringify({ ok: false }));
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_broker_status",
+                arguments: { probe: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                mode: string;
+                available: boolean;
+                probe: { requested: boolean; available: boolean; selected: { endpoint: string; status: number; body: { ok: boolean; name: string } }; attempts: Array<{ ok: boolean }> };
+                implemented: string[];
+                deferred: string[];
+            };
+            expect(payload.mode).toBe("host-broker-detected");
+            expect(payload.available).toBe(true);
+            expect(payload.probe.requested).toBe(true);
+            expect(payload.probe.available).toBe(true);
+            expect(payload.probe.selected).toEqual(expect.objectContaining({
+                endpoint: `http://127.0.0.1:${address.port}/health`,
+                status: 200,
+                body: expect.objectContaining({ ok: true, name: "ccc-device-broker" }),
+            }));
+            expect(payload.probe.attempts).toHaveLength(1);
+            expect(payload.implemented).toContain("broker health probe");
+            expect(payload.deferred).not.toContain("broker health probe");
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("reports bounded broker probe failures as diagnostics", { timeout: TIMEOUT }, async () => {
+        const server = createServer((_req, res) => {
+            const body = JSON.stringify({ ok: false });
+            res.writeHead(503, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
+            res.end(body);
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_broker_status",
+                arguments: { probe: true, hostCandidates: ["127.0.0.1"], port: address.port, timeoutMs: 500 },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                mode: string;
+                available: boolean;
+                probe: { requested: boolean; available: boolean; selected: null; attempts: Array<{ ok: boolean; status: number }> };
+            };
+            expect(payload.mode).toBe("direct-provider");
+            expect(payload.available).toBe(false);
+            expect(payload.probe).toEqual(expect.objectContaining({
+                requested: true,
+                available: false,
+                selected: null,
+            }));
+            expect(payload.probe.attempts).toEqual([
+                expect.objectContaining({ ok: false, status: 503 }),
+            ]);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {
