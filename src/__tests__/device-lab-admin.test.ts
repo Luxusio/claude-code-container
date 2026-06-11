@@ -94,7 +94,7 @@ describe("device-lab admin CLI formatters", () => {
             ],
         }));
         writeFileSync(otherOwnerFile, JSON.stringify({
-            devices: [{ id: "android-foreign", name: "Foreign", status: "running", platform: "android" }],
+            devices: [{ id: "android-foreign", name: "Foreign", status: "running", platform: "android", serial: "emulator-5596" }],
         }));
         for (const [stateKey, hardwareId, deviceId] of [
             ["android-device", "R5CREAL123", "android-real"],
@@ -260,12 +260,34 @@ describe("device-lab admin CLI formatters", () => {
     it("stops an owned device without mutating other owner devices", () => {
         const cwd = "/project/admin-stop-test";
         const { androidFile, otherOwnerFile } = setupFixture(cwd);
+        const binDir = join(homeDir!, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", "exit 0");
 
         const result = stopOwnerDevice("android-running", cwd);
 
         expect(result.ok).toBe(true);
         expect(result.text).toContain("stopped: android-running");
         expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
+    });
+
+    it("explicit stop preserves active state when the backend stop command fails", () => {
+        const cwd = "/project/admin-stop-failure-test";
+        const { androidFile, otherOwnerFile } = setupFixture(cwd);
+        const binDir = join(homeDir!, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", "echo stop-failed >&2; exit 9");
+
+        const result = stopOwnerDevice("android-running", cwd);
+
+        expect(result.ok).toBe(false);
+        expect(result.text).toContain("failed: android-running");
+        expect(result.text).toContain("command:");
+        expect(result.text).toContain("-> 9");
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:running"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
     });
 
@@ -460,33 +482,40 @@ describe("device-lab admin CLI formatters", () => {
         expect(readFileSync(logPath, "utf-8")).toContain("adb -s emulator-5594 shell pkill -2 screenrecord");
     });
 
-    it("cleanup is idempotent and tolerates missing stop tools", () => {
+    it("cleanup preserves active state for retry when lifecycle stop tools are missing", () => {
         const cwd = "/project/admin-cleanup-idempotent-test";
         const { androidFile, androidDeviceFile, iosFile, iosDeviceFile, windowsFile, macosFile, otherOwnerFile } = setupFixture(cwd);
 
         const first = cleanupOwnerDevices(cwd);
         const second = cleanupOwnerDevices(cwd);
 
-        expect(first.results.filter((result) => result.status === "stopped").map((result) => result.id).sort()).toEqual([
-            "android-real",
-            "android-real-recording",
+        expect(first.results.filter((result) => result.status === "failed").map((result) => result.id).sort()).toEqual([
             "android-running",
             "ios-owned",
-            "ios-real",
             "macos-owned",
             "windows-owned",
         ]);
-        expect(second.results.every((result) => result.status === "skipped")).toBe(true);
-        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(first.results.filter((result) => result.status === "stopped").map((result) => result.id).sort()).toEqual([
+            "android-real",
+            "android-real-recording",
+            "ios-real",
+        ]);
+        expect(second.results.filter((result) => result.status === "failed").map((result) => result.id).sort()).toEqual([
+            "android-running",
+            "ios-owned",
+            "macos-owned",
+            "windows-owned",
+        ]);
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:running"]);
         expect(readDeviceIds(androidDeviceFile)).toEqual(["android-real:detached", "android-real-recording:detached"]);
-        expect(readDeviceIds(iosFile)).toEqual(["ios-owned:stopped", "ios-stopped:stopped"]);
+        expect(readDeviceIds(iosFile)).toEqual(["ios-owned:booted", "ios-stopped:stopped"]);
         expect(readDeviceIds(iosDeviceFile)).toEqual(["ios-real:detached"]);
-        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:stopped"]);
-        expect(readDeviceIds(macosFile)).toEqual(["macos-owned:stopped", "macos-stopped:stopped"]);
+        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:running"]);
+        expect(readDeviceIds(macosFile)).toEqual(["macos-owned:running", "macos-stopped:stopped"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
     });
 
-    it("cleanup records failed stop commands but still marks owned devices stopped for teardown", () => {
+    it("cleanup records failed stop commands and preserves active state for retry", () => {
         const cwd = "/project/admin-cleanup-failure-test";
         const { androidFile, windowsFile, otherOwnerFile } = setupFixture(cwd);
         const binDir = join(homeDir!, "bin");
@@ -499,10 +528,16 @@ describe("device-lab admin CLI formatters", () => {
 
         const android = cleanup.results.find((result) => result.id === "android-running");
         const windows = cleanup.results.find((result) => result.id === "windows-owned");
+        expect(android?.status).toBe("failed");
+        expect(windows?.status).toBe("failed");
         expect(android?.commands[0]).toEqual(expect.objectContaining({ status: 9, stderr: expect.stringContaining("adb-failed") }));
         expect(windows?.commands[0]).toEqual(expect.objectContaining({ status: 8, stderr: expect.stringContaining("wsb-failed") }));
-        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
-        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:stopped"]);
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:running"]);
+        expect(readDevices(androidFile).find((device) => device.id === "android-running")).toEqual(expect.objectContaining({
+            serial: "emulator-5582",
+            pid: 999999,
+        }));
+        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:running"]);
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
     });
 
@@ -556,6 +591,27 @@ describe("device-lab admin CLI formatters", () => {
         expect(() => readFileSync(matchingForeignLock, "utf-8")).toThrow();
     });
 
+    it("admin stop --all reports failures and preserves retryable active definitions", () => {
+        const cwd = "/project/admin-stop-all-failure-test";
+        const { androidFile, windowsFile, otherOwnerFile } = setupFixture(cwd);
+        const binDir = join(homeDir!, "bin");
+        mkdirSync(binDir, { recursive: true });
+        process.env.PATH = binDir;
+        writeTool(binDir, "adb", "echo adb-failed >&2; exit 9");
+        writeTool(binDir, "wsb", "echo wsb-failed >&2; exit 8");
+
+        const result = stopAllOwnerDevices();
+
+        expect(result.ok).toBe(false);
+        expect(result.text).toContain("failed: android-running  backend=android-emulator");
+        expect(result.text).toContain("failed: android-foreign  backend=android-emulator");
+        expect(result.text).toContain("failed: windows-owned  backend=windows-sandbox");
+        expect(result.text).toContain("failed: 5");
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:running"]);
+        expect(readDeviceIds(windowsFile)).toEqual(["windows-owned:running"]);
+        expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
+    });
+
     it("bounds cleanup stop command execution with a timeout", () => {
         const cwd = "/project/admin-cleanup-timeout-test";
         const { androidFile, otherOwnerFile } = setupFixture(cwd);
@@ -567,11 +623,16 @@ describe("device-lab admin CLI formatters", () => {
         const cleanup = cleanupOwnerDevices(cwd, 50);
 
         const android = cleanup.results.find((result) => result.id === "android-running");
+        expect(android?.status).toBe("failed");
         expect(android?.commands[0]).toEqual(expect.objectContaining({
             status: null,
             stderr: expect.stringMatching(/ETIMEDOUT|timed out|Timeout/i),
         }));
-        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:stopped"]);
+        expect(readDeviceIds(androidFile)).toEqual(["android-owned:stopped", "android-running:running"]);
+        expect(readDevices(androidFile).find((device) => device.id === "android-running")).toEqual(expect.objectContaining({
+            serial: "emulator-5582",
+            pid: 999999,
+        }));
         expect(readDeviceIds(otherOwnerFile)).toEqual(["android-foreign:running"]);
     });
 

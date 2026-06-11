@@ -913,20 +913,24 @@ Container cleanup hook status:
   also sends `adb shell pkill -2 screenrecord` when serial metadata is
   available, without forcing an emulator shutdown for stopped-only stale
   recording metadata.
-- Cleanup is best-effort, bounded, and idempotent. Missing tools, stale PIDs,
-  hanging stop commands, and failed stop commands are tolerated so CCC teardown
-  continues; owned running/starting or booted definitions and definitions with
-  stale volatile process metadata are marked stopped with process/session
-  metadata cleared to avoid zombie state.
+- Cleanup is best-effort, bounded, and idempotent. Stale PIDs are tolerated so
+  CCC teardown continues. For lifecycle-active virtual devices, missing stop
+  tools, hanging stop commands, and failed stop commands now return a `failed`
+  cleanup result and preserve active owner state/process metadata so a later
+  cleanup/admin pass can retry instead of hiding a potentially live host
+  process behind a false `stopped` state. Already-stopped definitions that only
+  contain stale volatile metadata are still cleared because no lifecycle stop
+  command failed.
 - Cleanup is not a host-wide process-table sweeper and cannot run after
   uncatchable termination such as `SIGKILL` or host power loss. The next
   explicit owner-scoped cleanup pass still clears stale owner-state process
   metadata without touching foreign owners.
 - Automated tests cover Android, iOS, Windows Sandbox, and macOS VM cleanup
   command mapping, stopped-device no-op behavior, stopped-but-live process
-  metadata cleanup, repeated cleanup, missing-tool behavior, hanging/timeout
-  stop commands, failing stop commands, foreign-owner preservation, and
-  lifecycle wiring through both session cleanup and explicit container stop.
+  metadata cleanup, repeated cleanup, missing-tool retry preservation,
+  hanging/timeout stop commands, failing stop commands, foreign-owner
+  preservation, and lifecycle wiring through both session cleanup and explicit
+  container stop.
 
 ## Integration with existing CCC
 

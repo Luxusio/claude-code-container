@@ -18,7 +18,7 @@ type DeviceRecord = Record<string, unknown> & { id?: string; status?: string };
 type CommandResult = { command: string; status: number | null; stderr?: string; stdout?: string };
 type OwnerDeviceMatch = { backend: Backend; devices: DeviceRecord[]; index: number; device: DeviceRecord };
 type SmokeResult = { backend: string; status: "PASS" | "SKIP" | "FAIL"; detail: string; commands?: CommandResult[] };
-type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped"; commands: CommandResult[] };
+type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped" | "failed"; commands: CommandResult[] };
 type AdminBackendSnapshot = { stateKey: string; name: string; devices: DeviceRecord[] };
 type AdminOwnerSnapshot = { ownerId: string; backends: AdminBackendSnapshot[] };
 
@@ -291,6 +291,17 @@ function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandRe
     return results;
 }
 
+function lifecycleStopRequired(backend: Backend, device: DeviceRecord): boolean {
+    if (!lifecycleActive(device)) return false;
+    if (backend.stateKey === "android-device" || backend.stateKey === "ios-device") return false;
+    return true;
+}
+
+function lifecycleStopFailed(backend: Backend, device: DeviceRecord, commands: CommandResult[]): boolean {
+    if (!lifecycleStopRequired(backend, device)) return false;
+    return commands.length === 0 || commands.some((command) => command.status !== 0);
+}
+
 function stoppedDevice(device: DeviceRecord): DeviceRecord {
     return {
         ...device,
@@ -340,6 +351,17 @@ export function cleanupOwnerDevices(cwd = process.cwd(), timeoutMs = 5000): { ow
             }
 
             const commands = stopOwnedDevice({ backend, devices, index: -1, device }, timeoutMs);
+            if (lifecycleStopFailed(backend, device, commands)) {
+                results.push({
+                    id: device.id,
+                    backend: backend.name,
+                    previousStatus: device.status || "unknown",
+                    status: "failed",
+                    commands,
+                });
+                return device;
+            }
+
             releasePhysicalLeaseForOwner(ownerId, backend, device);
             results.push({
                 id: device.id,
@@ -402,6 +424,16 @@ export function stopOwnerDevice(deviceId: string, cwd = process.cwd()): { ok: bo
     if (!match) return { ok: false, text: `Device not found for owner ${ownerId}: ${deviceId}\n` };
 
     const commands = stopOwnedDevice(match);
+    if (lifecycleStopFailed(match.backend, match.device, commands)) {
+        const lines = [
+            `failed: ${deviceId}`,
+            `backend: ${match.backend.name}`,
+            `owner: ${ownerId}`,
+        ];
+        for (const result of commands) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
+        return { ok: false, text: `${lines.join("\n")}\n` };
+    }
+
     releasePhysicalLeaseForOwner(ownerId, match.backend, match.device);
     const updated = cleanedDevice(match.backend, match.device);
     const devices = [...match.devices];
@@ -456,6 +488,7 @@ export function stopAllOwnerDevices(timeoutMs = 5000): { ok: boolean; text: stri
     const lines = ["admin: stop --all"];
     let stopped = 0;
     let skipped = 0;
+    let failed = 0;
     for (const ownerId of allOwnerIds()) {
         lines.push(`owner: ${ownerId}`);
         for (const backend of DEVICE_BACKENDS) {
@@ -469,6 +502,13 @@ export function stopAllOwnerDevices(timeoutMs = 5000): { ok: boolean; text: stri
                 }
 
                 const commands = stopOwnedDevice({ backend, devices, index, device }, timeoutMs);
+                if (lifecycleStopFailed(backend, device, commands)) {
+                    failed += 1;
+                    lines.push(`failed: ${device.id}  backend=${backend.name}  previous=${device.status || "unknown"}`);
+                    for (const result of commands) lines.push(`command: ${result.command} -> ${result.status ?? "unknown"}`);
+                    return device;
+                }
+
                 releasePhysicalLeaseForOwner(ownerId, backend, device);
                 stopped += 1;
                 changed = true;
@@ -480,8 +520,9 @@ export function stopAllOwnerDevices(timeoutMs = 5000): { ok: boolean; text: stri
         }
     }
     if (stopped === 0) lines.push("stopped: 0");
+    if (failed > 0) lines.push(`failed: ${failed}`);
     lines.push(`skipped: ${skipped}`);
-    return { ok: true, text: `${lines.join("\n")}\n` };
+    return { ok: failed === 0, text: `${lines.join("\n")}\n` };
 }
 
 export function pruneAllOwnerDevices(): { ok: boolean; text: string } {
@@ -675,7 +716,7 @@ export function devicesCli(args: string[], cwd = process.cwd()): number {
             if (adminCommand === "stop" && args[2] === "--all" && args.length === 3) {
                 const result = stopAllOwnerDevices();
                 console.log(result.text);
-                return 0;
+                return result.ok ? 0 : 1;
             }
             if (adminCommand === "prune" && args.length === 2) {
                 const result = pruneAllOwnerDevices();
