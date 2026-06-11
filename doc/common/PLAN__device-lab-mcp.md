@@ -122,6 +122,10 @@ Patterns to avoid as defaults:
    - Owns device inventory, locking, lifecycle, and backend adapters.
    - Runs only when a device MCP call needs host control.
    - Stores state under `~/.ccc/devices`.
+   - Current implementation exposes the broker contract through
+     `device_broker_status` and `device_backends.broker` without starting a
+     daemon. Backends still use direct-provider mode until the host broker
+     daemon launcher and HTTP transport are added.
 
 3. Backend adapters
    - `android-emulator`: Android SDK emulator and `adb`.
@@ -178,6 +182,20 @@ Rules:
    ports, creation time, and last-seen time.
 4. Cross-owner cleanup is allowed only through explicit host admin commands,
    not through regular in-container MCP tools.
+
+Broker contract status:
+
+- `device_broker_status` reports the current host-control mode, owner ID,
+  lazy startup policy, deterministic zero-config host candidates
+  (`host.docker.internal`, `host.containers.internal`, `gateway.docker.internal`,
+  `172.17.0.1`, `10.0.2.2`), default broker port, and owner/broker state
+  roots without starting a daemon, emulator, simulator, sandbox, or VM.
+- `device_backends` includes the same broker diagnostics so agents can decide
+  whether they are in direct-provider mode or future host-broker mode before
+  requesting lifecycle work.
+- Environment variables are not required for broker discovery. The daemon
+  launcher, broker HTTP transport, command execution through the broker,
+  authentication token handshake, and health probe remain deferred.
 
 ## MCP tools
 

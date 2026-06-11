@@ -43,6 +43,7 @@ describe("device-lab MCP", () => {
         const names = result.tools.map((tool) => tool.name);
 
         expect(names).toContain("device_backends");
+        expect(names).toContain("device_broker_status");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
         expect(names).toContain("display_current");
@@ -116,10 +117,17 @@ describe("device-lab MCP", () => {
         const content = result.content as Array<{ type: string; text?: string }>;
         const payload = JSON.parse(content[0].text ?? "{}") as {
             ownerId?: string;
+            broker?: { mode: string; lazy: boolean; transport: { environmentRequired: boolean }; deferred: string[] };
             backends?: Array<{ name: string; available: boolean; status?: string; capabilities?: string[] }>;
         };
 
         expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+        expect(payload.broker).toEqual(expect.objectContaining({
+            mode: "direct-provider",
+            lazy: true,
+            transport: expect.objectContaining({ environmentRequired: false }),
+            deferred: expect.arrayContaining(["host broker daemon launcher"]),
+        }));
         expect(payload.backends?.map((backend) => backend.name)).toEqual([
             "x11-current-display",
             "android-emulator",
@@ -154,6 +162,39 @@ describe("device-lab MCP", () => {
         const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
         expect(macosBackend?.status).toBe("missing-prerequisites");
         expect(macosBackend?.capabilities).toContain("device_inventory");
+    });
+
+    it("reports zero-config broker contract without starting host providers", { timeout: TIMEOUT }, async () => {
+        const result = await client.callTool({
+            name: "device_broker_status",
+            arguments: {},
+        });
+        expect(result.isError).not.toBe(true);
+        const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ownerId: string;
+            mode: string;
+            lazy: boolean;
+            available: boolean;
+            transport: { hostCandidates: string[]; defaultPort: number; zeroConfig: boolean; environmentRequired: boolean };
+            state: { root: string; ownerRoot: string; locksRoot: string; logsRoot: string };
+            implemented: string[];
+            deferred: string[];
+        };
+
+        expect(payload.ownerId).toMatch(/^[a-f0-9]{16}$/);
+        expect(payload.mode).toBe("direct-provider");
+        expect(payload.lazy).toBe(true);
+        expect(payload.available).toBe(false);
+        expect(payload.transport).toEqual(expect.objectContaining({
+            hostCandidates: expect.arrayContaining(["host.docker.internal", "172.17.0.1"]),
+            defaultPort: 17373,
+            zeroConfig: true,
+            environmentRequired: false,
+        }));
+        expect(payload.state.ownerRoot).toContain(payload.ownerId);
+        expect(payload.state.locksRoot).toContain(".ccc/devices/broker/locks");
+        expect(payload.implemented).toContain("broker contract inspection");
+        expect(payload.deferred).toContain("host broker daemon launcher");
     });
 
     it("lists only the current non-creatable X11 display in the foundation slice", { timeout: TIMEOUT }, async () => {

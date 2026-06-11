@@ -7,6 +7,7 @@ import { handleIosTool, iosBackend, listIosDevices } from "./backends/ios-simula
 import { handleIosRealTool, iosRealBackend, listIosRealDevices } from "./backends/ios-device.mjs";
 import { handleMacosTool, listMacosDevices, macosBackend } from "./backends/macos-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "./backends/windows-sandbox.mjs";
+import { brokerStatus } from "./broker.mjs";
 import { ownerId } from "./context.mjs";
 import { currentDisplayTarget, handleDisplayTool, x11Available } from "./display/x11.mjs";
 import { jsonResult, textResult } from "./responses.mjs";
@@ -137,6 +138,7 @@ export async function startServer() {
                 case "device_backends":
                     return jsonResult({
                         ownerId: ownerId(),
+                        broker: brokerStatus(),
                         backends: [
                             {
                                 name: "x11-current-display",
@@ -154,6 +156,9 @@ export async function startServer() {
                             macosBackend(),
                         ],
                     });
+
+                case "device_broker_status":
+                    return jsonResult(brokerStatus());
 
                 case "device_list":
                     return jsonResult({
