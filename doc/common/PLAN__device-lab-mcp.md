@@ -778,10 +778,16 @@ Foundation status:
 - `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
   use configured SSH bridge metadata for macOS VM devices.
 - Tests verify Linux-host missing diagnostics and fake `tart` provider
-  start/stop behavior without requiring a real macOS host or VM image.
+  start/stop/delete behavior without requiring a real macOS host or VM image.
 - Tart-backed VM image create/clone/snapshot operations are implemented through
-  owner-scoped provider clones. Guest-helper auto-provisioning remains deferred
-  to later provider-specific hardening slices.
+  owner-scoped provider clones. Deleting managed Tart image/clone definitions
+  deletes their provider instances after refusing running devices unless
+  `force=true`; forced delete stops the VM first, and provider delete failures
+  preserve owner state so cleanup can be retried. Successful snapshot/recovery
+  candidate deletions are removed from state immediately, so a later partial
+  delete failure does not block retry cleanup of remaining Tart resources.
+  Guest-helper auto-provisioning remains deferred to later provider-specific
+  hardening slices.
 
 macOS helper/SSH bridge status:
 

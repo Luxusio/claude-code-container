@@ -568,6 +568,12 @@ if [ "$1" = "clone" ]; then
     *fail-snapshot*) exit 9 ;;
   esac
 fi
+if [ "$1" = "delete" ]; then
+  case "$2" in
+    *macos-partial-delete) echo "primary delete failed" >&2; exit 6 ;;
+    *fail-delete*) echo "delete failed" >&2; exit 6 ;;
+  esac
+fi
 exit 0
 `);
         chmodSync(tartPath, 0o755);
@@ -633,13 +639,15 @@ esac
         });
         expect(create?.isError).not.toBe(true);
         const created = JSON.parse(((create?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string } } };
+            device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string }; implemented: string[]; deferred: string[] } };
         };
         expect(created.device.id).toBe("macos-fake-tart");
         expect(created.device.providerPlan.selectedProvider).toBe("tart");
         expect(created.device.providerPlan.providerInstance).toContain("macos-fake-tart");
         expect(created.device.providerPlan.startCommand.args).toEqual(["run", created.device.providerPlan.providerInstance]);
         expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
+        expect(created.device.providerPlan.implemented).toEqual(expect.arrayContaining(["image-clone", "snapshot-clone", "provider-delete"]));
+        expect(created.device.providerPlan.deferred).toEqual(["guest-helper-auto-provisioning"]);
         expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
 
         const imageCreate = await handleMacosTool("device_image_create", {
@@ -679,6 +687,15 @@ esac
         expect(imageCloned.device.clonedFrom.deviceId).toBe("macos-base-image");
         expect(imageCloned.device.clonedFrom.providerInstance).toBe(imageCreated.device.providerInstance);
 
+        const imageSnapshotForCascadeDelete = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-base-image",
+            snapshotName: "Delete Cascade",
+        });
+        expect(imageSnapshotForCascadeDelete?.isError).not.toBe(true);
+        const imageSnapshotPayload = JSON.parse(((imageSnapshotForCascadeDelete?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            snapshot: { providerInstance: string };
+        };
+
         const startBaseImage = await handleMacosTool("device_start", { deviceId: "macos-base-image" });
         expect(startBaseImage?.isError).not.toBe(true);
         const forceClone = await handleMacosTool("device_image_clone", {
@@ -702,6 +719,56 @@ esac
         });
         expect(unsupportedProvider?.isError).toBe(true);
         expect((unsupportedProvider?.content as Array<{ text?: string }>)[0].text).toContain("Tart is currently required");
+
+        const deleteFailureCreate = await handleMacosTool("device_image_create", {
+            backend: "macos-vm",
+            name: "Fail Delete",
+            sourceImage: "ghcr.io/example/macos-base:latest",
+            provider: "auto",
+        });
+        expect(deleteFailureCreate?.isError).not.toBe(true);
+        const deleteFailureCreated = JSON.parse(((deleteFailureCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; providerInstance: string };
+        };
+        expect(deleteFailureCreated.device.providerInstance).toContain("fail-delete");
+        const deleteFailure = await handleMacosTool("device_delete", { deviceId: "macos-fail-delete" });
+        expect(deleteFailure?.isError).toBe(true);
+        expect((deleteFailure?.content as Array<{ text?: string }>)[0].text).toContain("delete failed");
+        const deleteFailureStillPresent = await handleMacosTool("device_status", { deviceId: "macos-fail-delete" });
+        expect(deleteFailureStillPresent?.isError).not.toBe(true);
+
+        const partialDeleteCreate = await handleMacosTool("device_image_create", {
+            backend: "macos-vm",
+            name: "Partial Delete",
+            sourceImage: "ghcr.io/example/macos-base:latest",
+            provider: "auto",
+        });
+        expect(partialDeleteCreate?.isError).not.toBe(true);
+        const partialDeleteCreated = JSON.parse(((partialDeleteCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { id: string; providerInstance: string };
+        };
+        const partialDeleteSnapshot = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-partial-delete",
+            snapshotName: "Retry Safe",
+        });
+        expect(partialDeleteSnapshot?.isError).not.toBe(true);
+        const partialDeleteSnapshotPayload = JSON.parse(((partialDeleteSnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            snapshot: { providerInstance: string };
+        };
+        const partialDelete = await handleMacosTool("device_delete", { deviceId: "macos-partial-delete" });
+        expect(partialDelete?.isError).toBe(true);
+        expect((partialDelete?.content as Array<{ text?: string }>)[0].text).toContain("primary delete failed");
+        const partialDeleteStatus = await handleMacosTool("device_status", { deviceId: "macos-partial-delete" });
+        const partialDeleteStillPresent = JSON.parse(((partialDeleteStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { snapshots: unknown[] };
+        };
+        expect(partialDeleteStillPresent.device.snapshots).toEqual([]);
+        const logBeforePartialRetry = readFileSync(logPath, "utf-8");
+        const partialDeleteRetry = await handleMacosTool("device_delete", { deviceId: "macos-partial-delete" });
+        expect(partialDeleteRetry?.isError).toBe(true);
+        const partialRetryDelta = readFileSync(logPath, "utf-8").slice(logBeforePartialRetry.length);
+        expect(partialRetryDelta).toContain(`tart delete ${partialDeleteCreated.device.providerInstance}`);
+        expect(partialRetryDelta).not.toContain(partialDeleteSnapshotPayload.snapshot.providerInstance);
 
         const start = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
         expect(start?.isError).not.toBe(true);
@@ -997,14 +1064,67 @@ esac
         expect(log).toContain("pkill -INT -f");
         expect(log).toContain("ccc@127.0.0.1:/tmp/custom-macos-recording.mov");
 
-        const clonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-clone" });
+        const startCloneBeforeDelete = await handleMacosTool("device_start", { deviceId: "macos-base-clone" });
+        expect(startCloneBeforeDelete?.isError).not.toBe(true);
+        const runningCloneDelete = await handleMacosTool("device_delete", { deviceId: "macos-base-clone" });
+        expect(runningCloneDelete?.isError).toBe(true);
+        expect((runningCloneDelete?.content as Array<{ text?: string }>)[0].text).toContain("Refusing to delete macos-base-clone while status is running");
+        const clonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-clone", force: true });
         expect(clonedDeleted?.isError).not.toBe(true);
+        const clonedDeletedPayload = JSON.parse(((clonedDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            providerDeleted: string[];
+        };
+        expect(clonedDeletedPayload.providerDeleted).toContain(imageCloned.device.providerInstance);
         const forcedClonedDeleted = await handleMacosTool("device_delete", { deviceId: "macos-forced-clone" });
         expect(forcedClonedDeleted?.isError).not.toBe(true);
         const imageDeleted = await handleMacosTool("device_delete", { deviceId: "macos-base-image" });
         expect(imageDeleted?.isError).not.toBe(true);
+        const imageDeletedPayload = JSON.parse(((imageDeleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            providerDeleted: string[];
+        };
+        expect(imageDeletedPayload.providerDeleted).toContain(imageSnapshotPayload.snapshot.providerInstance);
+        expect(imageDeletedPayload.providerDeleted).toContain(imageCreated.device.providerInstance);
+
+        const recoverySnapshot = await handleMacosTool("device_snapshot_create", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Activate Delete",
+        });
+        expect(recoverySnapshot?.isError).not.toBe(true);
+        const recoverySnapshotPayload = JSON.parse(((recoverySnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            snapshot: { providerInstance: string };
+        };
+        const restartBeforeRecoveryDelete = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
+        expect(restartBeforeRecoveryDelete?.isError).not.toBe(true);
+        const recoveryRestoreFailure = await handleMacosTool("device_snapshot_restore", {
+            deviceId: "macos-fake-tart",
+            snapshotName: "Fail Activate Delete",
+            force: true,
+        });
+        expect(recoveryRestoreFailure?.isError).toBe(true);
+        const statusBeforeRecoveryDelete = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const recoveryDeleteStatus = JSON.parse(((statusBeforeRecoveryDelete?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { restoreRecovery: { candidateProviderInstance: string } };
+        };
+        expect(recoveryDeleteStatus.device.restoreRecovery.candidateProviderInstance).toContain("restore-");
         const deleted = await handleMacosTool("device_delete", { deviceId: "macos-fake-tart" });
         expect(deleted?.isError).not.toBe(true);
+        const deletedPayload = JSON.parse(((deleted?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            providerDeleted: string[];
+        };
+        expect(deletedPayload.providerDeleted).toEqual(expect.arrayContaining([
+            recoverySnapshotPayload.snapshot.providerInstance,
+            recoveryDeleteStatus.device.restoreRecovery.candidateProviderInstance,
+        ]));
+
+        const deleteLog = readFileSync(logPath, "utf-8");
+        expect(deleteLog).toContain(`tart stop ${imageCloned.device.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${imageCloned.device.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${imageSnapshotPayload.snapshot.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${imageCreated.device.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${deleteFailureCreated.device.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${partialDeleteSnapshotPayload.snapshot.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${recoverySnapshotPayload.snapshot.providerInstance}`);
+        expect(deleteLog).toContain(`tart delete ${recoveryDeleteStatus.device.restoreRecovery.candidateProviderInstance}`);
     });
 });
 

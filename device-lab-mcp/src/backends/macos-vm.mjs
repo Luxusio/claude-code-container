@@ -14,18 +14,21 @@ const PROVIDERS = [
         command: "tart",
         startArgs: (instance) => ["run", instance],
         stopArgs: (instance) => ["stop", instance],
+        deleteArgs: (instance) => ["delete", instance],
     },
     {
         name: "vz",
         command: "vz",
         startArgs: (instance) => ["start", instance],
         stopArgs: (instance) => ["stop", instance],
+        deleteArgs: (instance) => ["delete", instance],
     },
     {
         name: "utmctl",
         command: "utmctl",
         startArgs: (instance) => ["start", instance],
         stopArgs: (instance) => ["stop", instance],
+        deleteArgs: (instance) => ["delete", instance],
     },
 ];
 
@@ -156,10 +159,17 @@ export function macosProviderPlan(device, discovery = macosDiscovery()) {
         missing,
         startCommand: catalog && command ? { command, args: catalog.startArgs(instance) } : null,
         stopCommand: catalog && command ? { command, args: catalog.stopArgs(instance) } : null,
-        deferred: [
+        deleteCommand: catalog && command ? { command, args: catalog.deleteArgs(instance) } : null,
+        implemented: catalog?.name === "tart" ? [
             "base-image-create",
+            "image-clone",
             "snapshot-clone",
-            "guest-helper",
+            "snapshot-restore",
+            "snapshot-delete",
+            "provider-delete",
+        ] : [],
+        deferred: [
+            "guest-helper-auto-provisioning",
         ],
     };
 }
@@ -233,6 +243,34 @@ function markMacosStopped(deviceId) {
         status: "stopped",
         updatedAt: new Date().toISOString(),
     }));
+}
+
+function managedProviderResource(device) {
+    return Boolean(
+        device.providerResourceManaged ||
+        device.provisioning === "image-created" ||
+        device.provisioning === "image-cloned" ||
+        device.imageSource ||
+        device.clonedFrom ||
+        device.imageCreatedAt ||
+        device.clonedAt
+    );
+}
+
+function snapshotProviderInstances(device) {
+    return (Array.isArray(device.snapshots) ? device.snapshots : [])
+        .filter((snapshot) => snapshot.provider === "tart" && snapshot.providerInstance)
+        .map((snapshot) => ({ kind: "snapshot", id: snapshot.id, instance: snapshot.providerInstance }));
+}
+
+function restoreRecoveryProviderInstance(device) {
+    const recovery = device.restoreRecovery;
+    if (!recovery?.candidateProviderInstance) return null;
+    return { kind: "restore-recovery", instance: recovery.candidateProviderInstance };
+}
+
+function tartDeleteInstance(plan, instance) {
+    return run(plan.providerCommand, ["delete", instance]);
 }
 
 function sshDiscovery() {
@@ -380,6 +418,7 @@ export async function handleMacosTool(name, args) {
                 ...device,
                 provider: tart.plan.selectedProvider,
                 providerInstance: target,
+                providerResourceManaged: true,
                 imageCreatedAt: new Date().toISOString(),
             };
             devices.push(created);
@@ -438,6 +477,7 @@ export async function handleMacosTool(name, args) {
                 ...device,
                 provider: tart.plan.selectedProvider,
                 providerInstance: target,
+                providerResourceManaged: true,
                 clonedAt: new Date().toISOString(),
             };
             writeMacosDevices([...readMacosDevices(), cloned]);
@@ -491,8 +531,47 @@ export async function handleMacosTool(name, args) {
             if (!force && device.status !== "stopped") {
                 return textResult(false, `Refusing to delete ${deviceId} while status is ${device.status}`);
             }
-            writeMacosDevices(devices.filter((item) => item.id !== deviceId));
-            return jsonResult({ deleted: deviceId });
+            let forcedStopPlan = null;
+            if (force && device.status !== "stopped") {
+                const plan = macosProviderPlan(device);
+                if (!plan.available) return textResult(false, `macOS VM backend missing prerequisites: ${plan.missing.join(", ")}`);
+                if (plan.stopCommand) {
+                    const stop = run(plan.stopCommand.command, plan.stopCommand.args);
+                    if (stop.status !== 0) return fail(stop);
+                    forcedStopPlan = plan;
+                    markMacosStopped(deviceId);
+                }
+            }
+            const managedInstances = [
+                ...snapshotProviderInstances(device),
+                restoreRecoveryProviderInstance(device),
+                ...(managedProviderResource(device) && device.providerInstance ? [{ kind: "device", instance: device.providerInstance }] : []),
+            ].filter(Boolean);
+            const providerDeleted = [];
+            if (managedInstances.length > 0) {
+                const tart = forcedStopPlan?.selectedProvider === "tart" ? { plan: forcedStopPlan } : tartProviderPlan(device, name);
+                if (tart.error) return tart.error;
+                for (const resource of managedInstances) {
+                    const deleted = tartDeleteInstance(tart.plan, resource.instance);
+                    if (deleted.status !== 0) return fail(deleted);
+                    providerDeleted.push(resource.instance);
+                    if (resource.kind === "snapshot") {
+                        updateMacosDevice(deviceId, (item) => ({
+                            ...item,
+                            snapshots: (item.snapshots || []).filter((snapshot) => snapshot.id !== resource.id),
+                            updatedAt: new Date().toISOString(),
+                        }));
+                    } else if (resource.kind === "restore-recovery") {
+                        updateMacosDevice(deviceId, (item) => ({
+                            ...item,
+                            restoreRecovery: null,
+                            updatedAt: new Date().toISOString(),
+                        }));
+                    }
+                }
+            }
+            writeMacosDevices(readMacosDevices().filter((item) => item.id !== deviceId));
+            return jsonResult({ deleted: deviceId, providerDeleted });
         }
 
         case "device_status": {
