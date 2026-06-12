@@ -55,6 +55,9 @@ case "$*" in
   *"ccc-macos-fake-tart-guest-helper.sh' type"*) echo '{"ok":true,"typed":{"text":"hello '\''mac'\'' {literal}"},"provider":"macos-helper"}'; exit 0 ;;
   *"ccc-macos-fake-tart-guest-helper.sh' scroll 'left' '4'"*) echo '{"ok":true,"scrolled":{"direction":"left","amount":4},"provider":"macos-helper"}'; exit 0 ;;
   *"ccc-macos-fake-tart-guest-helper.sh' cursor_position"*) echo '{"ok":true,"cursor":{"x":101,"y":202},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' window_list"*) echo '{"ok":true,"provider":"macos-system-events","windows":[{"processName":"TextEdit","processId":501,"title":"Notes","role":"AXWindow","position":[10,20],"size":[300,200]}]}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' accessibility_snapshot '8' '1000'"*) echo '{"ok":true,"provider":"macos-system-events","accessibility":{"provider":"macos-system-events","maxDepth":8,"maxNodes":1000,"nodeCount":3,"root":{"name":"macOS Desktop","role":"AXApplicationGroup","children":[{"name":"TextEdit","role":"AXApplication","processId":501,"children":[{"name":"Notes","role":"AXWindow","children":[]}]}]}}}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' accessibility_snapshot '0' '1'"*) echo '{"ok":true,"provider":"macos-system-events","accessibility":{"provider":"macos-system-events","maxDepth":0,"maxNodes":1,"nodeCount":1,"root":{"name":"macOS Desktop","role":"AXApplicationGroup","children":[]}}}'; exit 0 ;;
   *pkill*) exit 0 ;;
   *rm\\ -f*) exit 0 ;;
   *fail-command*) echo "ssh failure stdout"; echo "ssh failure stderr" >&2; exit 7 ;;
@@ -345,7 +348,11 @@ esac
             localScriptPath: started.device.helper.hostHelperScript,
             remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
         }));
-        expect(readFileSync(started.device.helper.hostHelperScript, "utf-8")).toContain("ccc macOS guest helper for macos-fake-tart");
+        const hostHelperScript = readFileSync(started.device.helper.hostHelperScript, "utf-8");
+        expect(hostHelperScript).toContain("ccc macOS guest helper for macos-fake-tart");
+        expect(hostHelperScript).toContain("window_list)");
+        expect(hostHelperScript).toContain("accessibility_snapshot)");
+        expect(hostHelperScript).toContain("macos-system-events");
         const startedStatus = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
         const startedStatusPayload = JSON.parse(((startedStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
             backend: { capabilities: string[] };
@@ -357,6 +364,8 @@ esac
             "device_type",
             "device_scroll",
             "device_cursor_position",
+            "device_window_list",
+            "device_accessibility_snapshot",
         ]));
 
         const snapshotWhileRunning = await handleMacosTool("device_snapshot_create", {
@@ -647,6 +656,67 @@ esac
             cursor: { x: 101, y: 202 },
         }));
 
+        const windowList = await handleMacosTool("device_window_list", { deviceId: "macos-fake-tart" });
+        expect(windowList?.isError).not.toBe(true);
+        expect(JSON.parse(((windowList?.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "macos-system-events",
+            remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
+            windows: [
+                expect.objectContaining({
+                    processName: "TextEdit",
+                    processId: 501,
+                    title: "Notes",
+                    role: "AXWindow",
+                    position: [10, 20],
+                    size: [300, 200],
+                }),
+            ],
+        }));
+
+        const accessibilitySnapshot = await handleMacosTool("device_accessibility_snapshot", {
+            deviceId: "macos-fake-tart",
+            maxDepth: 99,
+            maxNodes: 5000,
+        });
+        expect(accessibilitySnapshot?.isError).not.toBe(true);
+        const accessibilitySnapshotPayload = JSON.parse(((accessibilitySnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            provider: string;
+            remoteScriptPath: string;
+            accessibility: {
+                provider: string;
+                maxDepth: number;
+                maxNodes: number;
+                nodeCount: number;
+                root: { name: string; role: string; children: Array<{ name: string; role: string; children: Array<{ name: string; role: string }> }> };
+            };
+        };
+        expect(accessibilitySnapshotPayload.provider).toBe("macos-system-events");
+        expect(accessibilitySnapshotPayload.remoteScriptPath).toBe("/tmp/ccc-macos-fake-tart-guest-helper.sh");
+        expect(accessibilitySnapshotPayload.accessibility).toEqual(expect.objectContaining({
+            provider: "macos-system-events",
+            maxDepth: 8,
+            maxNodes: 1000,
+            nodeCount: 3,
+        }));
+        expect(accessibilitySnapshotPayload.accessibility.root.children[0]).toEqual(expect.objectContaining({
+            name: "TextEdit",
+            role: "AXApplication",
+            children: [expect.objectContaining({ name: "Notes", role: "AXWindow" })],
+        }));
+
+        const minimumAccessibilitySnapshot = await handleMacosTool("device_accessibility_snapshot", {
+            deviceId: "macos-fake-tart",
+            maxDepth: -9,
+            maxNodes: 0,
+        });
+        expect(minimumAccessibilitySnapshot?.isError).not.toBe(true);
+        expect(JSON.parse(((minimumAccessibilitySnapshot?.content as Array<{ text?: string }>)[0].text ?? "{}")).accessibility).toEqual(expect.objectContaining({
+            maxDepth: 0,
+            maxNodes: 1,
+            nodeCount: 1,
+            root: expect.objectContaining({ children: [] }),
+        }));
+
         const initialRecordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
         expect(initialRecordStatus?.isError).not.toBe(true);
         expect(JSON.parse(((initialRecordStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
@@ -724,6 +794,9 @@ esac
         expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' type 'hello '\\''mac'\\'' {literal}'");
         expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' scroll 'left' '4'");
         expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' cursor_position");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' window_list");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' accessibility_snapshot '8' '1000'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' accessibility_snapshot '0' '1'");
         expect(log).toContain("screencapture -v '/tmp/custom-macos-recording.mov'");
         expect(log).toContain("pkill -INT -f");
         expect(log).toContain("ccc@127.0.0.1:/tmp/custom-macos-recording.mov");

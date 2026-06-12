@@ -245,6 +245,7 @@ describe("device-lab MCP foundation and definitions", () => {
         const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
         expect(macosBackend?.status).toBe("missing-prerequisites");
         expect(macosBackend?.capabilities).toContain("device_inventory");
+        expect(macosBackend?.capabilities).toEqual(expect.arrayContaining(["device_window_list", "device_accessibility_snapshot"]));
     });
 
     it("reports real-device wireless missing prerequisites without environment configuration", { timeout: TIMEOUT }, async () => {

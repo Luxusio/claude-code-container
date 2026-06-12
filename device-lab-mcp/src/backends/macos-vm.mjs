@@ -78,6 +78,8 @@ export function macosBackend() {
             "device_type",
             "device_scroll",
             "device_cursor_position",
+            "device_window_list",
+            "device_accessibility_snapshot",
             "device_image_create",
             "device_image_clone",
             "device_snapshot_create",
@@ -135,7 +137,7 @@ function macosHelperMetadata(device) {
         ssh: device.ssh || null,
         status: provisioning?.status || (device.ssh ? "ssh-configured" : "planned"),
         provisioning,
-        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_window_list", "device_accessibility_snapshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
 
@@ -498,6 +500,67 @@ function macosGuestHelperScript(device) {
         "  ObjC.import('ApplicationServices');",
         "  var event = $.CGEventCreate(null); var point = $.CGEventGetLocation(event);",
         "  return JSON.stringify({ok:true, cursor:{x:point.x, y:point.y}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  window_list)",
+        "    osascript -l JavaScript <<'JXA'",
+        "function safe(fn, fallback) { try { return fn(); } catch (error) { return fallback; } }",
+        "function run() {",
+        "  var systemEvents = Application('System Events');",
+        "  var processes = safe(function () { return systemEvents.processes.whose({visible:true})(); }, []);",
+        "  var windows = [];",
+        "  for (var p = 0; p < processes.length; p++) {",
+        "    var process = processes[p];",
+        "    var processName = safe(function () { return process.name(); }, '');",
+        "    var pid = safe(function () { return process.unixId(); }, null);",
+        "    var processWindows = safe(function () { return process.windows(); }, []);",
+        "    for (var w = 0; w < processWindows.length; w++) {",
+        "      var win = processWindows[w];",
+        "      var position = safe(function () { return win.position(); }, null);",
+        "      var size = safe(function () { return win.size(); }, null);",
+        "      windows.push({processName:processName, processId:pid, title:safe(function () { return win.name(); }, ''), role:safe(function () { return win.role(); }, ''), subrole:safe(function () { return win.subrole(); }, ''), position:position, size:size});",
+        "    }",
+        "  }",
+        "  return JSON.stringify({ok:true, provider:'macos-system-events', windows:windows});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  accessibility_snapshot)",
+        "    osascript -l JavaScript - \"${2:-3}\" \"${3:-200}\" <<'JXA'",
+        "function safe(fn, fallback) { try { return fn(); } catch (error) { return fallback; } }",
+        "function run(argv) {",
+        "  var maxDepth = Math.max(0, Math.min(Number(argv[0] || 3), 8));",
+        "  var maxNodes = Math.max(1, Math.min(Number(argv[1] || 200), 1000));",
+        "  var count = 1;",
+        "  function node(element, depth) {",
+        "    if (!element || depth > maxDepth || count >= maxNodes) return null;",
+        "    count += 1;",
+        "    var children = [];",
+        "    if (depth < maxDepth && count < maxNodes) {",
+        "      var uiElements = safe(function () { return element.uiElements(); }, []);",
+        "      for (var i = 0; i < uiElements.length && count < maxNodes; i++) {",
+        "        var child = node(uiElements[i], depth + 1);",
+        "        if (child) children.push(child);",
+        "      }",
+        "    }",
+        "    return {name:safe(function () { return element.name(); }, ''), role:safe(function () { return element.role(); }, ''), subrole:safe(function () { return element.subrole(); }, ''), description:safe(function () { return element.description(); }, ''), value:safe(function () { return element.value(); }, null), enabled:safe(function () { return element.enabled(); }, null), position:safe(function () { return element.position(); }, null), size:safe(function () { return element.size(); }, null), children:children};",
+        "  }",
+        "  var systemEvents = Application('System Events');",
+        "  var processes = safe(function () { return systemEvents.processes.whose({visible:true})(); }, []);",
+        "  var root = {name:'macOS Desktop', role:'AXApplicationGroup', children:[]};",
+        "  for (var p = 0; maxDepth > 0 && p < processes.length && count < maxNodes; p++) {",
+        "    var process = processes[p];",
+        "    var processNode = {name:safe(function () { return process.name(); }, ''), role:'AXApplication', processId:safe(function () { return process.unixId(); }, null), children:[]};",
+        "    count += 1;",
+        "    var windows = safe(function () { return process.windows(); }, []);",
+        "    for (var w = 0; maxDepth > 1 && w < windows.length && count < maxNodes; w++) {",
+        "      var windowNode = node(windows[w], 2);",
+        "      if (windowNode) processNode.children.push(windowNode);",
+        "    }",
+        "    root.children.push(processNode);",
+        "  }",
+        "  return JSON.stringify({ok:true, accessibility:{provider:'macos-system-events', maxDepth:maxDepth, maxNodes:maxNodes, nodeCount:count, root:root}, provider:'macos-system-events'});",
         "}",
         "JXA",
         "    ;;",
@@ -1160,6 +1223,46 @@ export async function handleMacosTool(name, args) {
                 provider: "ssh-macos-helper",
                 remoteScriptPath: helper.remoteScriptPath,
                 cursor: payload?.cursor || null,
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_window_list": {
+            const { deviceId } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const helper = macosHelperCommand(device, "window_list");
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            const payload = macosHelperJson(helper.result.stdout);
+            return jsonResult({
+                provider: payload?.provider || "macos-system-events",
+                remoteScriptPath: helper.remoteScriptPath,
+                windows: Array.isArray(payload?.windows) ? payload.windows : [],
+                response: payload,
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_accessibility_snapshot": {
+            const { deviceId } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const maxDepth = Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8));
+            const maxNodes = Math.max(1, Math.min(Number.isFinite(Number(args.maxNodes)) ? Number(args.maxNodes) : 200, 1000));
+            const helper = macosHelperCommand(device, "accessibility_snapshot", [String(maxDepth), String(maxNodes)]);
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            const payload = macosHelperJson(helper.result.stdout);
+            return jsonResult({
+                provider: payload?.accessibility?.provider || payload?.provider || "macos-system-events",
+                remoteScriptPath: helper.remoteScriptPath,
+                accessibility: payload?.accessibility || null,
+                response: payload,
                 stdout: helper.result.stdout,
                 stderr: helper.result.stderr,
                 status: helper.result.status,

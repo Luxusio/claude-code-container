@@ -1001,9 +1001,14 @@ macOS helper/SSH bridge status:
   `ccc-guest-helper.sh` over SSH. The helper uses macOS built-in
   `osascript`, JavaScript for Automation/CoreGraphics, and System Events, so
   the MCP side does not need a persistent in-container daemon.
+- `device_window_list` and `device_accessibility_snapshot` use the same
+  provisioned helper over SSH. Window listing returns visible System Events
+  process/window metadata. Accessibility snapshots are bounded by MCP-side
+  clamps of `maxDepth` 0..8 and `maxNodes` 1..1000 before the helper traverses
+  System Events UI elements.
 - macOS guest GUI control still depends on normal macOS accessibility/input
-  monitoring permissions inside the guest. OCR, accessibility tree extraction,
-  and richer window targeting remain later hardening slices.
+  monitoring permissions inside the guest. OCR, target-by-window actions, and
+  richer target-by-element actions remain later hardening slices.
 - Tests use fake `ssh` and `scp` commands with the fake `tart` provider, so
   bridge behavior and helper auto-provisioning are covered without a real macOS
   VM.
