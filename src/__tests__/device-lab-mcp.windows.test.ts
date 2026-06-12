@@ -125,6 +125,12 @@ exit 0
         expect(helperScript).toContain("Get-ChildItem -Path $Inbox");
         expect(helperScript).toContain("'exec'");
         expect(helperScript).toContain("'screenshot'");
+        expect(helperScript).toContain("'click'");
+        expect(helperScript).toContain("'double_click'");
+        expect(helperScript).toContain("'key'");
+        expect(helperScript).toContain("'type'");
+        expect(helperScript).toContain("'scroll'");
+        expect(helperScript).toContain("'cursor_position'");
         expect(helperScript).toContain("'upload'");
         expect(helperScript).toContain("'download'");
 
@@ -132,6 +138,7 @@ exit 0
         expect(log).toContain(`wsb start ${started.device.configPath}`);
 
         let forceInactiveRecordStatus = false;
+        const helperRequests: Array<Record<string, unknown>> = [];
         const responder = setInterval(() => {
             let files: string[] = [];
             try {
@@ -148,7 +155,16 @@ exit 0
                     remotePath?: string;
                     sessionId?: string;
                     timeLimitSec?: number;
+                    x?: number;
+                    y?: number;
+                    button?: string;
+                    key?: string;
+                    keys?: string;
+                    text?: string;
+                    direction?: string;
+                    amount?: number;
                 };
+                helperRequests.push(request as unknown as Record<string, unknown>);
                 const response: Record<string, unknown> = { id: request.id, ok: true, type: request.type };
                 if (request.type === "exec") {
                     response.stdout = `ran ${request.command}`;
@@ -158,6 +174,24 @@ exit 0
                 if (request.type === "screenshot") {
                     writeFileSync(join(started.device.helper.downloadsDir, `${request.id}.png`), "fakepng");
                     response.imagePath = `C:\\ccc\\scratch\\downloads\\${request.id}.png`;
+                }
+                if (request.type === "click") {
+                    response.clicked = { x: request.x, y: request.y, button: request.button };
+                }
+                if (request.type === "double_click") {
+                    response.doubleClicked = { x: request.x, y: request.y, button: request.button };
+                }
+                if (request.type === "key") {
+                    response.key = { key: request.key, keys: request.keys };
+                }
+                if (request.type === "type") {
+                    response.typed = { text: request.text, keys: request.keys };
+                }
+                if (request.type === "scroll") {
+                    response.scrolled = { x: request.x, y: request.y, direction: request.direction, amount: request.amount };
+                }
+                if (request.type === "cursor_position") {
+                    response.cursor = { x: 11, y: 22 };
                 }
                 if (request.type === "download") {
                     const remoteName = String(request.remotePath ?? "remote.txt").split(/[\\/]/).filter(Boolean).pop() ?? "remote.txt";
@@ -222,6 +256,77 @@ exit 0
         });
         expect(screenshot.isError).not.toBe(true);
         expect((screenshot.content as Array<{ type: string }>)[0].type).toBe("image");
+
+        const click = await client.callTool({
+            name: "device_click",
+            arguments: { deviceId: "windows-win-helper", x: 25, y: 40, button: "right", helperTimeoutMs: 1000 },
+        });
+        expect(click.isError).not.toBe(true);
+        expect(JSON.parse(((click.content as Array<{ text?: string }>)[0].text ?? "{}")).clicked).toEqual({
+            x: 25,
+            y: 40,
+            button: "right",
+        });
+
+        const doubleClick = await client.callTool({
+            name: "device_double_click",
+            arguments: { deviceId: "windows-win-helper", x: 30, y: 50, helperTimeoutMs: 1000 },
+        });
+        expect(doubleClick.isError).not.toBe(true);
+        expect(JSON.parse(((doubleClick.content as Array<{ text?: string }>)[0].text ?? "{}")).doubleClicked).toEqual({
+            x: 30,
+            y: 50,
+            button: "left",
+        });
+
+        const key = await client.callTool({
+            name: "device_key",
+            arguments: { deviceId: "windows-win-helper", key: "Control+A", helperTimeoutMs: 1000 },
+        });
+        expect(key.isError).not.toBe(true);
+        expect(JSON.parse(((key.content as Array<{ text?: string }>)[0].text ?? "{}")).key).toEqual({
+            key: "Control+A",
+            keys: "^a",
+        });
+
+        const type = await client.callTool({
+            name: "device_type",
+            arguments: { deviceId: "windows-win-helper", text: "hello from ccc", helperTimeoutMs: 1000 },
+        });
+        expect(type.isError).not.toBe(true);
+        expect(JSON.parse(((type.content as Array<{ text?: string }>)[0].text ?? "{}")).typed).toEqual({
+            text: "hello from ccc",
+            keys: "hello from ccc",
+        });
+
+        const literalType = await client.callTool({
+            name: "device_type",
+            arguments: { deviceId: "windows-win-helper", text: "a+b {ok} 50% [x] (y) ~ ^", helperTimeoutMs: 1000 },
+        });
+        expect(literalType.isError).not.toBe(true);
+        expect(JSON.parse(((literalType.content as Array<{ text?: string }>)[0].text ?? "{}")).typed).toEqual({
+            text: "a+b {ok} 50% [x] (y) ~ ^",
+            keys: "a{+}b {{}ok{}} 50{%} {[}x{]} {(}y{)} {~} {^}",
+        });
+
+        const scroll = await client.callTool({
+            name: "device_scroll",
+            arguments: { deviceId: "windows-win-helper", x: 10, y: 20, direction: "down", amount: 3, helperTimeoutMs: 1000 },
+        });
+        expect(scroll.isError).not.toBe(true);
+        expect(JSON.parse(((scroll.content as Array<{ text?: string }>)[0].text ?? "{}")).scrolled).toEqual({
+            x: 10,
+            y: 20,
+            direction: "down",
+            amount: 3,
+        });
+
+        const cursor = await client.callTool({
+            name: "device_cursor_position",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(cursor.isError).not.toBe(true);
+        expect(JSON.parse(((cursor.content as Array<{ text?: string }>)[0].text ?? "{}")).cursor).toEqual({ x: 11, y: 22 });
 
         const uploadSource = join(homeDir, "upload.txt");
         writeFileSync(uploadSource, "upload");
@@ -325,6 +430,16 @@ exit 0
             arguments: { deviceId: "windows-win-helper" },
         });
         expect(stop.isError).not.toBe(true);
+
+        expect(helperRequests).toEqual(expect.arrayContaining([
+            expect.objectContaining({ type: "click", x: 25, y: 40, button: "right" }),
+            expect.objectContaining({ type: "double_click", x: 30, y: 50, button: "left" }),
+            expect.objectContaining({ type: "key", key: "Control+A", keys: "^a" }),
+            expect.objectContaining({ type: "type", text: "hello from ccc", keys: "hello from ccc" }),
+            expect.objectContaining({ type: "type", text: "a+b {ok} 50% [x] (y) ~ ^", keys: "a{+}b {{}ok{}} 50{%} {[}x{]} {(}y{)} {~} {^}" }),
+            expect.objectContaining({ type: "scroll", x: 10, y: 20, direction: "down", amount: 3 }),
+            expect.objectContaining({ type: "cursor_position" }),
+        ]));
     });
 
     it("cleans Windows Sandbox scratch on delete and preserves state when forced stop fails", { timeout: TIMEOUT }, async () => {

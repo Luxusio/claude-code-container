@@ -354,19 +354,25 @@ Required common tools:
 12. `device_screenshot`
    - Captures screen evidence to an owner-scoped artifact path.
 
-13. `device_image_create` / `device_image_clone`
+13. `device_click` / `device_double_click` / `device_key` /
+    `device_type` / `device_scroll` / `device_cursor_position`
+    - Provides desktop-style GUI control for VM/sandbox backends where a guest
+      control channel is available.
+    - Windows Sandbox implements these through the guest helper file channel.
+
+14. `device_image_create` / `device_image_clone`
     - Creates and clones owner-scoped VM images where supported.
     - macOS Tart uses provider clone operations to create a stopped device
       definition from a base image or existing owned provider instance.
     - Unsupported macOS VM providers must return explicit diagnostics.
 
-14. `device_snapshot_create` / `device_snapshot_restore` /
+15. `device_snapshot_create` / `device_snapshot_restore` /
     `device_snapshot_delete`
     - Manages owner-scoped VM snapshots where supported.
     - macOS Tart represents snapshots as owner-scoped provider clones and
       refuses running-device snapshot/restore operations unless `force` is set.
 
-15. `device_record_video_start` / `device_record_video_stop` /
+16. `device_record_video_start` / `device_record_video_stop` /
     `device_record_video_status`
     - Starts, stops, and inspects owner-scoped video recording state.
     - Android uses `adb shell screenrecord`, with a bounded
@@ -378,14 +384,14 @@ Required common tools:
     - macOS VM uses the configured SSH bridge to start `screencapture` video
       capture, stop it, and download the owner-scoped artifact.
 
-16. `device_upload` / `device_download`
+17. `device_upload` / `device_download`
     - Transfers files through owner-scoped scratch paths.
 
-17. `device_install_app` / `device_launch_app`
+18. `device_install_app` / `device_launch_app`
     - Installs and launches APK, `.app`, `.ipa` where supported, or Windows/macOS
       app bundles where a backend supports it.
 
-18. `device_reset`
+19. `device_reset`
     - Resets owned device state without deleting the definition.
 
 Optional future tools:
@@ -867,8 +873,12 @@ Foundation status:
   and only removes state/workspace after stop succeeds. Stop failure preserves
   state and scratch so cleanup can be retried.
 - Guest helper installation, command stdout/stderr capture, screenshot,
-  upload/download, and frame-archive recording are implemented. Richer Windows
-  GUI automation is deferred to later hardening slices.
+  upload/download, frame-archive recording, and first-pass GUI control are
+  implemented. Windows Sandbox now handles `device_click`,
+  `device_double_click`, `device_key`, `device_type`, `device_scroll`, and
+  `device_cursor_position` through owner-scoped guest-helper requests.
+  Accessibility tree inspection, OCR, and richer window targeting remain later
+  hardening slices.
 
 Guest-helper foundation status:
 
@@ -883,6 +893,11 @@ Guest-helper foundation status:
   folders.
 - `device_exec` writes an `exec` request and returns stdout/stderr/status from
   the helper response.
+- Desktop GUI control tools write `click`, `double_click`, `key`, `type`,
+  `scroll`, and `cursor_position` helper requests. The guest helper uses
+  `System.Windows.Forms`, `SendKeys`, cursor positioning, and Win32 mouse
+  events inside the sandbox, while the MCP side remains a lazy file-channel
+  client and does not require an always-running daemon in the CCC container.
 - `device_screenshot` writes a `screenshot` request and returns PNG image
   content from the helper response.
 - `device_record_video_start`, `device_record_video_status`, and

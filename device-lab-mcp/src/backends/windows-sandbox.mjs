@@ -38,6 +38,12 @@ export function windowsBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_click",
+            "device_double_click",
+            "device_key",
+            "device_type",
+            "device_scroll",
+            "device_cursor_position",
             "device_record_video_start",
             "device_record_video_stop",
             "device_record_video_status",
@@ -106,8 +112,51 @@ function windowsHelperMetadata(device) {
         guestUploadsDir: "C:\\ccc\\scratch\\uploads",
         guestDownloadsDir: "C:\\ccc\\scratch\\downloads",
         status: "file-channel",
-        requiredFor: ["device_exec", "device_screenshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
+}
+
+function windowsSendKeysExpression(key) {
+    const value = String(key || "");
+    const aliases = {
+        Enter: "{ENTER}",
+        Return: "{ENTER}",
+        Escape: "{ESC}",
+        Esc: "{ESC}",
+        Tab: "{TAB}",
+        Backspace: "{BACKSPACE}",
+        Delete: "{DELETE}",
+        Del: "{DELETE}",
+        Insert: "{INSERT}",
+        Space: " ",
+        ArrowUp: "{UP}",
+        Up: "{UP}",
+        ArrowDown: "{DOWN}",
+        Down: "{DOWN}",
+        ArrowLeft: "{LEFT}",
+        Left: "{LEFT}",
+        ArrowRight: "{RIGHT}",
+        Right: "{RIGHT}",
+        PageUp: "{PGUP}",
+        PageDown: "{PGDN}",
+        Home: "{HOME}",
+        End: "{END}",
+    };
+    for (let index = 1; index <= 24; index += 1) aliases[`F${index}`] = `{F${index}}`;
+    const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
+    if (parts.length <= 1) return aliases[value] || value;
+    const keyPart = parts[parts.length - 1];
+    const base = aliases[keyPart] || (keyPart.length === 1 ? keyPart.toLowerCase() : keyPart);
+    const modifiers = parts.slice(0, -1).map((part) => part.toLowerCase());
+    let prefix = "";
+    if (modifiers.some((part) => part === "control" || part === "ctrl")) prefix += "^";
+    if (modifiers.includes("alt")) prefix += "%";
+    if (modifiers.includes("shift")) prefix += "+";
+    return `${prefix}${base}`;
+}
+
+function windowsSendKeysLiteralText(text) {
+    return String(text ?? "").replace(/[+^%~()[\]{}]/g, (match) => `{${match}}`);
 }
 
 function escapeXml(value) {
@@ -155,6 +204,56 @@ function windowsHelperScript(helper) {
         "          $Bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)",
         "          $Graphics.Dispose(); $Bitmap.Dispose()",
         "          $Response.imagePath = $OutputPath",
+        "        }",
+        "        'click' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          Add-Type -AssemblyName System.Drawing",
+        "          if (-not ([System.Management.Automation.PSTypeName]'CccMouse').Type) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CccMouse { [DllImport(\"user32.dll\")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extraInfo); }' }",
+        "          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]$Request.x, [int]$Request.y)",
+        "          $Button = if ($Request.button) { [string]$Request.button } else { 'left' }",
+        "          $Down = if ($Button -eq 'right') { 0x0008 } else { 0x0002 }",
+        "          $Up = if ($Button -eq 'right') { 0x0010 } else { 0x0004 }",
+        "          [CccMouse]::mouse_event($Down, 0, 0, 0, 0); Start-Sleep -Milliseconds 50; [CccMouse]::mouse_event($Up, 0, 0, 0, 0)",
+        "          $Response.clicked = @{ x = [int]$Request.x; y = [int]$Request.y; button = $Button }",
+        "        }",
+        "        'double_click' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          Add-Type -AssemblyName System.Drawing",
+        "          if (-not ([System.Management.Automation.PSTypeName]'CccMouse').Type) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CccMouse { [DllImport(\"user32.dll\")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extraInfo); }' }",
+        "          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]$Request.x, [int]$Request.y)",
+        "          $Button = if ($Request.button) { [string]$Request.button } else { 'left' }",
+        "          $Down = if ($Button -eq 'right') { 0x0008 } else { 0x0002 }",
+        "          $Up = if ($Button -eq 'right') { 0x0010 } else { 0x0004 }",
+        "          1..2 | ForEach-Object { [CccMouse]::mouse_event($Down, 0, 0, 0, 0); Start-Sleep -Milliseconds 50; [CccMouse]::mouse_event($Up, 0, 0, 0, 0); Start-Sleep -Milliseconds 80 }",
+        "          $Response.doubleClicked = @{ x = [int]$Request.x; y = [int]$Request.y; button = $Button }",
+        "        }",
+        "        'key' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          [System.Windows.Forms.SendKeys]::SendWait([string]$Request.keys)",
+        "          $Response.key = @{ key = $Request.key; keys = $Request.keys }",
+        "        }",
+        "        'type' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          [System.Windows.Forms.SendKeys]::SendWait([string]$Request.keys)",
+        "          $Response.typed = @{ text = $Request.text; keys = $Request.keys }",
+        "        }",
+        "        'scroll' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          Add-Type -AssemblyName System.Drawing",
+        "          if (-not ([System.Management.Automation.PSTypeName]'CccMouse').Type) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class CccMouse { [DllImport(\"user32.dll\")] public static extern void mouse_event(int flags, int dx, int dy, int data, int extraInfo); }' }",
+        "          [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point([int]$Request.x, [int]$Request.y)",
+        "          $Amount = if ($Request.amount) { [int]$Request.amount } else { 1 }",
+        "          $Direction = if ($Request.direction) { [string]$Request.direction } else { 'down' }",
+        "          $WheelData = 120 * $Amount",
+        "          if ($Direction -eq 'down' -or $Direction -eq 'right') { $WheelData = -1 * $WheelData }",
+        "          $WheelFlag = if ($Direction -eq 'left' -or $Direction -eq 'right') { 0x01000 } else { 0x0800 }",
+        "          [CccMouse]::mouse_event($WheelFlag, 0, 0, $WheelData, 0)",
+        "          $Response.scrolled = @{ x = [int]$Request.x; y = [int]$Request.y; direction = $Direction; amount = $Amount }",
+        "        }",
+        "        'cursor_position' {",
+        "          Add-Type -AssemblyName System.Windows.Forms",
+        "          $Position = [System.Windows.Forms.Cursor]::Position",
+        "          $Response.cursor = @{ x = $Position.X; y = $Position.Y }",
         "        }",
         "        'upload' {",
         "          Copy-Item -Force -Path $Request.uploadPath -Destination $Request.remotePath",
@@ -528,6 +627,70 @@ export async function handleWindowsTool(name, args) {
             const imagePath = result.response.hostImagePath || helperOutputPath(result.helper, result.response.imagePath, `${result.response.id}.png`);
             if (!existsSync(imagePath)) return textResult(false, `Windows helper screenshot output missing: ${imagePath}`);
             return { content: [{ type: "image", data: readFileSync(imagePath).toString("base64"), mimeType: "image/png" }] };
+        }
+
+        case "device_click":
+        case "device_double_click": {
+            const { deviceId, x, y, button = "left", helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, `${name} requires numeric x and y`);
+            const type = name === "device_double_click" ? "double_click" : "click";
+            const result = await windowsHelperRequest(device, type, { x: Number(x), y: Number(y), button }, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || `Windows helper ${type} failed`);
+            return jsonResult({
+                provider: "windows-helper",
+                [name === "device_double_click" ? "doubleClicked" : "clicked"]: result.response.doubleClicked || result.response.clicked || { x: Number(x), y: Number(y), button },
+                response: result.response,
+            });
+        }
+
+        case "device_key": {
+            const { deviceId, key, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (!key) return textResult(false, "device_key requires key");
+            const keys = windowsSendKeysExpression(key);
+            const result = await windowsHelperRequest(device, "key", { key, keys }, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper key failed");
+            return jsonResult({ provider: "windows-helper", key: result.response.key || { key, keys }, response: result.response });
+        }
+
+        case "device_type": {
+            const { deviceId, text, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (text === undefined || text === null) return textResult(false, "device_type requires text");
+            const literalText = String(text);
+            const keys = windowsSendKeysLiteralText(literalText);
+            const result = await windowsHelperRequest(device, "type", { text: literalText, keys }, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper type failed");
+            return jsonResult({ provider: "windows-helper", typed: result.response.typed || { text: literalText, keys }, response: result.response });
+        }
+
+        case "device_scroll": {
+            const { deviceId, x, y, direction = "down", amount = 1, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, "device_scroll requires numeric x and y");
+            if (!["up", "down", "left", "right"].includes(direction)) return textResult(false, "device_scroll direction must be up, down, left, or right");
+            const result = await windowsHelperRequest(device, "scroll", { x: Number(x), y: Number(y), direction, amount: Number(amount) || 1 }, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper scroll failed");
+            return jsonResult({ provider: "windows-helper", scrolled: result.response.scrolled || { x: Number(x), y: Number(y), direction, amount: Number(amount) || 1 }, response: result.response });
+        }
+
+        case "device_cursor_position": {
+            const { deviceId, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            const result = await windowsHelperRequest(device, "cursor_position", {}, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper cursor position failed");
+            return jsonResult({ provider: "windows-helper", cursor: result.response.cursor || null, response: result.response });
         }
 
         case "device_record_video_status": {
