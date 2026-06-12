@@ -1070,15 +1070,19 @@ Container cleanup hook status:
 
 Test-suite structure hardening:
 
-- `src/__tests__/device-lab-mcp.test.ts` has become too large for continued
-  feature development. It currently mixes common MCP schema/lazy-start checks,
-  broker routing/autolaunch tests, Android emulator/real-device coverage, iOS
-  simulator/real-device coverage, Windows Sandbox tests, and macOS VM tests.
-- The next test-maintenance slice should split this file by backend and
-  responsibility while preserving the existing fake-host/fake-SDK coverage:
-  `device-lab-mcp.foundation.test.ts`, `device-lab-mcp.broker.test.ts`,
-  `device-lab-mcp.android.test.ts`, `device-lab-mcp.ios.test.ts`,
-  `device-lab-mcp.windows.test.ts`, and `device-lab-mcp.macos.test.ts`.
+- `src/__tests__/device-lab-mcp.broker.test.ts` now owns the common MCP
+  schema/lazy-start checks, broker diagnostics, broker autolaunch tests,
+  broker RPC, physical lease, physical attach/detach, broker-routed lifecycle,
+  and mobile flow coverage that previously lived at the top of the monolithic
+  MCP suite.
+- `src/__tests__/device-lab-mcp.test.ts` remains the backend-focused suite for
+  Android emulator/real-device coverage, iOS Simulator/real-device coverage,
+  Windows Sandbox tests, and macOS VM tests. It is still large enough that the
+  next test-maintenance slices should split it by backend while preserving the
+  existing fake-host/fake-SDK coverage.
+- Target remaining layout: `device-lab-mcp.android.test.ts`,
+  `device-lab-mcp.ios.test.ts`, `device-lab-mcp.windows.test.ts`, and
+  `device-lab-mcp.macos.test.ts`.
 - Shared fake server/SDK helpers should move into `src/__tests__/fixtures/`
   so adding future device features does not require editing a monolithic
   multi-thousand-line integration file.
