@@ -152,6 +152,7 @@ process.on("SIGINT", () => {});
         expect(names).toContain("device_broker_command");
         expect(names).toContain("device_list");
         expect(names).toContain("device_inventory");
+        expect(names).toContain("device_wireless");
         expect(names).toContain("display_current");
         expect(names).toContain("display_screenshot");
         expect(names).toContain("display_click");
@@ -214,6 +215,16 @@ process.on("SIGINT", () => {});
         expect(names).toContain("mobile_wait_for_app");
         expect(names).toContain("mobile_screenshot");
         expect(names).toContain("mobile_run_flow");
+        const wirelessTool = result.tools.find((tool) => tool.name === "device_wireless");
+        expect(wirelessTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["backend"],
+            properties: expect.objectContaining({
+                backend: expect.objectContaining({ enum: ["android-device", "ios-device"] }),
+                action: expect.objectContaining({ enum: ["status", "usb-tcpip", "pair", "connect"] }),
+                pairingCode: expect.objectContaining({ type: "string" }),
+                timeoutMs: expect.objectContaining({ maximum: 30000 }),
+            }),
+        }));
         const brokerTool = result.tools.find((tool) => tool.name === "device_broker_status");
         expect(brokerTool?.inputSchema).toEqual(expect.objectContaining({
             properties: expect.objectContaining({
@@ -312,6 +323,7 @@ process.on("SIGINT", () => {});
         ]);
         expect(payload.backends?.find((backend) => backend.name === "android-emulator")?.status).toBe("missing-prerequisites");
         expect(payload.backends?.find((backend) => backend.name === "android-device")?.status).toBe("missing-prerequisites");
+        expect(payload.backends?.find((backend) => backend.name === "android-device")?.capabilities).toContain("device_wireless");
         const iosSimulatorBackend = payload.backends?.find((backend) => backend.name === "ios-simulator");
         expect(iosSimulatorBackend?.status).toBe("missing-prerequisites");
         expect(iosSimulatorBackend?.capabilities).toEqual(expect.arrayContaining([
@@ -329,12 +341,37 @@ process.on("SIGINT", () => {});
             "mobile_wait_for_text",
         ]));
         expect(payload.backends?.find((backend) => backend.name === "ios-device")?.status).toBe("missing-prerequisites");
+        expect(payload.backends?.find((backend) => backend.name === "ios-device")?.capabilities).toContain("device_wireless");
         const windowsBackend = payload.backends?.find((backend) => backend.name === "windows-sandbox");
         expect(windowsBackend?.status).toBe("missing-prerequisites");
         expect(windowsBackend?.capabilities).toContain("device_inventory");
         const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
         expect(macosBackend?.status).toBe("missing-prerequisites");
         expect(macosBackend?.capabilities).toContain("device_inventory");
+    });
+
+    it("reports real-device wireless missing prerequisites without environment configuration", { timeout: TIMEOUT }, async () => {
+        const android = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "android-device", action: "status" },
+        });
+        expect(android.isError).toBe(true);
+        expect(JSON.parse((android.content as Array<{ text?: string }>)[0].text ?? "{}")).toEqual(expect.objectContaining({
+            ok: false,
+            error: "android-wireless-missing-adb",
+            missing: ["adb"],
+        }));
+
+        const ios = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "ios-device", action: "status" },
+        });
+        expect(ios.isError).toBe(true);
+        expect(JSON.parse((ios.content as Array<{ text?: string }>)[0].text ?? "{}")).toEqual(expect.objectContaining({
+            ok: false,
+            error: "ios-wireless-missing-xcrun",
+            missing: ["xcrun"],
+        }));
     });
 
     it("reports zero-config broker contract without starting host providers", { timeout: TIMEOUT }, async () => {
@@ -3099,6 +3136,20 @@ if [ "$1" = "connect" ]; then
     *) echo "failed to connect to $2" >&2; exit 1 ;;
   esac
 fi
+if [ "$1" = "tcpip" ]; then
+  case "$2" in
+    5555) echo "restarting in TCP mode port: $2"; exit 0 ;;
+    *) echo "failed to restart tcpip on $2" >&2; exit 1 ;;
+  esac
+fi
+if [ "$1" = "pair" ]; then
+  if [ "$2" = "192.168.1.70:37099" ] && [ "$3" = "123456" ]; then
+    echo "Successfully paired to $2"
+    exit 0
+  fi
+  echo "Failed to pair to $2" >&2
+  exit 1
+fi
 if [ "$1" = "get-state" ]; then
   echo "device"
   exit 0
@@ -3642,6 +3693,113 @@ exit 0
             expect.objectContaining({ serial: "emulator-5554", emulator: true }),
         ]));
 
+        const wirelessStatus = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "android-device" },
+        });
+        expect(wirelessStatus.isError).not.toBe(true);
+        const wirelessStatusPayload = JSON.parse(((wirelessStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            actions: string[];
+            hostDevices: { devices: Array<{ serial: string; connection: string }> };
+        };
+        expect(wirelessStatusPayload.actions).toEqual(expect.arrayContaining(["usb-tcpip", "pair", "connect"]));
+        expect(wirelessStatusPayload.hostDevices.devices).toEqual(expect.arrayContaining([
+            expect.objectContaining({ serial: "192.168.1.50:5555", connection: "wifi" }),
+        ]));
+
+        const listBeforeWirelessPrepare = await client.callTool({ name: "device_list", arguments: {} });
+        const listedBeforeWirelessPrepare = JSON.parse(((listBeforeWirelessPrepare.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ backend?: string }>;
+        };
+        expect(listedBeforeWirelessPrepare.devices.some((device) => device.backend === "android-device")).toBe(false);
+
+        const usbTcpip = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "android-device", action: "usb-tcpip", serial: "R5CREAL123", host: "192.168.1.50", port: 5555 },
+        });
+        expect(usbTcpip.isError).not.toBe(true);
+        const usbTcpipPayload = JSON.parse(((usbTcpip.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            action: string;
+            stateMutated: boolean;
+            target: string;
+            attachNext: { arguments: { host: string; port: number } };
+        };
+        expect(usbTcpipPayload).toEqual(expect.objectContaining({
+            ok: true,
+            action: "usb-tcpip",
+            stateMutated: false,
+            target: "192.168.1.50:5555",
+        }));
+        expect(usbTcpipPayload.attachNext.arguments).toEqual(expect.objectContaining({ host: "192.168.1.50", port: 5555 }));
+
+        const pairConnect = await client.callTool({
+            name: "device_wireless",
+            arguments: {
+                backend: "android-device",
+                action: "pair",
+                pairHost: "192.168.1.70",
+                pairPort: 37099,
+                pairingCode: "123456",
+                host: "192.168.1.50",
+                port: 5555,
+            },
+        });
+        expect(pairConnect.isError).not.toBe(true);
+        const pairConnectPayload = JSON.parse(((pairConnect.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            pairTarget: string;
+            pair: { args: string[] };
+            target: string;
+            stateMutated: boolean;
+        };
+        expect(pairConnectPayload).toEqual(expect.objectContaining({
+            ok: true,
+            pairTarget: "192.168.1.70:37099",
+            target: "192.168.1.50:5555",
+            stateMutated: false,
+        }));
+        expect(pairConnectPayload.pair.args).toEqual(["pair", "192.168.1.70:37099", "[redacted]"]);
+
+        const pairMissingConnectTarget = await client.callTool({
+            name: "device_wireless",
+            arguments: {
+                backend: "android-device",
+                action: "pair",
+                pairHost: "192.168.1.70",
+                pairPort: 37099,
+                pairingCode: "123456",
+                connect: true,
+            },
+        });
+        expect(pairMissingConnectTarget.isError).toBe(true);
+        const pairMissingConnectTargetPayload = JSON.parse((pairMissingConnectTarget.content as Array<{ text?: string }>)[0].text ?? "{}") as {
+            error: string;
+            pair: { args: string[] };
+        };
+        expect(pairMissingConnectTargetPayload.error).toBe("android-wireless-connect-requires-host");
+        expect(pairMissingConnectTargetPayload.pair.args).toEqual(["pair", "192.168.1.70:37099", "[redacted]"]);
+
+        const failedPair = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "android-device", action: "pair", pairHost: "192.168.1.70", pairPort: 37099, pairingCode: "000000" },
+        });
+        expect(failedPair.isError).toBe(true);
+        const failedPairPayload = JSON.parse((failedPair.content as Array<{ text?: string }>)[0].text ?? "{}") as {
+            ok: boolean;
+            error: string;
+            command: { args: string[]; status: number; stderr: string };
+        };
+        expect(failedPairPayload).toEqual(expect.objectContaining({ ok: false, error: "android-wireless-pair-failed" }));
+        expect(failedPairPayload.command).toEqual(expect.objectContaining({ status: 1, stderr: expect.stringContaining("Failed to pair") }));
+        expect(failedPairPayload.command.args).toEqual(["pair", "192.168.1.70:37099", "[redacted]"]);
+
+        const listAfterWirelessPrepare = await client.callTool({ name: "device_list", arguments: {} });
+        const listedAfterWirelessPrepare = JSON.parse(((listAfterWirelessPrepare.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            devices: Array<{ backend?: string }>;
+        };
+        expect(listedAfterWirelessPrepare.devices.some((device) => device.backend === "android-device")).toBe(false);
+
         const androidLeaseDir = join(homeDir, ".ccc/devices/physical-leases/android-device/locks");
         mkdirSync(androidLeaseDir, { recursive: true });
         writeFileSync(join(androidLeaseDir, `${encodeURIComponent("R5LEASED999")}.json`), JSON.stringify({
@@ -3829,6 +3987,9 @@ exit 0
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain("adb devices -l");
+        expect(log).toContain("adb -s R5CREAL123 tcpip 5555");
+        expect(log).toContain("adb pair 192.168.1.70:37099 123456");
+        expect(log).toContain("adb pair 192.168.1.70:37099 000000");
         expect(log).toContain("adb connect 192.168.1.50:5555");
         expect(log).toContain("adb connect 192.168.1.51:5555");
         expect(log).not.toContain("adb connect 192.168.1.52:5555");
@@ -4683,6 +4844,46 @@ exit 0
         ]));
         expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Simulator"))).toBe(false);
         expect(inventoryPayload.hostDevices.devices.some((device) => device.name.includes("Mac"))).toBe(false);
+
+        const wirelessStatus = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "ios-device", udid: "00008120-00AA00BB00CC00DD" },
+        });
+        expect(wirelessStatus.isError).not.toBe(true);
+        const wirelessStatusPayload = JSON.parse(((wirelessStatus.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            ok: boolean;
+            provider: string;
+            networkVisible: boolean;
+            selected: { udid: string; connection: string };
+            supportedActions: string[];
+            unsupportedActions: string[];
+        };
+        expect(wirelessStatusPayload).toEqual(expect.objectContaining({
+            ok: true,
+            provider: "xcrun-xctrace",
+            networkVisible: true,
+            selected: expect.objectContaining({ udid: "00008120-00AA00BB00CC00DD", connection: "wifi" }),
+        }));
+        expect(wirelessStatusPayload.supportedActions).toEqual(["status"]);
+        expect(wirelessStatusPayload.unsupportedActions).toEqual(expect.arrayContaining(["pair", "connect"]));
+
+        const unsupportedIosPair = await client.callTool({
+            name: "device_wireless",
+            arguments: { backend: "ios-device", action: "pair", udid: "00008110-001C195E0E91801E" },
+        });
+        expect(unsupportedIosPair.isError).toBe(true);
+        const unsupportedIosPairPayload = JSON.parse((unsupportedIosPair.content as Array<{ text?: string }>)[0].text ?? "{}") as {
+            ok: boolean;
+            error: string;
+            networkVisible: boolean;
+            attachFlow: string;
+        };
+        expect(unsupportedIosPairPayload).toEqual(expect.objectContaining({
+            ok: false,
+            error: "ios-wireless-pairing-requires-xcode-trust",
+            networkVisible: false,
+        }));
+        expect(unsupportedIosPairPayload.attachFlow).toContain("device_inventory");
 
         const iosLeaseDir = join(homeDir, ".ccc/devices/physical-leases/ios-device/locks");
         mkdirSync(iosLeaseDir, { recursive: true });

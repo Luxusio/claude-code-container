@@ -603,6 +603,14 @@ Physical Android device attachment status:
   is known, so an already-leased device cannot trigger a host-global ADB
   connection attempt. Android pairing/authorization must already be accepted by
   Android/ADB.
+- `device_wireless` exposes the pre-attachment wireless bootstrap steps without
+  creating an owner device record or lease. For a USB-trusted phone it can run
+  `adb -s <serial> tcpip <port>` and optionally `adb connect <host>:<port>`.
+  For Android 11+ wireless debugging it can run `adb pair <pairHost>:<pairPort>
+  <pairingCode>` and optionally `adb connect <host>:<port>`. The user still
+  needs to provide the pairing code shown by Android, and `device_attach`
+  remains the step that claims owner-scoped access after the transport is
+  visible.
 - `device_inventory` reports host ADB devices, including unauthorized/offline
   states and Wi-Fi ADB transports, without claiming or starting anything.
 - `device_attach` stores an owner-scoped lease for a real serial and refuses
@@ -722,6 +730,10 @@ Physical iOS device attachment status:
 - `device_attach` accepts `connection: "wifi"` for iOS only when the UDID is
   already visible to `xctrace` as a network device; it records network transport
   metadata but does not attempt to create or bypass Apple network pairing.
+- `device_wireless` for `ios-device` reports Xcode/xctrace network visibility
+  and returns explicit diagnostics for pairing/connect actions. Apple trust,
+  Developer Mode, and Xcode network pairing must already be satisfied on the
+  macOS host; CCC does not automate or bypass the iOS trust prompt.
 - `device_attach` stores an owner-scoped lease for a visible UDID and refuses
   missing or duplicate UDIDs in the current owner namespace.
 - Physical UDIDs are additionally protected by host-wide hardware lock files
