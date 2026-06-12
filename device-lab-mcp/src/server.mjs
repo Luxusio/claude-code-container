@@ -13,21 +13,9 @@ import { currentDisplayTarget, handleDisplayTool, x11Available } from "./display
 import { jsonResult, textResult } from "./responses.mjs";
 import { TOOLS } from "./tools.mjs";
 
-function heavyBackend(name, host, capabilities) {
-    return {
-        name,
-        host,
-        creatable: true,
-        available: false,
-        lazy: true,
-        status: "planned",
-        reason: "Backend adapter is not implemented in this foundation slice.",
-        capabilities,
-    };
-}
-
 const FLOW_MAX_STEPS = 50;
 const FLOW_ALLOWED_DEVICE_TOOLS = new Set(["device_status", "device_screenshot"]);
+const BROKER_LIFECYCLE_COMMANDS = new Set(["device_status", "device_start", "device_stop", "device_delete"]);
 
 function flowStepTool(step) {
     return step?.tool || step?.name || "";
@@ -65,7 +53,57 @@ function summarizeToolResult(result) {
     };
 }
 
+function wantsBrokerLifecycle(name, args) {
+    return BROKER_LIFECYCLE_COMMANDS.has(name) && (args?.broker === true || args?.viaBroker === true || args?.autolaunch === true);
+}
+
+function lifecycleBackendDevices() {
+    return [
+        ["android-emulator", listAndroidDevices()],
+        ["android-device", listAndroidRealDevices()],
+        ["ios-simulator", listIosDevices()],
+        ["ios-device", listIosRealDevices()],
+        ["windows-sandbox", listWindowsDevices()],
+        ["macos-vm", listMacosDevices()],
+    ];
+}
+
+function inferLifecycleBackend(deviceId) {
+    if (!deviceId) return { ok: false, error: "missing-device-id" };
+    const matches = [];
+    for (const [backend, devices] of lifecycleBackendDevices()) {
+        if ((devices || []).some((device) => device?.id === deviceId)) matches.push(backend);
+    }
+    if (matches.length === 1) return { ok: true, backend: matches[0] };
+    if (matches.length > 1) return { ok: false, error: "ambiguous-device-backend", matches };
+    return { ok: false, error: "device-backend-not-found" };
+}
+
+async function handleBrokerLifecycleTool(name, args) {
+    const deviceId = typeof args?.deviceId === "string" ? args.deviceId : "";
+    const backend = typeof args?.backend === "string" && args.backend ? args.backend : inferLifecycleBackend(deviceId);
+    if (backend?.ok === false) {
+        return jsonResult({
+            ok: false,
+            error: backend.error,
+            deviceId,
+            matches: backend.matches || [],
+            routedBy: "device-lifecycle-broker",
+        });
+    }
+    return jsonResult(await brokerCommand({
+        ...args,
+        action: "invoke",
+        backend: typeof backend === "string" ? backend : backend.backend,
+        command: name,
+        deviceId,
+        dryRun: args?.dryRun === true,
+    }));
+}
+
 async function dispatchTool(name, args) {
+    if (wantsBrokerLifecycle(name, args)) return handleBrokerLifecycleTool(name, args);
+
     const androidResult = await handleAndroidTool(name, args);
     if (androidResult) return androidResult;
 

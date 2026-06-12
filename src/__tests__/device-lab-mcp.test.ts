@@ -105,6 +105,7 @@ const server = http.createServer((req, res) => {
     if (body.method === "broker.physical.detach") return send(res, 200, { ok: true, result: { ownerId: match[1], detached: body.params.deviceId, physicalDevicePoweredOff: false } });
     if (body.method === "broker.physical.list") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, devices: [], leases: [] } });
     if (body.method === "broker.command.plan") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, command: body.params.command, deviceId: body.params.deviceId, device: { id: body.params.deviceId, status: "stopped" }, execution: { mode: "planned", providerExecution: "fake", mutatesHost: false } } });
+    if (body.method === "broker.command.invoke") return send(res, 200, { ok: true, result: { ownerId: match[1], backend: body.params.backend, command: body.params.command, deviceId: body.params.deviceId, dryRun: body.params.dryRun === true, invoked: body.params.dryRun !== true, device: { id: body.params.deviceId, status: body.params.command === "device_start" ? "running" : "stopped" }, execution: { mode: body.params.dryRun === true ? "dry-run" : "exec", providerExecution: "fake", mutatesHost: body.params.dryRun !== true && body.params.command !== "device_status" } } });
     return send(res, 418, { ok: false, error: "fake-broker-error", method: body.method });
   });
 });
@@ -266,6 +267,17 @@ process.on("SIGINT", () => {});
                 hostCandidates: expect.objectContaining({ maxItems: 8 }),
                 timeoutMs: expect.objectContaining({ maximum: 2000 }),
                 autolaunch: expect.objectContaining({ type: "boolean" }),
+            }),
+        }));
+        const lifecycleTool = result.tools.find((tool) => tool.name === "device_start");
+        expect(lifecycleTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["deviceId"],
+            properties: expect.objectContaining({
+                backend: expect.objectContaining({ enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm"] }),
+                broker: expect.objectContaining({ type: "boolean" }),
+                viaBroker: expect.objectContaining({ type: "boolean" }),
+                autolaunch: expect.objectContaining({ type: "boolean" }),
+                dryRun: expect.objectContaining({ type: "boolean" }),
             }),
         }));
     });
@@ -503,6 +515,31 @@ process.on("SIGINT", () => {});
             }),
         }));
 
+        mkdirSync(join(homeDir, ".ccc/devices/owners", firstPayload.launch.runtime.ownerId, "windows"), { recursive: true });
+        writeFileSync(join(homeDir, ".ccc/devices/owners", firstPayload.launch.runtime.ownerId, "windows", "devices.json"), JSON.stringify({
+            devices: [{ id: "win-autolaunch", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/win-autolaunch.wsb" }],
+        }));
+        const lifecycleStart = await client.callTool({
+            name: "device_start",
+            arguments: {
+                deviceId: "win-autolaunch",
+                autolaunch: true,
+                hostCandidates: ["127.0.0.1"],
+                port,
+                timeoutMs: 300,
+            },
+        });
+        expect(JSON.parse(((lifecycleStart.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: true,
+            result: expect.objectContaining({
+                backend: "windows-sandbox",
+                command: "device_start",
+                deviceId: "win-autolaunch",
+                invoked: true,
+                execution: expect.objectContaining({ mode: "exec", providerExecution: "fake" }),
+            }),
+        }));
+
         const shutdown = await client.callTool({ name: "device_broker_shutdown", arguments: {} });
         expect(JSON.parse(((shutdown.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
             ok: true,
@@ -510,6 +547,7 @@ process.on("SIGINT", () => {});
             runtime: expect.objectContaining({ pid: firstPayload.launch.runtime.pid }),
         }));
         expect(existsSync(statusPayload.state.runtimeFile)).toBe(false);
+        rmSync(join(homeDir, ".ccc/devices/owners", firstPayload.launch.runtime.ownerId, "windows"), { recursive: true, force: true });
     });
 
     it("preserves runtime metadata when explicit broker shutdown times out", { timeout: TIMEOUT }, async () => {
@@ -1302,6 +1340,57 @@ setInterval(() => {}, 1000);
                 }),
             }));
 
+            const lifecycleStatus = await client.callTool({
+                name: "device_status",
+                arguments: {
+                    deviceId: "win-broker-plan",
+                    backend: "windows-sandbox",
+                    broker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(lifecycleStatus.isError).not.toBe(true);
+            expect(JSON.parse(((lifecycleStatus.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    backend: "windows-sandbox",
+                    command: "device_status",
+                    deviceId: "win-broker-plan",
+                    invoked: true,
+                    execution: expect.objectContaining({
+                        mode: "noop",
+                        providerExecution: "executed",
+                        mutatesHost: false,
+                    }),
+                }),
+            }));
+
+            const lifecycleStop = await client.callTool({
+                name: "device_stop",
+                arguments: {
+                    deviceId: "win-broker-plan",
+                    backend: "windows-sandbox",
+                    viaBroker: true,
+                    dryRun: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                    timeoutMs: 500,
+                },
+            });
+            expect(lifecycleStop.isError).not.toBe(true);
+            expect(JSON.parse(((lifecycleStop.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    backend: "windows-sandbox",
+                    command: "device_stop",
+                    invoked: false,
+                    dryRun: true,
+                    execution: expect.objectContaining({ mode: "dry-run", mutatesHost: false }),
+                }),
+            }));
+
             const failedRun = await client.callTool({
                 name: "device_broker_command",
                 arguments: {
@@ -1367,6 +1456,18 @@ setInterval(() => {}, 1000);
             ok: false,
             error: "invalid-command-action",
             attempts: [],
+        }));
+
+        const inferenceFailure = await client.callTool({
+            name: "device_status",
+            arguments: { deviceId: "missing-broker-device", broker: true },
+        });
+        expect(inferenceFailure.isError).not.toBe(true);
+        expect(JSON.parse(((inferenceFailure.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "device-backend-not-found",
+            deviceId: "missing-broker-device",
+            routedBy: "device-lifecycle-broker",
         }));
 
         const unavailable = await client.callTool({

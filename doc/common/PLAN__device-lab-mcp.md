@@ -125,8 +125,10 @@ Patterns to avoid as defaults:
   - Current implementation exposes the broker contract through
     `device_broker_status` and `device_backends.broker` without starting a
     daemon by default. Broker tools can explicitly autolaunch the HTTP broker
-    and record MCP-owned runtime metadata; normal backend lifecycle tools still
-    use direct-provider mode until full broker routing parity is added.
+    and record MCP-owned runtime metadata. Normal backend lifecycle tools use
+    direct-provider mode by default, but `device_status`, `device_start`,
+    `device_stop`, and `device_delete` can explicitly opt into broker routing
+    with `broker: true`, `viaBroker: true`, or `autolaunch: true`.
 
 3. Backend adapters
    - `android-emulator`: Android SDK emulator and `adb`.
@@ -197,7 +199,8 @@ Broker contract status:
   `device_backends` still do not probe or start anything. Explicit probes are
   capped at eight host candidates and 2000ms per candidate.
 - When called with `autolaunch: true`, `device_broker_status`,
-  `device_broker_rpc`, `device_broker_lease`, and `device_broker_command`
+  `device_broker_rpc`, `device_broker_lease`, `device_broker_attach`,
+  `device_broker_command`, and opt-in lifecycle tools
   first reuse a healthy broker if one is reachable, then check owner-scoped
   runtime metadata, and finally start `ccc devices broker serve --host
   <host> --port <port>` only for the broker process. This does not start
@@ -243,11 +246,17 @@ Broker contract status:
   caps, handles emulator starts as detached launches, and reports structured
   missing-metadata/provider failures. Physical Android/iOS stop/delete commands
   are safety no-ops rather than host power/disconnect operations.
+- `device_status`, `device_start`, `device_stop`, and `device_delete` preserve
+  direct-provider behavior by default, but can opt into the same broker command
+  route with `broker: true`, `viaBroker: true`, or `autolaunch: true`. When
+  `backend` is omitted, the MCP server infers the backend from the current
+  owner-scoped device id before contacting a broker and returns structured JSON
+  inference errors if the device id is missing, unknown, or ambiguous.
 - Environment variables are not required for broker discovery, RPC, or physical
-  lease/lifecycle command operations. Full provider routing parity with the
-  direct in-container MCP path, Apple device pairing/trust bootstrap through the
-  broker, strong authentication token handshake, and permanent host service
-  manager integration remain deferred.
+  lease/lifecycle command operations. Default broker routing for every
+  lifecycle call, Apple device pairing/trust bootstrap through the broker,
+  strong authentication token handshake, and permanent host service manager
+  integration remain deferred.
 
 Host broker daemon skeleton status:
 
@@ -264,11 +273,11 @@ Host broker daemon skeleton status:
   invalid JSON, oversized requests, invalid lease or command params,
   cross-owner lease operations, unknown methods, missing provider metadata, and
   failed provider commands.
-- MCP can now explicitly autolaunch and shut down this broker for broker tools.
-  The current in-container MCP remains in direct-provider mode for normal
-  backend lifecycle tools until full provider routing parity, strong
-  authentication handshake, and permanent host service-manager integration are
-  implemented.
+- MCP can now explicitly autolaunch and shut down this broker for broker tools
+  and opt-in lifecycle tools. The current in-container MCP remains in
+  direct-provider mode by default for normal backend lifecycle tools until
+  default broker routing, strong authentication handshake, and permanent
+  host service-manager integration are implemented.
 
 ## MCP tools
 
