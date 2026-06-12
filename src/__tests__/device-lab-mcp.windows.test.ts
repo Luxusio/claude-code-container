@@ -131,6 +131,11 @@ exit 0
         expect(helperScript).toContain("'type'");
         expect(helperScript).toContain("'scroll'");
         expect(helperScript).toContain("'cursor_position'");
+        expect(helperScript).toContain("'window_list'");
+        expect(helperScript).toContain("'accessibility_snapshot'");
+        expect(helperScript).toContain("UIAutomationClient");
+        expect(helperScript).toContain("ControlViewWalker");
+        expect(helperScript).toContain("ConvertTo-Json -Depth 32");
         expect(helperScript).toContain("'upload'");
         expect(helperScript).toContain("'download'");
 
@@ -163,6 +168,8 @@ exit 0
                     text?: string;
                     direction?: string;
                     amount?: number;
+                    maxDepth?: number;
+                    maxNodes?: number;
                 };
                 helperRequests.push(request as unknown as Record<string, unknown>);
                 const response: Record<string, unknown> = { id: request.id, ok: true, type: request.type };
@@ -192,6 +199,27 @@ exit 0
                 }
                 if (request.type === "cursor_position") {
                     response.cursor = { x: 11, y: 22 };
+                }
+                if (request.type === "window_list") {
+                    response.provider = "windows-process-main-window";
+                    response.windows = [
+                        { processId: 101, processName: "notepad", title: "notes.txt - Notepad", handle: "1234" },
+                    ];
+                }
+                if (request.type === "accessibility_snapshot") {
+                    response.accessibility = {
+                        provider: "windows-uiautomation",
+                        maxDepth: request.maxDepth,
+                        maxNodes: request.maxNodes,
+                        nodeCount: 2,
+                        root: {
+                            name: "Desktop",
+                            controlType: "ControlType.Pane",
+                            children: [
+                                { name: "notes.txt - Notepad", controlType: "ControlType.Window", automationId: "", children: [] },
+                            ],
+                        },
+                    };
                 }
                 if (request.type === "download") {
                     const remoteName = String(request.remotePath ?? "remote.txt").split(/[\\/]/).filter(Boolean).pop() ?? "remote.txt";
@@ -328,6 +356,33 @@ exit 0
         expect(cursor.isError).not.toBe(true);
         expect(JSON.parse(((cursor.content as Array<{ text?: string }>)[0].text ?? "{}")).cursor).toEqual({ x: 11, y: 22 });
 
+        const windows = await client.callTool({
+            name: "device_window_list",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(windows.isError).not.toBe(true);
+        expect(JSON.parse(((windows.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "windows-process-main-window",
+            windows: [expect.objectContaining({ processName: "notepad", title: "notes.txt - Notepad" })],
+        }));
+
+        const accessibility = await client.callTool({
+            name: "device_accessibility_snapshot",
+            arguments: { deviceId: "windows-win-helper", maxDepth: 99, maxNodes: 5000, helperTimeoutMs: 1000 },
+        });
+        expect(accessibility.isError).not.toBe(true);
+        const accessibilityPayload = JSON.parse(((accessibility.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            provider: string;
+            accessibility: { maxDepth: number; maxNodes: number; nodeCount: number; root: { name: string; children: Array<{ name: string }> } };
+        };
+        expect(accessibilityPayload.provider).toBe("windows-uiautomation");
+        expect(accessibilityPayload.accessibility).toEqual(expect.objectContaining({
+            maxDepth: 8,
+            maxNodes: 1000,
+            nodeCount: 2,
+        }));
+        expect(accessibilityPayload.accessibility.root.children[0].name).toBe("notes.txt - Notepad");
+
         const uploadSource = join(homeDir, "upload.txt");
         writeFileSync(uploadSource, "upload");
         const upload = await client.callTool({
@@ -439,6 +494,8 @@ exit 0
             expect.objectContaining({ type: "type", text: "a+b {ok} 50% [x] (y) ~ ^", keys: "a{+}b {{}ok{}} 50{%} {[}x{]} {(}y{)} {~} {^}" }),
             expect.objectContaining({ type: "scroll", x: 10, y: 20, direction: "down", amount: 3 }),
             expect.objectContaining({ type: "cursor_position" }),
+            expect.objectContaining({ type: "window_list" }),
+            expect.objectContaining({ type: "accessibility_snapshot", maxDepth: 8, maxNodes: 1000 }),
         ]));
     });
 

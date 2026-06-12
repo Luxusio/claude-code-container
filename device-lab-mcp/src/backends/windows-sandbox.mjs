@@ -44,6 +44,8 @@ export function windowsBackend() {
             "device_type",
             "device_scroll",
             "device_cursor_position",
+            "device_window_list",
+            "device_accessibility_snapshot",
             "device_record_video_start",
             "device_record_video_stop",
             "device_record_video_status",
@@ -112,7 +114,7 @@ function windowsHelperMetadata(device) {
         guestUploadsDir: "C:\\ccc\\scratch\\uploads",
         guestDownloadsDir: "C:\\ccc\\scratch\\downloads",
         status: "file-channel",
-        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_window_list", "device_accessibility_snapshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
 
@@ -255,6 +257,50 @@ function windowsHelperScript(helper) {
         "          $Position = [System.Windows.Forms.Cursor]::Position",
         "          $Response.cursor = @{ x = $Position.X; y = $Position.Y }",
         "        }",
+        "        'window_list' {",
+        "          $Windows = Get-Process | Where-Object { $_.MainWindowHandle -and $_.MainWindowHandle -ne 0 } | ForEach-Object {",
+        "            @{ processId = $_.Id; processName = $_.ProcessName; title = $_.MainWindowTitle; handle = [string]$_.MainWindowHandle }",
+        "          }",
+        "          $Response.windows = @($Windows)",
+        "          $Response.provider = 'windows-process-main-window'",
+        "        }",
+        "        'accessibility_snapshot' {",
+        "          Add-Type -AssemblyName UIAutomationClient",
+        "          Add-Type -AssemblyName UIAutomationTypes",
+        "          $MaxDepth = if ($Request.maxDepth -ne $null) { [Math]::Max(0, [Math]::Min([int]$Request.maxDepth, 8)) } else { 3 }",
+        "          $MaxNodes = if ($Request.maxNodes -ne $null) { [Math]::Max(1, [Math]::Min([int]$Request.maxNodes, 1000)) } else { 200 }",
+        "          $script:CccNodeCount = 0",
+        "          function Convert-CccAutomationElement {",
+        "            param($Element, [int]$Depth)",
+        "            if ($null -eq $Element -or $script:CccNodeCount -ge $MaxNodes) { return $null }",
+        "            $script:CccNodeCount += 1",
+        "            $Rect = $Element.Current.BoundingRectangle",
+        "            $Node = [ordered]@{",
+        "              name = $Element.Current.Name",
+        "              automationId = $Element.Current.AutomationId",
+        "              className = $Element.Current.ClassName",
+        "              controlType = $Element.Current.ControlType.ProgrammaticName",
+        "              processId = $Element.Current.ProcessId",
+        "              isEnabled = $Element.Current.IsEnabled",
+        "              isOffscreen = $Element.Current.IsOffscreen",
+        "              bounds = @{ x = [double]$Rect.X; y = [double]$Rect.Y; width = [double]$Rect.Width; height = [double]$Rect.Height }",
+        "              children = @()",
+        "            }",
+        "            if ($Depth -lt $MaxDepth -and $script:CccNodeCount -lt $MaxNodes) {",
+        "              $Walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker",
+        "              $Child = $Walker.GetFirstChild($Element)",
+        "              while ($null -ne $Child -and $script:CccNodeCount -lt $MaxNodes) {",
+        "                $ChildNode = Convert-CccAutomationElement $Child ($Depth + 1)",
+        "                if ($null -ne $ChildNode) { $Node.children += $ChildNode }",
+        "                $Child = $Walker.GetNextSibling($Child)",
+        "              }",
+        "            }",
+        "            return $Node",
+        "          }",
+        "          $Root = [System.Windows.Automation.AutomationElement]::RootElement",
+        "          $Tree = Convert-CccAutomationElement $Root 0",
+        "          $Response.accessibility = @{ provider = 'windows-uiautomation'; maxDepth = $MaxDepth; maxNodes = $MaxNodes; nodeCount = $script:CccNodeCount; root = $Tree }",
+        "        }",
         "        'upload' {",
         "          Copy-Item -Force -Path $Request.uploadPath -Destination $Request.remotePath",
         "          $Response.uploaded = @{ remotePath = $Request.remotePath }",
@@ -336,7 +382,7 @@ function windowsHelperScript(helper) {
         "      $RequestId = if ($Request -and $Request.id) { $Request.id } else { [IO.Path]::GetFileNameWithoutExtension($RequestPath) }",
         "      $Response = [ordered]@{ id = $RequestId; ok = $false; error = $_.Exception.Message }",
         "    }",
-        "    $Response | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Outbox ($Response.id + '.json')) -Encoding UTF8",
+        "    $Response | ConvertTo-Json -Depth 32 | Set-Content -Path (Join-Path $Outbox ($Response.id + '.json')) -Encoding UTF8",
         "    Remove-Item -Force -Path $RequestPath",
         "  }",
         "  Start-Sleep -Milliseconds 250",
@@ -691,6 +737,36 @@ export async function handleWindowsTool(name, args) {
             if (result.error) return textResult(false, result.error);
             if (!result.response.ok) return textResult(false, result.response.error || "Windows helper cursor position failed");
             return jsonResult({ provider: "windows-helper", cursor: result.response.cursor || null, response: result.response });
+        }
+
+        case "device_window_list": {
+            const { deviceId, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            const result = await windowsHelperRequest(device, "window_list", {}, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper window list failed");
+            return jsonResult({
+                provider: result.response.provider || "windows-process-main-window",
+                windows: Array.isArray(result.response.windows) ? result.response.windows : [],
+                response: result.response,
+            });
+        }
+
+        case "device_accessibility_snapshot": {
+            const { deviceId, helperTimeoutMs } = args;
+            const device = findWindowsDevice(deviceId);
+            if (!device) return undefined;
+            const maxDepth = Math.max(0, Math.min(Number.isFinite(Number(args.maxDepth)) ? Number(args.maxDepth) : 3, 8));
+            const maxNodes = Math.max(1, Math.min(Number.isFinite(Number(args.maxNodes)) ? Number(args.maxNodes) : 200, 1000));
+            const result = await windowsHelperRequest(device, "accessibility_snapshot", { maxDepth, maxNodes }, helperTimeoutMs);
+            if (result.error) return textResult(false, result.error);
+            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper accessibility snapshot failed");
+            return jsonResult({
+                provider: result.response.accessibility?.provider || "windows-uiautomation",
+                accessibility: result.response.accessibility || null,
+                response: result.response,
+            });
         }
 
         case "device_record_video_status": {

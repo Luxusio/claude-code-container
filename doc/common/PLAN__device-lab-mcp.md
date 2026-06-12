@@ -876,9 +876,11 @@ Foundation status:
   upload/download, frame-archive recording, and first-pass GUI control are
   implemented. Windows Sandbox now handles `device_click`,
   `device_double_click`, `device_key`, `device_type`, `device_scroll`, and
-  `device_cursor_position` through owner-scoped guest-helper requests.
-  Accessibility tree inspection, OCR, and richer window targeting remain later
-  hardening slices.
+  `device_cursor_position` through owner-scoped guest-helper requests. It also
+  handles `device_window_list` and `device_accessibility_snapshot` for
+  structured desktop inspection through bounded helper requests. OCR and
+  richer target-by-window/target-by-element actions remain later hardening
+  slices.
 
 Guest-helper foundation status:
 
@@ -898,6 +900,11 @@ Guest-helper foundation status:
   `System.Windows.Forms`, `SendKeys`, cursor positioning, and Win32 mouse
   events inside the sandbox, while the MCP side remains a lazy file-channel
   client and does not require an always-running daemon in the CCC container.
+- Structured inspection tools write `window_list` and
+  `accessibility_snapshot` requests. The guest helper returns process main
+  window metadata via `Get-Process` and a bounded UIAutomation
+  `ControlViewWalker` snapshot with `maxDepth`/`maxNodes` clamps so agents can
+  inspect the desktop before choosing coordinates.
 - `device_screenshot` writes a `screenshot` request and returns PNG image
   content from the helper response.
 - `device_record_video_start`, `device_record_video_status`, and

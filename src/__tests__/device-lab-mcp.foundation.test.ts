@@ -51,6 +51,8 @@ describe("device-lab MCP foundation and definitions", () => {
         expect(names).toContain("device_type");
         expect(names).toContain("device_scroll");
         expect(names).toContain("device_cursor_position");
+        expect(names).toContain("device_window_list");
+        expect(names).toContain("device_accessibility_snapshot");
         expect(names).toContain("device_image_create");
         expect(names).toContain("device_image_clone");
         expect(names).toContain("device_snapshot_create");
@@ -177,6 +179,14 @@ describe("device-lab MCP foundation and definitions", () => {
                 dryRun: expect.objectContaining({ type: "boolean" }),
             }),
         }));
+        const accessibilityTool = result.tools.find((tool) => tool.name === "device_accessibility_snapshot");
+        expect(accessibilityTool?.inputSchema).toEqual(expect.objectContaining({
+            required: ["deviceId"],
+            properties: expect.objectContaining({
+                maxDepth: expect.objectContaining({ maximum: 8 }),
+                maxNodes: expect.objectContaining({ maximum: 1000 }),
+            }),
+        }));
     });
 
     it("reports backends without starting heavyweight devices", { timeout: TIMEOUT }, async () => {
@@ -231,6 +241,7 @@ describe("device-lab MCP foundation and definitions", () => {
         const windowsBackend = payload.backends?.find((backend) => backend.name === "windows-sandbox");
         expect(windowsBackend?.status).toBe("missing-prerequisites");
         expect(windowsBackend?.capabilities).toContain("device_inventory");
+        expect(windowsBackend?.capabilities).toEqual(expect.arrayContaining(["device_window_list", "device_accessibility_snapshot"]));
         const macosBackend = payload.backends?.find((backend) => backend.name === "macos-vm");
         expect(macosBackend?.status).toBe("missing-prerequisites");
         expect(macosBackend?.capabilities).toContain("device_inventory");
