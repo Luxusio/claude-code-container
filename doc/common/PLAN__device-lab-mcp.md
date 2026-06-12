@@ -934,8 +934,12 @@ Foundation status:
   preserve owner state so cleanup can be retried. Successful snapshot/recovery
   candidate deletions are removed from state immediately, so a later partial
   delete failure does not block retry cleanup of remaining Tart resources.
-  Guest-helper auto-provisioning remains deferred to later provider-specific
-  hardening slices.
+- SSH-configured macOS VM starts now generate an owner-scoped
+  `ccc-guest-helper.sh`, copy it to `/tmp/ccc-<device-id>-guest-helper.sh`
+  with `scp`, and verify it with `chmod 700 ... && ... status` over SSH after
+  provider start succeeds. Missing SSH metadata skips helper provisioning
+  without failing start; provisioning failures preserve running owner state and
+  helper failure metadata so cleanup can stop the VM later.
 
 macOS helper/SSH bridge status:
 
@@ -954,7 +958,8 @@ macOS helper/SSH bridge status:
   capture, track the local SSH process, interrupt the remote capture on stop,
   download the artifact via `scp`, and clear state on stop/device shutdown.
 - Tests use fake `ssh` and `scp` commands with the fake `tart` provider, so
-  bridge behavior is covered without a real macOS VM.
+  bridge behavior and helper auto-provisioning are covered without a real macOS
+  VM.
 - Automatic SSH credential provisioning and real macOS host smoke tests remain
   deferred.
 

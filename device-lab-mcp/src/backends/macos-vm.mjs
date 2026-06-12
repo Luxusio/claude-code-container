@@ -4,7 +4,7 @@ import { fail, jsonResult, textResult } from "../responses.mjs";
 import { findMacosDevice, readMacosDevices, updateMacosDevice, writeMacosDevices } from "../state/macos-state.mjs";
 import { spawn } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
@@ -118,13 +118,17 @@ function ensureMacosWorkspace(device) {
 
 function macosHelperMetadata(device) {
     ensureMacosWorkspace(device);
+    const remoteScriptPath = device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`;
+    const provisioning = device.helper?.provisioning || null;
     return {
         workspaceDir: macosWorkspaceDir(device),
         toolsDir: macosToolsDir(device),
         hostHelperScript: join(macosToolsDir(device), "ccc-guest-helper.sh"),
+        remoteScriptPath,
         bridge: device.ssh ? "ssh" : "missing",
         ssh: device.ssh || null,
-        status: device.ssh ? "ssh-configured" : "planned",
+        status: provisioning?.status || (device.ssh ? "ssh-configured" : "planned"),
+        provisioning,
         requiredFor: ["device_exec", "device_screenshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
@@ -170,7 +174,7 @@ export function macosProviderPlan(device, discovery = macosDiscovery()) {
             "provider-delete",
         ] : [],
         deferred: [
-            "guest-helper-auto-provisioning",
+            ...(device.ssh ? [] : ["guest-helper-auto-provisioning-requires-ssh"]),
         ],
     };
 }
@@ -366,6 +370,113 @@ function scpBaseArgs(device) {
     if (device.ssh?.port) args.push("-P", String(device.ssh.port));
     args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no");
     return args;
+}
+
+function macosGuestHelperScript(device) {
+    return [
+        "#!/bin/sh",
+        "set -eu",
+        `echo "ccc macOS guest helper for ${device.id}"`,
+        "case \"${1:-status}\" in",
+        "  status) echo '{\"ok\":true,\"helper\":\"ccc-macos-guest-helper\"}' ;;",
+        "  *) echo \"unsupported helper command: $1\" >&2; exit 64 ;;",
+        "esac",
+        "",
+    ].join("\n");
+}
+
+function writeMacosGuestHelper(device) {
+    ensureMacosWorkspace(device);
+    const path = join(macosToolsDir(device), "ccc-guest-helper.sh");
+    writeFileSync(path, macosGuestHelperScript(device), { mode: 0o700 });
+    try { chmodSync(path, 0o700); } catch { /* write mode is enough on most filesystems */ }
+    return path;
+}
+
+function provisionMacosGuestHelper(device) {
+    const target = sshTarget(device);
+    if (!target) {
+        return {
+            ok: true,
+            skipped: true,
+            provisioning: {
+                status: "skipped-missing-ssh",
+                updatedAt: new Date().toISOString(),
+            },
+        };
+    }
+    const discovery = sshDiscovery();
+    if (!discovery.available) {
+        return {
+            ok: false,
+            error: `macOS VM SSH bridge missing prerequisites: ${discovery.missing.join(", ")}`,
+            provisioning: {
+                status: "failed",
+                missing: discovery.missing,
+                updatedAt: new Date().toISOString(),
+            },
+        };
+    }
+    let localScriptPath;
+    try {
+        localScriptPath = writeMacosGuestHelper(device);
+    } catch (error) {
+        return {
+            ok: false,
+            error: "macos-helper-write-failed",
+            detail: error instanceof Error ? error.message : String(error),
+            provisioning: {
+                status: "failed",
+                provider: "local",
+                detail: error instanceof Error ? error.message : String(error),
+                updatedAt: new Date().toISOString(),
+            },
+        };
+    }
+    const remoteScriptPath = device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`;
+    const copy = run(discovery.scp, [...scpBaseArgs(device), localScriptPath, `${target}:${remoteScriptPath}`]);
+    if (copy.status !== 0) {
+        return {
+            ok: false,
+            error: "macos-helper-scp-failed",
+            command: copy,
+            provisioning: {
+                status: "failed",
+                localScriptPath,
+                remoteScriptPath,
+                provider: "scp",
+                updatedAt: new Date().toISOString(),
+            },
+        };
+    }
+    const chmod = run(discovery.ssh, [...sshBaseArgs(device), target, `chmod 700 ${shellQuote(remoteScriptPath)} && ${shellQuote(remoteScriptPath)} status`]);
+    if (chmod.status !== 0) {
+        return {
+            ok: false,
+            error: "macos-helper-chmod-failed",
+            command: chmod,
+            provisioning: {
+                status: "failed",
+                localScriptPath,
+                remoteScriptPath,
+                provider: "ssh",
+                updatedAt: new Date().toISOString(),
+            },
+        };
+    }
+    return {
+        ok: true,
+        skipped: false,
+        provisioning: {
+            status: "provisioned",
+            localScriptPath,
+            remoteScriptPath,
+            provider: "ssh-scp",
+            stdout: chmod.stdout,
+            stderr: chmod.stderr,
+            updatedAt: new Date().toISOString(),
+        },
+    };
 }
 
 function sshBridge(device, toolName) {
@@ -729,15 +840,32 @@ export async function handleMacosTool(name, args) {
             const r = run(plan.startCommand.command, plan.startCommand.args);
             if (r.status !== 0) return fail(r);
 
+            const startedDevice = {
+                ...device,
+                provider: plan.selectedProvider,
+                providerInstance: plan.providerInstance,
+                status: "running",
+            };
+            const provision = provisionMacosGuestHelper(startedDevice);
             const updated = updateMacosDevice(deviceId, (item) => ({
                 ...item,
                 provider: plan.selectedProvider,
                 providerInstance: plan.providerInstance,
-                helper: macosHelperMetadata(item),
+                helper: macosHelperMetadata({ ...item, helper: { ...(item.helper || {}), provisioning: provision.provisioning } }),
                 status: "running",
                 updatedAt: new Date().toISOString(),
             }));
-            return jsonResult({ device: deviceWithPlan(updated) });
+            if (!provision.ok) {
+                return textResult(false, JSON.stringify({
+                    ok: false,
+                    error: provision.error,
+                    command: provision.command,
+                    device: deviceWithPlan(updated),
+                    helper: provision.provisioning,
+                    providerStart: { stdout: r.stdout, stderr: r.stderr, status: r.status },
+                }));
+            }
+            return jsonResult({ device: deviceWithPlan(updated), helper: provision.provisioning });
         }
 
         case "device_stop": {

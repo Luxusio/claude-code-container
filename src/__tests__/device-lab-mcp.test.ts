@@ -1890,7 +1890,7 @@ setInterval(() => {}, 1000);
                 id: "macos-mac-test",
                 providerPlan: expect.objectContaining({
                     missing: ["macos-host"],
-                    deferred: ["guest-helper-auto-provisioning"],
+                    deferred: ["guest-helper-auto-provisioning-requires-ssh"],
                 }),
             }),
         ]));
@@ -1982,6 +1982,7 @@ echo "scp $*" >> "$FAKE_TART_LOG"
 last=""
 for arg in "$@"; do last="$arg"; done
 case "$last" in
+  *fail-helper*) echo "scp helper failure" >&2; exit 5 ;;
   *:*) exit 0 ;;
   *) printf 'fakepng' > "$last"; exit 0 ;;
 esac
@@ -2019,15 +2020,17 @@ esac
         });
         expect(create?.isError).not.toBe(true);
         const created = JSON.parse(((create?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string }; implemented: string[]; deferred: string[] } };
+            device: { id: string; providerPlan: { selectedProvider: string; providerInstance: string; startCommand: { args: string[] }; helper: { workspaceDir: string; hostHelperScript: string; remoteScriptPath: string }; implemented: string[]; deferred: string[] } };
         };
         expect(created.device.id).toBe("macos-fake-tart");
         expect(created.device.providerPlan.selectedProvider).toBe("tart");
         expect(created.device.providerPlan.providerInstance).toContain("macos-fake-tart");
         expect(created.device.providerPlan.startCommand.args).toEqual(["run", created.device.providerPlan.providerInstance]);
         expect(created.device.providerPlan.helper.workspaceDir).toContain("macos-fake-tart");
+        expect(created.device.providerPlan.helper.remoteScriptPath).toBe("/tmp/ccc-macos-fake-tart-guest-helper.sh");
         expect(created.device.providerPlan.implemented).toEqual(expect.arrayContaining(["image-clone", "snapshot-clone", "provider-delete"]));
-        expect(created.device.providerPlan.deferred).toEqual(["guest-helper-auto-provisioning"]);
+        expect(created.device.providerPlan.deferred).toEqual([]);
+        expect(existsSync(created.device.providerPlan.helper.hostHelperScript)).toBe(false);
         expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" })).not.toContain("tart run");
 
         const inventory = await handleMacosTool("device_inventory", { backend: "macos-vm" });
@@ -2099,6 +2102,18 @@ esac
 
         const startBaseImage = await handleMacosTool("device_start", { deviceId: "macos-base-image" });
         expect(startBaseImage?.isError).not.toBe(true);
+        const startedBaseImage = JSON.parse(((startBaseImage?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            helper: { status: string };
+            device: { helper: { provisioning: { status: string } } };
+        };
+        expect(startedBaseImage.helper.status).toBe("skipped-missing-ssh");
+        expect(startedBaseImage.device.helper.provisioning.status).toBe("skipped-missing-ssh");
+        const baseStatusAfterSkippedHelper = await handleMacosTool("device_status", { deviceId: "macos-base-image" });
+        const baseStatusAfterSkippedHelperPayload = JSON.parse(((baseStatusAfterSkippedHelper?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { helper: { status: string; provisioning: { status: string } } };
+        };
+        expect(baseStatusAfterSkippedHelperPayload.device.helper.status).toBe("skipped-missing-ssh");
+        expect(baseStatusAfterSkippedHelperPayload.device.helper.provisioning.status).toBe("skipped-missing-ssh");
         const forceClone = await handleMacosTool("device_image_clone", {
             backend: "macos-vm",
             name: "Forced Clone",
@@ -2120,6 +2135,64 @@ esac
         });
         expect(unsupportedProvider?.isError).toBe(true);
         expect((unsupportedProvider?.content as Array<{ text?: string }>)[0].text).toContain("Tart is currently required");
+
+        const helperFailureCreate = await handleMacosTool("device_create", {
+            backend: "macos-vm",
+            name: "Fail Helper",
+            provider: "auto",
+            sshHost: "127.0.0.1",
+            sshPort: 2222,
+            sshUser: "ccc",
+        });
+        expect(helperFailureCreate?.isError).not.toBe(true);
+        const helperFailureStart = await handleMacosTool("device_start", { deviceId: "macos-fail-helper" });
+        expect(helperFailureStart?.isError).toBe(true);
+        const helperFailurePayload = JSON.parse((helperFailureStart?.content as Array<{ text?: string }>)[0].text ?? "{}") as {
+            ok: boolean;
+            error: string;
+            command: { provider: string; status: number; stderr: string };
+            device: { status: string; helper: { provisioning: { status: string; remoteScriptPath: string } } };
+        };
+        expect(helperFailurePayload).toEqual(expect.objectContaining({
+            ok: false,
+            error: "macos-helper-scp-failed",
+        }));
+        expect(helperFailurePayload.command).toEqual(expect.objectContaining({ status: 5, stderr: expect.stringContaining("scp helper failure") }));
+        expect(helperFailurePayload.device.status).toBe("running");
+        expect(helperFailurePayload.device.helper.provisioning).toEqual(expect.objectContaining({
+            status: "failed",
+            remoteScriptPath: "/tmp/ccc-macos-fail-helper-guest-helper.sh",
+        }));
+
+        const localHelperFailureCreate = await handleMacosTool("device_create", {
+            backend: "macos-vm",
+            name: "Local Helper Failure",
+            provider: "auto",
+            sshHost: "127.0.0.1",
+            sshPort: 2222,
+            sshUser: "ccc",
+        });
+        expect(localHelperFailureCreate?.isError).not.toBe(true);
+        const localHelperFailureCreated = JSON.parse(((localHelperFailureCreate?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            device: { providerPlan: { helper: { hostHelperScript: string } } };
+        };
+        mkdirSync(localHelperFailureCreated.device.providerPlan.helper.hostHelperScript, { recursive: true });
+        const localHelperFailureStart = await handleMacosTool("device_start", { deviceId: "macos-local-helper-failure" });
+        expect(localHelperFailureStart?.isError).toBe(true);
+        const localHelperFailurePayload = JSON.parse((localHelperFailureStart?.content as Array<{ text?: string }>)[0].text ?? "{}") as {
+            ok: boolean;
+            error: string;
+            device: { status: string; helper: { provisioning: { status: string; provider: string } } };
+        };
+        expect(localHelperFailurePayload).toEqual(expect.objectContaining({
+            ok: false,
+            error: "macos-helper-write-failed",
+        }));
+        expect(localHelperFailurePayload.device.status).toBe("running");
+        expect(localHelperFailurePayload.device.helper.provisioning).toEqual(expect.objectContaining({
+            status: "failed",
+            provider: "local",
+        }));
 
         const deleteFailureCreate = await handleMacosTool("device_image_create", {
             backend: "macos-vm",
@@ -2174,10 +2247,19 @@ esac
         const start = await handleMacosTool("device_start", { deviceId: "macos-fake-tart" });
         expect(start?.isError).not.toBe(true);
         const started = JSON.parse(((start?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { status: string; provider: string; providerInstance: string };
+            device: { status: string; provider: string; providerInstance: string; helper: { hostHelperScript: string; remoteScriptPath: string; provisioning: { status: string; provider: string; localScriptPath: string; remoteScriptPath: string } } };
+            helper: { status: string; provider: string };
         };
         expect(started.device.status).toBe("running");
         expect(started.device.provider).toBe("tart");
+        expect(started.helper).toEqual(expect.objectContaining({ status: "provisioned", provider: "ssh-scp" }));
+        expect(started.device.helper.provisioning).toEqual(expect.objectContaining({
+            status: "provisioned",
+            provider: "ssh-scp",
+            localScriptPath: started.device.helper.hostHelperScript,
+            remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
+        }));
+        expect(readFileSync(started.device.helper.hostHelperScript, "utf-8")).toContain("ccc macOS guest helper for macos-fake-tart");
 
         const snapshotWhileRunning = await handleMacosTool("device_snapshot_create", {
             deviceId: "macos-fake-tart",
@@ -2460,6 +2542,8 @@ esac
         expect(log).not.toContain("vz clone");
         expect(log).toContain("ssh -p 2222 -o BatchMode=yes -o StrictHostKeyChecking=no ccc@127.0.0.1 whoami");
         expect(log).toContain("scp -P 2222 -o BatchMode=yes -o StrictHostKeyChecking=no");
+        expect(log).toContain("ccc-guest-helper.sh ccc@127.0.0.1:/tmp/ccc-macos-fake-tart-guest-helper.sh");
+        expect(log).toContain("chmod 700 '/tmp/ccc-macos-fake-tart-guest-helper.sh'");
         expect(log).toContain("screencapture -x /tmp/ccc-macos-fake-tart-screenshot.png");
         expect(log).toContain("screencapture -v '/tmp/custom-macos-recording.mov'");
         expect(log).toContain("pkill -INT -f");
