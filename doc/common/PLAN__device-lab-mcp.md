@@ -1075,14 +1075,14 @@ Test-suite structure hardening:
   broker RPC, physical lease, physical attach/detach, broker-routed lifecycle,
   and mobile flow coverage that previously lived at the top of the monolithic
   MCP suite.
-- `src/__tests__/device-lab-mcp.test.ts` remains the backend-focused suite for
-  Android emulator/real-device coverage, iOS Simulator/real-device coverage,
-  Windows Sandbox tests, and macOS VM tests. It is still large enough that the
-  next test-maintenance slices should split it by backend while preserving the
-  existing fake-host/fake-SDK coverage.
-- Target remaining layout: `device-lab-mcp.android.test.ts`,
-  `device-lab-mcp.ios.test.ts`, `device-lab-mcp.windows.test.ts`, and
-  `device-lab-mcp.macos.test.ts`.
+- `src/__tests__/device-lab-mcp.macos.test.ts`,
+  `src/__tests__/device-lab-mcp.windows.test.ts`,
+  `src/__tests__/device-lab-mcp.android.test.ts`, and
+  `src/__tests__/device-lab-mcp.ios.test.ts` now own the backend-focused
+  macOS VM, Windows Sandbox, Android emulator/real-device, and iOS
+  Simulator/real-device coverage.
+- The old aggregate `src/__tests__/device-lab-mcp.test.ts` file has been
+  removed so backend tests have one clear platform owner.
 - Shared fake server/SDK helpers should move into `src/__tests__/fixtures/`
   so adding future device features does not require editing a monolithic
   multi-thousand-line integration file.
