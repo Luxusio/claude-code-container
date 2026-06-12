@@ -1094,11 +1094,12 @@ Container cleanup hook status:
 
 Test-suite structure hardening:
 
-- `src/__tests__/device-lab-mcp.broker.test.ts` now owns the common MCP
-  schema/lazy-start checks, broker diagnostics, broker autolaunch tests,
-  broker RPC, physical lease, physical attach/detach, broker-routed lifecycle,
-  and mobile flow coverage that previously lived at the top of the monolithic
-  MCP suite.
+- `src/__tests__/device-lab-mcp.foundation.test.ts` now owns common MCP
+  schema/lazy-start checks plus metadata-only X11, Android, iOS, Windows, and
+  macOS definition coverage.
+- `src/__tests__/device-lab-mcp.broker.test.ts` now focuses on broker
+  diagnostics, broker autolaunch tests, broker RPC, physical lease, physical
+  attach/detach, and broker-routed lifecycle coverage.
 - `src/__tests__/device-lab-mcp.macos.test.ts`,
   `src/__tests__/device-lab-mcp.windows.test.ts`,
   `src/__tests__/device-lab-mcp.android.test.ts`, and
@@ -1107,9 +1108,12 @@ Test-suite structure hardening:
   Simulator/real-device coverage.
 - The old aggregate `src/__tests__/device-lab-mcp.test.ts` file has been
   removed so backend tests have one clear platform owner.
-- Shared fake server/SDK helpers should move into `src/__tests__/fixtures/`
-  so adding future device features does not require editing a monolithic
-  multi-thousand-line integration file.
+- `src/__tests__/helpers/device-lab-mcp-fixture.ts` owns shared stdio MCP
+  client setup/cleanup so split suites can run independently without copying
+  HOME/PATH fixture wiring.
+- Shared fake server/SDK helpers should continue moving into `src/__tests__/helpers/`
+  so adding future device features does not require editing monolithic
+  integration files.
 
 ## Integration with existing CCC
 
