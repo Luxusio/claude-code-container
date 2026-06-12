@@ -931,7 +931,7 @@ Implementation:
 2. Clone or snapshot per owner/device where supported.
 3. Start lazily, wait for guest readiness, and connect through a scoped guest
    helper or SSH where configured by the provider.
-4. Expose exec, screenshot, upload/download, and stop.
+4. Expose exec, screenshot, desktop GUI controls, upload/download, and stop.
 
 Foundation status:
 
@@ -954,8 +954,9 @@ Foundation status:
   `vz start <providerInstance>`, and `utmctl` to
   `utmctl start <providerInstance>`. Missing macOS host/provider prerequisites
   return explicit diagnostics without trying to boot anything.
-- `device_exec`, `device_screenshot`, `device_upload`, and `device_download`
-  use configured SSH bridge metadata for macOS VM devices.
+- `device_exec`, `device_screenshot`, desktop GUI control tools,
+  `device_upload`, and `device_download` use configured SSH bridge metadata for
+  macOS VM devices.
 - Tests verify Linux-host missing diagnostics and fake `tart` provider
   start/stop/delete behavior without requiring a real macOS host or VM image.
 - Tart-backed VM image create/clone/snapshot operations are implemented through
@@ -988,6 +989,14 @@ macOS helper/SSH bridge status:
   `device_record_video_stop` use the SSH bridge to run `screencapture` video
   capture, track the local SSH process, interrupt the remote capture on stop,
   download the artifact via `scp`, and clear state on stop/device shutdown.
+- `device_click`, `device_double_click`, `device_key`, `device_type`,
+  `device_scroll`, and `device_cursor_position` use the provisioned
+  `ccc-guest-helper.sh` over SSH. The helper uses macOS built-in
+  `osascript`, JavaScript for Automation/CoreGraphics, and System Events, so
+  the MCP side does not need a persistent in-container daemon.
+- macOS guest GUI control still depends on normal macOS accessibility/input
+  monitoring permissions inside the guest. OCR, accessibility tree extraction,
+  and richer window targeting remain later hardening slices.
 - Tests use fake `ssh` and `scp` commands with the fake `tart` provider, so
   bridge behavior and helper auto-provisioning are covered without a real macOS
   VM.

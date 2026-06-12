@@ -49,6 +49,12 @@ echo "ssh $*" >> "$FAKE_TART_LOG"
 case "$*" in
   *screencapture*"-v"*) exec /bin/sleep 20 ;;
   *screencapture*"-x"*) exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' click '22' '33' 'right'"*) echo '{"ok":true,"clicked":{"x":22,"y":33,"button":"right"},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' double_click '44' '55' 'left'"*) echo '{"ok":true,"doubleClicked":{"x":44,"y":55,"button":"left"},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' key '0' 'command,shift'"*) echo '{"ok":true,"key":{"keyCode":0,"modifiers":"command,shift"},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' type"*) echo '{"ok":true,"typed":{"text":"hello '\''mac'\'' {literal}"},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' scroll 'left' '4'"*) echo '{"ok":true,"scrolled":{"direction":"left","amount":4},"provider":"macos-helper"}'; exit 0 ;;
+  *"ccc-macos-fake-tart-guest-helper.sh' cursor_position"*) echo '{"ok":true,"cursor":{"x":101,"y":202},"provider":"macos-helper"}'; exit 0 ;;
   *pkill*) exit 0 ;;
   *rm\\ -f*) exit 0 ;;
   *fail-command*) echo "ssh failure stdout"; echo "ssh failure stderr" >&2; exit 7 ;;
@@ -340,6 +346,18 @@ esac
             remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
         }));
         expect(readFileSync(started.device.helper.hostHelperScript, "utf-8")).toContain("ccc macOS guest helper for macos-fake-tart");
+        const startedStatus = await handleMacosTool("device_status", { deviceId: "macos-fake-tart" });
+        const startedStatusPayload = JSON.parse(((startedStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+            backend: { capabilities: string[] };
+        };
+        expect(startedStatusPayload.backend.capabilities).toEqual(expect.arrayContaining([
+            "device_click",
+            "device_double_click",
+            "device_key",
+            "device_type",
+            "device_scroll",
+            "device_cursor_position",
+        ]));
 
         const snapshotWhileRunning = await handleMacosTool("device_snapshot_create", {
             deviceId: "macos-fake-tart",
@@ -554,6 +572,81 @@ esac
         expect(screenshot?.isError).not.toBe(true);
         expect((screenshot?.content as Array<{ type: string }>)[0].type).toBe("image");
 
+        const click = await handleMacosTool("device_click", {
+            deviceId: "macos-fake-tart",
+            x: 22,
+            y: 33,
+            button: "right",
+        });
+        expect(click?.isError).not.toBe(true);
+        expect(JSON.parse(((click?.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "ssh-macos-helper",
+            remoteScriptPath: "/tmp/ccc-macos-fake-tart-guest-helper.sh",
+            clicked: { x: 22, y: 33, button: "right" },
+        }));
+
+        const doubleClick = await handleMacosTool("device_double_click", {
+            deviceId: "macos-fake-tart",
+            x: 44,
+            y: 55,
+        });
+        expect(doubleClick?.isError).not.toBe(true);
+        expect(JSON.parse(((doubleClick?.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "ssh-macos-helper",
+            doubleClicked: { x: 44, y: 55, button: "left" },
+        }));
+
+        const key = await handleMacosTool("device_key", {
+            deviceId: "macos-fake-tart",
+            key: "Command+Shift+A",
+        });
+        expect(key?.isError).not.toBe(true);
+        expect(JSON.parse(((key?.content as Array<{ text?: string }>)[0].text ?? "{}")).key).toEqual({
+            key: "Command+Shift+A",
+            keyCode: 0,
+            modifiers: ["command", "shift"],
+        });
+
+        const unsupportedKey = await handleMacosTool("device_key", {
+            deviceId: "macos-fake-tart",
+            key: "Hyper+Nope",
+        });
+        expect(unsupportedKey?.isError).toBe(true);
+        expect((unsupportedKey?.content as Array<{ text?: string }>)[0].text).toContain("Unsupported macOS key expression");
+        const unsupportedModifier = await handleMacosTool("device_key", {
+            deviceId: "macos-fake-tart",
+            key: "Hyper+A",
+        });
+        expect(unsupportedModifier?.isError).toBe(true);
+        expect((unsupportedModifier?.content as Array<{ text?: string }>)[0].text).toContain("Unsupported macOS key expression");
+
+        const type = await handleMacosTool("device_type", {
+            deviceId: "macos-fake-tart",
+            text: "hello 'mac' {literal}",
+        });
+        expect(type?.isError).not.toBe(true);
+        expect(JSON.parse(((type?.content as Array<{ text?: string }>)[0].text ?? "{}")).typed).toEqual({
+            text: "hello 'mac' {literal}",
+        });
+
+        const scroll = await handleMacosTool("device_scroll", {
+            deviceId: "macos-fake-tart",
+            direction: "left",
+            amount: 4,
+        });
+        expect(scroll?.isError).not.toBe(true);
+        expect(JSON.parse(((scroll?.content as Array<{ text?: string }>)[0].text ?? "{}")).scrolled).toEqual({
+            direction: "left",
+            amount: 4,
+        });
+
+        const cursor = await handleMacosTool("device_cursor_position", { deviceId: "macos-fake-tart" });
+        expect(cursor?.isError).not.toBe(true);
+        expect(JSON.parse(((cursor?.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "ssh-macos-helper",
+            cursor: { x: 101, y: 202 },
+        }));
+
         const initialRecordStatus = await handleMacosTool("device_record_video_status", { deviceId: "macos-fake-tart" });
         expect(initialRecordStatus?.isError).not.toBe(true);
         expect(JSON.parse(((initialRecordStatus?.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
@@ -625,6 +718,12 @@ esac
         expect(log).toContain("ccc-guest-helper.sh ccc@127.0.0.1:/tmp/ccc-macos-fake-tart-guest-helper.sh");
         expect(log).toContain("chmod 700 '/tmp/ccc-macos-fake-tart-guest-helper.sh'");
         expect(log).toContain("screencapture -x /tmp/ccc-macos-fake-tart-screenshot.png");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' click '22' '33' 'right'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' double_click '44' '55' 'left'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' key '0' 'command,shift'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' type 'hello '\\''mac'\\'' {literal}'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' scroll 'left' '4'");
+        expect(log).toContain("'/tmp/ccc-macos-fake-tart-guest-helper.sh' cursor_position");
         expect(log).toContain("screencapture -v '/tmp/custom-macos-recording.mov'");
         expect(log).toContain("pkill -INT -f");
         expect(log).toContain("ccc@127.0.0.1:/tmp/custom-macos-recording.mov");

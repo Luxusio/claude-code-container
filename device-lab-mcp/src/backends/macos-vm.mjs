@@ -72,6 +72,12 @@ export function macosBackend() {
             "device_status",
             "device_exec",
             "device_screenshot",
+            "device_click",
+            "device_double_click",
+            "device_key",
+            "device_type",
+            "device_scroll",
+            "device_cursor_position",
             "device_image_create",
             "device_image_clone",
             "device_snapshot_create",
@@ -129,7 +135,7 @@ function macosHelperMetadata(device) {
         ssh: device.ssh || null,
         status: provisioning?.status || (device.ssh ? "ssh-configured" : "planned"),
         provisioning,
-        requiredFor: ["device_exec", "device_screenshot", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
+        requiredFor: ["device_exec", "device_screenshot", "device_click", "device_double_click", "device_key", "device_type", "device_scroll", "device_cursor_position", "device_record_video_start", "device_record_video_stop", "device_upload", "device_download"],
     };
 }
 
@@ -304,6 +310,50 @@ function shellQuote(value) {
     return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+function macosKeySpec(key) {
+    const value = String(key || "");
+    const keyCodes = {
+        A: 0, B: 11, C: 8, D: 2, E: 14, F: 3, G: 5, H: 4, I: 34, J: 38, K: 40, L: 37, M: 46,
+        N: 45, O: 31, P: 35, Q: 12, R: 15, S: 1, T: 17, U: 32, V: 9, W: 13, X: 7, Y: 16, Z: 6,
+        "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25,
+        Enter: 36, Return: 36, Tab: 48, Space: 49, Delete: 51, Backspace: 51, Escape: 53, Esc: 53,
+        ArrowLeft: 123, Left: 123, ArrowRight: 124, Right: 124, ArrowDown: 125, Down: 125, ArrowUp: 126, Up: 126,
+        Home: 115, End: 119, PageUp: 116, PageDown: 121,
+        F1: 122, F2: 120, F3: 99, F4: 118, F5: 96, F6: 97, F7: 98, F8: 100, F9: 101, F10: 109, F11: 103, F12: 111,
+    };
+    const parts = value.split("+").map((part) => part.trim()).filter(Boolean);
+    const keyPart = parts.length > 0 ? parts[parts.length - 1] : value;
+    const normalizedKey = keyPart.length === 1 ? keyPart.toUpperCase() : keyPart;
+    const keyCode = keyCodes[normalizedKey];
+    if (keyCode === undefined) return null;
+    const modifiers = [];
+    for (const part of parts.slice(0, -1).map((item) => item.toLowerCase())) {
+        if (part === "cmd" || part === "command" || part === "meta") modifiers.push("command");
+        else if (part === "ctrl" || part === "control") modifiers.push("control");
+        else if (part === "alt" || part === "option") modifiers.push("option");
+        else if (part === "shift") modifiers.push("shift");
+        else return null;
+    }
+    return { key, keyCode, modifiers };
+}
+
+function macosHelperCommand(device, subcommand, args = []) {
+    const bridge = sshBridge(device, subcommand);
+    if (bridge.error) return { error: bridge.error };
+    const remoteScriptPath = device.helper?.remoteScriptPath || `/tmp/ccc-${device.id}-guest-helper.sh`;
+    const command = [shellQuote(remoteScriptPath), subcommand, ...args.map(shellQuote)].join(" ");
+    const result = run(bridge.discovery.ssh, [...sshBaseArgs(device), bridge.target, command]);
+    return { result, remoteScriptPath };
+}
+
+function macosHelperJson(stdout) {
+    try {
+        return JSON.parse(stdout || "");
+    } catch {
+        return null;
+    }
+}
+
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -376,9 +426,81 @@ function macosGuestHelperScript(device) {
     return [
         "#!/bin/sh",
         "set -eu",
-        `echo "ccc macOS guest helper for ${device.id}"`,
+        `# ccc macOS guest helper for ${device.id}`,
         "case \"${1:-status}\" in",
         "  status) echo '{\"ok\":true,\"helper\":\"ccc-macos-guest-helper\"}' ;;",
+        "  click)",
+        "    osascript -l JavaScript - \"$2\" \"$3\" \"${4:-left}\" <<'JXA'",
+        "function run(argv) {",
+        "  ObjC.import('ApplicationServices');",
+        "  var x = Number(argv[0]); var y = Number(argv[1]); var buttonName = String(argv[2] || 'left');",
+        "  var button = buttonName === 'right' ? $.kCGMouseButtonRight : $.kCGMouseButtonLeft;",
+        "  var down = buttonName === 'right' ? $.kCGEventRightMouseDown : $.kCGEventLeftMouseDown;",
+        "  var up = buttonName === 'right' ? $.kCGEventRightMouseUp : $.kCGEventLeftMouseUp;",
+        "  var point = $.CGPointMake(x, y);",
+        "  $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, down, point, button));",
+        "  $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, up, point, button));",
+        "  return JSON.stringify({ok:true, clicked:{x:x, y:y, button:buttonName}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  double_click)",
+        "    osascript -l JavaScript - \"$2\" \"$3\" \"${4:-left}\" <<'JXA'",
+        "function run(argv) {",
+        "  ObjC.import('ApplicationServices');",
+        "  var x = Number(argv[0]); var y = Number(argv[1]); var buttonName = String(argv[2] || 'left');",
+        "  var button = buttonName === 'right' ? $.kCGMouseButtonRight : $.kCGMouseButtonLeft;",
+        "  var down = buttonName === 'right' ? $.kCGEventRightMouseDown : $.kCGEventLeftMouseDown;",
+        "  var up = buttonName === 'right' ? $.kCGEventRightMouseUp : $.kCGEventLeftMouseUp;",
+        "  var point = $.CGPointMake(x, y);",
+        "  for (var i = 0; i < 2; i++) {",
+        "    $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, down, point, button));",
+        "    $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, up, point, button));",
+        "    delay(0.08);",
+        "  }",
+        "  return JSON.stringify({ok:true, doubleClicked:{x:x, y:y, button:buttonName}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  key)",
+        "    KEY_CODE=\"$2\"",
+        "    MODIFIERS=\"${3:-}\"",
+        "    USING=\"\"",
+        "    [ -n \"$MODIFIERS\" ] && USING=\" using {$(printf '%s' \"$MODIFIERS\" | sed 's/,/ down, /g') down}\"",
+        "    osascript -e \"tell application \\\"System Events\\\" to key code $KEY_CODE$USING\"",
+        "    printf '{\"ok\":true,\"key\":{\"keyCode\":%s,\"modifiers\":\"%s\"},\"provider\":\"macos-helper\"}\\n' \"$KEY_CODE\" \"$MODIFIERS\"",
+        "    ;;",
+        "  type)",
+        "    osascript -l JavaScript - \"$2\" <<'JXA'",
+        "function run(argv) {",
+        "  var text = String(argv[0] || '');",
+        "  Application('System Events').keystroke(text);",
+        "  return JSON.stringify({ok:true, typed:{text:text}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  scroll)",
+        "    osascript -l JavaScript - \"${2:-down}\" \"${3:-1}\" <<'JXA'",
+        "function run(argv) {",
+        "  ObjC.import('ApplicationServices');",
+        "  var direction = String(argv[0] || 'down'); var amount = Number(argv[1] || 1);",
+        "  var delta = (direction === 'down' || direction === 'right') ? -amount : amount;",
+        "  var axisCount = (direction === 'left' || direction === 'right') ? 2 : 1;",
+        "  var event = axisCount === 2 ? $.CGEventCreateScrollWheelEvent(null, $.kCGScrollEventUnitLine, 2, 0, delta) : $.CGEventCreateScrollWheelEvent(null, $.kCGScrollEventUnitLine, 1, delta);",
+        "  $.CGEventPost($.kCGHIDEventTap, event);",
+        "  return JSON.stringify({ok:true, scrolled:{direction:direction, amount:amount}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
+        "  cursor_position)",
+        "    osascript -l JavaScript <<'JXA'",
+        "function run() {",
+        "  ObjC.import('ApplicationServices');",
+        "  var event = $.CGEventCreate(null); var point = $.CGEventGetLocation(event);",
+        "  return JSON.stringify({ok:true, cursor:{x:point.x, y:point.y}, provider:'macos-helper'});",
+        "}",
+        "JXA",
+        "    ;;",
         "  *) echo \"unsupported helper command: $1\" >&2; exit 64 ;;",
         "esac",
         "",
@@ -946,6 +1068,102 @@ export async function handleMacosTool(name, args) {
             if (copy.status !== 0) return fail(copy);
             if (!existsSync(localPath)) return textResult(false, `macOS VM screenshot output missing: ${localPath}`);
             return { content: [{ type: "image", data: readFileSync(localPath).toString("base64"), mimeType: "image/png" }] };
+        }
+
+        case "device_click":
+        case "device_double_click": {
+            const { deviceId, x, y, button = "left" } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return textResult(false, `${name} requires numeric x and y`);
+            const subcommand = name === "device_double_click" ? "double_click" : "click";
+            const helper = macosHelperCommand(device, subcommand, [String(Number(x)), String(Number(y)), button]);
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            const payload = macosHelperJson(helper.result.stdout);
+            return jsonResult({
+                provider: "ssh-macos-helper",
+                remoteScriptPath: helper.remoteScriptPath,
+                [name === "device_double_click" ? "doubleClicked" : "clicked"]: payload?.doubleClicked || payload?.clicked || { x: Number(x), y: Number(y), button },
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_key": {
+            const { deviceId, key } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const spec = macosKeySpec(key);
+            if (!spec) return textResult(false, `Unsupported macOS key expression: ${key}`);
+            const helper = macosHelperCommand(device, "key", [String(spec.keyCode), spec.modifiers.join(",")]);
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            return jsonResult({
+                provider: "ssh-macos-helper",
+                remoteScriptPath: helper.remoteScriptPath,
+                key: spec,
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_type": {
+            const { deviceId, text } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            if (text === undefined || text === null) return textResult(false, "device_type requires text");
+            const literalText = String(text);
+            const helper = macosHelperCommand(device, "type", [literalText]);
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            return jsonResult({
+                provider: "ssh-macos-helper",
+                remoteScriptPath: helper.remoteScriptPath,
+                typed: { text: literalText },
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_scroll": {
+            const { deviceId, direction = "down", amount = 1 } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            if (!["up", "down", "left", "right"].includes(direction)) return textResult(false, "device_scroll direction must be up, down, left, or right");
+            const helper = macosHelperCommand(device, "scroll", [direction, String(Number(amount) || 1)]);
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            const payload = macosHelperJson(helper.result.stdout);
+            return jsonResult({
+                provider: "ssh-macos-helper",
+                remoteScriptPath: helper.remoteScriptPath,
+                scrolled: payload?.scrolled || { direction, amount: Number(amount) || 1 },
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
+        }
+
+        case "device_cursor_position": {
+            const { deviceId } = args;
+            const device = findMacosDevice(deviceId);
+            if (!device) return undefined;
+            const helper = macosHelperCommand(device, "cursor_position");
+            if (helper.error) return helper.error;
+            if (helper.result.status !== 0) return fail(helper.result);
+            const payload = macosHelperJson(helper.result.stdout);
+            return jsonResult({
+                provider: "ssh-macos-helper",
+                remoteScriptPath: helper.remoteScriptPath,
+                cursor: payload?.cursor || null,
+                stdout: helper.result.stdout,
+                stderr: helper.result.stderr,
+                status: helper.result.status,
+            });
         }
 
         case "device_record_video_status": {
