@@ -1100,17 +1100,30 @@ Test-suite structure hardening:
 - `src/__tests__/device-lab-mcp.broker.test.ts` now focuses on broker
   diagnostics, broker autolaunch tests, broker RPC, physical lease, physical
   attach/detach, and broker-routed lifecycle coverage.
-- `src/__tests__/device-lab-mcp.macos.test.ts`,
-  `src/__tests__/device-lab-mcp.windows.test.ts`,
-  `src/__tests__/device-lab-mcp.android.test.ts`, and
-  `src/__tests__/device-lab-mcp.ios.test.ts` now own the backend-focused
-  macOS VM, Windows Sandbox, Android emulator/real-device, and iOS
-  Simulator/real-device coverage.
+- `src/__tests__/device-lab-mcp.macos.test.ts` and
+  `src/__tests__/device-lab-mcp.windows.test.ts` own backend-focused macOS VM
+  and Windows Sandbox coverage.
+- `src/__tests__/device-lab-mcp.android-emulator.test.ts` owns Android
+  emulator inventory, AVD provisioning, lifecycle, mobile action, file/app,
+  recording, UI dump, and non-owned AVD guard coverage.
+- `src/__tests__/device-lab-mcp.android-real-device.test.ts` owns
+  host-connected Android USB/Wi-Fi attach, wireless bootstrap, safe physical
+  actions, lease cleanup, and detach coverage.
+- `src/__tests__/device-lab-mcp.ios-simulator.test.ts` owns iOS Simulator
+  inventory, provisioning, lifecycle, file/container, recording,
+  Appium/XCUITest, and non-owned simulator guard coverage.
+- `src/__tests__/device-lab-mcp.ios-real-device.test.ts` owns physical iOS
+  USB/Wi-Fi attach, XCUITest/Appium real-device actions, devicectl app
+  install/launch, safe/unsafe action boundaries, lease cleanup, and detach
+  coverage.
 - The old aggregate `src/__tests__/device-lab-mcp.test.ts` file has been
   removed so backend tests have one clear platform owner.
 - `src/__tests__/helpers/device-lab-mcp-fixture.ts` owns shared stdio MCP
   client setup/cleanup so split suites can run independently without copying
   HOME/PATH fixture wiring.
+- `src/__tests__/helpers/fake-android-mcp-fixture.ts` and
+  `src/__tests__/helpers/fake-ios-mcp-fixture.ts` own reusable fake host
+  toolchains for the mobile split suites.
 - Shared fake server/SDK helpers should continue moving into `src/__tests__/helpers/`
   so adding future device features does not require editing monolithic
   integration files.
