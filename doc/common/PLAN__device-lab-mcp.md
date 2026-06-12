@@ -210,6 +210,11 @@ Broker contract status:
   `port`, command/args, log path, `startedAt`, and `managedBy:
   device-lab-mcp`. Stale metadata is removed when the recorded pid is gone or
   health checks fail.
+- Broker owner RPC uses a zero-configuration per-owner random secret stored at
+  `~/.ccc/devices/broker/auth/<owner-id>.json` with 0600 permissions. Both the
+  in-container MCP client and host broker derive `x-ccc-device-token` from the
+  owner ID plus this secret, so the token is no longer predictable from owner
+  ID alone.
 - `device_broker_shutdown` stops the MCP-owned broker recorded for the current
   owner and removes runtime metadata. The MCP process also registers a
   best-effort exit cleanup hook for broker children it launched.
@@ -218,7 +223,7 @@ Broker contract status:
   requesting lifecycle work.
 - `device_broker_rpc` provides an explicit diagnostic transport to an
   already-running or explicitly autolaunched host broker. It posts to
-  `/v1/owners/<owner-id>/rpc` with a deterministic owner token, supports
+  `/v1/owners/<owner-id>/rpc` with a secret-backed owner token, supports
   diagnostic `broker.status`, `broker.inventory`, and `broker.echo` methods,
   and reports structured per-candidate attempts. The public RPC tool still does
   not expose physical lease or mutating lifecycle methods; those remain behind
@@ -255,15 +260,14 @@ Broker contract status:
 - Environment variables are not required for broker discovery, RPC, or physical
   lease/lifecycle command operations. Default broker routing for every
   lifecycle call, Apple device pairing/trust bootstrap through the broker,
-  strong authentication token handshake, and permanent host service manager
-  integration remain deferred.
+  and permanent host service manager integration remain deferred.
 
 Host broker daemon skeleton status:
 
 - `ccc devices broker status` prints the host broker's default bind address,
   port, current owner namespace, state roots, implemented HTTP status/health
-  surface, and deferred full-routing/auth/service-manager work without starting
-  any devices.
+  surface, secret-backed owner RPC auth, and deferred full-routing/service-manager
+  work without starting any devices.
 - `ccc devices broker serve [--host HOST] [--port PORT]` starts a small
   host-side HTTP server. The server currently exposes `GET /health`,
   `GET /status`, and owner-scoped `POST /v1/owners/<owner-id>/rpc` for
@@ -276,8 +280,8 @@ Host broker daemon skeleton status:
 - MCP can now explicitly autolaunch and shut down this broker for broker tools
   and opt-in lifecycle tools. The current in-container MCP remains in
   direct-provider mode by default for normal backend lifecycle tools until
-  default broker routing, strong authentication handshake, and permanent
-  host service-manager integration are implemented.
+  default broker routing and permanent host service-manager integration are
+  implemented.
 
 ## MCP tools
 
@@ -1063,6 +1067,21 @@ Container cleanup hook status:
   hanging/timeout stop commands, failing stop commands, foreign-owner
   preservation, and lifecycle wiring through both session cleanup and explicit
   container stop.
+
+Test-suite structure hardening:
+
+- `src/__tests__/device-lab-mcp.test.ts` has become too large for continued
+  feature development. It currently mixes common MCP schema/lazy-start checks,
+  broker routing/autolaunch tests, Android emulator/real-device coverage, iOS
+  simulator/real-device coverage, Windows Sandbox tests, and macOS VM tests.
+- The next test-maintenance slice should split this file by backend and
+  responsibility while preserving the existing fake-host/fake-SDK coverage:
+  `device-lab-mcp.foundation.test.ts`, `device-lab-mcp.broker.test.ts`,
+  `device-lab-mcp.android.test.ts`, `device-lab-mcp.ios.test.ts`,
+  `device-lab-mcp.windows.test.ts`, and `device-lab-mcp.macos.test.ts`.
+- Shared fake server/SDK helpers should move into `src/__tests__/fixtures/`
+  so adding future device features does not require editing a monolithic
+  multi-thousand-line integration file.
 
 ## Integration with existing CCC
 

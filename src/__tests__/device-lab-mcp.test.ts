@@ -48,9 +48,12 @@ describe("device-lab MCP", () => {
     let client: Client;
     let homeDir: string;
     let pathDir: string;
+    let originalHome: string | undefined;
 
     beforeAll(async () => {
+        originalHome = process.env.HOME;
         homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-test-"));
+        process.env.HOME = homeDir;
         pathDir = join(homeDir, "bin");
         mkdirSync(pathDir, { recursive: true });
         const transport = new StdioClientTransport({
@@ -74,6 +77,8 @@ describe("device-lab MCP", () => {
     afterAll(async () => {
         await client?.close();
         if (homeDir) rmSync(homeDir, { recursive: true, force: true });
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
     }, TIMEOUT);
 
     function installFakeCccBroker(logPath: string) {
@@ -81,6 +86,9 @@ describe("device-lab MCP", () => {
         writeFileSync(fakeCcc, `#!${process.execPath}
 const http = require("http");
 const fs = require("fs");
+const crypto = require("crypto");
+const os = require("os");
+const path = require("path");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
 const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
@@ -89,11 +97,18 @@ function send(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
 }
+function expectedOwnerToken(ownerId) {
+  const file = path.join(os.homedir(), ".ccc/devices/broker/auth", ownerId + ".json");
+  const secret = JSON.parse(fs.readFileSync(file, "utf8")).secret;
+  return crypto.createHash("sha256").update("ccc-device-broker:owner:" + ownerId + ":secret:" + secret).digest("hex");
+}
 const server = http.createServer((req, res) => {
   if (req.url === "/health") return send(res, 200, { ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" });
   if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", host, port } });
   const match = /^\\/v1\\/owners\\/([^/]+)\\/rpc$/.exec(req.url || "");
   if (!match || req.method !== "POST") return send(res, 404, { ok: false, error: "not-found" });
+  if (req.headers["x-ccc-device-token"] !== expectedOwnerToken(match[1])) return send(res, 401, { ok: false, error: "invalid-owner-token" });
+  fs.appendFileSync(${JSON.stringify(logPath)}, "auth-ok " + match[1] + "\\n");
   let raw = "";
   req.on("data", (chunk) => { raw += chunk; });
   req.on("end", () => {
@@ -408,7 +423,9 @@ process.on("SIGINT", () => {});
         expect(payload.state).toEqual(expect.objectContaining({ runtimeFile: expect.stringContaining(".ccc/devices/broker/runtime.json") }));
         expect(payload.implemented).toContain("broker contract inspection");
         expect(payload.implemented).toContain("lazy host broker autolaunch");
+        expect(payload.implemented).toContain("secret-backed broker owner token auth");
         expect(payload.deferred).not.toContain("host broker daemon launcher");
+        expect(payload.deferred).not.toContain("strong broker authentication token handshake");
     });
 
     it("autolaunches, reuses, routes RPC/lease/command, and shuts down an MCP-owned broker", { timeout: TIMEOUT }, async () => {
@@ -480,7 +497,9 @@ process.on("SIGINT", () => {});
         };
         expect(secondPayload.ok).toBe(true);
         expect(secondPayload.launch).toEqual(expect.objectContaining({ launched: false, reused: true }));
-        expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(1);
+        let brokerLog = readFileSync(logPath, "utf8");
+        expect(brokerLog.trim().split("\n").filter((line) => line.startsWith("[\"devices\",\"broker\",\"serve\""))).toHaveLength(1);
+        expect(brokerLog).toContain(`auth-ok ${firstPayload.launch.runtime.ownerId}`);
 
         const lease = await client.callTool({
             name: "device_broker_lease",
@@ -584,6 +603,8 @@ process.on("SIGINT", () => {});
             runtime: expect.objectContaining({ pid: firstPayload.launch.runtime.pid }),
         }));
         expect(existsSync(statusPayload.state.runtimeFile)).toBe(false);
+        brokerLog = readFileSync(logPath, "utf8");
+        expect(brokerLog).toContain(`auth-ok ${firstPayload.launch.runtime.ownerId}`);
         rmSync(join(homeDir, ".ccc/devices/owners", firstPayload.launch.runtime.ownerId, "windows"), { recursive: true, force: true });
     });
 

@@ -1,6 +1,6 @@
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import { spawn } from "child_process";
-import { accessSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { accessSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { ownerId } from "./context.mjs";
@@ -402,8 +402,38 @@ export async function brokerShutdown(options = {}) {
     return { ok: true, ownerId: owner, stopped: signaled, runtime };
 }
 
+function brokerAuthSecretFile(owner) {
+    if (!/^[a-f0-9]{16}$/.test(owner)) throw new Error("invalid-owner-id");
+    return join(brokerStateRoot(), "broker", "auth", `${owner}.json`);
+}
+
+function ownerSecret(owner) {
+    const file = brokerAuthSecretFile(owner);
+    try {
+        if (existsSync(file)) {
+            const parsed = JSON.parse(readFileSync(file, "utf8"));
+            if (typeof parsed?.secret === "string" && /^[a-f0-9]{64}$/.test(parsed.secret)) {
+                try { chmodSync(file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+                return parsed.secret;
+            }
+        }
+    } catch {
+        // Replace unreadable/invalid auth metadata with a fresh owner secret.
+    }
+    const secret = randomBytes(32).toString("hex");
+    mkdirSync(join(brokerStateRoot(), "broker", "auth"), { recursive: true });
+    writeFileSync(file, JSON.stringify({
+        ownerId: owner,
+        secret,
+        createdAt: new Date().toISOString(),
+        version: 1,
+    }, null, 2), { mode: 0o600 });
+    try { chmodSync(file, 0o600); } catch { /* best effort on non-POSIX filesystems */ }
+    return secret;
+}
+
 function ownerToken(owner) {
-    return createHash("sha256").update(`${BROKER_NAME}:owner:${owner}`).digest("hex");
+    return createHash("sha256").update(`${BROKER_NAME}:owner:${owner}:secret:${ownerSecret(owner)}`).digest("hex");
 }
 
 function summarizeBody(body) {
@@ -708,9 +738,9 @@ export async function brokerStatus(options = {}) {
             "lazy host broker autolaunch",
             "mcp-owned broker shutdown",
             "broker runtime pid metadata",
+            "secret-backed broker owner token auth",
         ],
         deferred: [
-            "strong broker authentication token handshake",
             "permanent host service manager integration",
             "full direct-provider routing parity through broker",
         ],

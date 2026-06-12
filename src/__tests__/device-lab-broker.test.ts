@@ -1,12 +1,14 @@
 import { AddressInfo } from "net";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { homedir } from "os";
+import { createHash } from "crypto";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     createDeviceBrokerServer,
     DEVICE_BROKER_INVENTORY_DEVICE_LIMIT,
     DEVICE_BROKER_INVENTORY_FILE_LIMIT,
+    deviceBrokerAuthSecretFile,
     deviceBrokerCli,
     deviceBrokerOwnerToken,
     deviceBrokerStatus,
@@ -27,8 +29,18 @@ async function close(server: ReturnType<typeof createDeviceBrokerServer>): Promi
 }
 
 describe("device-lab host broker daemon", () => {
+    let originalHome: string | undefined;
+
+    beforeEach(() => {
+        originalHome = process.env.HOME;
+        process.env.HOME = mkdtempSync(join(tmpdir(), "ccc-device-broker-test-home-"));
+    });
+
     afterEach(() => {
         vi.restoreAllMocks();
+        if (process.env.HOME) rmSync(process.env.HOME, { recursive: true, force: true });
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
     });
 
     it("builds zero-config status metadata without side effects", () => {
@@ -47,13 +59,36 @@ describe("device-lab host broker daemon", () => {
             mode: "host-broker-daemon",
             lazy: true,
             startupPolicy: expect.stringContaining("explicit MCP autolaunch"),
-            implemented: expect.arrayContaining(["http-health", "http-status", "owner-state-path-reporting"]),
-            deferred: expect.arrayContaining(["full-provider-routing-parity", "strong-authentication-token-handshake"]),
+            implemented: expect.arrayContaining(["http-health", "http-status", "owner-state-path-reporting", "secret-backed-owner-token-auth"]),
+            deferred: expect.arrayContaining(["full-provider-routing-parity"]),
         }));
+        expect(status.deferred).not.toContain("strong-authentication-token-handshake");
         expect(status.implemented).toContain("explicit-mcp-autolaunch-compatible");
         expect(status.ownerId).toMatch(/^[a-f0-9]{16}$/);
         expect(status.state.ownerRoot).toContain(status.ownerId);
         expect(status.state.locksRoot).toContain(".ccc/devices/broker/locks");
+    });
+
+    it("creates and reuses per-owner broker auth secrets with private file permissions", () => {
+        const ownerId = "0a0b0c0d0e0f1112";
+        const secretFile = deviceBrokerAuthSecretFile(ownerId);
+        const token = deviceBrokerOwnerToken(ownerId);
+        expect(token).toMatch(/^[a-f0-9]{64}$/);
+        expect(existsSync(secretFile)).toBe(true);
+        const stat = statSync(secretFile);
+        expect(stat.mode & 0o777).toBe(0o600);
+        const firstSecret = JSON.parse(readFileSync(secretFile, "utf8")) as { ownerId: string; secret: string; version: number };
+        expect(firstSecret).toEqual(expect.objectContaining({
+            ownerId,
+            version: 1,
+            secret: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }));
+        expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
+        expect(JSON.parse(readFileSync(secretFile, "utf8")).secret).toBe(firstSecret.secret);
+
+        chmodSync(secretFile, 0o644);
+        expect(deviceBrokerOwnerToken(ownerId)).toBe(token);
+        expect(statSync(secretFile).mode & 0o777).toBe(0o600);
     });
 
     it("serves health, status, method errors, and 404 JSON", async () => {
@@ -93,7 +128,7 @@ describe("device-lab host broker daemon", () => {
         }
     });
 
-    it("serves owner-scoped read-only RPC with deterministic local owner token", async () => {
+    it("serves owner-scoped read-only RPC with secret-backed local owner token", async () => {
         const ownerId = "0123456789abcdef";
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-rpc-test",
@@ -143,6 +178,7 @@ describe("device-lab host broker daemon", () => {
         const baseUrl = await listen(server);
         const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
         const token = deviceBrokerOwnerToken(ownerId);
+        const oldDeterministicToken = createHash("sha256").update(`ccc-device-broker:owner:${ownerId}`).digest("hex");
         try {
             const missingToken = await fetch(endpoint, {
                 method: "POST",
@@ -151,6 +187,14 @@ describe("device-lab host broker daemon", () => {
             });
             expect(missingToken.status).toBe(401);
             expect(await missingToken.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-owner-token" }));
+
+            const oldToken = await fetch(endpoint, {
+                method: "POST",
+                headers: { "content-type": "application/json", "x-ccc-device-token": oldDeterministicToken },
+                body: JSON.stringify({ method: "broker.echo" }),
+            });
+            expect(oldToken.status).toBe(401);
+            expect(await oldToken.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-owner-token" }));
 
             const ownerMismatch = await fetch(endpoint, {
                 method: "POST",
