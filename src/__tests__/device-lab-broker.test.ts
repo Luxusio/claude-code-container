@@ -1,4 +1,3 @@
-import { AddressInfo } from "net";
 import { createHash } from "crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
@@ -17,16 +16,7 @@ import {
     startDeviceBrokerServe,
 } from "../device-lab-broker.js";
 import { devicesCli } from "../device-lab-admin.js";
-
-async function listen(server: ReturnType<typeof createDeviceBrokerServer>): Promise<string> {
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address() as AddressInfo;
-    return `http://127.0.0.1:${address.port}`;
-}
-
-async function close(server: ReturnType<typeof createDeviceBrokerServer>): Promise<void> {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
-}
+import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 
 describe("device-lab host broker daemon", () => {
     let originalHome: string | undefined;
@@ -246,27 +236,15 @@ describe("device-lab host broker daemon", () => {
 
     it("bounds owner inventory state reads and returned device arrays", async () => {
         const ownerId = "1111222233334444";
-        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
-        const androidRoot = join(ownerRoot, "android");
-        const iosRoot = join(ownerRoot, "ios");
         const server = createDeviceBrokerServer({ cwd: "/project/broker-inventory-bound-test", host: "127.0.0.1", port: 0 });
         const baseUrl = await listen(server);
         try {
-            mkdirSync(androidRoot, { recursive: true });
-            mkdirSync(iosRoot, { recursive: true });
-            writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
-                devices: Array.from({ length: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5 }, (_, index) => ({ id: `android-${index}` })),
-            }));
-            writeFileSync(join(iosRoot, "devices.json"), JSON.stringify({
-                devices: [{ id: "ios-large", payload: "x".repeat(DEVICE_BROKER_INVENTORY_FILE_LIMIT + 1) }],
-            }));
+            writeBrokerDevices(ownerId, "android", Array.from({ length: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5 }, (_, index) => ({ id: `android-${index}` })));
+            writeBrokerDevices(ownerId, "ios", [{ id: "ios-large", payload: "x".repeat(DEVICE_BROKER_INVENTORY_FILE_LIMIT + 1) }]);
 
             const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
                 method: "POST",
-                headers: {
-                    "content-type": "application/json",
-                    "x-ccc-device-token": deviceBrokerOwnerToken(ownerId),
-                },
+                headers: ownerRpcHeaders(ownerId),
                 body: JSON.stringify({ method: "broker.inventory" }),
             });
             expect(response.status).toBe(200);
@@ -292,7 +270,7 @@ describe("device-lab host broker daemon", () => {
             expect(ios?.devices).toEqual([]);
         } finally {
             await close(server);
-            rmSync(ownerRoot, { recursive: true, force: true });
+            cleanupOwner(ownerId);
         }
     });
 
@@ -483,8 +461,6 @@ describe("device-lab host broker daemon", () => {
 
     it("plans lifecycle commands and dry-run invokes without provider execution", async () => {
         const ownerId = "5555666677778888";
-        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
-        const androidRoot = join(ownerRoot, "android");
         const commandRunner = vi.fn((command) => ({
             mode: command.mode,
             provider: command.provider,
@@ -503,13 +479,10 @@ describe("device-lab host broker daemon", () => {
             commandRunner,
         });
         const baseUrl = await listen(server);
-        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
-        const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
         try {
-            mkdirSync(androidRoot, { recursive: true });
-            writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
-                devices: [{ id: "android-owned", status: "stopped", backend: "android-emulator", avdName: "ccc-test-pixel", port: 5580 }],
-            }));
+            writeBrokerDevices(ownerId, "android", [{ id: "android-owned", status: "stopped", backend: "android-emulator", avdName: "ccc-test-pixel", port: 5580 }]);
 
             const plan = await fetch(endpoint, {
                 method: "POST",
@@ -590,26 +563,21 @@ describe("device-lab host broker daemon", () => {
             }), expect.objectContaining({ timeoutMs: 5000, outputLimit: 32768 }));
         } finally {
             await close(server);
-            rmSync(ownerRoot, { recursive: true, force: true });
+            cleanupOwner(ownerId);
         }
     });
 
     it("validates lifecycle command params and keeps plans owner scoped", async () => {
         const ownerA = "6666777788889999";
         const ownerB = "777788889999aaaa";
-        const ownerARoot = join(homedir(), ".ccc/devices/owners", ownerA);
-        const ownerBRoot = join(homedir(), ".ccc/devices/owners", ownerB);
         const server = createDeviceBrokerServer({ cwd: "/project/broker-command-guard-test", host: "127.0.0.1", port: 0 });
         const baseUrl = await listen(server);
-        const endpointA = `${baseUrl}/v1/owners/${ownerA}/rpc`;
-        const endpointB = `${baseUrl}/v1/owners/${ownerB}/rpc`;
-        const headersA = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerA) };
-        const headersB = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerB) };
+        const endpointA = ownerRpcEndpoint(baseUrl, ownerA);
+        const endpointB = ownerRpcEndpoint(baseUrl, ownerB);
+        const headersA = ownerRpcHeaders(ownerA);
+        const headersB = ownerRpcHeaders(ownerB);
         try {
-            mkdirSync(join(ownerARoot, "windows"), { recursive: true });
-            writeFileSync(join(ownerARoot, "windows", "devices.json"), JSON.stringify({
-                devices: [{ id: "win-owned", status: "stopped", backend: "windows-sandbox" }],
-            }));
+            writeBrokerDevices(ownerA, "windows", [{ id: "win-owned", status: "stopped", backend: "windows-sandbox" }]);
 
             const foreignPlan = await fetch(endpointB, {
                 method: "POST",
@@ -660,14 +628,13 @@ describe("device-lab host broker daemon", () => {
             expect(await invalidDeviceId.json()).toEqual(expect.objectContaining({ ok: false, error: "invalid-device-id" }));
         } finally {
             await close(server);
-            rmSync(ownerARoot, { recursive: true, force: true });
-            rmSync(ownerBRoot, { recursive: true, force: true });
+            cleanupOwner(ownerA);
+            cleanupOwner(ownerB);
         }
     });
 
     it("builds provider command plans for each device backend and reports missing metadata", async () => {
         const ownerId = "88889999aaaabbbb";
-        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-provider-plan-test",
             host: "127.0.0.1",
@@ -680,33 +647,18 @@ describe("device-lab host broker daemon", () => {
             },
         });
         const baseUrl = await listen(server);
-        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
-        const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
         try {
-            mkdirSync(join(ownerRoot, "android-device"), { recursive: true });
-            mkdirSync(join(ownerRoot, "ios"), { recursive: true });
-            mkdirSync(join(ownerRoot, "ios-device"), { recursive: true });
-            mkdirSync(join(ownerRoot, "windows"), { recursive: true });
-            mkdirSync(join(ownerRoot, "macos"), { recursive: true });
-            writeFileSync(join(ownerRoot, "android-device", "devices.json"), JSON.stringify({
-                devices: [{ id: "android-real", serial: "real-serial" }],
-            }));
-            writeFileSync(join(ownerRoot, "ios", "devices.json"), JSON.stringify({
-                devices: [{ id: "ios-sim", udid: "SIM-UDID" }],
-            }));
-            writeFileSync(join(ownerRoot, "ios-device", "devices.json"), JSON.stringify({
-                devices: [{ id: "ios-real", udid: "REAL-UDID" }],
-            }));
-            writeFileSync(join(ownerRoot, "windows", "devices.json"), JSON.stringify({
-                devices: [{ id: "win", configPath: "C:/ccc/win.wsb" }],
-            }));
-            writeFileSync(join(ownerRoot, "macos", "devices.json"), JSON.stringify({
-                devices: [
-                    { id: "mac", provider: "tart", providerInstance: "ccc-mac" },
-                    { id: "mac-missing", provider: "tart" },
-                    { id: "mac-unsafe", provider: "/tmp/unsafe-provider", providerInstance: "ccc-mac" },
-                ],
-            }));
+            writeBrokerDevices(ownerId, "android-device", [{ id: "android-real", serial: "real-serial" }]);
+            writeBrokerDevices(ownerId, "ios", [{ id: "ios-sim", udid: "SIM-UDID" }]);
+            writeBrokerDevices(ownerId, "ios-device", [{ id: "ios-real", udid: "REAL-UDID" }]);
+            writeBrokerDevices(ownerId, "windows", [{ id: "win", configPath: "C:/ccc/win.wsb" }]);
+            writeBrokerDevices(ownerId, "macos", [
+                { id: "mac", provider: "tart", providerInstance: "ccc-mac" },
+                { id: "mac-missing", provider: "tart" },
+                { id: "mac-unsafe", provider: "/tmp/unsafe-provider", providerInstance: "ccc-mac" },
+            ]);
 
             const cases = [
                 { backend: "android-device", command: "device_status", deviceId: "android-real", provider: "adb", args: ["-s", "real-serial", "get-state"] },
@@ -772,15 +724,15 @@ describe("device-lab host broker daemon", () => {
             }));
         } finally {
             await close(server);
-            rmSync(ownerRoot, { recursive: true, force: true });
+            cleanupOwner(ownerId);
         }
     });
 
     it("bounds default provider execution output, reports timeouts, and preserves state on failures", async () => {
         const ownerId = "9999aaaabbbbcccc";
-        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
-        const windowsRoot = join(ownerRoot, "windows");
-        const fakeWsb = join(ownerRoot, "fake-wsb");
+        const ownerStateRoot = ownerRoot(ownerId);
+        const windowsRoot = backendRoot(ownerId, "windows");
+        const fakeWsb = join(ownerStateRoot, "fake-wsb");
         mkdirSync(windowsRoot, { recursive: true });
         writeFileSync(fakeWsb, [
             "#!/bin/sh",
@@ -792,13 +744,11 @@ describe("device-lab host broker daemon", () => {
             "",
         ].join("\n"));
         chmodSync(fakeWsb, 0o755);
-        writeFileSync(join(windowsRoot, "devices.json"), JSON.stringify({
-            devices: [
-                { id: "win-fail", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/fail.wsb" },
-                { id: "win-loud", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/loud.wsb" },
-                { id: "win-slow", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/slow.wsb" },
-            ],
-        }));
+        writeBrokerDevices(ownerId, "windows", [
+            { id: "win-fail", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/fail.wsb" },
+            { id: "win-loud", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/loud.wsb" },
+            { id: "win-slow", backend: "windows-sandbox", status: "stopped", configPath: "C:/ccc/slow.wsb" },
+        ]);
 
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-provider-failure-test",
@@ -807,8 +757,8 @@ describe("device-lab host broker daemon", () => {
             providerPaths: { wsb: fakeWsb },
         });
         const baseUrl = await listen(server);
-        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
-        const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
         try {
             const failed = await fetch(endpoint, {
                 method: "POST",
@@ -898,27 +848,23 @@ describe("device-lab host broker daemon", () => {
             ]));
         } finally {
             await close(server);
-            rmSync(ownerRoot, { recursive: true, force: true });
+            cleanupOwner(ownerId);
         }
     });
 
     it("reports detached provider startup failures before mutating owner state", async () => {
         const ownerId = "aaaabbbbccccdddd";
-        const ownerRoot = join(homedir(), ".ccc/devices/owners", ownerId);
-        const androidRoot = join(ownerRoot, "android");
-        mkdirSync(androidRoot, { recursive: true });
-        writeFileSync(join(androidRoot, "devices.json"), JSON.stringify({
-            devices: [{ id: "android-detached-missing", backend: "android-emulator", status: "stopped", avdName: "ccc-missing-provider", port: 5592 }],
-        }));
+        const ownerStateRoot = ownerRoot(ownerId);
+        const androidRoot = writeBrokerDevices(ownerId, "android", [{ id: "android-detached-missing", backend: "android-emulator", status: "stopped", avdName: "ccc-missing-provider", port: 5592 }]);
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-detached-failure-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { emulator: join(ownerRoot, "missing-emulator") },
+            providerPaths: { emulator: join(ownerStateRoot, "missing-emulator") },
         });
         const baseUrl = await listen(server);
-        const endpoint = `${baseUrl}/v1/owners/${ownerId}/rpc`;
-        const headers = { "content-type": "application/json", "x-ccc-device-token": deviceBrokerOwnerToken(ownerId) };
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
         try {
             const response = await fetch(endpoint, {
                 method: "POST",
@@ -949,7 +895,7 @@ describe("device-lab host broker daemon", () => {
             expect(state.devices).toEqual([expect.objectContaining({ id: "android-detached-missing", status: "stopped" })]);
         } finally {
             await close(server);
-            rmSync(ownerRoot, { recursive: true, force: true });
+            cleanupOwner(ownerId);
         }
     });
 
