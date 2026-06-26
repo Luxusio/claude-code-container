@@ -1,3 +1,23 @@
 [tools]
 node = "22"
 "npm:oh-my-codex" = "latest"
+
+[tasks.setup]
+description = "Install project dependencies from package-lock.json"
+run = "npm ci"
+
+[tasks.build]
+description = "Compile TypeScript and bundle x11 MCP"
+run = "npm run build"
+
+[tasks.lint]
+description = "Run ESLint"
+run = "npm run lint"
+
+[tasks.test]
+description = "Run Vitest"
+run = "npm test"
+
+[tasks.check]
+description = "Run lint and tests"
+depends = ["lint", "test"]

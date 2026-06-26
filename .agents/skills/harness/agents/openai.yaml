@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness"
+  short_description: "Run this repository harness workflow."
+  default_prompt: "Use the harness workflow for this repository task."

@@ -7,6 +7,8 @@ coverage/
 .omc
 doc/harness/tasks/
 .omx
+mise.local.toml
+mise.*.local.toml
 
 # harness — operational artifacts (ephemeral, not durable knowledge)
 doc/harness/learnings.jsonl

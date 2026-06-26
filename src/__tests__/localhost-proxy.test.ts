@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import * as net from 'net'
 
+const CLOSED_LOOPBACK = '127.0.0.2'
+
 // Helper: create a TCP server that echoes with a prefix
 function echoServer(prefix: string): Promise<{ port: number; server: net.Server }> {
     return new Promise((resolve) => {
@@ -9,6 +11,16 @@ function echoServer(prefix: string): Promise<{ port: number; server: net.Server 
         })
         server.listen(0, '127.0.0.1', () => {
             resolve({ port: (server.address() as net.AddressInfo).port, server })
+        })
+    })
+}
+
+function unusedPort(host = '127.0.0.1'): Promise<number> {
+    return new Promise((resolve) => {
+        const server = net.createServer()
+        server.listen(0, host, () => {
+            const port = (server.address() as net.AddressInfo).port
+            server.close(() => resolve(port))
         })
     })
 }
@@ -46,8 +58,9 @@ describe('localhost-proxy', () => {
 
         it('rejects with ECONNREFUSED when no server listening', async () => {
             const { tryConnect } = await import('../localhost-proxy.js')
+            const port = await unusedPort(CLOSED_LOOPBACK)
             try {
-                await tryConnect('127.0.0.1', 59999)
+                await tryConnect(CLOSED_LOOPBACK, port)
                 expect.unreachable('should have thrown')
             } catch (err: any) {
                 expect(err.code).toBe('ECONNREFUSED')
@@ -83,11 +96,11 @@ describe('localhost-proxy', () => {
             servers.push(hostServer)
 
             // localPort: nothing listening (simulates no container server)
-            const unusedPort = 59997
+            const localPort = await unusedPort(CLOSED_LOOPBACK)
 
             const proxyServer = net.createServer((client) => {
                 // Override hostAddr to 127.0.0.1 and hostPort for testing
-                proxyConnection(client, unusedPort, '127.0.0.1', '127.0.0.1', hostPort)
+                proxyConnection(client, localPort, CLOSED_LOOPBACK, '127.0.0.1', hostPort)
             })
             servers.push(proxyServer)
             await new Promise<void>((r) => proxyServer.listen(0, '127.0.0.1', r))
@@ -99,9 +112,11 @@ describe('localhost-proxy', () => {
 
         it('destroys client when both local and host fail', async () => {
             const { proxyConnection } = await import('../localhost-proxy.js')
+            const localPort = await unusedPort(CLOSED_LOOPBACK)
+            const hostPort = await unusedPort(CLOSED_LOOPBACK)
 
             const proxyServer = net.createServer((client) => {
-                proxyConnection(client, 59996, '127.0.0.1', '127.0.0.1', 59995)
+                proxyConnection(client, localPort, CLOSED_LOOPBACK, CLOSED_LOOPBACK, hostPort)
             })
             servers.push(proxyServer)
             await new Promise<void>((r) => proxyServer.listen(0, '127.0.0.1', r))

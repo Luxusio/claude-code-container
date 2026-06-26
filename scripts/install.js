@@ -58,15 +58,35 @@ function hashDirectory(hash, dir) {
     }
 }
 
+function isWslEnvironment() {
+    if (process.platform !== "linux") return false;
+    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+    try {
+        return /microsoft|wsl/i.test(readFileSync("/proc/version", "utf-8"));
+    } catch {
+        return false;
+    }
+}
+
+function runtimeOnPath(name) {
+    const r = spawnSync(name, ["--version"], { encoding: "utf-8" });
+    return r.status === 0;
+}
+
+function runtimeUsable(name) {
+    const r = spawnSync(name, ["info"], { encoding: "utf-8", timeout: 3000 });
+    return r.status === 0;
+}
+
 // Detect available container runtime. Mirrors src/container-runtime.ts:
 // prefer Podman, fall back to Docker. Honours CCC_RUNTIME override.
 function detectRuntime() {
     const env = process.env.CCC_RUNTIME;
     if (env === "docker" || env === "podman") return env;
-    for (const name of ["podman", "docker"]) {
-        const r = spawnSync(name, ["--version"], { encoding: "utf-8" });
-        if (r.status === 0) return name;
-    }
+    const podmanOnPath = runtimeOnPath("podman");
+    if (podmanOnPath && (!isWslEnvironment() || runtimeUsable("podman"))) return "podman";
+    if (runtimeOnPath("docker")) return "docker";
+    if (podmanOnPath) return "podman";
     return null;
 }
 

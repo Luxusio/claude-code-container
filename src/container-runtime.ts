@@ -107,6 +107,26 @@ function isRuntimeOnPath(name: RuntimeName): boolean {
     return result.status === 0;
 }
 
+function isRuntimeUsable(name: RuntimeName): boolean {
+    const result = spawnSync(name, ["info"], {
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+        timeout: 3000,
+    });
+    return result.status === 0;
+}
+
+function isWslEnvironment(): boolean {
+    if (process.platform !== "linux") return false;
+    if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+    try {
+        const version = readFileSync("/proc/version", "utf-8");
+        return /microsoft|wsl/i.test(version);
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Resolve which runtime to use. Pure function over inputs + environment.
  * Throws if neither runtime is available and no override is set.
@@ -124,9 +144,15 @@ function resolveRuntime(): RuntimeName {
         return envOverride;
     }
 
-    // Prefer Podman, fall back to Docker.
-    if (isRuntimeOnPath("podman")) return "podman";
+    // Prefer Podman, fall back to Docker. On WSL, a stale/unconfigured Podman
+    // CLI is common while Docker Desktop's WSL integration is the active
+    // runtime. Do not let a non-working Podman binary shadow a working Docker.
+    const podmanOnPath = isRuntimeOnPath("podman");
+    if (podmanOnPath && (!isWslEnvironment() || isRuntimeUsable("podman"))) {
+        return "podman";
+    }
     if (isRuntimeOnPath("docker")) return "docker";
+    if (podmanOnPath) return "podman";
 
     throw new Error(
         "No container runtime found. Install podman or docker and ensure the CLI is on PATH.",
@@ -169,7 +195,7 @@ function detectRemote(runtime: RuntimeName): boolean {
         if ((result.stdout ?? "").toLowerCase().includes("docker desktop")) {
             return true;
         }
-        if (process.env.WSL_DISTRO_NAME) {
+        if (isWslEnvironment()) {
             // WSL2 has two networking modes. Mirrored mode shares the Windows
             // host's loopback so --network host behaves equivalently to native
             // Linux; NAT mode (the default) keeps WSL's loopback separate and

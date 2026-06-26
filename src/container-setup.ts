@@ -11,6 +11,8 @@ import { runtimeCli } from "./container-runtime.js";
 export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
 export const CLAUDE_EXECUTABLE = "claude";
 export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
+const CLAUDE_INSTALL_TMP_HOME = "/tmp/ccc-claude-install-home";
+const NPM_CACHE_DIR = "/tmp/ccc-npm-cache";
 
 export function isClaudeVersionLine(line: string): boolean {
     const trimmed = line.trim();
@@ -114,14 +116,36 @@ echo INSTALL`.trim();
 
     // Fresh install and save to volume
     console.log("Installing claude (first run)...");
+    const installScript = `
+set -euo pipefail
+rm -rf ${CLAUDE_INSTALL_TMP_HOME}
+mkdir -p ${CLAUDE_INSTALL_TMP_HOME} ${NPM_CACHE_DIR}
+trap 'rm -rf ${CLAUDE_INSTALL_TMP_HOME}' EXIT
+export HOME=${CLAUDE_INSTALL_TMP_HOME}
+export XDG_CACHE_HOME=${NPM_CACHE_DIR}
+export XDG_CONFIG_HOME=${CLAUDE_INSTALL_TMP_HOME}/.config
+${getToolByName("claude")!.installCommand}
+ACTUAL=""
+for candidate in \\
+  "${CLAUDE_INSTALL_TMP_HOME}/.claude/local/${CLAUDE_EXECUTABLE}" \\
+  "${CLAUDE_INSTALL_TMP_HOME}/.local/bin/${CLAUDE_EXECUTABLE}" \\
+  "$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)"
+do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+    ACTUAL="$candidate"
+    break
+  fi
+done
+[ -n "$ACTUAL" ] && mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && cp -L "$ACTUAL" ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}
+`.trim();
     const installResult = spawnSync(
         runtimeCli(),
         [
             "exec",
             containerName,
-            "sh",
-            "-c",
-            `${getToolByName("claude")!.installCommand} && ACTUAL="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" && [ -n "$ACTUAL" ] && [ -x "$ACTUAL" ] && mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && cp -L "$ACTUAL" ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`,
+            "bash",
+            "-lc",
+            installScript,
         ],
         { stdio: "inherit" },
     );
@@ -139,13 +163,13 @@ export function ensureTools(containerName: string, activeTool: ToolDefinition): 
     if (activeTool.name === "claude") {
         ensureClaudeInContainer(containerName);
     }
-    ensureNpmTools(containerName);
+    ensureNpmTools(containerName, activeTool);
 }
 
 /**
  * Ensure npm-based tools from registry are installed.
  */
-function ensureNpmTools(containerName: string): void {
+function ensureNpmTools(containerName: string, activeTool: ToolDefinition): void {
     const tools = getNpmTools();
 
     // Single docker exec to check all tools at once (instead of one per tool)
@@ -195,12 +219,16 @@ function ensureNpmTools(containerName: string): void {
         runtimeCli(),
         [
             "exec", "-w", "/home/ccc", containerName, "sh", "-c",
-            `~/.local/bin/mise exec node@22 -- npm install -g ${pkgs}`,
+            `mkdir -p ${NPM_CACHE_DIR} && NPM_CONFIG_CACHE=${NPM_CACHE_DIR} NPM_CONFIG_TMP=/tmp ~/.local/bin/mise exec node@22 -- npm install -g --no-audit --no-fund ${pkgs}`,
         ],
         { stdio: "inherit" },
     );
     if (installResult.status !== 0) {
-        console.warn("Warning: Failed to install some global npm tools (non-fatal)");
+        const message = `Failed to install global npm tool(s): ${missing.map((t) => t.cmd).join(", ")}`;
+        if (missing.some((t) => t.cmd === activeTool.name)) {
+            throw new Error(message);
+        }
+        console.warn(`Warning: ${message} (non-fatal)`);
         return;
     }
 
