@@ -52,6 +52,8 @@ describe("container-runtime", () => {
         delete process.env.CCC_RUNTIME;
         delete process.env.CCC_SELINUX_RELABEL;
         delete process.env.CCC_PODMAN_CGROUPS;
+        delete process.env.WSL_DISTRO_NAME;
+        delete process.env.WSL_INTEROP;
         delete process.env.container;
         delete process.env.VITEST;
         for (const key of Object.keys(process.env)) {
@@ -71,6 +73,45 @@ describe("container-runtime", () => {
             spawnSyncMock
                 .mockReturnValueOnce(result(0, "podman version 5.2.3\n")) // podman --version (isRuntimeOnPath)
                 .mockReturnValue(result(0, ""));                             // subsequent detectVersion/remote/rootless
+            expect(runtimeCli()).toBe("podman");
+        });
+
+        it("uses docker on WSL when podman is installed but unusable", () => {
+            process.env.WSL_DISTRO_NAME = "Ubuntu";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "podman version 5.2.3\n"))    // podman --version
+                .mockReturnValueOnce(result(1, ""))                          // podman info
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))   // docker --version
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))   // detectVersion(docker)
+                .mockReturnValueOnce(result(0, "Docker Desktop\n"))          // detectRemote(docker)
+                .mockReturnValue(result(0, ""));
+
+            expect(runtimeCli()).toBe("docker");
+        });
+
+        it("uses docker on WSL detected from /proc/version when podman is unusable", () => {
+            mockReadFileSync.mockImplementation((p: unknown) => {
+                if (p === "/proc/version") return "Linux version 6.6.87.2-microsoft-standard-WSL2";
+                return "";
+            });
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "podman version 5.2.3\n"))    // podman --version
+                .mockReturnValueOnce(result(1, ""))                          // podman info
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))   // docker --version
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))   // detectVersion(docker)
+                .mockReturnValueOnce(result(0, "Ubuntu 24.04 LTS\n"))        // detectRemote(docker)
+                .mockReturnValue(result(0, ""));
+
+            expect(runtimeCli()).toBe("docker");
+        });
+
+        it("keeps podman on WSL when podman info succeeds", () => {
+            process.env.WSL_DISTRO_NAME = "Ubuntu";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "podman version 5.2.3\n")) // podman --version
+                .mockReturnValueOnce(result(0, ""))                       // podman info
+                .mockReturnValue(result(0, ""));
+
             expect(runtimeCli()).toBe("podman");
         });
 
@@ -339,6 +380,19 @@ describe("container-runtime", () => {
             const info = getRuntimeInfo();
             expect(info.remote).toBe(true);
             delete process.env.WSL_DISTRO_NAME;
+        });
+
+        it("WSL2 NAT mode is detected via WSL_INTEROP when WSL_DISTRO_NAME is absent", () => {
+            process.env.CCC_RUNTIME = "docker";
+            process.env.WSL_INTEROP = "/run/WSL/123_interop";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Ubuntu 24.04 LTS\n"))
+                .mockReturnValue(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.remote).toBe(true);
+            expect(info.flavor).toBe("docker-desktop");
         });
 
         it("WSL2 mirrored mode (loopback0 present) is treated as local", () => {

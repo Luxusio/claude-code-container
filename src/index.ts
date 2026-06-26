@@ -625,6 +625,9 @@ async function exec(
     } else {
         if (!wasAlreadyRunning) {
             runMiseInstall();
+        } else if (commandTool) {
+            progress(`Checking ${commandTool.name} install...`);
+            ensureTools(containerName, commandTool);
         }
         if (commandTool?.name === "codex") {
             prepareCodexConfigForContainer(containerName);

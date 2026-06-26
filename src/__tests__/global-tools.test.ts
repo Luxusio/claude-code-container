@@ -113,20 +113,20 @@ describe("ensureTools (npm tools)", () => {
         expect(console.log).toHaveBeenCalledWith("Installing codex...");
     });
 
-    it("warns and skips wrappers on install failure", () => {
+    it("throws and skips wrappers when active tool install fails", () => {
         // Combined check returns all 3 missing
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
 
-        ensureTools(container, getToolByName("gemini")!);
+        expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow(
+            "Failed to install global npm tool(s): gemini, codex, opencode",
+        );
 
         // 1 check + 2 cleanups + 1 install = 4 calls (no reshim/wrapper calls)
         expect(spawnSyncMock).toHaveBeenCalledTimes(4);
-        expect(console.warn).toHaveBeenCalledWith(
-            "Warning: Failed to install some global npm tools (non-fatal)",
-        );
+        expect(console.warn).not.toHaveBeenCalled();
     });
 
     it("checks all tools in single docker exec", () => {

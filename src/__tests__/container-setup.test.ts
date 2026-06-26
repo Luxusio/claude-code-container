@@ -235,9 +235,13 @@ describe("container-setup.ts module", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             ensureClaudeInContainer(container);
             const installCall = spawnSyncMock.mock.calls[1];
+            expect(installCall[1]).toContain("bash");
+            expect(installCall[1]).toContain("-lc");
             const shCmd = (installCall[1] as string[]).at(-1) as string;
+            expect(shCmd).toContain("set -euo pipefail");
             expect(shCmd).toContain("curl -fsSL");
-            expect(shCmd).toContain("command -v claude");
+            expect(shCmd).toContain("export HOME=/tmp/ccc-claude-install-home");
+            expect(shCmd).toContain("/tmp/ccc-claude-install-home/.claude/local/claude");
             expect(shCmd).toContain(CLAUDE_PERSIST_DIR);
             expect(shCmd).toContain(`cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`);
         });
@@ -296,7 +300,7 @@ describe("container-setup.ts module", () => {
             expect(codexCmd).toContain("codex");
         });
 
-        it("logs warning but does not throw when npm install fails", () => {
+        it("throws when npm install fails for the active tool", () => {
             const geminiTool = getToolByName("gemini")!;
             // Combined check returns both missing
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
@@ -306,12 +310,30 @@ describe("container-setup.ts module", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(0));
             // npm install fails
             spawnSyncMock.mockReturnValueOnce(makeResult(1));
-            expect(() => ensureTools(container, geminiTool)).not.toThrow();
-            expect(console.warn).toHaveBeenCalledWith(
-                "Warning: Failed to install some global npm tools (non-fatal)",
+            expect(() => ensureTools(container, geminiTool)).toThrow(
+                "Failed to install global npm tool(s): gemini, codex",
             );
             // check + cleanup + shim-nuke + failed install — early return, no reshim/wrappers
             expect(spawnSyncMock).toHaveBeenCalledTimes(4);
+        });
+
+        it("logs warning but does not throw when npm install fails for inactive tools", () => {
+            const claudeTool = getDefaultTool();
+            // ensureClaudeInContainer: combined probe returns VALID
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n"));
+            // Combined check returns npm tools missing
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\n"));
+            // cleanup
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // stale shim nuke
+            spawnSyncMock.mockReturnValueOnce(makeResult(0));
+            // npm install fails
+            spawnSyncMock.mockReturnValueOnce(makeResult(1));
+            expect(() => ensureTools(container, claudeTool)).not.toThrow();
+            expect(console.warn).toHaveBeenCalledWith(
+                "Warning: Failed to install global npm tool(s): gemini, codex (non-fatal)",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(5);
         });
 
         it("only installs missing tools when some are already present", () => {
@@ -335,6 +357,8 @@ describe("container-setup.ts module", () => {
             // Verify the npm install call (index 3) contains only the missing package
             const installCall = spawnSyncMock.mock.calls[3];
             const installCmd = (installCall[1] as string[]).at(-1) as string;
+            expect(installCmd).toContain("NPM_CONFIG_CACHE=/tmp/ccc-npm-cache");
+            expect(installCmd).toContain("--no-audit --no-fund");
             expect(installCmd).toContain("@openai/codex");
             expect(installCmd).not.toContain("@google/gemini-cli");
         });
