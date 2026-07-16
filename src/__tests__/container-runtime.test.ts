@@ -208,14 +208,14 @@ describe("container-runtime", () => {
             process.env.HOSTNAME = "ccc-parent";
             spawnSyncMock.mockReturnValue(result(0, JSON.stringify([
                 {
-                    Source: "C:\\Users\\Luxus\\.ccc\\codex",
+                    Source: "C:\\Users\\TestUser\\.ccc\\codex",
                     Destination: "/home/ccc/.codex",
                 },
             ])));
 
             expect(bindMountArgs("/home/ccc/.codex/config.toml", "/tmp/config.toml")).toEqual([
                 "-v",
-                "/run/desktop/mnt/host/c/Users/Luxus/.ccc/codex/config.toml:/tmp/config.toml",
+                "/run/desktop/mnt/host/c/Users/TestUser/.ccc/codex/config.toml:/tmp/config.toml",
             ]);
         });
 
@@ -416,6 +416,19 @@ describe("container-runtime", () => {
     });
 
     describe("getRuntimeInfo caching", () => {
+        it("detects linux rootless docker", () => {
+            process.env.CCC_RUNTIME = "docker";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1, build abc\n"))
+                .mockReturnValueOnce(result(0, "Docker Engine - Community\n"))
+                .mockReturnValueOnce(result(0, "[\"name=rootless\"]\n"));
+
+            const info = getRuntimeInfo();
+            expect(info.runtime).toBe("docker");
+            expect(info.rootless).toBe(true);
+            expect(info.flavor).toBe("docker-rootless");
+        });
+
         it("detects linux rootless podman and derives the user socket path", () => {
             process.env.CCC_RUNTIME = "podman";
             process.env.XDG_RUNTIME_DIR = "/run/user/1001";

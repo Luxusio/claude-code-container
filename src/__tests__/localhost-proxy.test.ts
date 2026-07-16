@@ -47,7 +47,7 @@ describe('localhost-proxy', () => {
         it('rejects with ECONNREFUSED when no server listening', async () => {
             const { tryConnect } = await import('../localhost-proxy.js')
             try {
-                await tryConnect('127.0.0.1', 59999)
+                await tryConnect('127.0.0.2', 1)
                 expect.unreachable('should have thrown')
             } catch (err: any) {
                 expect(err.code).toBe('ECONNREFUSED')
@@ -83,11 +83,9 @@ describe('localhost-proxy', () => {
             servers.push(hostServer)
 
             // localPort: nothing listening (simulates no container server)
-            const unusedPort = 59997
-
             const proxyServer = net.createServer((client) => {
                 // Override hostAddr to 127.0.0.1 and hostPort for testing
-                proxyConnection(client, unusedPort, '127.0.0.1', '127.0.0.1', hostPort)
+                proxyConnection(client, 1, '127.0.0.2', '127.0.0.1', hostPort)
             })
             servers.push(proxyServer)
             await new Promise<void>((r) => proxyServer.listen(0, '127.0.0.1', r))
@@ -99,9 +97,8 @@ describe('localhost-proxy', () => {
 
         it('destroys client when both local and host fail', async () => {
             const { proxyConnection } = await import('../localhost-proxy.js')
-
             const proxyServer = net.createServer((client) => {
-                proxyConnection(client, 59996, '127.0.0.1', '127.0.0.1', 59995)
+                proxyConnection(client, 1, '127.0.0.2', '127.0.0.2', 2)
             })
             servers.push(proxyServer)
             await new Promise<void>((r) => proxyServer.listen(0, '127.0.0.1', r))

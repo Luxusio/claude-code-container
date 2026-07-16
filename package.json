@@ -1,6 +1,6 @@
 {
   "name": "claude-code-container",
-  "version": "1.1.15",
+  "version": "1.1.73",
   "description": "Run Claude Code in isolated Docker containers",
   "type": "module",
   "bin": {
@@ -8,16 +8,39 @@
   },
   "files": [
     "dist/",
+    "Dockerfile",
+    "Containerfile",
+    "x11-mcp/package.json",
+    "x11-mcp/package-lock.json",
+    "x11-mcp/server.mjs",
+    "device-lab-mcp/package.json",
+    "device-lab-mcp/package-lock.json",
+    "device-lab-mcp/server.mjs",
+    "device-lab-mcp/src/",
+    "lab-mcp/package.json",
+    "lab-mcp/package-lock.json",
+    "lab-mcp/server.mjs",
+    "lab-mcp/src/",
+    "scripts/run-vitest.mjs",
+    "scripts/test-level.js",
+    "scripts/real-tests/",
     "scripts/install.js",
     "scripts/clipboard-shims/",
     "scripts/clipboard-helper-darwin.m",
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp",
+    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp",
     "build:x11-mcp": "node node_modules/esbuild-wasm/bin/esbuild x11-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/x11-mcp/server.mjs --banner:js=\"// x11-mcp-version: 2\"",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "build:device-lab-mcp": "node node_modules/esbuild-wasm/bin/esbuild device-lab-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/device-lab-mcp/server.mjs --banner:js=\"// device-lab-mcp-version: 1\"",
+    "build:lab-mcp": "node node_modules/esbuild-wasm/bin/esbuild lab-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/lab-mcp/server.mjs --banner:js=\"// lab-mcp-version: 1\"",
+    "test": "node scripts/run-vitest.mjs run",
+    "test:level0": "node scripts/test-level.js 0",
+    "test:level1": "node scripts/test-level.js 1",
+    "test:level2": "node scripts/test-level.js 2",
+    "test:level3": "node scripts/real-tests/level3.mjs",
+    "smoke:lab-mcp": "node lab-mcp/src/smoke.mjs",
+    "test:watch": "node scripts/run-vitest.mjs",
     "lint": "eslint src/",
     "install:global": "node scripts/install.js",
     "uninstall:global": "node scripts/install.js --uninstall",
@@ -25,7 +48,7 @@
     "postinstall": "node scripts/install.js --postinstall"
   },
   "engines": {
-    "node": ">=14.14.0"
+    "node": ">=20.19.0"
   },
   "keywords": [
     "claude",
@@ -42,7 +65,6 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@types/node": "^22.0.0",
-    "@vitest/coverage-v8": "^4.1.2",
     "esbuild-wasm": "^0.28.0",
     "eslint": "^9.0.0",
     "eslint-plugin-n": "^17.0.0",

@@ -33,6 +33,7 @@ import {
     getClaudeJsonFile,
     collectForwardedEnv,
     writeEnvFile,
+    LAB_RUNNER_PROFILE_NAME,
 } from "./utils.js";
 
 import { ensureClipboardServer } from "./clipboard-server.js";
@@ -60,7 +61,6 @@ import {
     isContainerExists,
     isImageExists,
     getImageLabel,
-    ensureImage,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -72,10 +72,13 @@ import {
     restoreCodexConfigHostOwnership,
 } from "./docker.js";
 import {
+    DEVICE_BROKER_DEFAULT_HOST,
+    ensureHostDeviceBroker,
+} from "./device-lab-broker.js";
+import {
     ensureClaudeInContainer,
     ensureTools,
     ensureUvAvailable,
-    saveClaudeBinaryToVolume,
     CLAUDE_BIN_PATH,
 } from "./container-setup.js";
 import {
@@ -100,10 +103,35 @@ import {
 import { getToolByName, getAllTools, getAllCredentialMounts, getDefaultTool, type ToolDefinition } from "./tool-registry.js";
 import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from "./tool-detect.js";
 import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
+import { devicesCliAsync } from "./device-lab-admin.js";
+import { labsCli } from "./lab-runner-admin.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+function deviceBrokerBindHostForContainer(): string {
+    return DEVICE_BROKER_DEFAULT_HOST;
+}
+
+async function prepareHostDeviceBroker(fullPath: string, profile?: string): Promise<void> {
+    const result = await ensureHostDeviceBroker({
+        cwd: fullPath,
+        profile,
+        cliPath: __filename,
+        bindHost: deviceBrokerBindHostForContainer(),
+        probeHost: DEVICE_BROKER_DEFAULT_HOST,
+        timeoutMs: 250,
+        startupTimeoutMs: 2500,
+    });
+    if (!("ok" in result) || result.ok !== true) {
+        const detail = "error" in result && result.error ? `${result.error}${"detail" in result && result.detail ? `: ${result.detail}` : ""}` : "unknown error";
+        const diagnostic = "diagnostics" in result && Array.isArray(result.diagnostics) && result.diagnostics.length > 0
+            ? ` ${result.diagnostics.join("; ")}.`
+            : "";
+        console.warn(`[ccc] WARNING: device broker auto-start failed (${detail}).${diagnostic} Host-backed device MCP tools may be unavailable.`);
+    }
+}
 
 // Progress indicator for startup steps (dim text on stderr)
 function progress(msg: string): void {
@@ -406,6 +434,10 @@ async function exec(
 
     // Start or get container (with extra mounts for worktree workspaces)
     if (!wasAlreadyRunning) progress("Starting container...");
+    progress("Preparing device broker...");
+    await prepareHostDeviceBroker(fullPath, profile).catch((error) => {
+        console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
+    });
     const containerName = startProjectContainer(
         fullPath,
         () => ensureDirs(profile),
@@ -971,6 +1003,31 @@ CONTAINER MANAGEMENT:
     ccc rm                  Remove current project's container
     ccc status              Show all containers status
     ccc doctor              Health check and diagnostics
+    ccc devices             Show device-lab status for this owner
+    ccc devices list        List current-project device definitions
+    ccc devices list --all-projects
+                            List device definitions across all projects
+    ccc devices create <backend> <id>
+                            Create an owner-scoped device definition
+    ccc devices start <id>  Start a device (Windows Sandbox defaults minimized)
+    ccc devices status <id> Show broker-owned device status
+    ccc devices backends    Show device backend prerequisites
+    ccc devices doctor      Device-lab diagnostics
+    ccc devices smoke       Non-destructive device backend smoke checks
+    ccc devices smoke --real-provider
+                            Opt-in real provider readiness smoke checks
+    ccc devices stop <id>   Stop a current-project device definition
+    ccc devices stop --all-projects
+                            Stop devices across all projects
+    ccc devices delete <id> Delete a current-project stopped device definition
+    ccc devices prune       Remove stopped current-project device definitions
+    ccc devices prune --all-projects
+                            Remove stopped definitions across all projects
+    ccc devices broker status
+    ccc labs                Show lab-runner container VM readiness
+    ccc labs smoke          Non-starting lab-runner VM readiness smoke check
+    ccc labs shell          Open bash in the built-in lab-runner profile
+    ccc labs run <command>  Run a command in the built-in lab-runner profile
     ccc runtime             Show detected container runtime
     ccc clean               Clean stopped containers and images
     ccc clean --volumes     Also remove cached volumes
@@ -989,6 +1046,7 @@ OPTIONS:
     --runtime <name>        Use docker or podman for this invocation
     --default <tool>        Set default tool (claude/gemini/codex/opencode)
     --default               Show current default tool
+    -v, --version           Show the CCC CLI version
     -h, --help              Show this help
 
 EXAMPLES:
@@ -1027,12 +1085,40 @@ export function parseArgs(args: string[]): {
     return { worktreeArg, filteredArgs };
 }
 
+export function informationalCommand(args: string[]): "help" | "version" | null {
+    const { filteredArgs } = parseArgs(args);
+    let command: string | undefined;
+    for (let i = 0; i < filteredArgs.length; i += 1) {
+        if ((filteredArgs[i] === "--env" || filteredArgs[i] === "--runtime") && i + 1 < filteredArgs.length) {
+            i += 1;
+            continue;
+        }
+        command = filteredArgs[i];
+        break;
+    }
+    if (command === "-h" || command === "--help" || command === "help") return "help";
+    if (command === "-v" || command === "--version" || command === "version") return "version";
+    return null;
+}
+
 // === Main ===
 async function main(): Promise<void> {
     const args = process.argv.slice(2);
 
     // Unified parsing: @branch and remaining args
     const { worktreeArg, filteredArgs } = parseArgs(args);
+
+    // Informational commands must never validate profiles, create worktrees,
+    // start containers, or reconcile the host device broker.
+    const informational = informationalCommand(args);
+    if (informational === "help") {
+        showHelp();
+        return;
+    }
+    if (informational === "version") {
+        console.log(CLI_VERSION);
+        return;
+    }
 
     // Profile from CCC_PROFILE env var
     const profile = process.env.CCC_PROFILE || undefined;
@@ -1130,6 +1216,12 @@ async function main(): Promise<void> {
             showHelp();
             break;
 
+        case "-v":
+        case "--version":
+        case "version":
+            console.log(CLI_VERSION);
+            break;
+
         case "stop":
             stopProjectContainer(cwd, profile);
             break;
@@ -1150,6 +1242,37 @@ async function main(): Promise<void> {
             const { runDoctor } = await import("./doctor.js");
             const healthy = runDoctor(cwd);
             process.exit(healthy ? 0 : 1);
+            break;
+        }
+
+        case "devices": {
+            const status = await devicesCliAsync(cmdArgs.slice(1), cwd, profile);
+            if (cmdArgs[1] === "broker" && cmdArgs[2] === "serve" && status === 0) {
+                return;
+            }
+            process.exit(status);
+            break;
+        }
+
+        case "labs": {
+            const subcommand = cmdArgs[1] || "status";
+            if (subcommand === "shell") {
+                ensureProfile(LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, ["bash"], { ...envOpt }, LAB_RUNNER_PROFILE_NAME);
+                break;
+            }
+            if (subcommand === "run") {
+                const labCommand = cmdArgs.slice(2);
+                if (labCommand.length === 0) {
+                    console.error("Usage: ccc labs run <command>");
+                    process.exit(1);
+                }
+                ensureProfile(LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, labCommand, { ...envOpt }, LAB_RUNNER_PROFILE_NAME);
+                break;
+            }
+            const status = labsCli(cmdArgs.slice(1), cwd);
+            process.exit(status);
             break;
         }
 

@@ -14,6 +14,7 @@
 //
 // Runtime-specific behaviours centralised here:
 //   - bind-mount `:Z` suffix on Linux Podman with SELinux enforcing
+//   - rootless runtime detection for Docker/Podman
 //   - `--userns=keep-id:uid=1000,gid=1000` on rootless Podman
 //     (maps host user to container ccc UID, not the host UID)
 //   - `host.docker.internal` vs `host.containers.internal` alias
@@ -28,6 +29,7 @@ export type RuntimeName = "docker" | "podman";
 
 export type RuntimeFlavor =
     | "docker-native"        // docker on Linux (native daemon, rootful)
+    | "docker-rootless"      // docker on Linux running rootless
     | "docker-desktop"       // docker on macOS/Windows/WSL2 (VM-backed)
     | "podman-rootful"       // podman on Linux running as root
     | "podman-rootless"      // podman on Linux running as unprivileged user
@@ -39,7 +41,7 @@ export interface RuntimeInfo {
     flavor: RuntimeFlavor;
     version: string | null;    // "x.y.z" or null if detection failed
     socketPath: string | null; // host-side path to the container-manager socket
-    rootless: boolean;         // true iff rootless podman
+    rootless: boolean;         // true iff the selected runtime is rootless
     remote: boolean;           // true iff Docker Desktop or podman machine (VM-backed)
 }
 
@@ -205,11 +207,28 @@ function isWSL2MirroredMode(): boolean {
 }
 
 /**
- * Rootless detection (podman only). Docker is rootful by convention.
+ * Rootless detection for local Docker/Podman runtimes.
  */
 function detectRootless(runtime: RuntimeName): boolean {
-    if (runtime !== "podman") return false;
     if (process.platform !== "linux") return false; // machine VM: not "rootless" in the host sense
+
+    if (runtime === "docker") {
+        const result = spawnSync(
+            "docker",
+            ["info", "--format", "{{json .SecurityOptions}}"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (result.status === 0) {
+            const raw = (result.stdout ?? "").trim();
+            try {
+                const options = JSON.parse(raw) as unknown;
+                if (Array.isArray(options) && options.some((option) => String(option).toLowerCase().includes("rootless"))) return true;
+            } catch {
+                if (raw.toLowerCase().includes("rootless")) return true;
+            }
+        }
+        return false;
+    }
 
     const result = spawnSync(
         "podman",
@@ -234,6 +253,7 @@ function detectRootless(runtime: RuntimeName): boolean {
 function deriveFlavor(runtime: RuntimeName, remote: boolean, rootless: boolean): RuntimeFlavor {
     if (runtime === "docker") {
         if (remote) return "docker-desktop";
+        if (rootless) return "docker-rootless";
         return "docker-native";
     }
     // runtime === "podman"

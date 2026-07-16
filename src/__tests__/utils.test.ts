@@ -271,7 +271,7 @@ describe('collectForwardedEnv', () => {
     it('skips Windows-path env values and noisy shell prefixes', () => {
         const env = {
             GOOD_KEY: 'value',
-            WIN_PATH: 'C:\\Users\\Luxus\\AppData\\Local',
+            WIN_PATH: 'C:\\Users\\TestUser\\AppData\\Local',
             __MISE_SESSION: 'huge-state',
             'BASH_FUNC_test%%': '() {  echo hi',
         };

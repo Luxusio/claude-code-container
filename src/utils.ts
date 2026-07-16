@@ -50,6 +50,8 @@ export const IMAGE_NAME = "ccc";
 export const DOCKER_REGISTRY_IMAGE = process.env.CCC_REGISTRY || "luxusio/claude-code-container";
 export const CONTAINER_PID_LIMIT = "-1"; // -1 = unlimited (same as host)
 export const MISE_VOLUME_NAME = "ccc-mise-cache";
+export const LAB_RUNNER_PROFILE_NAME = "lab-runner";
+export const LAB_RUNNER_STATE_CONTAINER_DIR = "/home/ccc/.ccc/labs";
 export const DEFAULT_ENV_FORWARD_BYTE_LIMIT = 64 * 1024;
 export const COMMON_IGNORE_DIRS = [
     "node_modules", ".git", "dist", "build", "target",

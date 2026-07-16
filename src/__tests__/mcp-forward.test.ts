@@ -173,13 +173,41 @@ describe("buildMcpConfig", () => {
         expect(entry.args).toContain("--executablePath=/usr/bin/chromium");
     });
 
-    it("always includes x11-display with the expected direct-spawn shape", () => {
+    it("does not include the retired standalone x11-display server", () => {
         buildMcpConfig();
         const config = getWrittenConfig();
         const servers = config.mcpServers as Record<string, unknown>;
-        expect(servers["x11-display"]).toEqual({
+        expect(servers["x11-display"]).toBeUndefined();
+    });
+
+    it("uses the container image device-lab MCP bundle", () => {
+        existsSync.mockImplementation((p: string) => p.endsWith("/dist/device-lab-mcp/server.mjs"));
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        expect(servers["device-lab"]).toEqual({
             command: "mise",
-            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
+            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/device-lab-mcp/server.mjs"],
+        });
+    });
+
+    it("never writes a host checkout path when host dist is unavailable", () => {
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        const entry = servers["device-lab"] as { command: string; args: string[] };
+        expect(entry.command).toBe("mise");
+        expect(entry.args).toContain("/opt/ccc/dist/device-lab-mcp/server.mjs");
+    });
+
+    it("uses the bundled lab MCP server when it is available", () => {
+        existsSync.mockImplementation((p: string) => p.endsWith("/dist/lab-mcp/server.mjs"));
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        expect(servers["lab"]).toEqual({
+            command: "mise",
+            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/lab-mcp/server.mjs"],
         });
     });
 
@@ -191,9 +219,28 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).toContain('command = "mise"');
         expect(codexConfig).toContain('"--no-config"');
         expect(codexConfig).toContain('"--executablePath=/usr/bin/chromium"');
-        expect(codexConfig).toContain("[mcp_servers.x11-display]");
-        expect(codexConfig).toContain('"/opt/ccc/x11-mcp/server.mjs"');
+        expect(codexConfig).not.toContain("[mcp_servers.x11-display]");
+        expect(codexConfig).not.toContain('"/opt/ccc/x11-mcp/server.mjs"');
+        expect(codexConfig).toContain("[mcp_servers.device-lab]");
+        expect(codexConfig).toContain('"/opt/ccc/dist/device-lab-mcp/server.mjs"');
+        expect(codexConfig).toContain("[mcp_servers.lab]");
+        expect(codexConfig).toContain('"/opt/ccc/dist/lab-mcp/server.mjs"');
         expect(codexConfig).toContain("# ccc-managed-mcp end");
+    });
+
+    it("writes bundled MCP server paths to Codex config.toml when available", () => {
+        existsSync.mockImplementation((p: string) => (
+            p.endsWith("/dist/device-lab-mcp/server.mjs")
+            || p.endsWith("/dist/lab-mcp/server.mjs")
+        ));
+
+        buildMcpConfig();
+
+        const codexConfig = getWrittenCodexConfig();
+        expect(codexConfig).toContain("/dist/device-lab-mcp/server.mjs");
+        expect(codexConfig).toContain("/dist/lab-mcp/server.mjs");
+        expect(codexConfig).not.toContain('"/opt/ccc/device-lab-mcp/server.mjs"');
+        expect(codexConfig).not.toContain('"/opt/ccc/lab-mcp/server.mjs"');
     });
 
     it("does not rewrite Codex config.toml when the generated config is unchanged", () => {
@@ -246,7 +293,11 @@ describe("buildMcpConfig", () => {
             'args = ["--no-config", "exec", "node@22", "--", "npx", "-y", "chrome-devtools-mcp"',
         );
         expect(codexConfig).toContain(
-            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"]',
+            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/device-lab-mcp/server.mjs"]',
+        );
+        expect(codexConfig).not.toContain("/opt/ccc/x11-mcp/server.mjs");
+        expect(codexConfig).toContain(
+            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/lab-mcp/server.mjs"]',
         );
     });
 
@@ -294,6 +345,14 @@ describe("buildMcpConfig", () => {
                     'command = "mise"',
                     'args = ["old"]',
                     "",
+                    "[mcp_servers.device-lab]",
+                    'command = "mise"',
+                    'args = ["old"]',
+                    "",
+                    "[mcp_servers.lab]",
+                    'command = "mise"',
+                    'args = ["old"]',
+                    "",
                     "[mcp_servers.user-server]",
                     'command = "user-tool"',
                     "",
@@ -307,7 +366,9 @@ describe("buildMcpConfig", () => {
         buildMcpConfig();
         const codexConfig = getWrittenCodexConfig();
         expect(codexConfig.match(/\[mcp_servers\.chrome-devtools\]/g)).toHaveLength(1);
-        expect(codexConfig.match(/\[mcp_servers\.x11-display\]/g)).toHaveLength(1);
+        expect(codexConfig.match(/\[mcp_servers\.x11-display\]/g)).toBeNull();
+        expect(codexConfig.match(/\[mcp_servers\.device-lab\]/g)).toHaveLength(1);
+        expect(codexConfig.match(/\[mcp_servers\.lab\]/g)).toHaveLength(1);
         expect(codexConfig).not.toContain('args = ["old"]');
         expect(codexConfig).toContain("[mcp_servers.user-server]");
         expect(codexConfig).toContain('[projects."/project/example"]');
@@ -356,6 +417,74 @@ describe("buildMcpConfig", () => {
         // ccc's own chrome-devtools should be present, not host's version
         const entry = servers["chrome-devtools"] as { command: string };
         expect(entry.command).toBe("mise");
+    });
+
+    it("does not forward host device-lab (ccc manages its own)", () => {
+        existsSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) return true;
+            return false;
+        });
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) {
+                return JSON.stringify({
+                    mcpServers: {
+                        "device-lab": { command: "host-device-lab", args: [] },
+                    },
+                });
+            }
+            return "{}";
+        });
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        const entry = servers["device-lab"] as { command: string; args: string[] };
+        expect(entry.command).toBe("mise");
+        expect(entry.args).toContain("/opt/ccc/dist/device-lab-mcp/server.mjs");
+    });
+
+    it("does not forward host x11-display after retiring the standalone entry", () => {
+        existsSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) return true;
+            return false;
+        });
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) {
+                return JSON.stringify({
+                    mcpServers: {
+                        "x11-display": { command: "host-x11", args: [] },
+                    },
+                });
+            }
+            return "{}";
+        });
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        expect(servers["x11-display"]).toBeUndefined();
+        expect(servers["device-lab"]).toBeDefined();
+    });
+
+    it("does not forward host lab (ccc manages its own)", () => {
+        existsSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) return true;
+            return false;
+        });
+        readFileSync.mockImplementation((p: string) => {
+            if (p.endsWith(".claude.json")) {
+                return JSON.stringify({
+                    mcpServers: {
+                        lab: { command: "host-lab", args: [] },
+                    },
+                });
+            }
+            return "{}";
+        });
+        buildMcpConfig();
+        const config = getWrittenConfig();
+        const servers = config.mcpServers as Record<string, unknown>;
+        const entry = servers["lab"] as { command: string; args: string[] };
+        expect(entry.command).toBe("mise");
+        expect(entry.args).toContain("/opt/ccc/dist/lab-mcp/server.mjs");
     });
 
     it("does not forward playwright (legacy, removed)", () => {

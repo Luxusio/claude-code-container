@@ -975,8 +975,8 @@ describe("clipboard-server", () => {
             });
 
             it("parses single image path text from Windows, macOS, Linux, and file URI clipboards", () => {
-                expect(parseClipboardImagePathText('"C:\\Users\\Luxus\\Desktop\\page-concepts\\consumer-pages-ops-set.png"')).toEqual([
-                    "C:\\Users\\Luxus\\Desktop\\page-concepts\\consumer-pages-ops-set.png",
+                expect(parseClipboardImagePathText('"C:\\Users\\TestUser\\Desktop\\page-concepts\\consumer-pages-ops-set.png"')).toEqual([
+                    "C:\\Users\\TestUser\\Desktop\\page-concepts\\consumer-pages-ops-set.png",
                 ]);
                 expect(parseClipboardImagePathText("/Users/me/Pictures/clip.webp")).toEqual(["/Users/me/Pictures/clip.webp"]);
                 expect(parseClipboardImagePathText("file:///home/me/Pictures/clip.avif")).toEqual(["/home/me/Pictures/clip.avif"]);
@@ -984,7 +984,7 @@ describe("clipboard-server", () => {
 
             it("does not treat normal text or non-image paths as image path text", () => {
                 expect(parseClipboardImagePathText("hello world")).toEqual([]);
-                expect(parseClipboardImagePathText("C:\\Users\\Luxus\\Desktop\\notes.txt")).toEqual([]);
+                expect(parseClipboardImagePathText("C:\\Users\\TestUser\\Desktop\\notes.txt")).toEqual([]);
                 expect(parseClipboardImagePathText("C:\\one.png\nC:\\two.png")).toEqual([]);
             });
 
@@ -3122,6 +3122,26 @@ describe("clipboard-server", () => {
         it("should export hasAnyActiveSessionsExcept as a function", async () => {
             const mod = await import("../clipboard-server.js");
             expect(typeof mod.hasAnyActiveSessionsExcept).toBe("function");
+        });
+
+        it("bounds orphan clipboard server lifetime while preserving active sessions", async () => {
+            const mod = await import("../clipboard-server.js");
+            const started = mod.clipboardServerOrphanWatchdogState(1000, null, false);
+            expect(started).toEqual({ noActiveSessionsSince: 1000, shouldShutdown: false });
+            expect(mod.clipboardServerOrphanWatchdogState(
+                1000 + mod.CLIPBOARD_SERVER_ORPHAN_GRACE_MS - 1,
+                started.noActiveSessionsSince,
+                false,
+            )).toEqual({ noActiveSessionsSince: 1000, shouldShutdown: false });
+            expect(mod.clipboardServerOrphanWatchdogState(
+                1000 + mod.CLIPBOARD_SERVER_ORPHAN_GRACE_MS,
+                started.noActiveSessionsSince,
+                false,
+            )).toEqual({ noActiveSessionsSince: 1000, shouldShutdown: true });
+            expect(mod.clipboardServerOrphanWatchdogState(20000, 1000, true)).toEqual({
+                noActiveSessionsSince: null,
+                shouldShutdown: false,
+            });
         });
     });
 

@@ -1,4 +1,4 @@
-import {existsSync, readdirSync, readFileSync, statSync} from "fs";
+import {readdirSync, readFileSync, statSync} from "fs";
 import {join, relative} from "path";
 import {COMMON_IGNORE_DIRS} from "./utils.js";
 

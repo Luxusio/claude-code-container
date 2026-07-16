@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
+import { createHash } from "crypto";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
@@ -10,15 +11,26 @@ vi.mock("child_process", async (importOriginal) => {
 
 // Mock fs for startProjectContainer
 const mockExistsSync = vi.fn().mockReturnValue(true);
+const mockLstatSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockReadFileSync = vi.fn();
+const mockStatSync = vi.fn();
 vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
         ...actual,
         existsSync: (...args: unknown[]) => mockExistsSync(...args),
+        lstatSync: (...args: unknown[]) => mockLstatSync(...args),
         mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+        readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
+        statSync: (...args: unknown[]) => mockStatSync(...args),
     };
 });
+
+const mockCleanupOwnerDevices = vi.fn();
+vi.mock("../device-lab-admin.js", () => ({
+    cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
+}));
 
 // Import AFTER mocks
 const {
@@ -36,11 +48,15 @@ const {
     syncClipboardShims,
     ensureDockerRunning,
     ensureImage,
+    buildContainerVmRunConfig,
+    buildLabRunnerRunConfig,
+    getLabRunnerStateVolumeName,
     qualifyImageRefForRuntime,
     getHostGitIdentityMounts,
     resolveCredentialHostPath,
     prepareCodexConfigForContainer,
     restoreCodexConfigHostOwnership,
+    syncManagedMcpBundles,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -60,10 +76,22 @@ function makeResult(
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
 }
 
-// docker inspect Mounts JSON containing every credential mount destination
-// the runtime expects. Use this whenever a test wants the existing container
-// to pass the credential-mount drift check.
-function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: string }> = []): string {
+// docker inspect Mounts JSON containing every required mount destination the
+// runtime expects. Use this whenever a test wants the existing container to
+// pass the mount-drift check.
+function fullCredentialMountsJson(
+    extra: Array<{ Source: string; Destination: string }> = [],
+    options: {
+        labState?: boolean;
+        status?: "ready" | "unsupported";
+        unsupportedReason?: string;
+        deviceLabState?: boolean;
+        kvmDevice?: boolean;
+        groupAdd?: string[];
+        devices?: Array<Record<string, string>>;
+        privileged?: boolean;
+    } = {},
+): string {
     const credMounts = getAllCredentialMounts().map((m) => ({
         Source: `/host${m.containerDir}`,
         Destination: m.containerDir,
@@ -75,14 +103,42 @@ function fullCredentialMountsJson(extra: Array<{ Source: string; Destination: st
     const clipboardMounts = [
         { Source: "/host/home/user/.ccc/clipboard-files", Destination: CLIPBOARD_FILES_CONTAINER_DIR },
     ];
-    return JSON.stringify([...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...extra]);
+    const deviceLabMounts = options.deviceLabState === false
+        ? []
+        : [{ Source: "/host/home/user/.ccc/devices", Destination: "/home/ccc/.ccc/devices" }];
+    const labStateMounts = options.labState === false
+        ? []
+        : [{ Source: "ccc-my-project-c7e2f75b53b9-lab-state", Destination: "/home/ccc/.ccc/labs" }];
+    const status = options.status || "ready";
+    const env = [
+        "CCC_LAB_RUNNER=1",
+        `CCC_LAB_RUNNER_STATUS=${status}`,
+        "CCC_LAB_STATE_DIR=/home/ccc/.ccc/labs",
+        "CCC_LAB_NET_MODE=user",
+    ];
+    if (options.unsupportedReason) env.push(`CCC_LAB_RUNNER_UNSUPPORTED_REASON=${options.unsupportedReason}`);
+    const devices = options.devices ?? (options.kvmDevice === false ? [] : [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" }]);
+    const groupAdd = options.groupAdd ?? (status === "ready" && options.kvmDevice !== false ? ["108"] : []);
+    return JSON.stringify({
+        Mounts: [...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...deviceLabMounts, ...labStateMounts, ...extra],
+        Config: { Env: env },
+        HostConfig: { Devices: devices, GroupAdd: groupAdd, Privileged: options.privileged === true },
+    });
 }
 
 describe("docker.ts module exports", () => {
     beforeEach(() => {
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
+        mockCleanupOwnerDevices.mockReset();
         mockExistsSync.mockReset().mockReturnValue(true);
+        mockLstatSync.mockReset().mockReturnValue({
+            isFile: () => true,
+            isSymbolicLink: () => false,
+            size: 1024,
+        });
+        mockReadFileSync.mockReset().mockReturnValue(Buffer.from("managed-mcp-bundle"));
+        mockStatSync.mockReset().mockReturnValue({ gid: 108 });
         _resetRuntimeCacheForTest();
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
@@ -389,8 +445,136 @@ describe("docker.ts module exports", () => {
         });
     });
 
+    describe("buildLabRunnerRunConfig", () => {
+        it("returns null for normal profiles", () => {
+            expect(buildLabRunnerRunConfig(undefined, "ccc-project")).toBeNull();
+            expect(buildLabRunnerRunConfig("work", "ccc-project")).toBeNull();
+        });
+
+        it("returns ready container VM config for ordinary containers on native Linux with /dev/kvm", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            const config = buildContainerVmRunConfig("ccc-project");
+
+            expect(config).toEqual({
+                status: "ready",
+                stateVolumeName: "ccc-project-lab-state",
+                stateContainerDir: "/home/ccc/.ccc/labs",
+                kvmDevicePath: "/dev/kvm",
+                kvmGroupId: 108,
+                networkMode: "user",
+            });
+        });
+
+        it("returns ready config for lab-runner on native Linux with /dev/kvm", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            const config = buildLabRunnerRunConfig("lab-runner", "ccc-project");
+
+            expect(config).toEqual({
+                status: "ready",
+                stateVolumeName: "ccc-project-lab-state",
+                stateContainerDir: "/home/ccc/.ccc/labs",
+                kvmDevicePath: "/dev/kvm",
+                kvmGroupId: 108,
+                networkMode: "user",
+            });
+        });
+
+        it("reports unsupported when /dev/kvm is missing", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockReturnValue(false);
+
+            const config = buildLabRunnerRunConfig("lab-runner", "ccc-project");
+
+            expect(config?.status).toBe("unsupported");
+            expect(config?.unsupportedReason).toMatch(/\/dev\/kvm/);
+            expect(config?.kvmDevicePath).toBeUndefined();
+            expect(config?.networkMode).toBe("user");
+        });
+
+        it("reports unsupported for VM-backed Docker Desktop style runtimes", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+
+            const config = buildLabRunnerRunConfig("lab-runner", "ccc-project");
+
+            expect(config?.status).toBe("unsupported");
+            expect(config?.unsupportedReason).toMatch(/VM-backed/);
+            expect(config?.kvmDevicePath).toBeUndefined();
+        });
+
+        it("reports unsupported for rootless Podman", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "podman",
+                flavor: "podman-rootless",
+                remote: false,
+                rootless: true,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+
+            const config = buildLabRunnerRunConfig("lab-runner", "ccc-project");
+
+            expect(config?.status).toBe("unsupported");
+            expect(config?.unsupportedReason).toMatch(/podman-rootless/);
+            expect(config?.kvmDevicePath).toBeUndefined();
+        });
+
+        it("reports unsupported for rootless Docker", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-rootless",
+                remote: false,
+                rootless: true,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+
+            const config = buildContainerVmRunConfig("ccc-project");
+
+            expect(config?.status).toBe("unsupported");
+            expect(config?.unsupportedReason).toMatch(/docker-rootless/);
+            expect(config?.kvmDevicePath).toBeUndefined();
+        });
+
+        it("uses a stable per-container lab state volume name", () => {
+            expect(getLabRunnerStateVolumeName("ccc-proj--p--lab-runner")).toBe(
+                "ccc-proj--p--lab-runner-lab-state",
+            );
+        });
+    });
+
     describe("getHostGitIdentityMounts", () => {
-        it("returns existing host git identity config paths", () => {
+        it("returns existing host git identity config directory paths", () => {
             mockExistsSync.mockImplementation((p: string) => (
                 p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
             ));
@@ -398,18 +582,16 @@ describe("docker.ts module exports", () => {
             const mounts = getHostGitIdentityMounts();
 
             expect(mounts).toEqual([
-                expect.objectContaining({ containerPath: "/host-stage/gitconfig" }),
                 expect.objectContaining({ containerPath: "/home/ccc/.config/git" }),
             ]);
         });
 
-        it("omits host git identity paths that do not exist", () => {
+        it("does not require a bind mount for host .gitconfig", () => {
             mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
 
             const mounts = getHostGitIdentityMounts();
 
-            expect(mounts).toHaveLength(1);
-            expect(mounts[0].containerPath).toBe("/host-stage/gitconfig");
+            expect(mounts).toHaveLength(0);
         });
 
         it("never mounts host gitconfig directly at /home/ccc/.gitconfig (atomic-rename safety)", () => {
@@ -419,10 +601,11 @@ describe("docker.ts module exports", () => {
 
             const mounts = getHostGitIdentityMounts();
 
-            // The entrypoint copies /host-stage/gitconfig → /home/ccc/.gitconfig
-            // so the in-HOME file is a regular file, not a bind mount whose
-            // inode is anchored to the mountpoint (rename(2) would EBUSY otherwise).
+            // The CLI copies ~/.gitconfig into the running container so the
+            // in-HOME file is regular, not a bind mount whose inode is anchored
+            // to the mountpoint (rename(2) would EBUSY otherwise).
             expect(mounts.find((m) => m.containerPath === "/home/ccc/.gitconfig")).toBeUndefined();
+            expect(mounts.find((m) => m.containerPath === "/host-stage/gitconfig")).toBeUndefined();
         });
     });
 
@@ -688,6 +871,94 @@ describe("docker.ts module exports", () => {
         });
     });
 
+    describe("syncManagedMcpBundles", () => {
+        it("stages and atomically installs every managed MCP bundle", () => {
+            const digest = createHash("sha256").update("managed-mcp-bundle").digest("hex");
+            let digestCalls = 0;
+            spawnSyncMock.mockImplementation((_command: unknown, args: unknown) => {
+                const argv = args as string[];
+                if (argv.includes("sha256sum")) {
+                    digestCalls += 1;
+                    return makeResult(0, `${digestCalls % 2 === 0 ? digest : "0".repeat(64)}  server.mjs\n`);
+                }
+                return makeResult(0);
+            });
+
+            syncManagedMcpBundles("ccc-test");
+
+            for (const bundle of ["x11-mcp", "device-lab-mcp", "lab-mcp"]) {
+                const copy = spawnSyncMock.mock.calls.find((call: unknown[]) => {
+                    const args = call[1] as string[];
+                    return args?.[0] === "cp"
+                        && args[1]?.endsWith(`/${bundle}/server.mjs`)
+                        && args[2]?.startsWith(`ccc-test:/tmp/ccc-managed-${bundle}-`);
+                });
+                expect(copy).toBeDefined();
+
+                const install = spawnSyncMock.mock.calls.find((call: unknown[]) => {
+                    const args = call[1] as string[];
+                    return args?.[0] === "exec"
+                        && args.includes("root")
+                        && args.at(-1)?.includes(`/opt/ccc/dist/${bundle}/server.mjs`);
+                });
+                expect(install).toBeDefined();
+            }
+            expect(digestCalls).toBe(6);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "exec" && args.includes("rm") && args.includes("/opt/ccc/dist/device-lab-mcp/server.mjs");
+            })).toBe(false);
+        });
+
+        it("skips transfer when the installed bundle digest already matches", () => {
+            const digest = createHash("sha256").update("managed-mcp-bundle").digest("hex");
+            spawnSyncMock.mockImplementation((_command: unknown, args: unknown) => {
+                const argv = args as string[];
+                return argv.includes("sha256sum") ? makeResult(0, `${digest}  server.mjs\n`) : makeResult(0);
+            });
+
+            syncManagedMcpBundles("ccc-test");
+
+            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+            expect(spawnSyncMock.mock.calls.every((call: unknown[]) => (call[1] as string[]).includes("sha256sum"))).toBe(true);
+        });
+
+        it("rejects a symlinked or oversized host bundle without copying it", () => {
+            mockLstatSync.mockReturnValue({
+                isFile: () => true,
+                isSymbolicLink: () => true,
+                size: 1024,
+            });
+
+            syncManagedMcpBundles("ccc-test");
+
+            expect(spawnSyncMock).not.toHaveBeenCalled();
+            expect(console.error).toHaveBeenCalledWith(expect.stringContaining("managed MCP bundle is invalid"));
+        });
+
+        it("does not replace the destination when staging fails", () => {
+            spawnSyncMock.mockReturnValue(makeResult(1));
+
+            syncManagedMcpBundles("ccc-test");
+
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => (call[1] as string[])[0] === "cp")).toHaveLength(3);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[]).includes("install"))).toBe(false);
+            expect(console.error).toHaveBeenCalledWith(expect.stringContaining("failed to stage managed MCP bundle"));
+        });
+
+        it("removes a destination whose installed digest does not match", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, `${"0".repeat(64)}  server.mjs\n`));
+
+            syncManagedMcpBundles("ccc-test");
+
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "exec" && args.includes("rm") && args.some((arg) => arg.endsWith("/server.mjs"));
+            })).toHaveLength(3);
+            expect(console.error).toHaveBeenCalledWith(expect.stringContaining("bundle verification failed"));
+        });
+    });
+
     describe("startProjectContainer", () => {
         const projectPath = "/home/user/my-project";
         const ensureDirs = vi.fn();
@@ -711,6 +982,10 @@ describe("docker.ts module exports", () => {
             const name = startProjectContainer(projectPath, ensureDirs);
             expect(name).toMatch(/^ccc-/);
             expect(ensureDirs).toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+            })).toHaveLength(3);
         });
 
         it("starts a stopped container and returns its name", () => {
@@ -732,6 +1007,10 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "start"
             );
             expect(startCall).toBeDefined();
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+            })).toHaveLength(3);
         });
 
         it("recreates container when credential mounts are missing (drift after tool registry update)", () => {
@@ -782,6 +1061,128 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
             expect(runCall).toBeDefined();
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+            })).toHaveLength(3);
+            const runArgs = runCall![1] as string[];
+            expect(runArgs.some((arg) => /^CCC_DEVICE_LAB_OWNER_BASIS=/.test(arg))).toBe(false);
+            expect(runArgs).toContain(`${name}-lab-state:/home/ccc/.ccc/labs`);
+            expect(runArgs).toContain("CCC_LAB_RUNNER=1");
+            expect(runArgs).toContain("CCC_LAB_RUNNER_STATUS=unsupported");
+            expect(runArgs).toContain("CCC_LAB_NET_MODE=user");
+            expect(runArgs).not.toContain("--device");
+            expect(runArgs).not.toContain("/dev/kvm:/dev/kvm");
+            expect(runArgs).not.toContain("/dev/net/tun:/dev/net/tun");
+            expect(runArgs).not.toContain("--privileged");
+        });
+
+        it("creates an ordinary container with durable lab state and KVM when supported", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValue(makeResult(0));                     // docker run
+
+            const name = startProjectContainer(projectPath, ensureDirs);
+            expect(name).not.toMatch(/--p--lab-runner$/);
+
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            const runArgs = runCall![1] as string[];
+            expect(runArgs).toContain(`${name}-lab-state:/home/ccc/.ccc/labs`);
+            expect(runArgs).toContain("CCC_LAB_RUNNER=1");
+            expect(runArgs).toContain("CCC_LAB_RUNNER_STATUS=ready");
+            expect(runArgs).toContain("CCC_LAB_NET_MODE=user");
+            expect(runArgs).toContain("--device");
+            expect(runArgs).toContain("/dev/kvm:/dev/kvm");
+            expect(runArgs).toContain("--group-add");
+            expect(runArgs).toContain("108");
+            expect(runArgs).not.toContain("/dev/net/tun:/dev/net/tun");
+            expect(runArgs).not.toContain("--privileged");
+        });
+
+        it("creates lab-runner profile container with durable lab state and KVM when supported", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValue(makeResult(0));                     // docker run
+
+            const name = startProjectContainer(projectPath, ensureDirs, undefined, undefined, "lab-runner");
+            expect(name).toMatch(/--p--lab-runner$/);
+
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            const runArgs = runCall![1] as string[];
+            expect(runArgs).toContain(`${name}-lab-state:/home/ccc/.ccc/labs`);
+            expect(runArgs).toContain("CCC_LAB_RUNNER=1");
+            expect(runArgs).toContain("CCC_LAB_RUNNER_STATUS=ready");
+            expect(runArgs).toContain("--device");
+            expect(runArgs).toContain("/dev/kvm:/dev/kvm");
+            expect(runArgs).toContain("--group-add");
+            expect(runArgs).toContain("108");
+            expect(runArgs).not.toContain("--privileged");
+        });
+
+        it("creates lab-runner profile container with unsupported diagnostics when KVM is missing", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockReturnValue(false);
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
+                .mockReturnValue(makeResult(0));                     // docker run
+
+            const name = startProjectContainer(projectPath, ensureDirs, undefined, undefined, "lab-runner");
+            expect(name).toMatch(/--p--lab-runner$/);
+
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            const runArgs = runCall![1] as string[];
+            expect(runArgs).toContain(`${name}-lab-state:/home/ccc/.ccc/labs`);
+            expect(runArgs).toContain("CCC_LAB_RUNNER_STATUS=unsupported");
+            expect(runArgs.some((arg) => arg.startsWith("CCC_LAB_RUNNER_UNSUPPORTED_REASON="))).toBe(true);
+            expect(runArgs).not.toContain("--device");
+            expect(runArgs).not.toContain("/dev/kvm:/dev/kvm");
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("lab-runner profile requested"));
         });
 
         it("mounts every registered tool credential path when creating a container", () => {
@@ -809,7 +1210,7 @@ describe("docker.ts module exports", () => {
 
         it("mounts existing host git identity paths when creating a container", () => {
             mockExistsSync.mockImplementation((p: string) => (
-                p.endsWith("/.gitconfig")
+                p.endsWith("/.gitconfig") || p.endsWith("/.config/git")
             ));
 
             spawnSyncMock
@@ -826,8 +1227,17 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
             const runArgs = runCall![1] as string[];
-            expect(runArgs.some((a) => a.endsWith("/.gitconfig:/host-stage/gitconfig:ro"))).toBe(true);
-            expect(runArgs.some((a) => a.includes("/.config/git:/home/ccc/.config/git"))).toBe(false);
+            expect(runArgs.some((a) => a.endsWith("/.gitconfig:/host-stage/gitconfig:ro"))).toBe(false);
+            expect(runArgs.some((a) => a.includes("/.config/git:/home/ccc/.config/git"))).toBe(true);
+            const gitConfigInstall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker"
+                    && (c[1] as string[]).some((arg) => arg.includes("/tmp/ccc-host-gitconfig"))
+                    && (c[1] as string[])[0] === "exec",
+            );
+            expect(gitConfigInstall?.[1]).toEqual(expect.arrayContaining([
+                "exec", "--user", "root", getContainerName(projectPath),
+            ]));
+            expect((gitConfigInstall?.[1] as string[]).at(-1)).toContain("chown ccc:ccc /home/ccc/.gitconfig");
         });
 
         it("fixes SSH key permissions after creating container when ssh dir exists", () => {
@@ -847,7 +1257,9 @@ describe("docker.ts module exports", () => {
             startProjectContainer(projectPath, ensureDirs);
 
             const execCall = spawnSyncMock.mock.calls.find(
-                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "exec"
+                (c: unknown[]) => c[0] === "docker"
+                    && (c[1] as string[])[0] === "exec"
+                    && (c[1] as string[]).at(-1)?.includes("chmod 666 /tmp/ssh-agent.sock")
             );
             expect(execCall).toBeDefined();
             expect((execCall![1] as string[])).toContain("sh");
@@ -956,17 +1368,277 @@ describe("docker.ts module exports", () => {
             expect(rmCall).toBeDefined();
         });
 
-        it("recreates container when host git identity mounts are missing", () => {
-            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.gitconfig"));
+        it("recreates container when host git identity directory mounts are missing", () => {
+            mockExistsSync.mockImplementation((p: string) => p.endsWith("/.config/git"));
 
             const missingGitIdentityMountsJson = fullCredentialMountsJson()
-                .replace(/,\{"Source":"\/host\/home\/user\/\.gitconfig","Destination":"\/host-stage\/gitconfig"\}/, "");
+                .replace(/,\{"Source":"\/host\/home\/user\/\.config\/git","Destination":"\/home\/ccc\/\.config\/git"\}/, "");
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, missingGitIdentityMountsJson)) // inspect -> missing git identity mount
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when durable lab state mount is missing", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { labState: false }))) // inspect -> missing lab state mount
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            expect(stopCall).toBeDefined();
+            expect(runCall).toBeDefined();
+        });
+
+        it("recreates existing default container when device lab state mount is missing", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { deviceLabState: false }))) // inspect -> missing device state mount
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            const runCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
+            );
+            expect(stopCall).toBeDefined();
+            expect(runCall).toBeDefined();
+        });
+
+        it("recreates existing default container when VM contract changes from unsupported to ready", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], {
+                    status: "unsupported",
+                    unsupportedReason: "/dev/kvm is not available on the container host",
+                    kvmDevice: false,
+                }))) // inspect -> stale unsupported VM contract
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when VM contract changes from ready to unsupported", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockReturnValue(false);
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson())) // inspect -> stale ready VM contract
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when ready VM contract has extra group-add entries", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { groupAdd: ["108", "999"] }))) // inspect -> extra group-add
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when ready VM contract has extra host devices", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], {
+                    devices: [
+                        { PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" },
+                        { PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" },
+                    ],
+                }))) // inspect -> extra device
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when unsupported VM contract has any stale device", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockReturnValue(false);
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], {
+                    status: "unsupported",
+                    unsupportedReason: "/dev/kvm is not available on the container host",
+                    groupAdd: [],
+                    devices: [{ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" }],
+                }))) // inspect -> unsupported but stale device
+                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0))                  // docker rm
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
+                .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
+                .mockReturnValueOnce(makeResult(0));                 // docker run
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("recreates existing default container when it is privileged", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                rootless: false,
+            });
+            mockExistsSync.mockImplementation((p: string) => p === "/dev/kvm");
+            mockStatSync.mockReturnValue({ gid: 108 });
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
+                .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { privileged: true }))) // inspect -> privileged
                 .mockReturnValueOnce(makeResult(0))                  // docker stop
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
@@ -1099,6 +1771,7 @@ describe("docker.ts module exports", () => {
             const consoleSpy = vi.spyOn(console, "log");
             stopProjectContainer(projectPath);
             expect(consoleSpy).toHaveBeenCalledWith("Container not found");
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
         it("stops container when it exists", () => {
@@ -1106,6 +1779,24 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))           // docker info
                 .mockReturnValueOnce(makeResult(0, "abc123\n")) // isContainerExists -> true
                 .mockReturnValueOnce(makeResult(0));            // docker stop
+
+            stopProjectContainer(projectPath);
+
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
+            const stopCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            );
+            expect(stopCall).toBeDefined();
+        });
+
+        it("still stops container when device cleanup throws", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))           // docker info
+                .mockReturnValueOnce(makeResult(0, "abc123\n")) // isContainerExists -> true
+                .mockReturnValueOnce(makeResult(0));            // docker stop
+            mockCleanupOwnerDevices.mockImplementation(() => {
+                throw new Error("cleanup failed");
+            });
 
             stopProjectContainer(projectPath);
 
@@ -1152,6 +1843,8 @@ describe("docker.ts module exports", () => {
 
             removeProjectContainer(projectPath);
 
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
+            expect(mockCleanupOwnerDevices).toHaveBeenCalledTimes(1);
             const rmCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
