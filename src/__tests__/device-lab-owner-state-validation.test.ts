@@ -1,11 +1,12 @@
-import { linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     OWNER_DEVICE_STATE_FILE_LIMIT_BYTES,
     readOwnerDeviceStateFile,
 } from "../device-lab-owner-state.js";
+import { writeJsonFileAtomically } from "../device-lab-shared-state.js";
 import { readOwnerDeviceStateFile as readMcpOwnerDeviceStateFile } from "../../device-lab-mcp/src/state/owner-device-state.mjs";
 import { TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import {
@@ -142,6 +143,73 @@ describe("owner device state validation", () => {
             else linkSync(target, file);
             expectStateError(() => readOwnerDeviceStateFile(file), "owner-devices-state-invalid");
             expect(readFileSync(target, "utf8")).toBe(contents);
+        }
+    });
+
+    it("rejects symlinked managed parent, owner, and backend directories", () => {
+        const stateRoot = join(homeDir, ".ccc", "devices");
+        const cases = [
+            { linked: join(stateRoot, "owners"), suffix: ["owner-a", "android"] },
+            { linked: join(stateRoot, "owners", "owner-a"), suffix: ["android"] },
+            { linked: join(stateRoot, "owners", "owner-a", "android"), suffix: [] },
+        ];
+
+        for (const [index, testCase] of cases.entries()) {
+            rmSync(stateRoot, { recursive: true, force: true });
+            const external = join(homeDir, `external-${index}`);
+            mkdirSync(external, { recursive: true });
+            mkdirSync(dirname(testCase.linked), { recursive: true });
+            symlinkSync(external, testCase.linked, process.platform === "win32" ? "junction" : "dir");
+            const file = join(testCase.linked, ...testCase.suffix, "devices.json");
+
+            expectStateError(() => readOwnerDeviceStateFile(file), "owner-devices-state-read-failed");
+            try {
+                writeJsonFileAtomically(file, { devices: [{ id: "escaped" }] });
+                throw new Error("expected atomic state write to reject a linked parent");
+            } catch (error) {
+                expect(error).toEqual(expect.objectContaining({ code: "device-lab-state-directory-invalid" }));
+            }
+            expect(existsSync(join(external, ...testCase.suffix, "devices.json"))).toBe(false);
+        }
+    });
+
+    it("rechecks backend identity before committing an atomic owner-state write", async () => {
+        const backend = join(homeDir, ".ccc", "devices", "owners", "owner-a", "android");
+        const displaced = `${backend}.displaced`;
+        const external = join(homeDir, "external-race-target");
+        const file = join(backend, "devices.json");
+        mkdirSync(backend, { recursive: true });
+        mkdirSync(external, { recursive: true });
+
+        vi.resetModules();
+        let swapOnTemporaryWrite = true;
+        vi.doMock("fs", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("fs")>();
+            return {
+                ...actual,
+                writeFileSync(path: Parameters<typeof actual.writeFileSync>[0], ...args: unknown[]) {
+                    const result = (actual.writeFileSync as (...values: unknown[]) => void)(path, ...args);
+                    if (swapOnTemporaryWrite && String(path).startsWith(`${file}.`) && String(path).endsWith(".tmp")) {
+                        swapOnTemporaryWrite = false;
+                        actual.renameSync(backend, displaced);
+                        actual.symlinkSync(external, backend, process.platform === "win32" ? "junction" : "dir");
+                    }
+                    return result;
+                },
+            };
+        });
+
+        try {
+            const raced = await import("../device-lab-shared-state.js?owner-parent-race");
+            expect(() => raced.writeJsonFileAtomically(file, { devices: [{ id: "escaped" }] })).toThrow(
+                /Unsafe device-lab state directory/,
+            );
+            expect(existsSync(join(external, "devices.json"))).toBe(false);
+        } finally {
+            vi.doUnmock("fs");
+            vi.resetModules();
+            rmSync(backend, { recursive: true, force: true });
+            if (existsSync(displaced)) renameSync(displaced, backend);
         }
     });
 });

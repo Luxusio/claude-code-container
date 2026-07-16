@@ -541,38 +541,40 @@ describe("lab-mcp container-QEMU provider", () => {
             paths: { ...metadata.paths, labDir: outsideLabDir },
             image: { ...metadata.image, diskImage: join(outsideLabDir, "escape-link", "..", "root.qcow2") },
         }, null, 2)}\n`);
-        const materializeCommands: Array<{ command: string; args: string[] }> = [];
+        const materializeCommands: Array<{ command: string; args: string[]; timeoutMs?: number }> = [];
         const materialized = materializeDisk({ labId: "materialize-policy-vm" }, {
             env,
             stateRoot: root,
             qemuImgPath: "/usr/bin/qemu-img",
             qemuPath: "/usr/bin/qemu-system-x86_64",
             kvmAvailable: true,
-            commandRunner: (command: string, args: string[]) => {
-                materializeCommands.push({ command, args });
+            providerCommandTimeoutMs: 999999,
+            commandRunner: (command: string, args: string[], runOptions: { timeoutMs?: number }) => {
+                materializeCommands.push({ command, args, timeoutMs: runOptions.timeoutMs });
                 writeFileSync(args[args.length - 1], "overlay");
                 return { ok: true, command, args };
             },
         });
         expect(materialized).toEqual(expect.objectContaining({ ok: true, diskImage: created.lab.image.diskImage }));
         expect(materializeCommands).toEqual([
-            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), created.lab.image.diskImage] },
+            { command: "/usr/bin/qemu-img", args: ["create", "-f", "qcow2", "-F", "qcow2", "-b", join(root, "images", "base.qcow2"), created.lab.image.diskImage], timeoutMs: 600000 },
         ]);
         expect(readFileSync(outsideDisk, "utf8")).toBe("outside");
         expect(JSON.stringify(materialized)).not.toContain(outsideLabDir);
 
-        const snapshotCommands: Array<{ command: string; args: string[] }> = [];
+        const snapshotCommands: Array<{ command: string; args: string[]; timeoutMs?: number }> = [];
         expect(snapshotLab("create", { labId: "materialize-policy-vm", snapshotName: "unsafe" }, {
             env,
             stateRoot: root,
             qemuImgPath: "/usr/bin/qemu-img",
-            commandRunner: (command: string, args: string[]) => {
-                snapshotCommands.push({ command, args });
+            providerCommandTimeoutMs: 1,
+            commandRunner: (command: string, args: string[], runOptions: { timeoutMs?: number }) => {
+                snapshotCommands.push({ command, args, timeoutMs: runOptions.timeoutMs });
                 return { ok: true, command, args };
             },
         })).toEqual(expect.objectContaining({ ok: true }));
         expect(snapshotCommands).toEqual([
-            { command: "/usr/bin/qemu-img", args: ["snapshot", "-c", "unsafe", created.lab.image.diskImage] },
+            { command: "/usr/bin/qemu-img", args: ["snapshot", "-c", "unsafe", created.lab.image.diskImage], timeoutMs: 1 },
         ]);
 
         writeFileSync(labPath, `${JSON.stringify({ ...metadata, runtimeState: "running", runtime: { pid: 1 } }, null, 2)}\n`);

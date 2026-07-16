@@ -7,9 +7,20 @@
 
 import { spawnSync } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "fs";
+import {
+    closeSync,
+    constants as fsConstants,
+    existsSync,
+    fstatSync,
+    lstatSync,
+    mkdirSync,
+    openSync,
+    readFileSync,
+    realpathSync,
+    statSync,
+} from "fs";
 import { homedir } from "os";
-import { join, resolve } from "path";
+import { dirname, join, normalize, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     getProjectId,
@@ -33,13 +44,189 @@ import {
     getRuntimeInfo,
 } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
-import { deviceLabContainerName } from "./device-lab-owner.js";
+import { deviceLabContainerName, deviceLabOwnerId } from "./device-lab-owner.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
 
 const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp", "lab-mcp"] as const;
 const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
 const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
+const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
+
+type MountSourceIdentity = {
+    path: string;
+    kind: "directory" | "file";
+    dev: string;
+    ino: string;
+};
+
+type PreparedDeviceLabMountSources = {
+    stateRoot: MountSourceIdentity;
+    ownerRoot: MountSourceIdentity;
+    ownerAuthPath: string;
+    ownerAuthFile?: MountSourceIdentity;
+    contractIdentity: string;
+};
+
+type RequiredContainerMount = {
+    hostPath: string;
+    containerPath: string;
+    readonly?: boolean;
+    type?: "bind" | "tmpfs" | "volume";
+    verifySource?: boolean;
+};
+
+function normalizedHostPath(path: string): string {
+    const normalized = normalize(resolve(path));
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function canonicalHostPath(path: string): string {
+    return normalizedHostPath(realpathSync(path));
+}
+
+function sameFileIdentity(
+    left: { dev?: number | bigint; ino?: number | bigint },
+    right: { dev?: number | bigint; ino?: number | bigint },
+): boolean {
+    return left.dev === right.dev && left.ino === right.ino;
+}
+
+function sourceIdentity(
+    path: string,
+    kind: MountSourceIdentity["kind"],
+    stat: { dev?: number | bigint; ino?: number | bigint },
+): MountSourceIdentity {
+    if (stat.dev === undefined || stat.ino === undefined) {
+        throw new Error(`filesystem identity is unavailable for mount source: ${path}`);
+    }
+    return {
+        path,
+        kind,
+        dev: String(stat.dev),
+        ino: String(stat.ino),
+    };
+}
+
+function sameMountSourceIdentity(left: MountSourceIdentity, right: MountSourceIdentity): boolean {
+    return left.path === right.path
+        && left.kind === right.kind
+        && left.dev === right.dev
+        && left.ino === right.ino;
+}
+
+function assertStableDirectory(path: string, label: string): MountSourceIdentity {
+    const before = lstatSync(path, { bigint: true });
+    if (before.isSymbolicLink() || !before.isDirectory()) {
+        throw new Error(`${label} must be a real directory: ${path}`);
+    }
+    const canonical = canonicalHostPath(path);
+    if (canonical !== normalizedHostPath(path)) {
+        throw new Error(`${label} must not traverse symbolic links: ${path}`);
+    }
+    const after = lstatSync(path, { bigint: true });
+    if (after.isSymbolicLink() || !after.isDirectory() || !sameFileIdentity(before, after)) {
+        throw new Error(`${label} changed while it was being validated: ${path}`);
+    }
+    return sourceIdentity(canonical, "directory", after);
+}
+
+function ensureStableDirectory(path: string, label: string): MountSourceIdentity {
+    try {
+        return assertStableDirectory(path, label);
+    } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+    mkdirSync(path, { mode: 0o700 });
+    return assertStableDirectory(path, label);
+}
+
+function stableRegularFile(path: string, label: string): MountSourceIdentity | undefined {
+    let before;
+    try {
+        before = lstatSync(path, { bigint: true });
+    } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined;
+        throw error;
+    }
+    if (before.isSymbolicLink() || !before.isFile()) {
+        throw new Error(`${label} must be a real regular file: ${path}`);
+    }
+    const canonical = canonicalHostPath(path);
+    if (canonical !== normalizedHostPath(path)) {
+        throw new Error(`${label} must not traverse symbolic links: ${path}`);
+    }
+
+    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+    const fd = openSync(path, fsConstants.O_RDONLY | noFollow);
+    let identity: MountSourceIdentity;
+    try {
+        const opened = fstatSync(fd, { bigint: true });
+        const after = lstatSync(path, { bigint: true });
+        if (!opened.isFile() || after.isSymbolicLink() || !after.isFile()
+            || !sameFileIdentity(before, opened) || !sameFileIdentity(opened, after)) {
+            throw new Error(`${label} changed while it was being validated: ${path}`);
+        }
+        identity = sourceIdentity(canonical, "file", opened);
+    } finally {
+        closeSync(fd);
+    }
+    return identity;
+}
+
+function deviceLabMountContractIdentity(
+    stateRoot: MountSourceIdentity,
+    ownerRoot: MountSourceIdentity,
+    ownerAuthFile?: MountSourceIdentity,
+): string {
+    const payload = [stateRoot, ownerRoot, ownerAuthFile ?? null]
+        .map((identity) => identity
+            ? `${identity.kind}:${identity.dev}:${identity.ino}`
+            : "absent")
+        .join("|");
+    return createHash("sha256").update(payload).digest("hex");
+}
+
+function prepareDeviceLabMountSources(stateRoot: string, ownerId: string): PreparedDeviceLabMountSources {
+    const cccRoot = ensureStableDirectory(dirname(stateRoot), "CCC state root");
+    const stableStateRoot = ensureStableDirectory(join(cccRoot.path, "devices"), "device-lab state root");
+    const ownersRoot = ensureStableDirectory(join(stableStateRoot.path, "owners"), "device-lab owners root");
+    const ownerRoot = ensureStableDirectory(join(ownersRoot.path, ownerId), "device-lab owner root");
+    const brokerRoot = ensureStableDirectory(join(stableStateRoot.path, "broker"), "device broker root");
+    const authRoot = ensureStableDirectory(join(brokerRoot.path, "auth"), "device broker auth root");
+    const ownerAuthPath = join(authRoot.path, `${ownerId}.json`);
+    const ownerAuthFile = stableRegularFile(ownerAuthPath, "device broker owner auth file");
+    return {
+        stateRoot: stableStateRoot,
+        ownerRoot,
+        ownerAuthPath,
+        ownerAuthFile,
+        contractIdentity: deviceLabMountContractIdentity(stableStateRoot, ownerRoot, ownerAuthFile),
+    };
+}
+
+function assertPreparedDeviceLabMountSources(prepared: PreparedDeviceLabMountSources): void {
+    const stateRoot = assertStableDirectory(prepared.stateRoot.path, "device-lab state root");
+    const ownerRoot = assertStableDirectory(prepared.ownerRoot.path, "device-lab owner root");
+    const ownerAuthFile = stableRegularFile(prepared.ownerAuthPath, "device broker owner auth file");
+    if (!sameMountSourceIdentity(stateRoot, prepared.stateRoot)
+        || !sameMountSourceIdentity(ownerRoot, prepared.ownerRoot)
+        || Boolean(ownerAuthFile) !== Boolean(prepared.ownerAuthFile)
+        || (ownerAuthFile && prepared.ownerAuthFile
+            && !sameMountSourceIdentity(ownerAuthFile, prepared.ownerAuthFile))) {
+        throw new Error("device-lab mount source changed after preflight validation");
+    }
+}
+
+function preparedDeviceLabMountSourcesMatch(prepared: PreparedDeviceLabMountSources): boolean {
+    try {
+        assertPreparedDeviceLabMountSources(prepared);
+        return true;
+    } catch {
+        return false;
+    }
+}
 
 // === Docker Args Builder ===
 
@@ -65,6 +252,9 @@ export interface DockerRunArgsOptions {
      */
     labRunner?: LabRunnerRunConfig | null;
     deviceLabStateHostDir?: string;
+    deviceLabOwnerId?: string;
+    deviceLabOwnerAuthFile?: string;
+    deviceLabMountIdentity?: string;
     /**
      * Tells the in-container entrypoint to install the iptables NAT REDIRECT
      * and start ccc-proxy. Set on Docker Desktop / WSL2 / podman-machine
@@ -131,7 +321,19 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     }
     args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
     if (opts.deviceLabStateHostDir) {
-        args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices"));
+        args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices", { readonly: true }));
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        if (opts.deviceLabOwnerId) {
+            args.push(...bindMountArgs(
+                join(opts.deviceLabStateHostDir, "owners", opts.deviceLabOwnerId),
+                `/home/ccc/.ccc/devices/owners/${opts.deviceLabOwnerId}`,
+            ));
+        }
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        if (opts.deviceLabOwnerAuthFile) {
+            args.push(...bindMountArgs(opts.deviceLabOwnerAuthFile, DEVICE_BROKER_AUTH_CONTAINER_FILE, { readonly: true }));
+            args.push("-e", `CCC_DEVICE_BROKER_AUTH_FILE=${DEVICE_BROKER_AUTH_CONTAINER_FILE}`);
+        }
     }
     // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
     args.push(...bindMountArgs(opts.miseVolumeName, "/home/ccc/.local/share/mise"));
@@ -204,6 +406,9 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     }
 
     args.push(...getComposeLabels(opts.containerName, opts.fullPath));
+    if (opts.deviceLabMountIdentity) {
+        args.push("--label", `${DEVICE_LAB_MOUNT_IDENTITY_LABEL}=${opts.deviceLabMountIdentity}`);
+    }
     args.push(opts.imageName);
     return args;
 }
@@ -606,8 +811,9 @@ function groupAddMatchesExpected(groupAdd: unknown, groupId: number | undefined)
  */
 function containerMatchesRunContract(
     containerName: string,
-    requiredMounts: Array<{ hostPath: string; containerPath: string }>,
+    requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
+    deviceLabMountIdentity: string,
 ): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -618,31 +824,58 @@ function containerMatchesRunContract(
 
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
-            Mounts?: Array<{ Source: string; Destination: string }>;
-            Config?: { Env?: string[] };
+            Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
+            Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
         const mounts = inspected.Mounts || [];
         const env = envMap(inspected.Config?.Env);
+        if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
+            return false;
+        }
         const devices = inspected.HostConfig?.Devices;
         const groupAdd = inspected.HostConfig?.GroupAdd;
-        const destinations = new Set(mounts.map((m: {
-            Source: string;
-            Destination: string;
-        }) => m.Destination));
         for (const req of requiredMounts) {
-            if (!destinations.has(req.containerPath)) {
+            const mount = mounts.find((item) => item.Destination === req.containerPath);
+            if (!mount) {
                 if (process.env.DEBUG) {
                     console.error(`[ccc:debug] containerMatchesRunContract: missing ${req.containerPath}`);
-                    console.error(`[ccc:debug] containerMatchesRunContract: container destinations: ${[...destinations].join(", ")}`);
+                    console.error(`[ccc:debug] containerMatchesRunContract: container destinations: ${mounts.map((item) => item.Destination).join(", ")}`);
                 }
                 return false;
+            }
+            if (req.readonly !== undefined && mount.RW !== !req.readonly) return false;
+            if (req.type !== undefined && mount.Type !== req.type) return false;
+            if (req.verifySource) {
+                if (mount.Type !== "bind" || !mount.Source) return false;
+                let actualSource: string;
+                let expectedSource: string;
+                try {
+                    // The runtime daemon may be reached through a host socket, so
+                    // its Source path is not necessarily readable in this process.
+                    // The expected source was already resolved and identity-checked
+                    // before it entered the contract.
+                    actualSource = normalizedHostPath(mount.Source);
+                    expectedSource = canonicalHostPath(req.hostPath);
+                } catch {
+                    return false;
+                }
+                if (actualSource !== expectedSource) return false;
             }
         }
         const failContract = (reason: string) => {
             if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
             return false;
         };
+        const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
+        const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
+        if (authRequired !== authMounted) return failContract("stale isolated device broker auth mount");
+        if (authRequired && env.get("CCC_DEVICE_BROKER_AUTH_FILE") !== DEVICE_BROKER_AUTH_CONTAINER_FILE) {
+            return failContract("missing isolated device broker auth file environment");
+        }
+        if (!authRequired && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) {
+            return failContract("stale isolated device broker auth file environment");
+        }
         if (inspected.HostConfig?.Privileged === true) return failContract("stale privileged container");
         if (env.get("CCC_LAB_RUNNER") !== "1") return failContract("missing CCC_LAB_RUNNER=1");
         if (env.get("CCC_LAB_RUNNER_STATUS") !== labRunner.status) return failContract(`CCC_LAB_RUNNER_STATUS is ${env.get("CCC_LAB_RUNNER_STATUS") || "unset"}, expected ${labRunner.status}`);
@@ -858,7 +1091,12 @@ export function startProjectContainer(
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath, profile);
     const cli = runtimeCli();
-    const deviceLabStateHostDir = join(homedir(), ".ccc", "devices");
+    const requestedDeviceLabStateHostDir = join(homedir(), ".ccc", "devices");
+    const currentDeviceLabOwnerId = deviceLabOwnerId(fullPath, profile);
+    const preparedDeviceLabSources = prepareDeviceLabMountSources(requestedDeviceLabStateHostDir, currentDeviceLabOwnerId);
+    const deviceLabStateHostDir = preparedDeviceLabSources.stateRoot.path;
+    const currentDeviceLabOwnerRoot = preparedDeviceLabSources.ownerRoot.path;
+    const currentDeviceLabOwnerAuthFile = preparedDeviceLabSources.ownerAuthFile?.path;
 
     const debug = !!process.env.DEBUG;
 
@@ -870,7 +1108,7 @@ export function startProjectContainer(
     if (isContainerExists(containerName)) {
         const gitIdentityMounts = getHostGitIdentityMounts();
         const labRunner = buildContainerVmRunConfig(containerName);
-        const requiredMounts: Array<{ hostPath: string; containerPath: string }> = [
+        const requiredMounts: RequiredContainerMount[] = [
             ...getAllCredentialMounts().map((m) => ({
                 // hostPath isn't checked — only containerPath matters
                 hostPath: m.hostDir,
@@ -878,14 +1116,34 @@ export function startProjectContainer(
             })),
             ...gitIdentityMounts,
             ...(extraMounts ?? []),
-            { hostPath: deviceLabStateHostDir, containerPath: "/home/ccc/.ccc/devices" },
+            { hostPath: deviceLabStateHostDir, containerPath: "/home/ccc/.ccc/devices", readonly: true, type: "bind", verifySource: true },
+            { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/owners", readonly: false, type: "tmpfs" },
+            { hostPath: currentDeviceLabOwnerRoot, containerPath: `/home/ccc/.ccc/devices/owners/${currentDeviceLabOwnerId}`, readonly: false, type: "bind", verifySource: true },
+            { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/broker/auth", readonly: false, type: "tmpfs" },
             { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR },
         ];
+        if (currentDeviceLabOwnerAuthFile) {
+            requiredMounts.push({
+                hostPath: currentDeviceLabOwnerAuthFile,
+                containerPath: DEVICE_BROKER_AUTH_CONTAINER_FILE,
+                readonly: true,
+                type: "bind",
+                verifySource: true,
+            });
+        }
         requiredMounts.push({
             hostPath: labRunner.stateVolumeName,
             containerPath: labRunner.stateContainerDir,
         });
-        if (!containerMatchesRunContract(containerName, requiredMounts, labRunner)) {
+        assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+        const contractMatches = containerMatchesRunContract(
+            containerName,
+            requiredMounts,
+            labRunner,
+            preparedDeviceLabSources.contractIdentity,
+        );
+        assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+        if (!contractMatches) {
             if (debug) {
                 console.error(`[ccc:debug] Container ${containerName} missing required mounts or VM run contract:`);
                 for (const m of requiredMounts) {
@@ -900,23 +1158,34 @@ export function startProjectContainer(
 
     if (isContainerRunning(containerName)) {
         if (canExecContainer(containerName)) {
-            syncManagedMcpBundles(containerName);
-            syncHostGitConfig(containerName);
-            return containerName;
+            if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
+                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+            } else {
+                syncManagedMcpBundles(containerName);
+                syncHostGitConfig(containerName);
+                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
+                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+            }
+        } else {
+            recreateContainer(containerName, "container exec failed", onRecreate);
         }
-        recreateContainer(containerName, "container exec failed", onRecreate);
     }
 
     if (isContainerExists(containerName)) {
         if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
-        spawnSync(cli, ["start", containerName], { stdio: "inherit" });
-        if (!canExecContainer(containerName)) {
-            recreateContainer(containerName, "container exec failed after restart", onRecreate);
+        if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
+            recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
         } else {
-            syncManagedMcpBundles(containerName);
-            syncHostGitConfig(containerName);
-            fixSshPermissions(containerName);
-            return containerName;
+            spawnSync(cli, ["start", containerName], { stdio: "inherit" });
+            if (!canExecContainer(containerName)) {
+                recreateContainer(containerName, "container exec failed after restart", onRecreate);
+            } else {
+                syncManagedMcpBundles(containerName);
+                syncHostGitConfig(containerName);
+                fixSshPermissions(containerName);
+                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
+                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+            }
         }
     }
 
@@ -932,8 +1201,6 @@ export function startProjectContainer(
 
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
-    mkdirSync(deviceLabStateHostDir, { recursive: true });
-
     const credentialMounts = getAllCredentialMounts().map(m => {
         const hostPath = resolveCredentialHostPath(m, profile);
         mkdirSync(hostPath, { recursive: true });
@@ -976,16 +1243,27 @@ export function startProjectContainer(
         clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
         labRunner,
         deviceLabStateHostDir,
+        deviceLabOwnerId: currentDeviceLabOwnerId,
+        deviceLabOwnerAuthFile: currentDeviceLabOwnerAuthFile,
+        deviceLabMountIdentity: preparedDeviceLabSources.contractIdentity,
         // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
         // heuristics get it wrong (exotic VPN/networking setups, mirrored
         // mode we failed to recognize, etc).
         proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
     });
 
+    assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
     const result = spawnSync(cli, args, { stdio: "inherit" });
     if (result.status !== 0) {
         console.error("Failed to create container");
         process.exit(1);
+    }
+
+    try {
+        assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+    } catch (error) {
+        spawnSync(cli, ["rm", "-f", containerName], { stdio: "ignore" });
+        throw error;
     }
 
     syncManagedMcpBundles(containerName);

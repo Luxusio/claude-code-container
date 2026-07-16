@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import type { AddressInfo } from "net";
-import { join } from "path";
+import { dirname, join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fetchIosAppiumJson, IOS_APPIUM_HTTP_MAX_TIMEOUT_MS, IOS_APPIUM_RESPONSE_LIMIT_BYTES, normalizeIosAppiumHttpTimeoutMs } from "../../device-lab-mcp/src/backends/ios-simulator.mjs";
 import { cleanupFakeIosMcpContext, createFakeIosMcpContext, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
@@ -389,10 +389,11 @@ describe("device-lab MCP iOS simulator lifecycle with fake simctl", () => {
         symlinkSync(outsideContainerDir, join(iosContainerRoot, "Links"));
         const symlinkUpload = await client.callTool({
             name: "device_upload",
-            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "Links/escape.txt", bundleId: "com.example.Test" },
+            arguments: { deviceId: ownedDeviceId, localPath: localUploadPath, remotePath: "Links/new-dir/escape.txt", bundleId: "com.example.Test" },
         });
         expect(symlinkUpload.isError).toBe(true);
         expect((symlinkUpload.content as Array<{ text?: string }>)[0].text).toContain("escapes the container");
+        expect(existsSync(join(outsideContainerDir, "new-dir"))).toBe(false);
 
         const symlinkDownload = await client.callTool({
             name: "device_download",
@@ -594,6 +595,7 @@ describe("device-lab MCP iOS simulator lifecycle with fake simctl", () => {
             arguments: { deviceId: ownedDeviceId, localPath: "/tmp/stop-cleanup-ios-recording.mp4" },
         });
         expect(stopCleanupRecordStart.isError).not.toBe(true);
+        const stopCleanupRecording = parseToolJson(stopCleanupRecordStart).recording as { runtimeId: string; stagingPath: string };
 
         const session = await client.callTool({
             name: "mobile_session_status",
@@ -755,16 +757,28 @@ describe("device-lab MCP iOS simulator lifecycle with fake simctl", () => {
         });
         expect(stop.isError).not.toBe(true);
         const stoppedPayload = JSON.parse(((stop.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
-            device: { recording: unknown; status: string };
+            device: { recording: { active: boolean; runtimeId: string; stagingPath: string }; status: string };
         };
         expect(stoppedPayload.device.status).toBe("stopped");
-        expect(stoppedPayload.device.recording).toBeNull();
+        expect(stoppedPayload.device.recording).toEqual(expect.objectContaining({
+            active: false,
+            runtimeId: stopCleanupRecording.runtimeId,
+            stagingPath: stopCleanupRecording.stagingPath,
+        }));
+        expect(existsSync(stopCleanupRecording.stagingPath)).toBe(true);
 
         const statusAfterDeviceStop = await client.callTool({
             name: "device_record_video_status",
             arguments: { deviceId: ownedDeviceId },
         });
-        expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toBeNull();
+        expect(JSON.parse(((statusAfterDeviceStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({ active: false }));
+
+        const finalizeStoppedDeviceRecording = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: ownedDeviceId },
+        });
+        expect(finalizeStoppedDeviceRecording.isError, (finalizeStoppedDeviceRecording.content as Array<{ text?: string }>)[0]?.text ?? "").not.toBe(true);
+        expect(readFileSync("/tmp/stop-cleanup-ios-recording.mp4", "utf8")).toBe("fakevideo");
 
         const eraseReset = await client.callTool({
             name: "device_reset",
@@ -1011,6 +1025,267 @@ describe("device-lab MCP iOS simulator lifecycle with fake simctl", () => {
             arguments: { deviceId, deleteSimulator: true, confirmDestructive: true },
         });
         expect(cleanup.isError).not.toBe(true);
+    });
+
+    it("preserves active recording metadata when device stop cannot verify the recorder", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "ios-simulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = `ios-stop-recorder-mismatch-${Date.now()}`;
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                deviceId,
+                name: "iOS stop recorder mismatch",
+                simulatorName: `ccc-${ownerId}-stop-recorder-mismatch`,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId, localPath: join(homeDir, "stop-recorder-mismatch.mp4") },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recording = parseToolJson(recordStart).recording as { runtimeId: string; stagingPath: string };
+
+        const statePath = iosStatePath();
+        const originalState = readFileSync(statePath, "utf8");
+        const forgedState = JSON.parse(originalState) as { devices: Array<{ id: string; recording?: { processIdentity?: { commandHash?: string } } }> };
+        forgedState.devices.find((device) => device.id === deviceId)!.recording!.processIdentity!.commandHash = "0".repeat(64);
+        writeFileSync(statePath, `${JSON.stringify(forgedState, null, 2)}\n`);
+
+        const failedStop = await client.callTool({ name: "device_stop", arguments: { deviceId } });
+        expect(failedStop.isError).toBe(true);
+        expect((failedStop.content as Array<{ text?: string }>)[0]?.text).toContain("runtime-process-identity-mismatch");
+        const preserved = (JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> }).devices.find((device) => device.id === deviceId)!;
+        expect(preserved.status).toBe("booted");
+        expect(preserved.recording).toEqual(expect.objectContaining({ active: true, runtimeId: recording.runtimeId }));
+        expect(existsSync(recording.stagingPath)).toBe(true);
+
+        writeFileSync(statePath, originalState);
+        expect((await client.callTool({ name: "device_record_video_stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, deleteSimulator: true, confirmDestructive: true },
+        })).isError).not.toBe(true);
+    });
+
+    it("persists recorder and simulator shutdown when later Appium cleanup fails", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "ios-simulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = `ios-stop-partial-cleanup-${Date.now()}`;
+        expect((await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                deviceId,
+                name: "iOS stop partial cleanup",
+                simulatorName: `ccc-${ownerId}-stop-partial-cleanup`,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "mobile_dump_ui", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId, localPath: join(homeDir, "stop-partial-cleanup.mp4") },
+        })).isError).not.toBe(true);
+
+        const statePath = iosStatePath();
+        const state = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> };
+        const before = state.devices.find((device) => device.id === deviceId)!;
+        const originalAppium = structuredClone(before.appium);
+        const forgedAppium = structuredClone(originalAppium);
+        forgedAppium.processIdentity.commandHash = "0".repeat(64);
+        before.appium = forgedAppium;
+        writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+        const logBefore = readFileSync(logPath, "utf8");
+        const shutdownsBefore = (logBefore.match(/xcrun simctl shutdown CREATED-IOS-UDID/g) || []).length;
+        const appiumStopsBefore = (logBefore.match(/appium-server-sigint /g) || []).length;
+
+        const failedStop = await client.callTool({ name: "device_stop", arguments: { deviceId } });
+        expect(failedStop.isError).toBe(true);
+        expect((failedStop.content as Array<{ text?: string }>)[0]?.text).toContain("runtime-process-identity-mismatch");
+
+        const partial = (JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> }).devices.find((device) => device.id === deviceId)!;
+        expect(partial.status).toBe("stopped");
+        expect(partial.recording).toEqual(expect.objectContaining({
+            runtimeId: before.recording.runtimeId,
+            active: false,
+            endedAt: expect.any(String),
+        }));
+        expect(partial.appium).toEqual(forgedAppium);
+        expect(partial.lifecycle).toBeNull();
+        const logAfter = readFileSync(logPath, "utf8");
+        expect((logAfter.match(/xcrun simctl shutdown CREATED-IOS-UDID/g) || []).length).toBe(shutdownsBefore + 1);
+        expect((logAfter.match(/appium-server-sigint /g) || []).length).toBe(appiumStopsBefore);
+
+        partial.appium = originalAppium;
+        const recoveredState = JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> };
+        recoveredState.devices = recoveredState.devices.map((device) => device.id === deviceId ? partial : device);
+        writeFileSync(statePath, `${JSON.stringify(recoveredState, null, 2)}\n`);
+        expect((await client.callTool({ name: "device_record_video_stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, deleteSimulator: true, confirmDestructive: true },
+        })).isError).not.toBe(true);
+    });
+
+    it("preserves Appium metadata when forced delete cannot verify the owned process", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "ios-simulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = `ios-delete-appium-mismatch-${Date.now()}`;
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                deviceId,
+                name: "iOS delete Appium mismatch",
+                simulatorName: `ccc-${ownerId}-delete-appium-mismatch`,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "mobile_dump_ui", arguments: { deviceId } })).isError).not.toBe(true);
+
+        const statePath = iosStatePath();
+        const originalState = readFileSync(statePath, "utf8");
+        const forgedState = JSON.parse(originalState) as { devices: Array<{ id: string; appium?: { runtimeId?: string; processIdentity?: { commandHash?: string } } }> };
+        const originalAppium = forgedState.devices.find((device) => device.id === deviceId)!.appium!;
+        originalAppium.processIdentity!.commandHash = "0".repeat(64);
+        writeFileSync(statePath, `${JSON.stringify(forgedState, null, 2)}\n`);
+        const logBefore = readFileSync(logPath, "utf8");
+        const deletesBefore = (logBefore.match(/xcrun simctl delete CREATED-IOS-UDID/g) || []).length;
+        const sessionDeletesBefore = (logBefore.match(/appium-http DELETE /g) || []).length;
+
+        const failedDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, force: true, deleteSimulator: true, confirmDestructive: true },
+        });
+        expect(failedDelete.isError).toBe(true);
+        expect((failedDelete.content as Array<{ text?: string }>)[0]?.text).toContain("runtime-process-identity-mismatch");
+        const preserved = (JSON.parse(readFileSync(statePath, "utf8")) as { devices: Array<Record<string, any>> }).devices.find((device) => device.id === deviceId)!;
+        expect(preserved.status).toBe("booted");
+        expect(preserved.appium).toEqual(originalAppium);
+        const logAfterFailure = readFileSync(logPath, "utf8");
+        expect((logAfterFailure.match(/xcrun simctl delete CREATED-IOS-UDID/g) || []).length).toBe(deletesBefore);
+        expect((logAfterFailure.match(/appium-http DELETE /g) || []).length).toBe(sessionDeletesBefore);
+
+        writeFileSync(statePath, originalState);
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, force: true, deleteSimulator: true, confirmDestructive: true },
+        });
+        expect(deleted.isError, (deleted.content as Array<{ text?: string }>)[0]?.text ?? "").not.toBe(true);
+        const cleanupLog = readFileSync(logPath, "utf8");
+        expect((cleanupLog.match(/appium-http DELETE /g) || []).length).toBe(sessionDeletesBefore + 1);
+        expect((cleanupLog.match(/xcrun simctl delete CREATED-IOS-UDID/g) || []).length).toBe(deletesBefore + 1);
+        expect(cleanupLog).toContain("appium-server-sigint");
+    });
+
+    it("commits stopped recording and Appium state when simctl delete fails", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "ios-simulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = `ios-delete-partial-simctl-${Date.now()}`;
+        expect((await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                deviceId,
+                name: "iOS delete partial simctl",
+                simulatorName: `ccc-${ownerId}-delete-partial-simctl`,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "mobile_dump_ui", arguments: { deviceId } })).isError).not.toBe(true);
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId, localPath: join(homeDir, "delete-partial-simctl.mp4") },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recording = parseToolJson(recordStart).recording as { runtimeId: string };
+
+        writeFileSync(join(homeDir, "fake-ios-delete-fail-once"), "1");
+        const failedDelete = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, force: true, deleteSimulator: true, confirmDestructive: true },
+        });
+        expect(failedDelete.isError).toBe(true);
+        expect((failedDelete.content as Array<{ text?: string }>)[0]?.text).toContain("simulated delete failure");
+
+        const partial = (JSON.parse(readFileSync(iosStatePath(), "utf8")) as { devices: Array<Record<string, any>> }).devices.find((device) => device.id === deviceId)!;
+        expect(partial).toEqual(expect.objectContaining({
+            status: "stopped",
+            bootReady: false,
+            appium: null,
+            recording: expect.objectContaining({ runtimeId: recording.runtimeId, active: false, endedAt: expect.any(String) }),
+        }));
+        expect(partial.lifecycle).toBeNull();
+
+        expect((await client.callTool({ name: "device_record_video_stop", arguments: { deviceId } })).isError).not.toBe(true);
+        expect((await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, deleteSimulator: true, confirmDestructive: true },
+        })).isError).not.toBe(true);
+    });
+
+    it("does not restore device metadata after simulator deletion when staging cleanup fails", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "ios-simulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = `ios-delete-partial-stage-${Date.now()}`;
+        expect((await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "ios-simulator",
+                deviceId,
+                name: "iOS delete partial stage",
+                simulatorName: `ccc-${ownerId}-delete-partial-stage`,
+                deviceType: "com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+                runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0",
+                createSimulator: true,
+            },
+        })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "device_start", arguments: { deviceId, bootTimeoutMs: 1000 } })).isError).not.toBe(true);
+        expect((await client.callTool({ name: "mobile_dump_ui", arguments: { deviceId } })).isError).not.toBe(true);
+        const recordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId, localPath: join(homeDir, "delete-partial-stage.mp4") },
+        });
+        expect(recordStart.isError).not.toBe(true);
+        const recording = parseToolJson(recordStart).recording as { stagingPath: string };
+
+        const state = JSON.parse(readFileSync(iosStatePath(), "utf8")) as { devices: Array<Record<string, any>> };
+        state.devices.find((device) => device.id === deviceId)!.recording.stagingPath = join(homeDir, "invalid-recording-stage", "payload");
+        writeFileSync(iosStatePath(), `${JSON.stringify(state, null, 2)}\n`);
+        const logBefore = readFileSync(logPath, "utf8");
+        const appiumStopsBefore = (logBefore.match(/appium-server-sigint /g) || []).length;
+
+        const failedCleanup = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, force: true, deleteSimulator: true, confirmDestructive: true },
+        });
+        expect(failedCleanup.isError).toBe(true);
+        expect((failedCleanup.content as Array<{ text?: string }>)[0]?.text).toContain("simulator and device metadata were deleted");
+        const remaining = (JSON.parse(readFileSync(iosStatePath(), "utf8")) as { devices: Array<Record<string, any>> }).devices;
+        expect(remaining.some((device) => device.id === deviceId)).toBe(false);
+        expect(existsSync(join(homeDir, "fake-ios-created-name"))).toBe(false);
+        expect((readFileSync(logPath, "utf8").match(/appium-server-sigint /g) || []).length).toBe(appiumStopsBefore + 1);
+
+        rmSync(dirname(recording.stagingPath), { recursive: true, force: true });
     });
 
 

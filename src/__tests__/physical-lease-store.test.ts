@@ -10,6 +10,7 @@ import {
     prunePhysicalLeases,
     readPhysicalLeases,
     releasePhysicalLease,
+    releasePhysicalLeaseWithMutation,
     startPhysicalLeaseHeartbeat,
     stopPhysicalLeaseHeartbeat,
 } from "../../device-lab-mcp/src/state/physical-lease-store.mjs";
@@ -32,6 +33,38 @@ describe("device-lab MCP direct physical lease store", () => {
 
     function lockPath(backend: string, hardwareId: string) {
         return join(homedir(), ".ccc/devices/physical-leases", backend, "locks", `${encodeURIComponent(hardwareId)}.json`);
+    }
+
+    function aggregatePath(backend: string) {
+        return join(homedir(), ".ccc/devices/physical-leases", `${backend}.json`);
+    }
+
+    async function withInjectedAtomicWriteFailure(
+        shouldFail: (file: string) => boolean,
+        operation: (store: typeof import("../../device-lab-mcp/src/state/physical-lease-store.mjs")) => void,
+    ) {
+        const sharedMutationModule = "../../device-lab-mcp/src/state/shared-mutation-lock.mjs";
+        vi.resetModules();
+        vi.doMock(sharedMutationModule, async (importOriginal) => {
+            const original = await importOriginal<typeof import("../../device-lab-mcp/src/state/shared-mutation-lock.mjs")>();
+            let injected = false;
+            return {
+                ...original,
+                writeJsonFileAtomically(file: string, value: unknown) {
+                    if (!injected && shouldFail(file)) {
+                        injected = true;
+                        throw new Error(`injected-physical-lease-write-failure:${file}`);
+                    }
+                    return original.writeJsonFileAtomically(file, value);
+                },
+            };
+        });
+        try {
+            operation(await import("../../device-lab-mcp/src/state/physical-lease-store.mjs"));
+        } finally {
+            vi.doUnmock(sharedMutationModule);
+            vi.resetModules();
+        }
     }
 
     function runLeaseChild(profile: string, hardwareId: string) {
@@ -182,20 +215,196 @@ describe("device-lab MCP direct physical lease store", () => {
         }
     });
 
-    it("preserves a malformed diagnostic aggregate while maintaining the authoritative lock", () => {
+    it("fails closed on a malformed aggregate before creating an authoritative lock", () => {
         const aggregateFile = join(homedir(), ".ccc/devices/physical-leases/android-device.json");
         mkdirSync(join(homedir(), ".ccc/devices/physical-leases"), { recursive: true });
         writeFileSync(aggregateFile, "{broken-aggregate");
 
-        const claimed = claimPhysicalLease("android-device", "USB-AGGREGATE", "android-aggregate", { ttlMs: 60000 });
-
-        expect(claimed).toEqual(expect.objectContaining({ ok: true }));
+        expect(() => claimPhysicalLease("android-device", "USB-AGGREGATE", "android-aggregate", { ttlMs: 60000 }))
+            .toThrow("physical-lease-aggregate-state-invalid");
         expect(readFileSync(aggregateFile, "utf8")).toBe("{broken-aggregate");
-        expect(JSON.parse(readFileSync(lockPath("android-device", "USB-AGGREGATE"), "utf8"))).toEqual(expect.objectContaining({
-            ownerId: ownerId(),
-            deviceId: "android-aggregate",
+        expect(existsSync(lockPath("android-device", "USB-AGGREGATE"))).toBe(false);
+    });
+
+    it("does not create a claim when the aggregate write fails", async () => {
+        const aggregateFile = aggregatePath("android-device");
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases"), { recursive: true });
+        writeFileSync(aggregateFile, JSON.stringify({ leases: [] }));
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === aggregateFile,
+            (store) => {
+                expect(() => store.claimPhysicalLease("android-device", "USB-CLAIM-FAIL", "android-claim-fail", { ttlMs: 60000 }))
+                    .toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(JSON.parse(readFileSync(aggregateFile, "utf8"))).toEqual({ leases: [] });
+        expect(existsSync(lockPath("android-device", "USB-CLAIM-FAIL"))).toBe(false);
+    });
+
+    it("preserves the prior lease when heartbeat aggregate persistence fails", async () => {
+        const aggregateFile = aggregatePath("android-device");
+        claimPhysicalLease("android-device", "USB-HEARTBEAT-FAIL", "android-heartbeat-fail", { ttlMs: 60000 });
+        const priorAggregate = readFileSync(aggregateFile, "utf8");
+        const priorLock = readFileSync(lockPath("android-device", "USB-HEARTBEAT-FAIL"), "utf8");
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === aggregateFile,
+            (store) => {
+                expect(() => store.heartbeatPhysicalLease("android-device", "USB-HEARTBEAT-FAIL", "android-heartbeat-fail", { ttlMs: 120000 }))
+                    .toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(readFileSync(aggregateFile, "utf8")).toBe(priorAggregate);
+        expect(readFileSync(lockPath("android-device", "USB-HEARTBEAT-FAIL"), "utf8")).toBe(priorLock);
+    });
+
+    it("preserves the authoritative lease when release aggregate persistence fails", async () => {
+        const aggregateFile = aggregatePath("android-device");
+        claimPhysicalLease("android-device", "USB-RELEASE-FAIL", "android-release-fail", { ttlMs: 60000 });
+        const priorAggregate = readFileSync(aggregateFile, "utf8");
+        const priorLock = readFileSync(lockPath("android-device", "USB-RELEASE-FAIL"), "utf8");
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === aggregateFile,
+            (store) => {
+                expect(() => store.releasePhysicalLease("android-device", "USB-RELEASE-FAIL", "android-release-fail"))
+                    .toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(readFileSync(aggregateFile, "utf8")).toBe(priorAggregate);
+        expect(readFileSync(lockPath("android-device", "USB-RELEASE-FAIL"), "utf8")).toBe(priorLock);
+    });
+
+    it("does not run or commit a fenced release mutation when the exact lease changed", () => {
+        const claimed = claimPhysicalLease("android-device", "USB-DETACH-FENCED", "android-detach-fenced", {
+            claimNonce: "detach-generation-a",
+        });
+        expect(claimed.ok).toBe(true);
+        let mutationCalled = false;
+
+        const released = releasePhysicalLeaseWithMutation("android-device", "USB-DETACH-FENCED", "android-detach-fenced", {
+            claimId: claimed.lease?.claimId,
+            claimNonce: "detach-generation-b",
+        }, () => {
+            mutationCalled = true;
+            return { ok: true };
+        });
+
+        expect(released).toEqual(expect.objectContaining({ ok: false, error: "physical-lease-operation-mismatch" }));
+        expect(mutationCalled).toBe(false);
+        expect(readPhysicalLeases("android-device")).toEqual([
+            expect.objectContaining({ hardwareId: "USB-DETACH-FENCED", claimNonce: "detach-generation-a" }),
+        ]);
+        expect(existsSync(lockPath("android-device", "USB-DETACH-FENCED"))).toBe(true);
+    });
+
+    it("leaves the lease intact when a release mutation rejects the owner-state transition", () => {
+        const claimed = claimPhysicalLease("ios-device", "IOS-DETACH-CONFLICT", "ios-detach-conflict", {
+            claimNonce: "ios-detach-generation",
+        });
+        const released = releasePhysicalLeaseWithMutation("ios-device", "IOS-DETACH-CONFLICT", "ios-detach-conflict", {
+            claimId: claimed.lease?.claimId,
+            claimNonce: "ios-detach-generation",
+        }, () => ({ ok: false, transition: { found: true, matched: false } }));
+
+        expect(released).toEqual(expect.objectContaining({
+            ok: false,
+            error: "physical-lease-release-mutation-rejected",
+            mutation: { ok: false, transition: { found: true, matched: false } },
         }));
-        expect(() => readPhysicalLeases("android-device")).toThrow("physical-lease-aggregate-state-invalid");
+        expect(readPhysicalLeases("ios-device")).toEqual([
+            expect.objectContaining({ hardwareId: "IOS-DETACH-CONFLICT", deviceId: "ios-detach-conflict" }),
+        ]);
+        expect(existsSync(lockPath("ios-device", "IOS-DETACH-CONFLICT"))).toBe(true);
+    });
+
+    it("rolls back the owner-state mutation when release persistence fails", async () => {
+        const aggregateFile = aggregatePath("android-device");
+        let ownerRecordPresent = true;
+        let rollbackCalled = false;
+        const claimed = claimPhysicalLease("android-device", "USB-DETACH-ROLLBACK", "android-detach-rollback", {
+            claimNonce: "detach-rollback-generation",
+        });
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === aggregateFile,
+            (store) => {
+                expect(() => store.releasePhysicalLeaseWithMutation("android-device", "USB-DETACH-ROLLBACK", "android-detach-rollback", {
+                    claimId: claimed.lease?.claimId,
+                    claimNonce: "detach-rollback-generation",
+                }, () => {
+                    ownerRecordPresent = false;
+                    return {
+                        ok: true,
+                        rollback() {
+                            rollbackCalled = true;
+                            ownerRecordPresent = true;
+                        },
+                    };
+                })).toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(rollbackCalled).toBe(true);
+        expect(ownerRecordPresent).toBe(true);
+        expect(readPhysicalLeases("android-device")).toEqual([
+            expect.objectContaining({ hardwareId: "USB-DETACH-ROLLBACK", deviceId: "android-detach-rollback" }),
+        ]);
+        expect(existsSync(lockPath("android-device", "USB-DETACH-ROLLBACK"))).toBe(true);
+    });
+
+    it("preserves expired lease state when prune aggregate persistence fails", async () => {
+        const hardwareId = "USB-PRUNE-FAIL";
+        const aggregateFile = aggregatePath("android-device");
+        const expiredLease = {
+            backend: "android-device",
+            hardwareId,
+            ownerId: ownerId(),
+            deviceId: "android-prune-fail",
+            updatedAt: "2000-01-01T00:00:00.000Z",
+            ttlMs: 60000,
+            expiresAt: "2000-01-01T00:01:00.000Z",
+        };
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks"), { recursive: true });
+        writeFileSync(aggregateFile, JSON.stringify({ leases: [expiredLease] }));
+        writeFileSync(lockPath("android-device", hardwareId), JSON.stringify(expiredLease));
+        const priorAggregate = readFileSync(aggregateFile, "utf8");
+        const priorLock = readFileSync(lockPath("android-device", hardwareId), "utf8");
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === aggregateFile,
+            (store) => {
+                expect(() => store.prunePhysicalLeases("android-device"))
+                    .toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(readFileSync(aggregateFile, "utf8")).toBe(priorAggregate);
+        expect(readFileSync(lockPath("android-device", hardwareId), "utf8")).toBe(priorLock);
+    });
+
+    it("rolls back the aggregate when authoritative lock persistence fails", async () => {
+        const hardwareId = "USB-LOCK-WRITE-FAIL";
+        const aggregateFile = aggregatePath("android-device");
+        const authoritativeFile = lockPath("android-device", hardwareId);
+        claimPhysicalLease("android-device", hardwareId, "android-lock-write-fail", { ttlMs: 60000 });
+        const priorAggregate = readFileSync(aggregateFile, "utf8");
+        const priorLock = readFileSync(authoritativeFile, "utf8");
+
+        await withInjectedAtomicWriteFailure(
+            (file) => file === authoritativeFile,
+            (store) => {
+                expect(() => store.heartbeatPhysicalLease("android-device", hardwareId, "android-lock-write-fail", { ttlMs: 120000 }))
+                    .toThrow("injected-physical-lease-write-failure");
+            },
+        );
+
+        expect(readFileSync(aggregateFile, "utf8")).toBe(priorAggregate);
+        expect(readFileSync(authoritativeFile, "utf8")).toBe(priorLock);
     });
 
     it("recovers expired foreign locks while preserving active foreign conflicts", () => {

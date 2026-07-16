@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cleanupFakeAndroidMcpContext, createFakeAndroidMcpContext, TIMEOUT, type FakeAndroidMcpContext } from "./helpers/fake-android-mcp-fixture.js";
@@ -626,6 +626,7 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
         expect(attachedResult.isError).not.toBe(true);
         const attached = parseToolJson(attachedResult).device as Record<string, unknown>;
         const statePath = join(homeDir, ".ccc", "devices", "owners", String(attached.ownerId), "android-device", "devices.json");
+        const leasePath = join(homeDir, ".ccc", "devices", "physical-leases", "android-device", "locks", `${encodeURIComponent(String(attached.serial))}.json`);
         const armConflict = (marker: string) => {
             const currentState = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
             const current = currentState.devices.find((device) => device.id === deviceId);
@@ -652,8 +653,189 @@ describe("device-lab MCP Android real-device flows with fake SDK", () => {
         expect(detach.isError).toBe(true);
         expect((detach.content as Array<{ text?: string }>)[0]?.text).toContain("owner-device-state-conflict");
         expect((JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> }).devices.find((device) => device.id === deviceId)).toEqual(detachSuccessor);
+        expect(JSON.parse(readFileSync(leasePath, "utf-8"))).toEqual(expect.objectContaining({ deviceId, hardwareId: attached.serial }));
 
         const cleanup = await client.callTool({ name: "device_detach", arguments: { backend: "android-device", deviceId } });
         expect(cleanup.isError).not.toBe(true);
+    });
+
+    it("preserves active recording metadata and the physical lease when stop or detach cannot confirm recorder exit", { timeout: TIMEOUT }, async () => {
+        const deviceId = "android-real-recorder-cleanup-retry";
+        const attachedResult = await client.callTool({
+            name: "device_attach",
+            arguments: { backend: "android-device", deviceId, name: "Recorder Cleanup Retry", serial: "R5CREAL123" },
+        });
+        expect(attachedResult.isError).not.toBe(true);
+        const attached = parseToolJson(attachedResult).device as Record<string, unknown>;
+        const statePath = join(homeDir, ".ccc", "devices", "owners", String(attached.ownerId), "android-device", "devices.json");
+        const leasePath = join(homeDir, ".ccc", "devices", "physical-leases", "android-device", "locks", `${encodeURIComponent("R5CREAL123")}.json`);
+        const adbPath = join(binDir, "adb");
+        const originalAdbPath = join(binDir, "adb-original");
+        const failFallbackMarker = join(homeDir, "fake-adb-pkill-fail");
+        const ignoreSignalMarker = join(homeDir, "fake-adb-screenrecord-ignore-sigint");
+
+        renameSync(adbPath, originalAdbPath);
+        writeFileSync(adbPath, `#!/bin/sh
+if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "pkill" ] && [ -f "$HOME/fake-adb-pkill-fail" ]; then
+  echo "screenrecord pkill denied" >&2
+  exit 17
+fi
+if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "screenrecord" ] && [ -f "$HOME/fake-adb-screenrecord-ignore-sigint" ]; then
+  trap '' INT
+fi
+exec "${originalAdbPath}" "$@"
+`);
+        chmodSync(adbPath, 0o755);
+
+        let stubbornPid: number | undefined;
+        try {
+            const started = await client.callTool({
+                name: "device_record_video_start",
+                arguments: { backend: "android-device", deviceId, remotePath: "/sdcard/cleanup-failure.mp4" },
+            });
+            expect(started.isError).not.toBe(true);
+
+            const state = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
+            const current = state.devices.find((device) => device.id === deviceId);
+            const originalRecording = current?.recording as Record<string, unknown>;
+            expect(originalRecording.active).toBe(true);
+            const mismatchedRecording = {
+                ...originalRecording,
+                processIdentity: { ...(originalRecording.processIdentity as Record<string, unknown>), startToken: "mismatched" },
+            };
+            writeFileSync(statePath, JSON.stringify({
+                devices: state.devices.map((device) => device.id === deviceId ? { ...device, recording: mismatchedRecording } : device),
+            }, null, 2));
+            writeFileSync(failFallbackMarker, "1");
+
+            for (const tool of ["device_stop", "device_detach"]) {
+                const failed = await client.callTool({ name: tool, arguments: { backend: "android-device", deviceId } });
+                expect(failed.isError, tool).toBe(true);
+                expect((failed.content as Array<{ text?: string }>)[0]?.text).toContain("preserved for retry");
+                const preserved = (JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> }).devices.find((device) => device.id === deviceId);
+                expect(preserved).toEqual(expect.objectContaining({ status: "attached", recording: mismatchedRecording }));
+                expect(() => readFileSync(leasePath, "utf-8")).not.toThrow();
+            }
+
+            rmSync(failFallbackMarker, { force: true });
+            const stateBeforeRetry = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
+            writeFileSync(statePath, JSON.stringify({
+                devices: stateBeforeRetry.devices.map((device) => device.id === deviceId ? { ...device, recording: originalRecording } : device),
+            }, null, 2));
+            const finalized = await client.callTool({ name: "device_record_video_stop", arguments: { backend: "android-device", deviceId } });
+            expect(finalized.isError).not.toBe(true);
+
+            writeFileSync(ignoreSignalMarker, "1");
+            const stubbornStart = await client.callTool({
+                name: "device_record_video_start",
+                arguments: { backend: "android-device", deviceId, remotePath: "/sdcard/stubborn-cleanup.mp4" },
+            });
+            expect(stubbornStart.isError).not.toBe(true);
+            stubbornPid = Number((parseToolJson(stubbornStart).recording as Record<string, unknown>).pid);
+
+            const remainsActive = await client.callTool({ name: "device_stop", arguments: { backend: "android-device", deviceId } });
+            expect(remainsActive.isError).toBe(true);
+            expect((remainsActive.content as Array<{ text?: string }>)[0]?.text).toContain("did not exit within 3000ms");
+            const preservedActive = (JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> }).devices.find((device) => device.id === deviceId);
+            expect(preservedActive).toEqual(expect.objectContaining({
+                status: "attached",
+                recording: expect.objectContaining({ active: true, pid: stubbornPid }),
+            }));
+            expect(() => readFileSync(leasePath, "utf-8")).not.toThrow();
+        } finally {
+            rmSync(failFallbackMarker, { force: true });
+            rmSync(ignoreSignalMarker, { force: true });
+            if (stubbornPid) {
+                try { process.kill(stubbornPid, "SIGKILL"); } catch { /* recorder already exited */ }
+            }
+            rmSync(adbPath, { force: true });
+            renameSync(originalAdbPath, adbPath);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await client.callTool({ name: "device_detach", arguments: { backend: "android-device", deviceId } });
+        }
+    });
+
+    it("formats IPv6 wireless endpoints and bounds physical-device install and launch results", { timeout: TIMEOUT }, async () => {
+        const deviceId = "android-real-adb-result-validation";
+        const adbPath = join(binDir, "adb");
+        const delegatedAdbPath = join(binDir, "adb-before-real-result-validation");
+        renameSync(adbPath, delegatedAdbPath);
+        writeFileSync(adbPath, `#!/bin/sh
+if [ "$1" = "connect" ] && [ "$2" = "[2001:db8::50]:5555" ]; then
+  echo "adb $*" >> "$FAKE_ANDROID_LOG"
+  echo "connected to $2"
+  exit 0
+fi
+if [ "$1" = "pair" ] && [ "$2" = "[2001:db8::70]:37099" ] && [ "$3" = "123456" ]; then
+  echo "adb $*" >> "$FAKE_ANDROID_LOG"
+  echo "Successfully paired to $2"
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$3" = "install" ] && [ "$5" = "/tmp/slow-real-install.apk" ]; then
+  /bin/sleep 1
+  exit 0
+fi
+if [ "$1" = "-s" ] && [ "$3" = "shell" ] && [ "$4" = "monkey" ] && [ "$6" = "com.example.real.missing" ]; then
+  echo "No activities found to run, monkey aborted."
+  exit 0
+fi
+exec "${delegatedAdbPath}" "$@"
+`);
+        chmodSync(adbPath, 0o755);
+
+        try {
+            const ipv6 = await client.callTool({
+                name: "device_wireless",
+                arguments: { backend: "android-device", action: "connect", host: "2001:db8::50", port: 5555 },
+            });
+            expect(ipv6.isError).not.toBe(true);
+            expect(parseToolJson(ipv6)).toEqual(expect.objectContaining({
+                target: "[2001:db8::50]:5555",
+                attachNext: expect.objectContaining({
+                    arguments: expect.objectContaining({ host: "2001:db8::50", port: 5555 }),
+                }),
+            }));
+            expect(readFileSync(logPath, "utf8")).toContain("adb connect [2001:db8::50]:5555");
+
+            const ipv6Pair = await client.callTool({
+                name: "device_wireless",
+                arguments: {
+                    backend: "android-device",
+                    action: "pair",
+                    pairHost: "2001:db8::70",
+                    pairPort: 37099,
+                    pairingCode: "123456",
+                },
+            });
+            expect(ipv6Pair.isError).not.toBe(true);
+            expect(parseToolJson(ipv6Pair)).toEqual(expect.objectContaining({ pairTarget: "[2001:db8::70]:37099" }));
+            expect(readFileSync(logPath, "utf8")).toContain("adb pair [2001:db8::70]:37099 123456");
+
+            const attached = await client.callTool({
+                name: "device_attach",
+                arguments: { backend: "android-device", deviceId, name: "ADB Result Validation", serial: "R5CREAL123" },
+            });
+            expect(attached.isError).not.toBe(true);
+
+            const startedAt = Date.now();
+            const timedOutInstall = await client.callTool({
+                name: "mobile_install_app",
+                arguments: { deviceId, path: "/tmp/slow-real-install.apk", helperTimeoutMs: 25 },
+            });
+            expect(timedOutInstall.isError).toBe(true);
+            expect(Date.now() - startedAt).toBeLessThan(750);
+            expect((timedOutInstall.content as Array<{ text?: string }>)[0]?.text).toMatch(/timed out|ETIMEDOUT/i);
+
+            const launch = await client.callTool({
+                name: "device_launch_app",
+                arguments: { deviceId, packageName: "com.example.real.missing" },
+            });
+            expect(launch.isError).toBe(true);
+            expect((launch.content as Array<{ text?: string }>)[0]?.text).toContain("No activities found");
+        } finally {
+            await client.callTool({ name: "device_detach", arguments: { backend: "android-device", deviceId } });
+            rmSync(adbPath, { force: true });
+            renameSync(delegatedAdbPath, adbPath);
+        }
     });
 });

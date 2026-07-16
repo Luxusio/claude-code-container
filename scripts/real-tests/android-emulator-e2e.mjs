@@ -162,6 +162,25 @@ export function androidEmulatorE2ECapability(level = Number(process.env.CCC_TEST
     return { available: true, reason: "ready", discovery, systemImage: images[0], imageCount: images.length };
 }
 
+export function androidEmulatorAppSelection(env = process.env) {
+    const app = {
+        path: (env.CCC_REAL_ANDROID_APK || env.CCC_REAL_DEVICE_LAB_ANDROID_APK || "").trim(),
+        packageName: (env.CCC_REAL_ANDROID_PACKAGE || env.CCC_REAL_DEVICE_LAB_ANDROID_PACKAGE || "").trim(),
+        permission: (env.CCC_REAL_ANDROID_PERMISSION || env.CCC_REAL_DEVICE_LAB_ANDROID_PERMISSION || "").trim(),
+    };
+    const supplied = Object.values(app).filter(Boolean).length;
+    if (supplied === 0) return { available: true, reason: "use deterministic fixture", source: "fixture", app: null };
+    const missing = [
+        !app.path ? "CCC_REAL_ANDROID_APK" : "",
+        !app.packageName ? "CCC_REAL_ANDROID_PACKAGE" : "",
+        !app.permission ? "CCC_REAL_ANDROID_PERMISSION" : "",
+        app.path && !existsSync(app.path) ? `APK file not found: ${app.path}` : "",
+    ].filter(Boolean);
+    return missing.length > 0
+        ? { available: false, reason: `external Android app proof is incomplete before emulator mutation: ${missing.join(", ")}`, source: "external", app }
+        : { available: true, reason: "external app ready", source: "external", app };
+}
+
 async function portAvailable(port) {
     return new Promise((resolvePromise) => {
         const server = createServer();
@@ -197,18 +216,13 @@ export async function runAndroidEmulatorE2E(options = {}) {
     if (!cap.available) return { status: "SKIP", reason: cap.reason, capability: cap };
     const port = options.brokerOnly === true ? undefined : await findAndroidEmulatorPort(cap.discovery.adb);
     if (options.brokerOnly !== true && !port) return { status: "SKIP", reason: "no free Android emulator console port found" };
+    const appSelection = androidEmulatorAppSelection();
+    if (!appSelection.available) return { status: "SKIP", reason: appSelection.reason, capability: cap };
     const stamp = Date.now();
     const deviceId = `android-real-e2e-${stamp}`;
     const name = `Real Android E2E ${stamp}`;
     const tempDir = mkdtempSync(join(realProviderTempRoot(options), "ccc-android-emulator-e2e-"));
-    const externalApp = {
-        path: (process.env.CCC_REAL_ANDROID_APK || process.env.CCC_REAL_DEVICE_LAB_ANDROID_APK || "").trim(),
-        packageName: (process.env.CCC_REAL_ANDROID_PACKAGE || process.env.CCC_REAL_DEVICE_LAB_ANDROID_PACKAGE || "").trim(),
-        permission: (process.env.CCC_REAL_ANDROID_PERMISSION || process.env.CCC_REAL_DEVICE_LAB_ANDROID_PERMISSION || "").trim(),
-    };
-    const app = externalApp.path && externalApp.packageName && externalApp.permission
-        ? externalApp
-        : materializeAndroidAppFixture(tempDir);
+    const app = appSelection.source === "external" ? appSelection.app : materializeAndroidAppFixture(tempDir);
     const appApk = app.path;
     const appPackage = app.packageName;
     const appPermission = app.permission;
@@ -218,6 +232,7 @@ export async function runAndroidEmulatorE2E(options = {}) {
     let stopped = false;
     let deleted = false;
     let recordingActive = false;
+    let primaryFailure = null;
 
     return withDeviceLabMcp(async ({ callTool: rawCallTool }) => {
         const callTool = async (tool, args) => {
@@ -621,31 +636,44 @@ export async function runAndroidEmulatorE2E(options = {}) {
                 port: createdDevice.port,
                 appArtifact: "verified",
                 appPermission: "verified",
+                appSource: appSelection.source,
+                appPackage,
                 verifiedCapabilities: [...calledCapabilities].sort(),
             };
+        } catch (error) {
+            primaryFailure = error;
+            throw error;
         } finally {
+            const cleanupErrors = [];
             if (recordingActive) {
                 try {
                     await callTool("device_record_video_stop", { ...direct, deviceId });
-                } catch {
-                    // Best-effort cleanup preserves the primary failure.
+                } catch (error) {
+                    cleanupErrors.push(`recording stop: ${error.message}`);
                 }
             }
             if (created && !stopped) {
                 try {
                     await callTool("device_stop", { ...direct, deviceId });
-                } catch {
-                    // Best-effort cleanup preserves the primary failure.
+                } catch (error) {
+                    cleanupErrors.push(`device stop: ${error.message}`);
                 }
             }
             if (created && !deleted) {
                 try {
                     await callTool("device_delete", { ...direct, deviceId, force: true, deleteAvd: true, confirmDestructive: true });
-                } catch {
-                    // Preserve the primary failure if cleanup also fails.
+                } catch (error) {
+                    cleanupErrors.push(`device/AVD delete: ${error.message}`);
                 }
             }
-            rmSync(tempDir, { recursive: true, force: true });
+            try {
+                rmSync(tempDir, { recursive: true, force: true });
+            } catch (error) {
+                cleanupErrors.push(`temporary artifact removal: ${error.message}`);
+            }
+            if (cleanupErrors.length > 0) {
+                throw new Error(`Android emulator E2E cleanup failed: ${cleanupErrors.join("; ")}${primaryFailure ? `; primary failure: ${primaryFailure.message}` : ""}`);
+            }
         }
     }, providerMcpSessionOptions(options, "ccc-real-android-emulator-e2e"));
 }

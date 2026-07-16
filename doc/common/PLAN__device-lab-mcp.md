@@ -1432,6 +1432,11 @@ Physical Android device attachment status:
 - Physical serials are additionally protected by host-wide hardware lock files
   under `~/.ccc/devices/physical-leases/android-device/locks`, so two CCC
   owners cannot attach and command the same phone at the same time.
+- Direct Android/iOS physical detach validates the exact lease claim and
+  commits owner-record removal with lease removal as one fenced mutation. A
+  lease conflict, owner-state conflict, or persistence failure returns an
+  error and preserves or rolls back both records for a retry; detach never
+  reports success while leaving an orphan hardware lease.
 - The host broker backs Android physical leases, attach/detach/list, and
   pre-attachment wireless operations. Public `device_wireless` routes to the
   host without requiring an owner device record or `deviceId`, so a container
@@ -3121,7 +3126,12 @@ remain unchanged where they are the behavior under test.
     simulator is booting, CCC shuts down the just-booted owned UDID instead of
     leaving an untracked runtime. A running simulator without `xcrun`, or a
     failed `simctl shutdown`, retains its prior running generation instead of
-    being falsely recorded as stopped. Brokers advertise and MCP clients require
+    being falsely recorded as stopped. Delete rollback records each completed
+    side effect: stopped recording metadata becomes inactive, stopped Appium
+    metadata is cleared, and a successful simulator shutdown remains stopped
+    when a later `simctl delete` fails. Once the owned simulator is deleted, a
+    later recording-stage cleanup failure cannot resurrect the owner device
+    record or its stale runtime metadata. Brokers advertise and MCP clients require
     `direct-ios-lifecycle-generation-fencing-v1`, preventing reuse of a stale
     same-version broker with unconditional iOS lifecycle state writes.
 53. Direct Windows Sandbox start, stop, and delete now claim a lifecycle
@@ -3220,3 +3230,10 @@ remain unchanged where they are the behavior under test.
     stop contracts: both must prove that the real device was preserved, while
     the broker expresses this as a successful no-op provider command followed
     by owner attachment and lease cleanup.
+62. Recorder start rollback must cover metadata persistence exceptions as well
+    as compare-and-set conflicts. After an external recorder process starts,
+    a thrown owner-state write terminates that exact spawned process, waits for
+    exit with a bounded force-kill fallback, and disarms its exit callback
+    before rollback. The exception path performs no compensating owner-state
+    mutation, so a concurrently installed successor recording generation is
+    preserved unchanged.

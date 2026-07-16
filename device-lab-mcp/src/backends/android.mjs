@@ -19,6 +19,7 @@ import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } f
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const ANDROID_TRANSFER_TIMEOUT_MS = 300_000;
+const ANDROID_HELPER_MAX_TIMEOUT_MS = 300_000;
 
 function androidSdkCandidates() {
     const candidates = [];
@@ -403,13 +404,29 @@ function ensureAdbDevice(deviceId) {
     return { device, adb: discovery.adb };
 }
 
-function runAdbDeviceCommand(device, adb, args) {
-    const r = run(adb, adbArgsForDevice(device, args));
-    return r.status === 0 ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status } : { ok: false, result: r };
+function androidHelperTimeoutMs(value, fallback = ANDROID_TRANSFER_TIMEOUT_MS) {
+    const requested = Number(value);
+    if (!Number.isFinite(requested) || requested <= 0) return fallback;
+    return Math.min(ANDROID_HELPER_MAX_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
-function adbJsonResult(device, adb, args, payload) {
-    const r = runAdbDeviceCommand(device, adb, args);
+function adbLaunchSemanticFailure(result) {
+    const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+    return /(?:no activities found to run|monkey aborted|error:\s*(?:activity|unable to resolve intent)|activity class .* does not exist)/i.test(output);
+}
+
+function runAdbDeviceCommand(device, adb, args, options = {}) {
+    const r = options.timeoutMs
+        ? runWithTimeout(adb, adbArgsForDevice(device, args), androidHelperTimeoutMs(options.timeoutMs))
+        : run(adb, adbArgsForDevice(device, args));
+    const semanticFailure = options.validateLaunch === true && adbLaunchSemanticFailure(r);
+    return r.status === 0 && !semanticFailure
+        ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status }
+        : { ok: false, result: r };
+}
+
+function adbJsonResult(device, adb, args, payload, options = {}) {
+    const r = runAdbDeviceCommand(device, adb, args, options);
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
 }
 
@@ -468,15 +485,29 @@ function listHostAvds(discovery = androidDiscovery()) {
     };
 }
 
-async function waitForAndroidBoot(discovery, device, timeoutMs) {
+function androidEmulatorProcessExit(child) {
+    if (!child || (child.exitCode === null && child.signalCode === null)) return null;
+    return {
+        reason: "emulator-process-exited",
+        exitCode: child.exitCode,
+        signal: child.signalCode,
+    };
+}
+
+async function waitForAndroidBoot(discovery, device, timeoutMs, child = null) {
     if (!discovery.adb) return { ready: false, skipped: true, reason: "adb missing" };
     const serial = androidSerial(device);
     const deadline = Date.now() + Math.max(0, timeoutMs);
     while (Date.now() <= deadline) {
+        const processExit = androidEmulatorProcessExit(child);
+        if (processExit) return { ready: false, skipped: false, ...processExit };
         const adbArgs = serial
             ? ["-s", serial, "shell", "getprop", "sys.boot_completed"]
             : ["shell", "getprop", "sys.boot_completed"];
         const r = run(discovery.adb, adbArgs);
+        await sleep(0);
+        const processExitAfterPoll = androidEmulatorProcessExit(child);
+        if (processExitAfterPoll) return { ready: false, skipped: false, ...processExitAfterPoll };
         if (r.status === 0 && r.stdout.trim() === "1") return { ready: true };
         await sleep(250);
     }
@@ -811,14 +842,62 @@ async function handleAndroidToolUnlocked(name, args) {
             }
             const claim = claimAndroidLifecycle(deviceId, device, "delete");
             if (!claim.transition.matched) return androidLifecycleConflict(deviceId, "delete-claim", claim.transition);
+            let deleteCurrent = null;
+            if (force && device.status !== "stopped") {
+                discovery ||= androidDiscovery();
+                const serial = androidSerial(device);
+                let adbStop = null;
+                if (discovery.adb && serial) {
+                    const state = run(discovery.adb, ["-s", serial, "get-state"]);
+                    if (state.status === 0) {
+                        const stopped = run(discovery.adb, ["-s", serial, "emu", "kill"]);
+                        adbStop = { status: stopped.status, stdout: stopped.stdout, stderr: stopped.stderr };
+                    }
+                }
+                const runtimeStop = device.runtime
+                    ? await terminateOwnedRuntimeProcessTree(refreshOwnedRuntimeProcessIdentity(device.runtime), "Android Emulator", { timeoutMs: 3000 })
+                    : null;
+                const runtimePid = device.runtime?.pid || device.pid;
+                const adbProcessExited = adbStop?.status === 0 && runtimePid
+                    ? await waitForProcessExit(runtimePid, 3000)
+                    : false;
+                const runtimeStopped = runtimeStop?.exited === true || adbProcessExited;
+                const adbStopped = adbStop?.status === 0;
+                if ((runtimeStop && !runtimeStopped) || (!runtimeStop && !adbStopped)) {
+                    const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                    return textResult(false, JSON.stringify({
+                        ok: false,
+                        error: "android-emulator-force-delete-stop-failed",
+                        backend: "android-emulator",
+                        deviceId,
+                        adbStop,
+                        runtimeStop,
+                        stateReverted: restored.matched,
+                    }));
+                }
+                const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
+                if (!current) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(findAndroidDevice(deviceId)), matched: false });
+                const stopped = {
+                    ...current,
+                    status: "stopped",
+                    pid: null,
+                    runtime: null,
+                    bootReady: false,
+                    lifecycle: null,
+                    updatedAt: new Date().toISOString(),
+                };
+                const stoppedTransition = transitionAndroidDevice(deviceId, current, stopped);
+                if (!stoppedTransition.matched) return androidLifecycleConflict(deviceId, "delete-stop", stoppedTransition);
+                deleteCurrent = stopped;
+            }
             if (deleteAvd) {
                 const r = run(discovery.avdmanager, ["delete", "avd", "--name", device.avdName]);
                 if (r.status !== 0) {
-                    abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                    if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                     return fail(r);
                 }
             }
-            const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
+            const current = deleteCurrent || currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
             if (!current) return androidLifecycleConflict(deviceId, "delete", { found: Boolean(findAndroidDevice(deviceId)), matched: false });
             const transition = transitionAndroidDevice(deviceId, current, null);
             if (!transition.matched) return androidLifecycleConflict(deviceId, "delete", transition);
@@ -924,7 +1003,20 @@ async function handleAndroidToolUnlocked(name, args) {
 
             if (!waitForBoot) return jsonResult({ device: withTargetStatus(starting), boot: { ready: false, skipped: true } });
 
-            const boot = await waitForAndroidBoot(discovery, starting, bootTimeoutMs);
+            const boot = await waitForAndroidBoot(discovery, starting, bootTimeoutMs, child);
+            if (boot.reason === "emulator-process-exited") {
+                const rollback = await rollbackStartedAndroidEmulator(discovery, device, runtime);
+                const reverted = transitionAndroidDevice(deviceId, starting, device);
+                return textResult(false, JSON.stringify({
+                    ok: false,
+                    error: "android-emulator-process-exited-during-boot",
+                    backend: "android-emulator",
+                    deviceId,
+                    boot,
+                    rollback,
+                    stateReverted: reverted.matched,
+                }));
+            }
             const completed = {
                 ...starting,
                 status: boot.ready ? "running" : "starting",
@@ -1195,12 +1287,12 @@ async function handleAndroidToolUnlocked(name, args) {
         }
 
         case "device_install_app": {
-            const { deviceId, path, replace = true } = args;
+            const { deviceId, path, replace = true, helperTimeoutMs } = args;
             const target = ensureAdbDevice(deviceId);
             const unavailable = adbTargetResult(target);
             if (unavailable !== null) return unavailable;
             const installArgs = replace ? ["install", "-r", path] : ["install", path];
-            return adbJsonResult(target.device, target.adb, installArgs, { installed: path, provider: "adb" });
+            return adbJsonResult(target.device, target.adb, installArgs, { installed: path, provider: "adb" }, { timeoutMs: helperTimeoutMs });
         }
 
         case "device_launch_app": {
@@ -1209,10 +1301,10 @@ async function handleAndroidToolUnlocked(name, args) {
             const unavailable = adbTargetResult(target);
             if (unavailable !== null) return unavailable;
             if (component) {
-                return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" });
+                return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" }, { validateLaunch: true });
             }
             if (!packageName) return textResult(false, "Android app launch requires packageName or component");
-            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" });
+            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" }, { validateLaunch: true });
         }
 
         case "device_reset": {
@@ -1405,8 +1497,8 @@ async function handleAndroidToolUnlocked(name, args) {
         }
 
         case "mobile_install_app": {
-            const { deviceId, path } = args;
-            return handleAndroidTool("device_install_app", { deviceId, path });
+            const { deviceId, path, helperTimeoutMs } = args;
+            return handleAndroidTool("device_install_app", { deviceId, path, helperTimeoutMs });
         }
 
         case "mobile_launch_app": {

@@ -53,15 +53,17 @@ function currentIosLifecycleDevice(deviceId, lifecycle) {
     return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
 }
 
-function abortIosLifecycle(deviceId, lifecycle, original) {
+function abortIosLifecycle(deviceId, lifecycle, original, actual = {}) {
     const current = currentIosLifecycleDevice(deviceId, lifecycle);
     if (!current) return { matched: false, found: Boolean(findIosDevice(deviceId)) };
     const restored = {
         ...current,
         status: original.status,
+        ...actual,
         updatedAt: now(),
     };
-    if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
+    if (Object.prototype.hasOwnProperty.call(actual, "lifecycle")) restored.lifecycle = actual.lifecycle;
+    else if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
     else delete restored.lifecycle;
     return transitionIosDevice(deviceId, current, restored);
 }
@@ -686,8 +688,17 @@ function realPathIsInside(parent, child) {
 function ensureContainerPathForWrite(containerRoot, targetPath) {
     try {
         const root = realpathSync(containerRoot);
-        mkdirSync(dirname(targetPath), { recursive: true });
-        const parent = realpathSync(dirname(targetPath));
+        const targetParent = dirname(targetPath);
+        let existingAncestor = targetParent;
+        while (!existsSync(existingAncestor)) {
+            const next = dirname(existingAncestor);
+            if (next === existingAncestor) break;
+            existingAncestor = next;
+        }
+        const ancestor = realpathSync(existingAncestor);
+        if (!realPathIsInside(root, ancestor)) return { error: "Resolved iOS app container path escapes the container" };
+        mkdirSync(targetParent, { recursive: true });
+        const parent = realpathSync(targetParent);
         if (!realPathIsInside(root, parent)) return { error: "Resolved iOS app container path escapes the container" };
         if (existsSync(targetPath)) {
             const existing = realpathSync(targetPath);
@@ -899,6 +910,7 @@ async function handleIosToolUnlocked(name, args) {
             }
             const claim = claimIosLifecycle(deviceId, device, "delete");
             if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "delete-claim", claim.transition);
+            const actual = { lifecycle: null };
             if (device.recording?.active) {
                 const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
                 if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
@@ -912,15 +924,27 @@ async function handleIosToolUnlocked(name, args) {
                         return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; device was not deleted.`);
                     }
                 }
+                actual.recording = { ...device.recording, active: false, endedAt: now() };
             }
+
+            const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
+            if (!appiumStop.exited) {
+                abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
+                return textResult(false, `${appiumStop.error}; device was not deleted.`);
+            }
+            actual.appium = null;
 
             if (deleteSimulator) {
                 if (force && device.status !== "stopped") {
-                    run(discovery.xcrun, ["simctl", "shutdown", ownedTarget.target]);
+                    const shutdown = run(discovery.xcrun, ["simctl", "shutdown", ownedTarget.target]);
+                    if (shutdown.status === 0 || String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown")) {
+                        actual.status = "stopped";
+                        actual.bootReady = false;
+                    }
                 }
                 const r = run(discovery.xcrun, ["simctl", "delete", ownedTarget.target]);
                 if (r.status !== 0 && !String(r.stderr || r.stdout).includes("Invalid device")) {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device);
+                    abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
                     return fail(r);
                 }
             }
@@ -932,7 +956,14 @@ async function handleIosToolUnlocked(name, args) {
                     stagePrefix: ".recording-stage-",
                 });
                 if (!discarded.ok) {
-                    abortIosLifecycle(deviceId, claim.lifecycle, device);
+                    if (deleteSimulator) {
+                        const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
+                        if (!current) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", { found: Boolean(findIosDevice(deviceId)), matched: false });
+                        const transition = transitionIosDevice(deviceId, current, null);
+                        if (!transition.matched) return iosLifecycleConflict(deviceId, "delete-after-simulator-delete", transition);
+                        return textResult(false, `${discarded.message}; simulator and device metadata were deleted, but the staged recording requires explicit recovery`);
+                    }
+                    abortIosLifecycle(deviceId, claim.lifecycle, device, actual);
                     return textResult(false, `${discarded.message}; device metadata was preserved for explicit recovery`);
                 }
             }
@@ -1016,8 +1047,20 @@ async function handleIosToolUnlocked(name, args) {
             }
             const claim = claimIosLifecycle(deviceId, device, "stop");
             if (!claim.transition.matched) return iosLifecycleConflict(deviceId, "stop-claim", claim.transition);
-            const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
-            if (recorderSignal.signaled) await waitForProcessExit(device.recording.pid, 1000);
+            if (device.recording?.active) {
+                const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
+                if (!recorderSignal.signaled && recorderSignal.reason !== "runtime-process-exited") {
+                    abortIosLifecycle(deviceId, claim.lifecycle, device);
+                    return textResult(false, `iOS Simulator recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata was preserved.`);
+                }
+                if (recorderSignal.signaled) {
+                    const exited = await waitForProcessExit(device.recording.pid, 3000);
+                    if (!exited) {
+                        abortIosLifecycle(deviceId, claim.lifecycle, device);
+                        return textResult(false, `iOS Simulator recording did not exit within 3000ms for ${deviceId}; recording metadata was preserved.`);
+                    }
+                }
+            }
             if (discovery.available) {
                 const shutdown = run(discovery.xcrun, ["simctl", "shutdown", ownedTarget.target]);
                 const alreadyShutdown = String(shutdown.stderr || shutdown.stdout).includes("Unable to shutdown device in current state: Shutdown");
@@ -1028,25 +1071,26 @@ async function handleIosToolUnlocked(name, args) {
             }
             const appiumStop = await stopOwnedAppium(device.appium, "iOS Simulator Appium");
             if (!appiumStop.exited) {
-                abortIosLifecycle(deviceId, claim.lifecycle, device);
+                abortIosLifecycle(deviceId, claim.lifecycle, device, {
+                    status: "stopped",
+                    lifecycle: null,
+                    ...(device.recording?.active
+                        ? { recording: { ...device.recording, active: false, endedAt: now() } }
+                        : {}),
+                });
                 return textResult(false, appiumStop.error);
             }
-            if (device.recording?.stagingPath) {
-                discardLocalOutputStage(device.recording.stagingPath, {
-                    label: "recording-local-path",
-                    stageParent: iosRecordingDir(device),
-                    stagePrefix: ".recording-stage-",
-                });
-            }
-
             const current = currentIosLifecycleDevice(deviceId, claim.lifecycle);
             if (!current) return iosLifecycleConflict(deviceId, "stop", { found: Boolean(findIosDevice(deviceId)), matched: false });
+            const recording = current.recording?.active
+                ? { ...current.recording, active: false, endedAt: now() }
+                : current.recording ?? null;
             const updated = {
                 ...current,
                 status: "stopped",
                 lifecycle: null,
                 appium: null,
-                recording: null,
+                recording,
                 updatedAt: now(),
             };
             const transition = transitionIosDevice(deviceId, current, updated);

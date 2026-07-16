@@ -8,7 +8,7 @@ import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
 import { inspectProcessIdentity, refreshOwnedRuntimeProcessIdentity, signalOwnedRuntimeProcess, terminateOwnedRuntimeProcess, waitForProcessIdentity } from "../state/process-identity.mjs";
 import { transitionAppiumGeneration } from "../state/runtime-generation.mjs";
-import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
+import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { fetchIosAppiumJson, iosAppiumDiscovery, iosDiscovery, normalizeIosOrientation } from "./ios-simulator.mjs";
 
@@ -78,10 +78,10 @@ function currentIosRealLifecycleDevice(deviceId, lifecycle) {
     return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
 }
 
-function abortIosRealLifecycle(deviceId, lifecycle, original) {
+function abortIosRealLifecycle(deviceId, lifecycle, original, actual = {}) {
     const current = currentIosRealLifecycleDevice(deviceId, lifecycle);
     if (!current) return { matched: false, found: Boolean(findIosRealDevice(deviceId)) };
-    const restored = { ...current, status: original.status, updatedAt: now() };
+    const restored = { ...current, status: original.status, ...actual, updatedAt: now() };
     if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
     else delete restored.lifecycle;
     return transitionIosRealDevice(deviceId, current, restored);
@@ -186,13 +186,51 @@ function stoppedIosRealDevice(device) {
     };
 }
 
-async function stopVolatileProcesses(device) {
-    signalOwnedRuntimeProcess(device.recording, "SIGINT");
-    return stopOwnedAppium(device.appium, "iOS physical Appium");
-}
-
 async function sleep(ms) {
     await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForOwnedRuntimeExit(runtime, timeoutMs = 3000) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    do {
+        const observation = inspectProcessIdentity(runtime?.processIdentity, runtime?.pid);
+        if (observation.status === "exited" || observation.status === "mismatch") return true;
+        if (Date.now() >= deadline) break;
+        await sleep(Math.min(50, Math.max(0, deadline - Date.now())));
+    } while (Date.now() <= deadline);
+    const finalObservation = inspectProcessIdentity(runtime?.processIdentity, runtime?.pid);
+    return finalObservation.status === "exited" || finalObservation.status === "mismatch";
+}
+
+async function stopOwnedRecording(recording, deviceId, timeoutMs = 3000) {
+    if (!recording?.active) return { exited: true };
+    const recorderSignal = signalOwnedRuntimeProcess(recording, "SIGINT");
+    if (recorderSignal.reason === "runtime-process-exited") return { exited: true };
+    if (!recorderSignal.signaled) {
+        return {
+            exited: false,
+            error: `iOS physical recording process could not be safely stopped for ${deviceId} (${recorderSignal.reason || "unknown"}); recording metadata and physical lease were preserved for retry.`,
+        };
+    }
+    if (await waitForOwnedRuntimeExit(recording, timeoutMs)) return { exited: true };
+    return {
+        exited: false,
+        error: `iOS physical recording did not exit within ${timeoutMs}ms for ${deviceId}; recording metadata and physical lease were preserved for retry.`,
+    };
+}
+
+async function stopVolatileProcesses(device) {
+    const recording = await stopOwnedRecording(device.recording, device.id);
+    if (!recording.exited) return recording;
+    const appium = await stopOwnedAppium(device.appium, "iOS physical Appium");
+    if (!appium.exited) {
+        return {
+            ...appium,
+            recordingStopped: Boolean(device.recording?.active),
+            error: `${appium.error}; Appium metadata and physical lease were preserved for retry.`,
+        };
+    }
+    return { exited: true };
 }
 
 function processIsAlive(pid) {
@@ -586,17 +624,41 @@ async function handleIosRealToolUnlocked(name, args) {
             if (!claim.transition.matched) return iosRealStateConflict(deviceId, "detach-claim", claim.transition);
             const stopped = await stopVolatileProcesses(device);
             if (!stopped.exited) {
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
+                abortIosRealLifecycle(deviceId, claim.lifecycle, device, stopped.recordingStopped
+                    ? { recording: { ...device.recording, active: false, endedAt: now() } }
+                    : {});
                 return textResult(false, stopped.error);
             }
             const current = currentIosRealLifecycleDevice(deviceId, claim.lifecycle);
             if (!current) return iosRealStateConflict(deviceId, "detach", { found: Boolean(findIosRealDevice(deviceId)), matched: false });
-            const transition = transitionIosRealDevice(deviceId, current, null);
-            if (!transition.matched) return iosRealStateConflict(deviceId, "detach", transition);
-            releasePhysicalLease("ios-device", device.udid, deviceId, {
-                claimId: device.leaseClaimId,
-                claimNonce: device.leaseClaimNonce,
-            });
+            let released;
+            try {
+                released = releasePhysicalLeaseWithMutation("ios-device", device.udid, deviceId, {
+                    claimId: device.leaseClaimId,
+                    claimNonce: device.leaseClaimNonce,
+                }, () => {
+                    const transition = transitionIosRealDevice(deviceId, current, null);
+                    if (!transition.matched) return { ok: false, transition };
+                    return {
+                        ok: true,
+                        transition,
+                        rollback() {
+                            const restored = claimIosRealDevice(current);
+                            if (!restored.ok) throw new Error(`ios-device-detach-state-rollback-failed:${restored.error}`);
+                        },
+                    };
+                });
+            } catch (error) {
+                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, `iOS physical device detach could not commit lease release; owner state and physical lease were preserved for retry: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            if (!released.ok) {
+                if (released.error === "physical-lease-release-mutation-rejected") {
+                    return iosRealStateConflict(deviceId, "detach", released.mutation?.transition || { found: Boolean(findIosRealDevice(deviceId)), matched: false });
+                }
+                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, `iOS physical device detach lease release was rejected (${released.error || "lease-conflict"}); owner state and physical lease were preserved for retry.`);
+            }
             return jsonResult({ detached: deviceId, physicalDevicePoweredOff: false });
         }
 
@@ -615,7 +677,9 @@ async function handleIosRealToolUnlocked(name, args) {
             if (!claim.transition.matched) return iosRealStateConflict(deviceId, "stop-claim", claim.transition);
             const stopped = await stopVolatileProcesses(device);
             if (!stopped.exited) {
-                abortIosRealLifecycle(deviceId, claim.lifecycle, device);
+                abortIosRealLifecycle(deviceId, claim.lifecycle, device, stopped.recordingStopped
+                    ? { recording: { ...device.recording, active: false, endedAt: now() } }
+                    : {});
                 return textResult(false, stopped.error);
             }
             const current = currentIosRealLifecycleDevice(deviceId, claim.lifecycle);

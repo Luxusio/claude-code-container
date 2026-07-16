@@ -90,6 +90,11 @@ if [ "$1" = "simctl" ] && [ "$2" = "shutdown" ]; then
   exit 0
 fi
 if [ "$1" = "simctl" ] && [ "$2" = "delete" ]; then
+  if [ -f "$HOME/fake-ios-delete-fail-once" ]; then
+    /bin/rm -f "$HOME/fake-ios-delete-fail-once"
+    echo "simulated delete failure" >&2
+    exit 1
+  fi
   replace_state_if_requested delete
   if [ "$3" = "CREATED-IOS-UDID" ]; then /bin/rm -f "$HOME/fake-ios-created-name" "$HOME/fake-ios-created-booted"; fi
   exit 0

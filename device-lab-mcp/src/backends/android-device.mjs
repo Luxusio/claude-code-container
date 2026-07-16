@@ -13,13 +13,14 @@ import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
 import { inspectProcessIdentity, readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 import { claimRecordingFinalization, recordingGenerationMatches, transitionRecordingGeneration } from "../state/runtime-generation.mjs";
-import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
+import { claimPhysicalLease, heartbeatPhysicalLease, releasePhysicalLease, releasePhysicalLeaseWithMutation, startPhysicalLeaseHeartbeat } from "../state/physical-lease-store.mjs";
 import { withTargetStatus } from "../status.mjs";
 import { commitLocalOutputStage, createLocalOutputStage, stageLocalInputFile } from "../transfer-file.mjs";
 
 const ANDROID_SCREENSHOT_TIMEOUT_MS = 30_000;
 const ANDROID_SCREENSHOT_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 const ANDROID_TRANSFER_TIMEOUT_MS = 300_000;
+const ANDROID_HELPER_MAX_TIMEOUT_MS = 300_000;
 
 const ANDROID_REAL_CAPABILITIES = [
     "device_inventory", "device_attach", "device_detach", "device_start", "device_stop",
@@ -87,6 +88,15 @@ function currentAndroidRealLifecycleDevice(deviceId, lifecycle) {
     return current?.lifecycle?.runtimeId === lifecycle.runtimeId ? current : null;
 }
 
+function abortAndroidRealLifecycle(deviceId, lifecycle, original) {
+    const current = currentAndroidRealLifecycleDevice(deviceId, lifecycle);
+    if (!current) return { matched: false, found: Boolean(findAndroidRealDevice(deviceId)) };
+    const restored = { ...current, status: original.status, updatedAt: now() };
+    if (Object.prototype.hasOwnProperty.call(original, "lifecycle")) restored.lifecycle = original.lifecycle;
+    else delete restored.lifecycle;
+    return transitionAndroidRealDevice(deviceId, current, restored);
+}
+
 function refreshAndroidRealDeviceLease(device) {
     if (!device?.id || !device?.serial || !device?.leaseClaimId || !device?.leaseClaimNonce) {
         return { ok: false, error: "Android physical device lease metadata is incomplete; clear stale owner metadata and attach the device again" };
@@ -130,30 +140,56 @@ function parseAdbDevices(text) {
                 return index > 0 ? [part.slice(0, index), part.slice(index + 1)] : [part, true];
             }));
             const emulator = serial?.startsWith("emulator-") || false;
-            const connection = !emulator && /^[^:]+:\d+$/.test(serial || "") ? "wifi" : "usb";
+            const connection = !emulator && parseAndroidWifiEndpoint(serial) ? "wifi" : "usb";
             return { serial, state: state || "unknown", details, emulator, connection };
         })
         .filter((device) => device.serial);
 }
 
+function parseAndroidWifiEndpoint(value, fallbackPort = null) {
+    const input = String(value || "").trim();
+    if (!input) return null;
+    const bracketed = input.match(/^\[([^\]]+)](?::(\d+))?$/);
+    if (bracketed) {
+        const port = bracketed[2] ? Number(bracketed[2]) : Number(fallbackPort);
+        return Number.isInteger(port) && port > 0 && port <= 65535 ? { host: bracketed[1], port } : null;
+    }
+    const colonCount = (input.match(/:/g) || []).length;
+    if (colonCount === 1) {
+        const separator = input.lastIndexOf(":");
+        const port = Number(input.slice(separator + 1));
+        if (Number.isInteger(port) && port > 0 && port <= 65535) return { host: input.slice(0, separator), port };
+    }
+    const port = Number(fallbackPort);
+    if (colonCount !== 1 && Number.isInteger(port) && port > 0 && port <= 65535) return { host: input, port };
+    return null;
+}
+
 function androidWifiSerial(host, port = 5555) {
-    if (!host) return null;
-    return `${host}:${port || 5555}`;
+    const endpoint = parseAndroidWifiEndpoint(host, port || 5555);
+    if (!endpoint) return null;
+    const formattedHost = endpoint.host.includes(":") ? `[${endpoint.host}]` : endpoint.host;
+    return `${formattedHost}:${endpoint.port}`;
 }
 
 function androidWifiTarget(host, port = 5555, serial = "") {
-    if (serial && String(serial).includes(":")) return String(serial);
+    if (serial) return androidWifiSerial(serial, port);
     if (!host) return null;
     return androidWifiSerial(host, port);
 }
 
 function androidWifiTransport(serial, host, port) {
-    const [serialHost, serialPort] = String(serial || "").split(":");
+    const endpoint = parseAndroidWifiEndpoint(serial, port || 5555);
     return {
         type: "wifi",
-        host: host || serialHost || null,
-        port: Number(serialPort || port || 5555),
+        host: parseAndroidWifiEndpoint(host, port || 5555)?.host || endpoint?.host || null,
+        port: endpoint?.port || Number(port || 5555),
     };
+}
+
+function androidWifiAttachNext(backend, target, fallbackPort = 5555) {
+    const endpoint = parseAndroidWifiEndpoint(target, fallbackPort);
+    return endpoint ? { tool: "device_attach", arguments: { backend, connection: "wifi", ...endpoint } } : null;
 }
 
 function hostAndroidDevices(discovery = androidDiscovery()) {
@@ -212,13 +248,29 @@ function backendHintAllows(args, backend) {
     return !args?.backend || args.backend === backend;
 }
 
-function runAdbDeviceCommand(device, adb, args) {
-    const r = run(adb, adbArgsForDevice(device, args));
-    return r.status === 0 ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status } : { ok: false, result: r };
+function androidHelperTimeoutMs(value, fallback = ANDROID_TRANSFER_TIMEOUT_MS) {
+    const requested = Number(value);
+    if (!Number.isFinite(requested) || requested <= 0) return fallback;
+    return Math.min(ANDROID_HELPER_MAX_TIMEOUT_MS, Math.max(1, Math.trunc(requested)));
 }
 
-function adbJsonResult(device, adb, args, payload) {
-    const r = runAdbDeviceCommand(device, adb, args);
+function adbLaunchSemanticFailure(result) {
+    const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+    return /(?:no activities found to run|monkey aborted|error:\s*(?:activity|unable to resolve intent)|activity class .* does not exist)/i.test(output);
+}
+
+function runAdbDeviceCommand(device, adb, args, options = {}) {
+    const r = options.timeoutMs
+        ? runWithTimeout(adb, adbArgsForDevice(device, args), androidHelperTimeoutMs(options.timeoutMs))
+        : run(adb, adbArgsForDevice(device, args));
+    const semanticFailure = options.validateLaunch === true && adbLaunchSemanticFailure(r);
+    return r.status === 0 && !semanticFailure
+        ? { ok: true, stdout: r.stdout, stderr: r.stderr, status: r.status }
+        : { ok: false, result: r };
+}
+
+function adbJsonResult(device, adb, args, payload, options = {}) {
+    const r = runAdbDeviceCommand(device, adb, args, options);
     return r.ok ? jsonResult({ ...payload, stdout: r.stdout, stderr: r.stderr, status: r.status }) : fail(r.result);
 }
 
@@ -369,11 +421,32 @@ function stoppedAndroidRealDevice(device) {
     };
 }
 
-function stopVolatileProcesses(device, adb) {
-    signalOwnedRuntimeProcess(device.recording, "SIGINT");
-    if (device.recording?.active && adb && device.serial) {
-        run(adb, ["-s", device.serial, "shell", "pkill", "-2", "screenrecord"]);
+async function stopVolatileProcesses(device, adb) {
+    if (!device.recording?.active) return { exited: true };
+
+    const recorderSignal = signalOwnedRuntimeProcess(device.recording, "SIGINT");
+    const adbFallback = adb && device.serial
+        ? run(adb, ["-s", device.serial, "shell", "pkill", "-2", "screenrecord"])
+        : null;
+
+    if (recorderSignal.signaled) {
+        const exited = await waitForProcessExit(device.recording.pid, 3000);
+        if (exited) return { exited: true };
+        return {
+            exited: false,
+            error: `Android real-device recording did not exit within 3000ms for ${device.id}; recording metadata and physical lease were preserved for retry.`,
+        };
     }
+    if (recorderSignal.exited || adbFallback?.status === 0) return { exited: true };
+
+    const signalFailure = recorderSignal.reason || "owned recorder signaling failed";
+    const adbFailure = adbFallback
+        ? adbFallback.stderr || adbFallback.stdout || `exit ${adbFallback.status}`
+        : "ADB fallback unavailable";
+    return {
+        exited: false,
+        error: `Android real-device recording cleanup failed for ${device.id}: ${signalFailure}; ${adbFailure}. Recording metadata and physical lease were preserved for retry.`,
+    };
 }
 
 export function listAndroidRealDevices() {
@@ -447,7 +520,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
                         tcpip: androidWirelessCommandPayload(tcpipArgs, tcpip),
                         connect: androidWirelessCommandPayload(connectArgs, connected),
                         stateMutated: false,
-                        attachNext: { tool: "device_attach", arguments: { backend, connection: "wifi", host: connectTarget.split(":")[0], port: Number(connectTarget.split(":")[1] || port || 5555) } },
+                        attachNext: androidWifiAttachNext(backend, connectTarget, port),
                     });
                 }
                 return jsonResult({
@@ -462,7 +535,8 @@ async function handleAndroidRealToolUnlocked(name, args) {
 
             if (action === "pair") {
                 if (!pairHost || !pairPort || !pairingCode) return wirelessFailure("android-wireless-pair-requires-host-port-code");
-                const pairTarget = `${pairHost}:${pairPort}`;
+                const pairTarget = androidWifiSerial(pairHost, pairPort);
+                if (!pairTarget) return wirelessFailure("android-wireless-pair-requires-host-port-code");
                 const pairArgs = ["pair", pairTarget, String(pairingCode)];
                 const paired = runWirelessAdb(discovery.adb, pairArgs, timeoutMs);
                 if (paired.status !== 0) {
@@ -488,7 +562,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
                         pair: androidWirelessCommandPayload(pairArgs, paired, [2]),
                         connect: androidWirelessCommandPayload(connectArgs, connected),
                         stateMutated: false,
-                        attachNext: { tool: "device_attach", arguments: { backend, connection: "wifi", host: connectTarget.split(":")[0], port: Number(connectTarget.split(":")[1] || port || 5555) } },
+                        attachNext: androidWifiAttachNext(backend, connectTarget, port),
                     });
                 }
                 return jsonResult({
@@ -514,7 +588,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
                     target: connectTarget,
                     connect: androidWirelessCommandPayload(connectArgs, connected),
                     stateMutated: false,
-                    attachNext: { tool: "device_attach", arguments: { backend, connection: "wifi", host: connectTarget.split(":")[0], port: Number(connectTarget.split(":")[1] || port || 5555) } },
+                    attachNext: androidWifiAttachNext(backend, connectTarget, port),
                 });
             }
 
@@ -536,9 +610,10 @@ async function handleAndroidRealToolUnlocked(name, args) {
             if (!discovery.adb) return textResult(false, "Android real-device backend missing prerequisites: adb");
             const devices = readAndroidRealDevices();
             if (connection === "wifi") {
-                resolvedSerial = serial || androidWifiSerial(host, port);
+                resolvedSerial = serial ? androidWifiSerial(serial, port) : androidWifiSerial(host, port);
                 if (!host && !serial) return textResult(false, "Android Wi-Fi attach requires host or serial in host:port form");
-                const connectTarget = resolvedSerial.includes(":") ? resolvedSerial : androidWifiSerial(host || resolvedSerial, port);
+                const connectTarget = resolvedSerial;
+                if (!connectTarget) return textResult(false, "Android Wi-Fi attach requires a valid host and port");
                 const id = deviceId || androidRealDeviceId(deviceName || connectTarget);
                 if (devices.some((device) => device.id === id)) return textResult(false, `Device already exists for this owner: ${id}`);
                 if (devices.some((device) => device.serial === connectTarget)) return textResult(false, `Android serial already attached for this owner: ${connectTarget}`);
@@ -628,15 +703,41 @@ async function handleAndroidRealToolUnlocked(name, args) {
             const claim = claimAndroidRealLifecycle(deviceId, device, "detach");
             if (!claim.transition.matched) return androidRealStateConflict(deviceId, "detach-claim", claim.transition);
             const discovery = androidDiscovery();
-            stopVolatileProcesses(device, discovery.adb);
+            const stopped = await stopVolatileProcesses(device, discovery.adb);
+            if (!stopped.exited) {
+                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, stopped.error);
+            }
             const current = currentAndroidRealLifecycleDevice(deviceId, claim.lifecycle);
             if (!current) return androidRealStateConflict(deviceId, "detach", { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
-            const transition = transitionAndroidRealDevice(deviceId, current, null);
-            if (!transition.matched) return androidRealStateConflict(deviceId, "detach", transition);
-            releasePhysicalLease("android-device", device.serial, deviceId, {
-                claimId: device.leaseClaimId,
-                claimNonce: device.leaseClaimNonce,
-            });
+            let released;
+            try {
+                released = releasePhysicalLeaseWithMutation("android-device", device.serial, deviceId, {
+                    claimId: device.leaseClaimId,
+                    claimNonce: device.leaseClaimNonce,
+                }, () => {
+                    const transition = transitionAndroidRealDevice(deviceId, current, null);
+                    if (!transition.matched) return { ok: false, transition };
+                    return {
+                        ok: true,
+                        transition,
+                        rollback() {
+                            const restored = claimAndroidRealDevice(current);
+                            if (!restored.ok) throw new Error(`android-device-detach-state-rollback-failed:${restored.error}`);
+                        },
+                    };
+                });
+            } catch (error) {
+                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, `Android physical device detach could not commit lease release; owner state and physical lease were preserved for retry: ${error instanceof Error ? error.message : String(error)}`);
+            }
+            if (!released.ok) {
+                if (released.error === "physical-lease-release-mutation-rejected") {
+                    return androidRealStateConflict(deviceId, "detach", released.mutation?.transition || { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
+                }
+                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, `Android physical device detach lease release was rejected (${released.error || "lease-conflict"}); owner state and physical lease were preserved for retry.`);
+            }
             return jsonResult({ detached: deviceId, physicalDevicePoweredOff: false });
         }
 
@@ -654,7 +755,11 @@ async function handleAndroidRealToolUnlocked(name, args) {
             const claim = claimAndroidRealLifecycle(deviceId, device, "stop");
             if (!claim.transition.matched) return androidRealStateConflict(deviceId, "stop-claim", claim.transition);
             const discovery = androidDiscovery();
-            stopVolatileProcesses(device, discovery.adb);
+            const stopped = await stopVolatileProcesses(device, discovery.adb);
+            if (!stopped.exited) {
+                abortAndroidRealLifecycle(deviceId, claim.lifecycle, device);
+                return textResult(false, stopped.error);
+            }
             const current = currentAndroidRealLifecycleDevice(deviceId, claim.lifecycle);
             if (!current) return androidRealStateConflict(deviceId, "stop", { found: Boolean(findAndroidRealDevice(deviceId)), matched: false });
             const updated = stoppedAndroidRealDevice(current);
@@ -873,11 +978,11 @@ async function handleAndroidRealToolUnlocked(name, args) {
         }
 
         case "device_install_app": {
-            const { deviceId, path, replace = true } = args;
+            const { deviceId, path, replace = true, helperTimeoutMs } = args;
             const target = ensureAdbDevice(deviceId);
             const unavailable = adbTargetResult(target);
             if (unavailable !== null) return unavailable;
-            return adbJsonResult(target.device, target.adb, replace ? ["install", "-r", path] : ["install", path], { installed: path, provider: "adb" });
+            return adbJsonResult(target.device, target.adb, replace ? ["install", "-r", path] : ["install", path], { installed: path, provider: "adb" }, { timeoutMs: helperTimeoutMs });
         }
 
         case "device_launch_app": {
@@ -885,9 +990,9 @@ async function handleAndroidRealToolUnlocked(name, args) {
             const target = ensureAdbDevice(deviceId);
             const unavailable = adbTargetResult(target);
             if (unavailable !== null) return unavailable;
-            if (component) return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" });
+            if (component) return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-n", component], { launched: component, provider: "adb" }, { validateLaunch: true });
             if (!packageName) return textResult(false, "Android app launch requires packageName or component");
-            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" });
+            return adbJsonResult(target.device, target.adb, ["shell", "monkey", "-p", packageName, "1"], { launched: packageName, provider: "adb" }, { validateLaunch: true });
         }
 
         case "device_reset": {
@@ -1001,7 +1106,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
             return adbJsonResult(target.device, target.adb, ["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], { openedUrl: url, provider: "adb" });
         }
 
-        case "mobile_install_app": return handleAndroidRealTool("device_install_app", { deviceId: args.deviceId, path: args.path });
+        case "mobile_install_app": return handleAndroidRealTool("device_install_app", { deviceId: args.deviceId, path: args.path, helperTimeoutMs: args.helperTimeoutMs });
         case "mobile_launch_app": return handleAndroidRealTool("device_launch_app", { deviceId: args.deviceId, packageName: args.packageName, component: args.component });
 
         case "mobile_uninstall_app": {

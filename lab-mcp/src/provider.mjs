@@ -24,6 +24,8 @@ const DEFAULT_GUEST_ROOTS = ["/workspace", "/artifacts", "/tmp/ccc-lab"];
 const DEFAULT_SSH_CONNECT_TIMEOUT_SEC = 5;
 const DEFAULT_GUEST_EXEC_TIMEOUT_MS = 30000;
 const MAX_GUEST_EXEC_TIMEOUT_MS = 600000;
+const DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS = 120000;
+const PROVIDER_COMMAND_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 const MAX_GUEST_EXEC_COMMAND_LENGTH = 4096;
 const MAX_GUEST_AGENT_HEALTH_COMMAND_LENGTH = 512;
 const MAX_GUEST_AGENT_PROVISION_COMMAND_LENGTH = 4096;
@@ -59,7 +61,12 @@ function validId(value) {
 }
 
 function commandPath(command, env = process.env) {
-    const result = spawnSync("/bin/sh", ["-c", `command -v ${command}`], { encoding: "utf8", env });
+    const result = spawnSync("/bin/sh", ["-c", `command -v ${command}`], {
+        encoding: "utf8",
+        env,
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+    });
     return result.status === 0 ? result.stdout.trim().split("\n")[0] : null;
 }
 
@@ -957,10 +964,20 @@ function qemuImgCreateOverlay(lab, source, options = {}, dryRun = false) {
     if (!status.qemuImg) return { ok: false, error: "qemu-img-unavailable", providerStatus: status };
     mkdirSync(dirname(disk.diskPath), { recursive: true });
     const runner = options.commandRunner || ((command, commandArgs, runOptions) => {
-        const result = spawnSync(command, commandArgs, { cwd: runOptions.cwd, env: runOptions.env, encoding: "utf8" });
+        const result = spawnSync(command, commandArgs, {
+            cwd: runOptions.cwd,
+            env: runOptions.env,
+            encoding: "utf8",
+            timeout: runOptions.timeoutMs,
+            maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+        });
         return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args: commandArgs };
     });
-    const result = runner(status.qemuImg, args, { cwd: lab.paths.labDir, env: options.env || process.env });
+    const result = runner(status.qemuImg, args, {
+        cwd: lab.paths.labDir,
+        env: options.env || process.env,
+        timeoutMs: boundedTimeout(options.providerCommandTimeoutMs, DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS),
+    });
     if (!result?.ok) return { ok: false, error: "qemu-img-create-failed", result: publicExecution(result) };
     return { ok: true, command: status.qemuImg, args, result: publicExecution(result) };
 }
@@ -1661,11 +1678,21 @@ function qemuImgSnapshot(action, lab, snapshotName, options) {
     const status = labProviderStatus(options);
     if (!status.qemuImg) return { ok: true, diskSnapshot: false, reason: "qemu-img-unavailable" };
     const runner = options.commandRunner || ((command, args, runOptions) => {
-        const result = spawnSync(command, args, { cwd: runOptions.cwd, env: runOptions.env, encoding: "utf8" });
+        const result = spawnSync(command, args, {
+            cwd: runOptions.cwd,
+            env: runOptions.env,
+            encoding: "utf8",
+            timeout: runOptions.timeoutMs,
+            maxBuffer: PROVIDER_COMMAND_MAX_BUFFER_BYTES,
+        });
         return { ok: result.status === 0, status: result.status, stdout: result.stdout, stderr: result.stderr, command, args };
     });
     const flag = action === "create" ? "-c" : action === "restore" ? "-a" : "-d";
-    return runner(status.qemuImg, ["snapshot", flag, snapshotName, disk.diskPath], { cwd: lab.paths.labDir, env: options.env || process.env });
+    return runner(status.qemuImg, ["snapshot", flag, snapshotName, disk.diskPath], {
+        cwd: lab.paths.labDir,
+        env: options.env || process.env,
+        timeoutMs: boundedTimeout(options.providerCommandTimeoutMs, DEFAULT_PROVIDER_COMMAND_TIMEOUT_MS),
+    });
 }
 
 export function snapshotLab(action, args = {}, options = {}) {

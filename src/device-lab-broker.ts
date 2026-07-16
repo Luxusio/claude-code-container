@@ -6,6 +6,7 @@ import { homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
+import { Worker } from "worker_threads";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId as canonicalDeviceLabOwnerId, deviceLabProjectMountPath } from "./device-lab-owner.js";
 import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
@@ -19,6 +20,7 @@ export const DEVICE_BROKER_DEFAULT_HOST = "127.0.0.1";
 export const DEVICE_BROKER_DEFAULT_PORT = 17373;
 export const DEVICE_BROKER_NAME = "ccc-device-broker";
 export const DEVICE_BROKER_RPC_BODY_LIMIT = 64 * 1024;
+export const DEVICE_BROKER_REQUEST_BODY_TIMEOUT_MS = 5000;
 export const DEVICE_BROKER_ERROR_RESPONSE_LIMIT = 256 * 1024;
 export const DEVICE_BROKER_CONTROL_RESPONSE_LIMIT_BYTES = 1024 * 1024;
 export const DEVICE_BROKER_RPC_RESPONSE_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -43,6 +45,9 @@ const DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS = 300000;
 const DEVICE_BROKER_APPIUM_INSTALL_LOCK_WAIT_MS = DEVICE_BROKER_APPIUM_INSTALL_TIMEOUT_MS + 15000;
 const DEVICE_BROKER_APPIUM_INSTALL_LOCK_STALE_MS = 15 * 60 * 1000;
 const DEVICE_BROKER_APPIUM_LAUNCH_POLICY = "node-direct-hidden-v1";
+const DEVICE_BROKER_APPIUM_PORT_SCAN_LIMIT = 128;
+const DEVICE_BROKER_APPIUM_AUTO_PORT_MIN = 20000;
+const DEVICE_BROKER_APPIUM_AUTO_PORT_MAX = 39999;
 export const DEVICE_BROKER_COMMAND_OUTPUT_LIMIT = 32 * 1024;
 export const DEVICE_BROKER_AUTO_START_TIMEOUT_MS = 2500;
 const DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS = 60000;
@@ -59,6 +64,7 @@ const DEVICE_BROKER_CAPABILITY_ANDROID_DEVICE_TOOL_PROXY = "http-android-device-
 const DEVICE_BROKER_CAPABILITY_VERSION_REPORTING = "http-broker-version-reporting";
 const DEVICE_BROKER_CAPABILITY_HIDDEN_PROVIDER_CHILDREN = "windows-hidden-provider-children-v5";
 const DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE = "windows-sandbox-window-minimize-v4";
+const DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP = "windows-sandbox-runtime-snapshot-ownership-v1";
 const DEVICE_BROKER_CAPABILITY_APPIUM3_NPM_RUNTIME = "appium3-scoped-security-npm-cwd-v1";
 const DEVICE_BROKER_CAPABILITY_EXISTING_OWNER_AUTH = "constant-time-existing-owner-auth-v1";
 const DEVICE_BROKER_CAPABILITY_ATOMIC_OWNER_AUTH = "atomic-owner-secret-provisioning-v1";
@@ -86,6 +92,7 @@ const DEVICE_BROKER_CAPABILITY_DIRECT_RUNTIME_PROCESS_IDENTITY = "direct-runtime
 const DEVICE_BROKER_CAPABILITY_HOST_RECORDING_PROCESS_IDENTITY = "host-recording-process-identity-v1";
 const DEVICE_BROKER_CAPABILITY_RUNTIME_PROCESS_OBSERVATION = "runtime-process-observation-v1";
 const DEVICE_BROKER_CAPABILITY_HOST_APPIUM_PROCESS_IDENTITY = "host-appium-process-identity-v1";
+const DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY = "appium-port-process-identity-fencing-v1";
 const DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH = "broker-owned-owner-secret-provisioning-v1";
 const DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY = "host-broker-port-process-identity-v1";
 const DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY = "direct-appium-process-identity-v1";
@@ -127,6 +134,7 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_VERSION_REPORTING,
     DEVICE_BROKER_CAPABILITY_HIDDEN_PROVIDER_CHILDREN,
     DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE,
+    DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP,
     DEVICE_BROKER_CAPABILITY_APPIUM3_NPM_RUNTIME,
     DEVICE_BROKER_CAPABILITY_EXISTING_OWNER_AUTH,
     DEVICE_BROKER_CAPABILITY_ATOMIC_OWNER_AUTH,
@@ -154,6 +162,7 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_RECORDING_PROCESS_IDENTITY,
     DEVICE_BROKER_CAPABILITY_RUNTIME_PROCESS_OBSERVATION,
     DEVICE_BROKER_CAPABILITY_HOST_APPIUM_PROCESS_IDENTITY,
+    DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY,
     DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH,
     DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY,
     DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY,
@@ -533,10 +542,12 @@ export interface DeviceBrokerOptions {
     ownerId?: string;
     providerPaths?: Record<string, string>;
     commandTimeoutMs?: number;
+    requestBodyTimeoutMs?: number;
     commandRunner?: ProviderCommandRunner;
     deviceToolRunner?: BrokerDeviceToolRunner;
     platform?: NodeJS.Platform;
     cliPath?: string;
+    portProcessResolver?: BrokerPortProcessResolver;
 }
 
 type BrokerRpcResult = { status: number; payload: unknown };
@@ -548,11 +559,14 @@ type NormalizedBrokerOptions = {
     startedAt: string;
     providerPaths: Record<string, string>;
     commandTimeoutMs: number;
+    requestBodyTimeoutMs: number;
     commandRunner: ProviderCommandRunner;
     deviceToolRunner: BrokerDeviceToolRunner;
     usesDefaultCommandRunner: boolean;
     platform: NodeJS.Platform;
     cliPath: string;
+    portProcessResolver: BrokerPortProcessResolver;
+    strictAppiumPortOwnership: boolean;
 };
 type LeaseParamError = { ok: false; status: number; error: string; allowed?: string[] };
 type LeaseParamSuccess = {
@@ -665,8 +679,15 @@ type ProviderCommandResult = {
     pid?: number;
     processIdentity?: DeviceRuntimeProcessIdentity;
     timedOut?: boolean;
+    cleanup?: BrokerProcessTreeCleanup;
 };
-type ProviderCommandRunner = (command: ProviderCommand, options: { timeoutMs: number; outputLimit: number }) => ProviderCommandResult;
+type ProviderCommandRunnerOptions = {
+    timeoutMs: number;
+    outputLimit: number;
+    wrapperTimeoutMs?: number;
+    cleanupGraceMs?: number;
+};
+type ProviderCommandRunner = (command: ProviderCommand, options: ProviderCommandRunnerOptions) => ProviderCommandResult;
 type BrokerDeviceToolRunner = (ownerId: string, parsed: DeviceToolParamSuccess, match: DeviceToolMatch, normalized: NormalizedBrokerOptions) => BrokerRpcResult | Promise<BrokerRpcResult>;
 type ServiceAction = "status";
 type ServicePlan = {
@@ -688,8 +709,8 @@ type ServiceOwnerRecord = {
     updatedAt: string;
 };
 type BrokerSpawn = typeof spawn;
-type BrokerPortProcess = { pid: number; commandLine?: string | null };
-type BrokerPortProcessResolver = (port: number, platform: NodeJS.Platform) => BrokerPortProcess | null;
+export type BrokerPortProcess = { pid: number; commandLine?: string | null };
+export type BrokerPortProcessResolver = (port: number, platform: NodeJS.Platform) => BrokerPortProcess | null;
 
 export interface HostDeviceBrokerOptions extends DeviceBrokerOptions {
     bindHost?: string;
@@ -1311,6 +1332,9 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
     const commandTimeoutMs = Number.isFinite(options.commandTimeoutMs)
         ? Math.min(30000, Math.max(1, Number(options.commandTimeoutMs)))
         : DEVICE_BROKER_COMMAND_TIMEOUT_MS;
+    const requestBodyTimeoutMs = Number.isFinite(options.requestBodyTimeoutMs)
+        ? Math.min(30000, Math.max(1, Number(options.requestBodyTimeoutMs)))
+        : DEVICE_BROKER_REQUEST_BODY_TIMEOUT_MS;
     return {
         cwd,
         profile: options.profile,
@@ -1319,11 +1343,14 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
         startedAt,
         providerPaths: options.providerPaths || {},
         commandTimeoutMs,
+        requestBodyTimeoutMs,
         commandRunner: options.commandRunner || defaultProviderCommandRunner,
         deviceToolRunner: options.deviceToolRunner || defaultBrokerDeviceToolRunner,
         usesDefaultCommandRunner: !options.commandRunner,
         platform: options.platform || process.platform,
         cliPath: options.cliPath || process.argv[1] || "ccc",
+        portProcessResolver: options.portProcessResolver || discoverBrokerPortProcess,
+        strictAppiumPortOwnership: !options.commandRunner || options.portProcessResolver !== undefined,
     };
 }
 
@@ -2182,6 +2209,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK,
             DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE,
+            DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP,
             DEVICE_BROKER_CAPABILITY_APPIUM3_NPM_RUNTIME,
             "http-appium-process-api",
             "http-appium-webdriver-session-api",
@@ -2221,6 +2249,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_HOST_RECORDING_PROCESS_IDENTITY,
             DEVICE_BROKER_CAPABILITY_RUNTIME_PROCESS_OBSERVATION,
             DEVICE_BROKER_CAPABILITY_HOST_APPIUM_PROCESS_IDENTITY,
+            DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY,
             DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH,
             DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY,
             DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY,
@@ -2702,19 +2731,25 @@ function writeJson(res: ServerResponse, status: number, body: unknown, headers: 
     res.end(payload);
 }
 
-function readRequestJson(req: IncomingMessage, limit = DEVICE_BROKER_RPC_BODY_LIMIT): Promise<{ ok: true; body: unknown } | { ok: false; status: number; error: string }> {
+function readRequestJson(req: IncomingMessage, limit = DEVICE_BROKER_RPC_BODY_LIMIT, timeoutMs = DEVICE_BROKER_REQUEST_BODY_TIMEOUT_MS): Promise<{ ok: true; body: unknown } | { ok: false; status: number; error: string }> {
     return new Promise((resolve) => {
         const chunks: Buffer[] = [];
         let total = 0;
         let resolved = false;
+        const timer = setTimeout(() => {
+            req.pause();
+            finish({ ok: false, status: 408, error: "request-body-timeout" });
+        }, timeoutMs);
 
         function finish(result: { ok: true; body: unknown } | { ok: false; status: number; error: string }) {
             if (resolved) return;
             resolved = true;
+            clearTimeout(timer);
             resolve(result);
         }
 
         req.on("data", (chunk: Buffer) => {
+            if (resolved) return;
             total += chunk.length;
             if (total > limit) {
                 finish({ ok: false, status: 413, error: "request-too-large" });
@@ -3413,21 +3448,32 @@ function joinHostProjectPath(root: string, rel: string): string {
     return join(root, ...parts);
 }
 
-function translateContainerProjectPathForHost(value: unknown, normalized: NormalizedBrokerOptions): unknown {
-    if (typeof value !== "string" || !value.startsWith("/")) return value;
+type BrokerHostPathTranslation = { ok: true; value: unknown } | { ok: false };
+
+function translateContainerProjectPathForHost(value: unknown, normalized: NormalizedBrokerOptions): BrokerHostPathTranslation {
+    if (typeof value !== "string") return { ok: true, value };
+    const absolute = posix.isAbsolute(value) || win32.isAbsolute(value);
+    if (!absolute) return { ok: true, value };
     const projectMount = deviceLabProjectMountPath(normalized.cwd);
-    if (value !== projectMount && !value.startsWith(`${projectMount}/`)) return value;
+    if (!posix.isAbsolute(value) || (value !== projectMount && !value.startsWith(`${projectMount}/`))) return { ok: false };
     const rel = value.slice(projectMount.length).replace(/^\/+/, "");
     const parts = rel.split("/").filter(Boolean);
-    if (parts.some((part) => part === "." || part === "..")) return value;
-    return joinHostProjectPath(normalized.cwd, rel);
+    if (parts.some((part) => part === "." || part === ".." || part.includes("\\"))) return { ok: false };
+    return { ok: true, value: joinHostProjectPath(normalized.cwd, rel) };
 }
 
-function translateDeviceToolPathsForHost(parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): DeviceToolParamSuccess {
+function translateDeviceToolPathsForHost(parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): DeviceToolParamSuccess | BrokerRpcResult {
     const params = { ...parsed.params };
     for (const key of ["localPath", "path"]) {
         if (typeof params[key] === "string") {
-            params[key] = translateContainerProjectPathForHost(params[key], normalized);
+            const translated = translateContainerProjectPathForHost(params[key], normalized);
+            if (!translated.ok) {
+                return {
+                    status: 400,
+                    payload: { ok: false, error: "device-tool-path-outside-project-mount", field: key },
+                };
+            }
+            params[key] = translated.value;
         }
     }
     return {
@@ -3466,6 +3512,7 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
         return { status, payload };
     }
     const parsed = translateDeviceToolPathsForHost(validation, normalized);
+    if ("status" in parsed) return parsed;
     if (parsed.tool === "device_inventory") return invokeDeviceInventory(ownerId, parsed, normalized);
     if (DEVICE_BROKER_UNATTACHED_TOOL_METHODS.has(parsed.tool)) {
         if (parsed.backend !== "android-device" && parsed.backend !== "ios-device") {
@@ -6036,36 +6083,60 @@ function brokerOwnedAppiumPid(appium: unknown) {
         : null;
 }
 
-function brokerLaunchedAppiumServerUrl(appium: unknown) {
-    if (!appium || typeof appium !== "object") return null;
-    const metadata = appium as { authority?: unknown; serverUrl?: unknown; processOwner?: unknown; startedBy?: unknown };
+function claimsBrokerOwnedAppiumRuntime(appium: unknown) {
+    if (!appium || typeof appium !== "object" || Array.isArray(appium)) return false;
+    const metadata = appium as { authority?: unknown; processOwner?: unknown; startedBy?: unknown };
+    return metadata.authority === "host-broker"
+        && metadata.processOwner === "host-broker"
+        && metadata.startedBy === "broker.appium.start";
+}
+
+function brokerOwnedAppiumEndpoint(appium: unknown) {
+    if (!appium || typeof appium !== "object" || Array.isArray(appium)) {
+        return { ok: false as const, error: "appium-runtime-metadata-incomplete" };
+    }
+    const metadata = appium as { authority?: unknown; serverUrl?: unknown; port?: unknown; processOwner?: unknown; startedBy?: unknown };
     if (metadata.authority !== "host-broker"
         || metadata.processOwner !== "host-broker"
-        || metadata.startedBy !== "broker.appium.start") return null;
-    if (typeof metadata.serverUrl !== "string") return null;
-    try {
-        const url = new URL(metadata.serverUrl);
-        if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") return null;
-        return `${url.origin}${url.pathname === "/" ? "" : url.pathname}`;
-    } catch {
-        return null;
+        || metadata.startedBy !== "broker.appium.start"
+        || typeof metadata.serverUrl !== "string") {
+        return { ok: false as const, error: "appium-runtime-metadata-incomplete" };
     }
+
+    // Broker-launched Appium always listens at the loopback origin root. Keeping this
+    // grammar deliberately narrow rejects URL parser aliases, credentials, path
+    // prefixes, query strings, and fragments before any host request is attempted.
+    const match = /^http:\/\/127\.0\.0\.1:(\d{1,5})\/?$/.exec(metadata.serverUrl);
+    if (!match) {
+        return { ok: false as const, error: "appium-server-url-unsafe", serverUrl: metadata.serverUrl };
+    }
+    const urlPort = Number(match[1]);
+    if (!Number.isInteger(urlPort) || urlPort <= 0 || urlPort > 65535) {
+        return { ok: false as const, error: "appium-server-url-unsafe", serverUrl: metadata.serverUrl };
+    }
+    if (metadata.port !== undefined
+        && (typeof metadata.port !== "number"
+            || !Number.isInteger(metadata.port)
+            || metadata.port !== urlPort)) {
+        return {
+            ok: false as const,
+            error: "appium-server-url-port-mismatch",
+            port: metadata.port,
+            urlPort,
+            serverUrl: metadata.serverUrl,
+        };
+    }
+    return { ok: true as const, port: urlPort, serverUrl: `http://127.0.0.1:${urlPort}` };
+}
+
+function brokerLaunchedAppiumServerUrl(appium: unknown) {
+    const endpoint = brokerOwnedAppiumEndpoint(appium);
+    return endpoint.ok ? endpoint.serverUrl : null;
 }
 
 function brokerOwnedAppiumPort(appium: unknown) {
-    if (!appium || typeof appium !== "object") return null;
-    const metadata = appium as { port?: unknown; serverUrl?: unknown };
-    if (typeof metadata.port === "number" && Number.isInteger(metadata.port) && metadata.port > 0 && metadata.port <= 65535) {
-        return metadata.port;
-    }
-    if (typeof metadata.serverUrl !== "string") return null;
-    try {
-        const url = new URL(metadata.serverUrl);
-        const port = Number(url.port);
-        return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
-    } catch {
-        return null;
-    }
+    const endpoint = brokerOwnedAppiumEndpoint(appium);
+    return endpoint.ok ? endpoint.port : null;
 }
 
 function brokerOwnedAppiumRuntime(appium: unknown) {
@@ -6094,6 +6165,111 @@ function liveBrokerOwnedAppiumRuntime(appium: unknown, normalized: NormalizedBro
     return inspectDeviceRuntimeProcessIdentity(runtime.processIdentity, runtime.pid).status === "match";
 }
 
+function verifyBrokerOwnedAppiumListener(appium: unknown, normalized: NormalizedBrokerOptions) {
+    const runtime = brokerOwnedAppiumRuntime(appium);
+    const endpoint = brokerOwnedAppiumEndpoint(appium);
+    if (!endpoint.ok) return { ...endpoint, runtime };
+    const { port, serverUrl } = endpoint;
+    if (!normalized.strictAppiumPortOwnership) {
+        return port && serverUrl
+            ? { ok: true, runtime, port, serverUrl, simulated: true }
+            : { ok: false, error: "appium-runtime-metadata-incomplete", port, serverUrl };
+    }
+    if (!runtime || !port || !serverUrl) {
+        return { ok: false, error: "appium-runtime-metadata-incomplete", port, serverUrl };
+    }
+    if (typeof runtime.runtimeId !== "string" || runtime.runtimeId.length === 0 || !runtime.processIdentity) {
+        return { ok: false, error: "appium-runtime-process-identity-missing", runtime, port, serverUrl };
+    }
+    const observation = inspectDeviceRuntimeProcessIdentity(runtime.processIdentity, runtime.pid);
+    if (observation.status !== "match") {
+        return {
+            ok: false,
+            error: observation.status === "mismatch"
+                ? "appium-runtime-process-identity-mismatch"
+                : "appium-runtime-process-identity-unavailable",
+            runtime,
+            port,
+            serverUrl,
+            observation,
+        };
+    }
+    const listener = normalized.portProcessResolver(port, normalized.platform);
+    if (!listener) {
+        return { ok: false, error: "appium-port-listener-unavailable", runtime, port, serverUrl, observation };
+    }
+    if (listener.pid !== runtime.pid) {
+        return {
+            ok: false,
+            error: "appium-port-listener-identity-mismatch",
+            runtime,
+            port,
+            serverUrl,
+            observation,
+            listener,
+        };
+    }
+    return { ok: true, runtime, port, serverUrl, observation, listener };
+}
+
+async function waitForBrokerOwnedAppiumListener(
+    appium: unknown,
+    normalized: NormalizedBrokerOptions,
+    timeoutMs = DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS,
+) {
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    let verification = verifyBrokerOwnedAppiumListener(appium, normalized);
+    while (!verification.ok
+        && verification.error === "appium-port-listener-unavailable"
+        && Date.now() < deadline) {
+        await sleep(Math.min(100, Math.max(1, deadline - Date.now())));
+        verification = verifyBrokerOwnedAppiumListener(appium, normalized);
+    }
+    return verification;
+}
+
+function selectAvailableAppiumPort(
+    ownerId: string,
+    backend: string,
+    deviceId: string,
+    params: unknown,
+    record: Record<string, unknown>,
+    normalized: NormalizedBrokerOptions,
+) {
+    const explicitPort = requestedAppiumPort(params);
+    const preferredPort = explicitPort
+        || (typeof record.appiumPort === "number" && Number.isInteger(record.appiumPort) && record.appiumPort > 0 && record.appiumPort <= 65535
+            ? record.appiumPort
+            : defaultAppiumPort(ownerId, backend, deviceId));
+    if (!normalized.strictAppiumPortOwnership) {
+        return { ok: true, port: preferredPort, attempts: [{ port: preferredPort, occupied: false, simulated: true }] };
+    }
+    const occupied = normalized.portProcessResolver(preferredPort, normalized.platform);
+    if (!occupied) return { ok: true, port: preferredPort, attempts: [{ port: preferredPort, occupied: false }] };
+    if (explicitPort) {
+        return {
+            ok: false,
+            error: "appium-port-occupied",
+            port: preferredPort,
+            listener: occupied,
+            attempts: [{ port: preferredPort, occupied: true }],
+        };
+    }
+    const attempts = [{ port: preferredPort, occupied: true }];
+    const start = preferredPort >= DEVICE_BROKER_APPIUM_AUTO_PORT_MIN && preferredPort <= DEVICE_BROKER_APPIUM_AUTO_PORT_MAX
+        ? preferredPort
+        : defaultAppiumPort(ownerId, backend, deviceId);
+    const range = DEVICE_BROKER_APPIUM_AUTO_PORT_MAX - DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + 1;
+    for (let offset = 1; offset < DEVICE_BROKER_APPIUM_PORT_SCAN_LIMIT; offset += 1) {
+        const port = DEVICE_BROKER_APPIUM_AUTO_PORT_MIN
+            + ((start - DEVICE_BROKER_APPIUM_AUTO_PORT_MIN + offset) % range);
+        const listener = normalized.portProcessResolver(port, normalized.platform);
+        attempts.push({ port, occupied: Boolean(listener) });
+        if (!listener) return { ok: true, port, attempts };
+    }
+    return { ok: false, error: "appium-port-range-exhausted", port: preferredPort, listener: occupied, attempts };
+}
+
 export function windowsProcessTreeOutcome(status: number | null, output: string, aliveAfter: boolean) {
     const stale = !aliveAfter || /not found|no running instance|not recognized/i.test(output);
     return {
@@ -6102,10 +6278,10 @@ export function windowsProcessTreeOutcome(status: number | null, output: string,
     };
 }
 
-function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRuntimeProcessIdentity) {
+function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRuntimeProcessIdentity, forceTreeAttempt = false) {
     if (expectedIdentity) {
         const observation = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid);
-        if (observation.status === "exited") {
+        if (observation.status === "exited" && !forceTreeAttempt) {
             return {
                 attempted: false,
                 ok: true,
@@ -6132,7 +6308,7 @@ function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRunti
             };
         }
     }
-    if (!processIsAlive(pid)) {
+    if (!forceTreeAttempt && !processIsAlive(pid)) {
         return {
             attempted: false,
             ok: true,
@@ -6160,6 +6336,61 @@ function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRunti
     };
 }
 
+export type BrokerProcessTreeCleanup = {
+    attempted: boolean;
+    ok: boolean;
+    stale?: boolean;
+    pid: number;
+    signal: "SIGKILL";
+    platform: NodeJS.Platform;
+    error?: string;
+};
+
+type BrokerProcessTreeCleanupOptions = {
+    platform?: NodeJS.Platform;
+    kill?: (pid: number, signal: NodeJS.Signals) => void;
+    terminateWindowsTree?: (pid: number) => { attempted?: boolean; ok: boolean; stale?: boolean; error?: string };
+};
+
+/** Terminates a process tree whose root was spawned by this broker invocation. */
+export function terminateBrokerSpawnedProcessTree(
+    pid: unknown,
+    options: BrokerProcessTreeCleanupOptions = {},
+): BrokerProcessTreeCleanup {
+    const platform = options.platform || process.platform;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+        return { attempted: false, ok: false, pid: 0, signal: "SIGKILL", platform, error: "spawned-process-pid-missing" };
+    }
+    if (platform === "win32") {
+        const outcome = (options.terminateWindowsTree || ((value: number) => terminateWindowsProcessTree(value, undefined, true)))(pid);
+        return {
+            attempted: outcome.attempted !== false,
+            ok: outcome.ok,
+            ...(outcome.stale === true ? { stale: true } : {}),
+            pid,
+            signal: "SIGKILL",
+            platform,
+            ...(outcome.error ? { error: outcome.error } : {}),
+        };
+    }
+    try {
+        // Backend/provider wrappers are spawned as POSIX process-group leaders.
+        (options.kill || process.kill)(-pid, "SIGKILL");
+        return { attempted: true, ok: true, pid, signal: "SIGKILL", platform };
+    } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : null;
+        return {
+            attempted: true,
+            ok: code === "ESRCH",
+            ...(code === "ESRCH" ? { stale: true } : {}),
+            pid,
+            signal: "SIGKILL",
+            platform,
+            ...(code === "ESRCH" ? {} : { error: error instanceof Error ? error.message : String(error) }),
+        };
+    }
+}
+
 function normalizedWindowsCommandLine(value: string) {
     return value.replace(/\\/g, "/").toLowerCase();
 }
@@ -6176,32 +6407,14 @@ export function managedAppiumCommandLine(commandLine: string, packageRoot: strin
 }
 
 function terminateManagedAppiumPortListener(port: number, normalized: NormalizedBrokerOptions) {
-    if (process.platform !== "win32") return { attempted: false, ok: true };
-    const listener = discoverWindowsBrokerPortProcess(port);
-    if (!listener?.commandLine) return { attempted: false, ok: true };
-    if (!managedAppiumCommandLine(listener.commandLine, packageRootForBroker(normalized), brokerAppiumRuntimeRoot())) {
-        return {
-            attempted: false,
-            ok: false,
-            blocked: true,
-            error: "appium-port-owned-by-unmanaged-process",
-            port,
-            listener,
-        };
-    }
-    const processIdentity = readDeviceRuntimeProcessIdentity(listener.pid);
-    if (!processIdentity) {
-        return {
-            attempted: false,
-            ok: false,
-            blocked: true,
-            error: "appium-listener-process-identity-unavailable",
-            port,
-            listener,
-        };
-    }
+    if (!normalized.strictAppiumPortOwnership) return { attempted: false, ok: true, simulated: true };
+    const listener = normalized.portProcessResolver(port, normalized.platform);
+    if (!listener) return { attempted: false, ok: true };
     return {
-        ...terminateWindowsProcessTree(listener.pid, processIdentity),
+        attempted: false,
+        ok: false,
+        blocked: true,
+        error: "appium-port-occupied-after-allocation",
         port,
         listener,
     };
@@ -7081,6 +7294,13 @@ function quoteWindowsCommandArg(value: string): string {
     return `"${value.replace(/(["^&|<>])/g, "^$1")}"`;
 }
 
+function assertSafeWindowsCommandArguments(values: string[]): void {
+    for (const value of values) {
+        if (/[\r\n]/.test(value)) throw new Error("windows-command-argument-newline-rejected");
+        if (value.includes("%")) throw new Error("windows-command-argument-percent-expansion-rejected");
+    }
+}
+
 function quotePowerShellSingleString(value: string): string {
     return `'${value.replace(/'/g, "''")}'`;
 }
@@ -7113,6 +7333,7 @@ function quoteWindowsProcessArgument(value: string): string {
 }
 
 export function windowsHiddenVbsLauncherScript(executable: string, args: string[]): string {
+    assertSafeWindowsCommandArguments([executable, ...args]);
     const commandLine = [quoteWindowsCommandArg(executable), ...args.map(quoteWindowsCommandArg)].join(" ");
     const hiddenCommand = `%ComSpec% /d /s /c "${commandLine} >NUL 2>NUL"`;
     return [
@@ -7269,6 +7490,7 @@ export function providerCommandSpawn(command: ProviderCommand, platform: NodeJS.
         if (invocation) return invocation;
     }
     if (platform === "win32" && executable && /\.(bat|cmd)$/i.test(executable)) {
+        assertSafeWindowsCommandArguments([executable, ...args]);
         const commandLine = [quoteWindowsCommandArg(executable), ...args.map(quoteWindowsCommandArg)].join(" ");
         return { executable: "cmd.exe", args: ["/d", "/s", "/c", commandLine] };
     }
@@ -7335,6 +7557,110 @@ function deviceLabBackendInvocation(normalized: NormalizedBrokerOptions, backend
         };
     }
     return null;
+}
+
+type BrokerBackendChildResult = {
+    status: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+    error?: Error;
+    timedOut: boolean;
+    cleanup?: BrokerProcessTreeCleanup;
+};
+
+export function runBrokerBackendChild(
+    script: string,
+    input: string,
+    options: {
+        cwd: string;
+        timeoutMs: number;
+        outputLimit: number;
+        cleanupGraceMs?: number;
+        terminateTree?: (pid: number | undefined) => BrokerProcessTreeCleanup;
+    },
+): Promise<BrokerBackendChildResult> {
+    return new Promise((resolveResult) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", script], hiddenChildProcessOptions({
+            cwd: options.cwd,
+            detached: process.platform !== "win32",
+        }));
+        let stdout = Buffer.alloc(0);
+        let stderr = Buffer.alloc(0);
+        let outputBytes = 0;
+        let settled = false;
+        let timedOut = false;
+        let childError: Error | undefined;
+        let cleanup: BrokerProcessTreeCleanup | undefined;
+        let timer: NodeJS.Timeout | undefined;
+        let forceSettleTimer: NodeJS.Timeout | undefined;
+        const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
+        const cleanupFailureError = () => cleanup && !cleanup.ok
+            ? `process-tree cleanup failed${cleanup.error ? `: ${cleanup.error}` : ""}`
+            : null;
+        const terminateTree = () => {
+            if (!cleanup) cleanup = options.terminateTree
+                ? options.terminateTree(child.pid)
+                : terminateBrokerSpawnedProcessTree(child.pid);
+            const cleanupFailure = cleanupFailureError();
+            if (cleanupFailure) {
+                childError = new Error(childError ? `${childError.message}; ${cleanupFailure}` : cleanupFailure);
+            }
+            try { child.kill("SIGKILL"); } catch { /* process tree termination already observed the exit */ }
+            if (!forceSettleTimer) {
+                forceSettleTimer = setTimeout(() => {
+                    if (!childError) childError = new Error("device-lab backend child did not close after process-tree cleanup");
+                    child.stdin?.destroy();
+                    child.stdout?.destroy();
+                    child.stderr?.destroy();
+                    child.unref();
+                    finish(null, null);
+                }, cleanupGraceMs);
+                forceSettleTimer.unref();
+            }
+        };
+        const finish = (status: number | null, signal: NodeJS.Signals | null) => {
+            if (settled) return;
+            settled = true;
+            if (timer) clearTimeout(timer);
+            if (forceSettleTimer) clearTimeout(forceSettleTimer);
+            resolveResult({
+                status,
+                signal,
+                stdout: stdout.toString("utf8"),
+                stderr: stderr.toString("utf8"),
+                error: childError,
+                timedOut,
+                cleanup,
+            });
+        };
+        const append = (target: "stdout" | "stderr", chunk: Buffer) => {
+            const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            const remaining = Math.max(0, options.outputLimit - Math.min(outputBytes, options.outputLimit));
+            if (remaining > 0) {
+                if (target === "stdout") stdout = Buffer.concat([stdout, value.subarray(0, remaining)]);
+                else stderr = Buffer.concat([stderr, value.subarray(0, remaining)]);
+            }
+            outputBytes += value.length;
+            if (!childError && outputBytes > options.outputLimit) {
+                childError = new Error("device-lab backend output exceeded limit");
+                terminateTree();
+            }
+        };
+        child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
+        child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
+        child.once("error", (error) => {
+            childError = error;
+            finish(null, null);
+        });
+        child.once("close", finish);
+        timer = setTimeout(() => {
+            timedOut = true;
+            childError = new Error(`device-lab backend tool timed out after ${options.timeoutMs}ms`);
+            terminateTree();
+        }, options.timeoutMs);
+        child.stdin?.end(input);
+    });
 }
 
 function deviceLabBackendToolArgs(parsed: DeviceToolParamSuccess): Record<string, unknown> {
@@ -7469,42 +7795,10 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
     };
     const outputLimit = Math.max(DEVICE_BROKER_COMMAND_OUTPUT_LIMIT, 12 * 1024 * 1024);
     const timeoutMs = deviceBrokerBackendToolTimeoutMs(parsed.tool, parsed.params, normalized.commandTimeoutMs);
-    const result = await new Promise<{ status: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; error?: Error; timedOut: boolean }>((resolve) => {
-        const child = spawn(process.execPath, ["--input-type=module", "-e", script], hiddenChildProcessOptions({
-            cwd: normalized.cwd,
-        }));
-        let stdout = "";
-        let stderr = "";
-        let settled = false;
-        let timedOut = false;
-        let childError: Error | undefined;
-        const finish = (status: number | null, signal: NodeJS.Signals | null) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve({ status, signal, stdout, stderr, error: childError, timedOut });
-        };
-        const append = (target: "stdout" | "stderr", chunk: Buffer) => {
-            if (target === "stdout") stdout += chunk.toString("utf8");
-            else stderr += chunk.toString("utf8");
-            if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > outputLimit) {
-                childError = new Error("device-lab backend output exceeded limit");
-                child.kill("SIGKILL");
-            }
-        };
-        child.stdout?.on("data", (chunk: Buffer) => append("stdout", chunk));
-        child.stderr?.on("data", (chunk: Buffer) => append("stderr", chunk));
-        child.once("error", (error) => {
-            childError = error;
-            finish(null, null);
-        });
-        child.once("close", finish);
-        const timer = setTimeout(() => {
-            timedOut = true;
-            childError = new Error(`device-lab backend tool timed out after ${timeoutMs}ms`);
-            child.kill("SIGKILL");
-        }, timeoutMs);
-        child.stdin?.end(JSON.stringify(invocationPayload));
+    const result = await runBrokerBackendChild(script, JSON.stringify(invocationPayload), {
+        cwd: normalized.cwd,
+        timeoutMs,
+        outputLimit,
     });
     if (result.status !== 0 || result.error) {
         return {
@@ -7521,6 +7815,7 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
                 detail: result.error ? result.error.message : undefined,
                 timedOut: result.timedOut,
                 timeoutMs,
+                ...(result.cleanup ? { cleanup: result.cleanup } : {}),
             },
         };
     }
@@ -7560,7 +7855,157 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
     };
 }
 
-function defaultProviderCommandRunner(command: ProviderCommand, options: { timeoutMs: number; outputLimit: number }): ProviderCommandResult {
+function boundedProviderCommandRunnerScript() {
+    return String.raw`
+const { spawn, spawnSync } = require("node:child_process");
+const { workerData } = require("node:worker_threads");
+
+const payload = workerData.payload;
+const control = new Int32Array(workerData.shared, 0, 4);
+const transport = new Uint8Array(workerData.shared, 16);
+const outputLimit = Math.max(1, Number(payload.outputLimit) || 1);
+const cleanupGraceMs = Math.max(1, Number(payload.cleanupGraceMs) || 1000);
+let stdout = Buffer.alloc(0);
+let stderr = Buffer.alloc(0);
+let outputBytes = 0;
+let commandError;
+let timedOut = false;
+let cleanup;
+let settled = false;
+let timer;
+let forceSettleTimer;
+
+function boundedText(value, limit = 8192) {
+    const input = String(value || "");
+    return Buffer.byteLength(input) <= limit ? input : Buffer.from(input).subarray(0, limit).toString("utf8");
+}
+
+function append(current, chunk) {
+    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    const remaining = Math.max(0, outputLimit - outputBytes);
+    outputBytes += value.length;
+    if (remaining > 0) current = Buffer.concat([current, value.subarray(0, remaining)]);
+    if (outputBytes > outputLimit && !commandError) commandError = "spawn ENOBUFS: device-lab provider output exceeded limit";
+    return current;
+}
+
+function terminateTree(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) {
+        return { attempted: false, ok: false, pid: 0, signal: "SIGKILL", platform: process.platform, error: "spawned-process-pid-missing" };
+    }
+    if (process.platform === "win32") {
+        const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: 10000,
+        });
+        const output = boundedText(String(result.stdout || "") + "\n" + String(result.stderr || ""));
+        const stale = /not found|no running instance|not running|cannot find|could not be found|0x8007012b/i.test(output);
+        const ok = result.status === 0 || stale;
+        return {
+            attempted: true,
+            ok,
+            ...(stale ? { stale: true } : {}),
+            pid,
+            signal: "SIGKILL",
+            platform: process.platform,
+            ...(ok ? {} : { error: output.trim() || (result.error && result.error.message) || "taskkill failed" }),
+        };
+    }
+    try {
+        process.kill(-pid, "SIGKILL");
+        return { attempted: true, ok: true, pid, signal: "SIGKILL", platform: process.platform };
+    } catch (error) {
+        const stale = error && error.code === "ESRCH";
+        return {
+            attempted: true,
+            ok: stale,
+            ...(stale ? { stale: true } : {}),
+            pid,
+            signal: "SIGKILL",
+            platform: process.platform,
+            ...(stale ? {} : { error: error instanceof Error ? error.message : String(error) }),
+        };
+    }
+}
+
+function publish(status, signal) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    clearTimeout(forceSettleTimer);
+    let encoded = Buffer.from(JSON.stringify({
+        status,
+        signal,
+        stdout: stdout.toString("utf8"),
+        stderr: stderr.toString("utf8"),
+        ...(commandError ? { error: commandError } : {}),
+        timedOut,
+        ...(cleanup ? { cleanup } : {}),
+    }), "utf8");
+    if (encoded.length > transport.length) {
+        encoded = Buffer.from(JSON.stringify({
+            status: null,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            error: "device-lab provider runner transport overflow",
+            timedOut,
+            ...(cleanup ? { cleanup } : {}),
+        }), "utf8");
+    }
+    transport.set(encoded.subarray(0, transport.length));
+    Atomics.store(control, 1, Math.min(encoded.length, transport.length));
+    Atomics.store(control, 0, 1);
+    Atomics.notify(control, 0);
+}
+
+const child = spawn(payload.executable, payload.args, {
+    cwd: payload.cwd || undefined,
+    env: { ...process.env, ...(payload.env || {}) },
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "pipe"],
+});
+Atomics.store(control, 2, Number.isInteger(child.pid) ? child.pid : 0);
+Atomics.notify(control, 2);
+
+function terminateForFailure() {
+    if (cleanup) return;
+    cleanup = terminateTree(child.pid);
+    if (!cleanup.ok) {
+        const detail = cleanup.error ? ": " + cleanup.error : "";
+        commandError = boundedText((commandError ? commandError + "; " : "") + "process-tree cleanup failed" + detail);
+    }
+    try { child.kill("SIGKILL"); } catch {}
+    forceSettleTimer = setTimeout(() => {
+        if (!commandError) commandError = "device-lab provider child did not close after process-tree cleanup";
+        publish(null, null);
+    }, cleanupGraceMs);
+}
+
+child.stdout.on("data", (chunk) => {
+    stdout = append(stdout, chunk);
+    if (outputBytes > outputLimit) terminateForFailure();
+});
+child.stderr.on("data", (chunk) => {
+    stderr = append(stderr, chunk);
+    if (outputBytes > outputLimit) terminateForFailure();
+});
+child.once("error", (error) => {
+    commandError = error instanceof Error ? error.message : String(error);
+});
+child.once("close", publish);
+timer = setTimeout(() => {
+    timedOut = true;
+    commandError = "device-lab provider command timed out after " + payload.timeoutMs + "ms";
+    terminateForFailure();
+}, payload.timeoutMs);
+child.stdin.end(payload.input === undefined ? undefined : payload.input);
+`;
+}
+
+export function defaultProviderCommandRunner(command: ProviderCommand, options: ProviderCommandRunnerOptions): ProviderCommandResult {
     if (command.mode === "noop") {
         return { mode: "noop", provider: command.provider, stdout: command.reason || "", stderr: "", status: 0 };
     }
@@ -7594,27 +8039,100 @@ function defaultProviderCommandRunner(command: ProviderCommand, options: { timeo
             return { mode: "detached", provider: command.provider, executable: command.executable, args: command.args || [], status: null, error: error instanceof Error ? error.message : String(error) };
         }
     }
-    const invocation = providerCommandSpawn(command);
-    const result = spawnSync(invocation.executable || command.executable, invocation.args, hiddenChildProcessOptions({
-        encoding: "utf8",
-        timeout: options.timeoutMs,
-        maxBuffer: options.outputLimit,
-        input: command.input,
-        ...(commandEnv ? { env: { ...process.env, ...commandEnv } } : {}),
-        ...(command.cwd ? { cwd: command.cwd } : {}),
-    }));
+    let invocation: ReturnType<typeof providerCommandSpawn>;
+    try {
+        invocation = providerCommandSpawn(command);
+    } catch (error) {
+        return {
+            mode: "exec",
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args || [],
+            status: null,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+    const timeoutMs = Math.max(1, options.timeoutMs);
+    const outputLimit = Math.max(1, Math.floor(options.outputLimit));
+    const cleanupGraceMs = Math.min(10000, Math.max(1, options.cleanupGraceMs ?? 1000));
+    // JSON can expand each raw control byte to a six-byte \\u00xx escape. The
+    // fixed shared transport therefore reserves the exact bounded worst case.
+    const transportCapacity = (outputLimit * 6) + (64 * 1024);
+    const shared = new SharedArrayBuffer(16 + transportCapacity);
+    const control = new Int32Array(shared, 0, 4);
+    const transport = new Uint8Array(shared, 16);
+    let worker: Worker;
+    try {
+        worker = new Worker(boundedProviderCommandRunnerScript(), {
+            eval: true,
+            workerData: {
+                shared,
+                payload: {
+                    executable: invocation.executable || command.executable,
+                    args: invocation.args,
+                    input: command.input,
+                    cwd: command.cwd,
+                    env: commandEnv,
+                    timeoutMs,
+                    outputLimit,
+                    cleanupGraceMs,
+                },
+            },
+        });
+        worker.on("error", () => undefined);
+        worker.unref();
+    } catch (error) {
+        return {
+            mode: "exec",
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args || [],
+            status: null,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+    const wrapperTimeoutMs = Math.max(1, options.wrapperTimeoutMs ?? (timeoutMs + cleanupGraceMs + 15000));
+    const waitResult = Atomics.wait(control, 0, 0, wrapperTimeoutMs);
+    if (waitResult === "timed-out") {
+        const providerPid = Atomics.load(control, 2);
+        const cleanup = terminateBrokerSpawnedProcessTree(providerPid);
+        void worker.terminate();
+        return {
+            mode: "exec",
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args || [],
+            status: null,
+            stdout: "",
+            stderr: "",
+            error: `device-lab provider wrapper timed out after ${wrapperTimeoutMs}ms`,
+            timedOut: true,
+            cleanup,
+        };
+    }
+    const resultLength = Atomics.load(control, 1);
+    let execution: Partial<ProviderCommandResult>;
+    try {
+        if (resultLength <= 0 || resultLength > transport.length) throw new Error("invalid transport length");
+        execution = JSON.parse(Buffer.from(transport.subarray(0, resultLength)).toString("utf8")) as Partial<ProviderCommandResult>;
+    } catch {
+        execution = {
+            status: null,
+            stdout: "",
+            stderr: "",
+            error: "device-lab provider runner returned invalid output",
+        };
+    }
+    void worker.terminate();
     return {
         mode: "exec",
         provider: command.provider,
         executable: command.executable,
         args: command.args || [],
         ...(command.input !== undefined ? { input: command.input } : {}),
-        status: result.status,
-        signal: result.signal,
-        stdout: truncateOutput(result.stdout, options.outputLimit),
-        stderr: truncateOutput(result.stderr, options.outputLimit),
-        error: result.error ? result.error.message : undefined,
-        timedOut: result.error?.message?.includes("ETIMEDOUT"),
+        ...execution,
+        stdout: truncateOutput(execution.stdout, options.outputLimit),
+        stderr: truncateOutput(execution.stderr, options.outputLimit),
     };
 }
 
@@ -7710,6 +8228,10 @@ type WindowsSandboxRuntimeRegistration =
     | { ok: true; sandboxId: string; requestedSandboxId?: string; matchedRequested: boolean; result?: ProviderCommandResult }
     | { ok: false; error: ProviderCommandResult };
 
+type WindowsSandboxRuntimeSnapshot =
+    | { ok: true; sandboxIds: string[]; result?: ProviderCommandResult }
+    | { ok: false; error: ProviderCommandResult };
+
 type MacosVmBootRegistration =
     | { ok: true; ready: boolean; skipped?: boolean; sshHost?: string; result?: ProviderCommandResult; attempts?: ProviderCommandResult[] }
     | { ok: false; error: ProviderCommandResult; attempts?: ProviderCommandResult[] };
@@ -7718,7 +8240,43 @@ type AndroidEmulatorBootRegistration =
     | { ok: true; ready: boolean; skipped?: boolean; result?: ProviderCommandResult; attempts?: ProviderCommandResult[] }
     | { ok: false; ready: false; error: ProviderCommandResult; attempts?: ProviderCommandResult[] };
 
-function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized: NormalizedBrokerOptions): WindowsSandboxRuntimeRegistration {
+function brokerWindowsSandboxRuntimeSnapshot(command: ProviderCommand, normalized: NormalizedBrokerOptions): WindowsSandboxRuntimeSnapshot {
+    if (normalized.platform !== "win32") {
+        return { ok: true, sandboxIds: [] };
+    }
+    if (!command.executable || !command.sandboxId) {
+        return { ok: false, error: {
+            mode: "exec",
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args || [],
+            status: null,
+            error: "windows-sandbox-start-missing-registration-metadata",
+        } };
+    }
+    const result = normalized.commandRunner({
+        mode: "exec",
+        provider: "wsb",
+        executable: command.executable,
+        args: ["list", "--raw"],
+    }, {
+        timeoutMs: DEVICE_BROKER_WINDOWS_SANDBOX_LIST_TIMEOUT_MS,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (!commandSucceeded(result)) {
+        return { ok: false, error: {
+            ...result,
+            error: result.error || "windows-sandbox-runtime-snapshot-failed",
+        } };
+    }
+    return {
+        ok: true,
+        sandboxIds: windowsSandboxSessionIdsFromBrokerListOutput(result.stdout || ""),
+        result,
+    };
+}
+
+function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized: NormalizedBrokerOptions, baselineSandboxIds: string[]): WindowsSandboxRuntimeRegistration {
     if (normalized.platform !== "win32") {
         return { ok: true, sandboxId: command.sandboxId || "", matchedRequested: true };
     }
@@ -7733,6 +8291,7 @@ function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized
         } };
     }
     const expected = command.sandboxId.toLowerCase();
+    const baseline = new Set(baselineSandboxIds.map((sandboxId) => sandboxId.toLowerCase()));
     const deadline = Date.now() + DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS;
     let last: ProviderCommandResult | null = null;
     while (Date.now() <= deadline) {
@@ -7747,11 +8306,24 @@ function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized
         });
         if (commandSucceeded(last)) {
             const ids = windowsSandboxSessionIdsFromBrokerListOutput(last.stdout || "");
-            if (ids.includes(expected)) {
+            const launchedIds = ids.filter((sandboxId) => !baseline.has(sandboxId));
+            if (launchedIds.includes(expected)) {
                 return { ok: true, sandboxId: expected, matchedRequested: true, result: last };
             }
-            if (ids.length === 1) {
-                return { ok: true, sandboxId: ids[0], requestedSandboxId: command.sandboxId, matchedRequested: false, result: last };
+            if (launchedIds.length === 1) {
+                return { ok: true, sandboxId: launchedIds[0], requestedSandboxId: command.sandboxId, matchedRequested: false, result: last };
+            }
+            if (launchedIds.length > 1) {
+                return { ok: false, error: {
+                    ...last,
+                    error: `Windows Sandbox launch produced ambiguous runtimes: ${launchedIds.join(", ")}`,
+                } };
+            }
+            if (baseline.has(expected)) {
+                return { ok: false, error: {
+                    ...last,
+                    error: `Windows Sandbox runtime ${command.sandboxId} existed before launch; no new owned runtime appeared`,
+                } };
             }
         }
         sleepSync(500);
@@ -7766,7 +8338,7 @@ function waitForBrokerWindowsSandboxRuntime(command: ProviderCommand, normalized
         stdout: last?.stdout,
         stderr: last?.stderr,
         timedOut: last?.timedOut,
-        error: `Windows Sandbox runtime ${command.sandboxId} did not appear in wsb list within ${DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS}ms`,
+        error: `No new Windows Sandbox runtime for ${command.sandboxId} appeared in wsb list within ${DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS}ms`,
     } };
 }
 
@@ -8538,6 +9110,30 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
         rmSync(windowsHelper.minimizeWatchdogCancelPath, { force: true });
         rmSync(windowsHelper.minimizeWatchdogResultPath, { force: true });
     }
+    const windowsSandboxRuntimeBaseline = windowsHelper && normalized.platform === "win32"
+        ? brokerWindowsSandboxRuntimeSnapshot(providerCommand, normalized)
+        : null;
+    if (windowsSandboxRuntimeBaseline && !windowsSandboxRuntimeBaseline.ok) {
+        releaseBrokerWindowsSandboxLock(ownerId, payload.result?.device, providerCommand.sandboxId);
+        return {
+            status: 502,
+            payload: {
+                ok: false,
+                error: "windows-sandbox-runtime-snapshot-failed",
+                result: {
+                    ...(payload.result || {}),
+                    invoked: false,
+                    dryRun: false,
+                    execution: {
+                        mode: "preflight",
+                        providerExecution: "blocked",
+                        mutatesHost: false,
+                        command: windowsSandboxRuntimeBaseline.error,
+                    },
+                },
+            },
+        };
+    }
     const windowsSandboxStartedAfter = windowsHelper ? new Date(Date.now() - 2000).toISOString() : null;
     const windowsSandboxWindowSnapshot = windowsHelper && providerCommand.windowStyle === "minimized" && normalized.platform === "win32"
         ? normalized.commandRunner({
@@ -8569,27 +9165,11 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
     let windowsMinimizeWatchdogCleanup: ReturnType<typeof cancelBrokerWindowsMinimizeWatchdog> | null = null;
     if (success && parsed.backend === "windows-sandbox" && parsed.command === "device_start") {
-        if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper && windowsSandboxStartedAfter) {
-            windowsMinimizeWatchdog = normalized.commandRunner({
-                mode: "detached",
-                provider: "powershell",
-                executable: "powershell.exe",
-                args: windowsSandboxMinimizeWatchdogArgs(
-                    DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
-                    windowsSandboxStartedAfter,
-                    windowsHelper.minimizeWatchdogCancelPath,
-                    windowsSandboxBaselineHandles,
-                    windowsHelper.minimizeWatchdogResultPath,
-                ),
-            }, {
-                timeoutMs: normalized.commandTimeoutMs,
-                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-            });
-            if (!commandSucceeded(windowsMinimizeWatchdog)) {
-                windowsMinimizeConfirmation = windowsMinimizeWatchdog;
-            }
-        }
-        const runtime = success ? waitForBrokerWindowsSandboxRuntime(providerCommand, normalized) : null;
+        const runtime = success ? waitForBrokerWindowsSandboxRuntime(
+            providerCommand,
+            normalized,
+            windowsSandboxRuntimeBaseline?.ok ? windowsSandboxRuntimeBaseline.sandboxIds : [],
+        ) : null;
         if (runtime?.ok) {
             if (runtime.sandboxId && runtime.sandboxId !== providerCommand.sandboxId) {
                 updateBrokerWindowsSandboxLockRuntimeId(ownerId, payload.result?.device, providerCommand.sandboxId, runtime.sandboxId);
@@ -8599,23 +9179,39 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
                     requestedSandboxId: providerCommand.sandboxId,
                 };
             }
+            if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper && windowsSandboxStartedAfter && windowsSandboxBaselineHandles !== null) {
+                windowsMinimizeWatchdog = normalized.commandRunner({
+                    mode: "detached",
+                    provider: "powershell",
+                    executable: "powershell.exe",
+                    args: windowsSandboxMinimizeWatchdogArgs(
+                        DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS,
+                        windowsSandboxStartedAfter,
+                        windowsHelper.minimizeWatchdogCancelPath,
+                        windowsSandboxBaselineHandles,
+                        windowsHelper.minimizeWatchdogResultPath,
+                    ),
+                }, {
+                    timeoutMs: normalized.commandTimeoutMs,
+                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                });
+                if (!commandSucceeded(windowsMinimizeWatchdog)) {
+                    windowsMinimizeConfirmation = windowsMinimizeWatchdog;
+                }
+            } else if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper) {
+                windowsMinimizeConfirmation = {
+                    mode: "exec",
+                    provider: "windows-sandbox-window",
+                    status: null,
+                    error: "windows-sandbox-window-baseline-unavailable",
+                };
+            }
             if (providerCommand.windowStyle === "minimized" && normalized.platform === "win32" && windowsHelper && windowsMinimizeWatchdog && commandSucceeded(windowsMinimizeWatchdog)) {
                 windowsMinimizeConfirmation = waitForBrokerWindowsMinimizeConfirmation(windowsHelper.minimizeWatchdogResultPath);
             }
         } else if (runtime && !runtime.ok) {
             registration = runtime.error;
             success = false;
-            if (providerCommand.sandboxId) {
-                normalized.commandRunner({
-                    mode: "exec",
-                    provider: "wsb",
-                    executable: providerCommand.executable,
-                    args: ["stop", "--id", providerCommand.sandboxId],
-                }, {
-                    timeoutMs: normalized.commandTimeoutMs,
-                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                });
-            }
         }
     }
     if (success && parsed.backend === "macos-vm" && parsed.command === "device_start") {
@@ -9026,7 +9622,9 @@ async function startAppiumServerUnlocked(ownerId: string, params: unknown, norma
     if (!device) return ownerDeviceNotFound(ownerId, parsed.backend, parsed.deviceId);
     const existingAppium = device && typeof device === "object" ? (device as { appium?: unknown }).appium : null;
     const force = (params as { force?: unknown })?.force === true;
-    const reusable = reusableBrokerOwnedAppium(existingAppium, normalized);
+    const reusableRuntime = reusableBrokerOwnedAppium(existingAppium, normalized);
+    const reusableListener = reusableRuntime ? verifyBrokerOwnedAppiumListener(existingAppium, normalized) : null;
+    const reusable = reusableRuntime && reusableListener?.ok === true;
     if (existingAppium && typeof existingAppium === "object" && !force && reusable) {
         return {
             status: 200,
@@ -9065,7 +9663,22 @@ async function startAppiumServerUnlocked(ownerId: string, params: unknown, norma
         };
     }
     const record = device as Record<string, unknown>;
-    const port = requestedAppiumPort(params) || (typeof record.appiumPort === "number" ? record.appiumPort : null) || defaultAppiumPort(ownerId, parsed.backend, parsed.deviceId);
+    const portSelection = selectAvailableAppiumPort(ownerId, parsed.backend, parsed.deviceId, params, record, normalized);
+    if (!portSelection.ok) {
+        return {
+            status: 409,
+            payload: {
+                ok: false,
+                error: portSelection.error,
+                ownerId,
+                backend: parsed.backend,
+                stateKey: parsed.stateKey,
+                deviceId: parsed.deviceId,
+                portSelection,
+            },
+        };
+    }
+    const port = portSelection.port;
     const serverUrl = `http://127.0.0.1:${port}`;
     const appiumArgs = ["server", "--port", String(port), "--base-path", "/"];
     if (parsed.backend.startsWith("android")) appiumArgs.push("--allow-insecure", "uiautomator2:adb_shell");
@@ -9207,6 +9820,7 @@ async function startAppiumServerUnlocked(ownerId: string, params: unknown, norma
                 authority: "host-broker",
                 execution,
                 portCleanup,
+                portSelection,
                 runtime: {
                     provisioned: runtime.provisioned,
                     source: runtime.source,
@@ -9313,6 +9927,21 @@ function appiumRuntimeStateConflict(ownerId: string, parsed: AppiumParamSuccess,
     };
 }
 
+function appiumListenerOwnershipFailure(ownerId: string, parsed: AppiumParamSuccess, verification: ReturnType<typeof verifyBrokerOwnedAppiumListener>) {
+    return {
+        status: 409,
+        payload: {
+            ok: false,
+            error: "appium-listener-ownership-unverified",
+            ownerId,
+            backend: parsed.backend,
+            stateKey: parsed.stateKey,
+            deviceId: parsed.deviceId,
+            verification,
+        },
+    };
+}
+
 async function ensureAppiumWebDriverSessionUnlocked(ownerId: string, params: unknown, normalized: NormalizedBrokerOptions) {
     const parsed = validateAppiumParams(params, "session");
     if (!parsed.ok) return appiumParamError(parsed);
@@ -9345,7 +9974,14 @@ async function ensureAppiumWebDriverSessionUnlocked(ownerId: string, params: unk
         ? { ...((device as { appium: Record<string, unknown> }).appium) }
         : {};
     const force = params && typeof params === "object" && !Array.isArray(params) && (params as { force?: unknown }).force === true;
-    const existingServerUrl = brokerLaunchedAppiumServerUrl(appium);
+    const existingEndpoint = brokerOwnedAppiumEndpoint(appium);
+    const existingVerification = (claimsBrokerOwnedAppiumRuntime(appium) || existingEndpoint.ok)
+        ? verifyBrokerOwnedAppiumListener(appium, normalized)
+        : null;
+    if (existingVerification && !existingVerification.ok) {
+        return appiumListenerOwnershipFailure(ownerId, parsed, existingVerification);
+    }
+    const existingServerUrl = existingVerification?.ok ? existingVerification.serverUrl : null;
     if (existingServerUrl && typeof appium.sessionId === "string" && force) {
         const deleteResponse = await fetchAppiumJson(`${existingServerUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: normalized.commandTimeoutMs });
         if (!deleteResponse.ok) {
@@ -9400,9 +10036,11 @@ async function ensureAppiumWebDriverSessionUnlocked(ownerId: string, params: unk
         if (!transition.matched) return appiumRuntimeStateConflict(ownerId, parsed, transition, { status, session });
     }
 
+    let startedServer = false;
     if (!brokerLaunchedAppiumServerUrl(appium)) {
         const started = await startAppiumServerUnlocked(ownerId, params, normalized);
         if (started.status !== 200) return started;
+        startedServer = true;
         try {
             ({ device } = findOwnerAppiumDevice(ownerId, parsed));
         } catch (error) {
@@ -9413,10 +10051,11 @@ async function ensureAppiumWebDriverSessionUnlocked(ownerId: string, params: unk
             : {};
     }
 
-    const serverUrl = brokerLaunchedAppiumServerUrl(appium);
-    if (!serverUrl) {
-        return { status: 400, payload: { ok: false, error: "missing-appium-server-url", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
-    }
+    const listenerVerification = startedServer
+        ? await waitForBrokerOwnedAppiumListener(appium, normalized)
+        : verifyBrokerOwnedAppiumListener(appium, normalized);
+    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
+    const serverUrl = listenerVerification.serverUrl;
     const readiness = await waitForAppiumServerReady(serverUrl);
     if (!readiness.ok) {
         const signal = await terminateBrokerOwnedAppiumAndWait(appium, normalized);
@@ -9522,10 +10161,12 @@ async function deleteAppiumWebDriverSessionUnlocked(ownerId: string, params: unk
     const appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
         ? { ...((device as { appium: Record<string, unknown> }).appium) }
         : null;
-    const serverUrl = brokerLaunchedAppiumServerUrl(appium);
-    if (!appium || !serverUrl || typeof appium.sessionId !== "string") {
+    if (!appium || typeof appium.sessionId !== "string") {
         return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, stateKey: parsed.stateKey, deviceId: parsed.deviceId, deleted: false, authority: "host-broker" } } };
     }
+    const listenerVerification = verifyBrokerOwnedAppiumListener(appium, normalized);
+    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
+    const serverUrl = listenerVerification.serverUrl;
     const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}`, { method: "DELETE", timeoutMs: normalized.commandTimeoutMs });
     if (!response.ok) {
         return {
@@ -9583,10 +10224,12 @@ async function proxyAppiumWebDriverRequest(ownerId: string, params: unknown, nor
     const appium = device && typeof device === "object" && (device as { appium?: unknown }).appium && typeof (device as { appium?: unknown }).appium === "object"
         ? (device as { appium: Record<string, unknown> }).appium
         : null;
-    const serverUrl = brokerLaunchedAppiumServerUrl(appium);
-    if (!appium || !serverUrl || typeof appium.sessionId !== "string") {
+    if (!appium || typeof appium.sessionId !== "string") {
         return { status: 400, payload: { ok: false, error: "missing-appium-session", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
     }
+    const listenerVerification = verifyBrokerOwnedAppiumListener(appium, normalized);
+    if (!listenerVerification.ok) return appiumListenerOwnershipFailure(ownerId, parsed, listenerVerification);
+    const serverUrl = listenerVerification.serverUrl;
     const response = await fetchAppiumJson(`${serverUrl}/session/${encodeURIComponent(appium.sessionId)}${parsed.path}`, {
         method: parsed.method,
         body: parsed.method === "GET" ? undefined : parsed.body,
@@ -9813,9 +10456,9 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, 405, { ok: false, error: "method-not-allowed" }, { allow: "POST" });
                     return;
                 }
-                const body = await readRequestJson(req);
+                const body = await readRequestJson(req, DEVICE_BROKER_RPC_BODY_LIMIT, normalized.requestBodyTimeoutMs);
                 if (!body.ok) {
-                    writeJson(res, body.status, { ok: false, error: body.error });
+                    writeJson(res, body.status, { ok: false, error: body.error }, body.error === "request-body-timeout" ? { connection: "close" } : {});
                     return;
                 }
                 const requestPayload = body.body as { projectMountPath?: unknown; profile?: unknown };
@@ -9901,9 +10544,9 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     cwd: ownerRegistration.hostProjectPath,
                     profile: ownerRegistration.profile ?? undefined,
                 };
-                const body = await readRequestJson(req);
+                const body = await readRequestJson(req, DEVICE_BROKER_RPC_BODY_LIMIT, normalized.requestBodyTimeoutMs);
                 if (!body.ok) {
-                    writeJson(res, body.status, { ok: false, error: body.error });
+                    writeJson(res, body.status, { ok: false, error: body.error }, body.error === "request-body-timeout" ? { connection: "close" } : {});
                     return;
                 }
                 const result = brokerRpcMutatesOwnerState(body.body)

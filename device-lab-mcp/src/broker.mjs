@@ -1162,10 +1162,21 @@ export async function brokerShutdown(options = {}) {
 
 function brokerAuthSecretFile(owner) {
     if (!/^[a-f0-9]{16}$/.test(owner)) throw new Error("invalid-owner-id");
+    const isolatedFile = String(process.env.CCC_DEVICE_BROKER_AUTH_FILE || "").trim();
+    if (isolatedFile) return resolve(isolatedFile);
     return join(brokerStateRoot(), "broker", "auth", `${owner}.json`);
 }
 
 function brokerAuthDirectoryValid() {
+    const isolatedFile = String(process.env.CCC_DEVICE_BROKER_AUTH_FILE || "").trim();
+    if (isolatedFile) {
+        try {
+            const stat = lstatSync(dirname(resolve(isolatedFile)));
+            return stat.isDirectory() && !stat.isSymbolicLink();
+        } catch {
+            return false;
+        }
+    }
     const root = brokerStateRoot();
     for (const directory of [root, join(root, "broker"), join(root, "broker", "auth")]) {
         try {

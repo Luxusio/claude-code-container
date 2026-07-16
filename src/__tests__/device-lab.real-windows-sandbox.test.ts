@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+    cleanupCurrentWindowsSandboxE2E,
     cleanupPreviousWindowsSandboxE2E,
     findImageContent,
     runWindowsSandboxE2E,
@@ -20,6 +21,21 @@ const cap = windowsSandboxE2ECapability(level);
 const title = cap.available
     ? "creates, starts, drives helper actions, stops, and deletes an owner-scoped Windows Sandbox"
     : `skips Windows Sandbox helper E2E (${cap.reason})`;
+
+function toolResult(payload: unknown, isError = false) {
+    return { isError, content: [{ type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) }] };
+}
+
+function createCleanupEvidence(homeDir: string, owner: string, device: Record<string, unknown>) {
+    const windowsRoot = join(homeDir, ".ccc/devices/owners", owner, "windows");
+    const deviceId = String(device.id);
+    mkdirSync(join(windowsRoot, deviceId), { recursive: true });
+    writeFileSync(join(windowsRoot, "devices.json"), JSON.stringify({ devices: [device] }));
+    const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+    mkdirSync(join(homeDir, ".ccc/devices/host-locks"), { recursive: true });
+    writeFileSync(lockPath, JSON.stringify({ ownerId: owner, deviceId }));
+    return { windowsRoot, deviceId, lockPath, deviceDir: join(windowsRoot, deviceId) };
+}
 
 describe.runIf(enabled)("level 2 real Windows Sandbox helper E2E", () => {
     it.skipIf(!cap.available)(title, async () => {
@@ -53,10 +69,12 @@ describe("Windows Sandbox real E2E cleanup preflight", () => {
         expect(findImageContent({ content: [{ type: "text", text: "error" }] })).toBeNull();
     });
 
-    it("extracts and stops running sandbox sessions from raw list output", () => {
+    it("extracts sessions but stops only the verified test-owned session", () => {
         const calls: Array<{ command: string; args: string[]; options?: { windowsHide?: boolean } }> = [];
         const result = stopRunningWindowsSandboxSessions({
             wsb: "wsb",
+            verifiedSessionIds: ["12345678-1234-4234-9234-1234567890ab"],
+            preExistingSessionIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
             runner(command: string, args: string[], options?: { windowsHide?: boolean }) {
                 calls.push({ command, args, options });
                 if (args[0] === "list") {
@@ -64,7 +82,9 @@ describe("Windows Sandbox real E2E cleanup preflight", () => {
                         status: 0,
                         stdout: JSON.stringify({
                             sessions: [
+                                { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", status: "running" },
                                 { id: "12345678-1234-4234-9234-1234567890ab", status: "running" },
+                                { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", status: "running" },
                             ],
                         }),
                         stderr: "",
@@ -83,32 +103,136 @@ describe("Windows Sandbox real E2E cleanup preflight", () => {
         ]);
     });
 
-    it("cleans only prior owner-scoped real E2E devices and stale locks", async () => {
+    it("removes previous cleanup evidence only after verified provider deletion", async () => {
         const homeDir = join(tmpdir(), `ccc-windows-e2e-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         const owner = "windows-e2e-cleanup-owner";
         try {
-            const windowsRoot = join(homeDir, ".ccc/devices/owners", owner, "windows");
-            mkdirSync(join(windowsRoot, "windows-real-sandbox-old"), { recursive: true });
-            mkdirSync(join(windowsRoot, "windows-real-sandbox-orphan"), { recursive: true });
+            const { windowsRoot, deviceId, deviceDir, lockPath } = createCleanupEvidence(homeDir, owner, {
+                id: "windows-real-sandbox-old",
+                backend: "windows-sandbox",
+                status: "stopped",
+            });
             mkdirSync(join(windowsRoot, "windows-keep"), { recursive: true });
             writeFileSync(join(windowsRoot, "devices.json"), JSON.stringify({
                 devices: [
-                    { id: "windows-real-sandbox-old", backend: "windows-sandbox", status: "stopped" },
+                    { id: deviceId, backend: "windows-sandbox", status: "stopped" },
                     { id: "windows-keep", backend: "windows-sandbox", status: "stopped" },
                 ],
             }));
-            const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
-            mkdirSync(join(homeDir, ".ccc/devices/host-locks"), { recursive: true });
-            writeFileSync(lockPath, JSON.stringify({ ownerId: owner, deviceId: "windows-real-sandbox-old" }));
 
-            await cleanupPreviousWindowsSandboxE2E({ homeDir, ownerId: owner, skipProviderCleanup: true });
+            await cleanupPreviousWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                callTool: async (tool: string) => {
+                    expect(tool).toBe("device_delete");
+                    return toolResult({ deleted: deviceId });
+                },
+            });
 
             const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf-8")) as { devices: Array<{ id: string }> };
             expect(state.devices).toEqual([{ id: "windows-keep", backend: "windows-sandbox", status: "stopped" }]);
-            expect(existsSync(join(windowsRoot, "windows-real-sandbox-old"))).toBe(false);
-            expect(existsSync(join(windowsRoot, "windows-real-sandbox-orphan"))).toBe(false);
+            expect(existsSync(deviceDir)).toBe(false);
             expect(existsSync(join(windowsRoot, "windows-keep"))).toBe(true);
             expect(existsSync(lockPath)).toBe(false);
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    it("preserves previous cleanup state, directory, and singleton when stop fails", async () => {
+        const homeDir = join(tmpdir(), `ccc-windows-e2e-stop-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        const owner = "windows-e2e-cleanup-owner";
+        const evidence = createCleanupEvidence(homeDir, owner, {
+            id: "windows-real-sandbox-running",
+            backend: "windows-sandbox",
+            status: "running",
+            sandboxId: "11111111-1111-4111-8111-111111111111",
+        });
+        const calls: string[] = [];
+        try {
+            await expect(cleanupPreviousWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                callTool: async (tool: string) => {
+                    calls.push(tool);
+                    throw new Error("stop denied");
+                },
+            })).rejects.toThrow(/cleanup was not verified/);
+            expect(calls).toEqual(["device_stop"]);
+            expect(existsSync(evidence.deviceDir)).toBe(true);
+            expect(existsSync(evidence.lockPath)).toBe(true);
+            expect(readFileSync(join(evidence.windowsRoot, "devices.json"), "utf-8")).toContain(evidence.deviceId);
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    it("preserves finally-path evidence when verified deletion fails", async () => {
+        const homeDir = join(tmpdir(), `ccc-windows-e2e-delete-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        const owner = "windows-e2e-cleanup-owner";
+        const evidence = createCleanupEvidence(homeDir, owner, {
+            id: "windows-real-sandbox-current",
+            backend: "windows-sandbox",
+            status: "stopped",
+            sandboxId: "22222222-2222-4222-8222-222222222222",
+        });
+        try {
+            await expect(cleanupCurrentWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                deviceId: evidence.deviceId,
+                callTool: async () => toolResult("delete failed", true),
+            })).rejects.toThrow(/device_delete failed.*ownership evidence was preserved/);
+            expect(existsSync(evidence.deviceDir)).toBe(true);
+            expect(existsSync(evidence.lockPath)).toBe(true);
+            expect(readFileSync(join(evidence.windowsRoot, "devices.json"), "utf-8")).toContain(evidence.deviceId);
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    it.each([
+        { operation: "recording cleanup", recordingActive: true, needsStop: true, firstTool: "device_record_video_stop" },
+        { operation: "device_stop", recordingActive: false, needsStop: true, firstTool: "device_stop" },
+    ])("preserves finally-path evidence when $operation fails", async ({ recordingActive, needsStop, firstTool }) => {
+        const homeDir = join(tmpdir(), `ccc-windows-e2e-provider-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        const owner = "windows-e2e-cleanup-owner";
+        const evidence = createCleanupEvidence(homeDir, owner, {
+            id: "windows-real-sandbox-current-running",
+            backend: "windows-sandbox",
+            status: "running",
+            recording: recordingActive ? { active: true } : undefined,
+        });
+        const calls: string[] = [];
+        try {
+            await expect(cleanupCurrentWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                deviceId: evidence.deviceId,
+                recordingActive,
+                needsStop,
+                callTool: async (tool: string) => {
+                    calls.push(tool);
+                    throw new Error("provider cleanup failed");
+                },
+            })).rejects.toThrow(/ownership evidence was preserved/);
+            expect(calls).toEqual([firstTool]);
+            expect(existsSync(evidence.deviceDir)).toBe(true);
+            expect(existsSync(evidence.lockPath)).toBe(true);
+            expect(readFileSync(join(evidence.windowsRoot, "devices.json"), "utf-8")).toContain(evidence.deviceId);
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    it("preserves orphan directories because runtime absence cannot be verified", async () => {
+        const homeDir = join(tmpdir(), `ccc-windows-e2e-orphan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        const owner = "windows-e2e-cleanup-owner";
+        const orphan = join(homeDir, ".ccc/devices/owners", owner, "windows", "windows-real-sandbox-orphan");
+        try {
+            mkdirSync(orphan, { recursive: true });
+            await expect(cleanupPreviousWindowsSandboxE2E({ homeDir, ownerId: owner })).rejects.toThrow(/cleanup was not verified/);
+            expect(existsSync(orphan)).toBe(true);
         } finally {
             rmSync(homeDir, { recursive: true, force: true });
         }

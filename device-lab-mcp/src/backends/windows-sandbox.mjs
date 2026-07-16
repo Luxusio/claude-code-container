@@ -1291,23 +1291,26 @@ async function runWindowsHelperRequestOnce(device, helper, wsb, requestPath, res
     writeFileAtomically(requestScriptPath, script);
     const command = `powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ${guestScriptPath}`;
     const firstTimeoutMs = Math.min(WINDOWS_SANDBOX_EXEC_TIMEOUT_MS, Math.max(1000, deadline - Date.now()));
-    let execution = windowsSandboxExec(wsb, device.sandboxId, command, firstTimeoutMs);
-    let visibleConnectFallback = null;
-    if (!execution.ok && device.minimized !== false && existingLoginUnavailable(execution.result)) {
-        visibleConnectFallback = launchWindowsSandboxSession(wsb, device.sandboxId, false, {
-            autoMinimizeAfterVisible: true,
-            cancelPath: helper.minimizeWatchdogCancelPath,
-        });
-        await sleep(2000);
-        const remainingMs = Math.max(1000, deadline - Date.now());
-        const retry = windowsSandboxExec(wsb, device.sandboxId, command, Math.min(WINDOWS_SANDBOX_EXEC_TIMEOUT_MS, remainingMs));
-        execution = {
-            ...retry,
-            attempts: [...execution.attempts, ...retry.attempts],
-        };
+    try {
+        let execution = windowsSandboxExec(wsb, device.sandboxId, command, firstTimeoutMs);
+        let visibleConnectFallback = null;
+        if (!execution.ok && device.minimized !== false && existingLoginUnavailable(execution.result)) {
+            visibleConnectFallback = launchWindowsSandboxSession(wsb, device.sandboxId, false, {
+                autoMinimizeAfterVisible: true,
+                cancelPath: helper.minimizeWatchdogCancelPath,
+            });
+            await sleep(2000);
+            const remainingMs = Math.max(1000, deadline - Date.now());
+            const retry = windowsSandboxExec(wsb, device.sandboxId, command, Math.min(WINDOWS_SANDBOX_EXEC_TIMEOUT_MS, remainingMs));
+            execution = {
+                ...retry,
+                attempts: [...execution.attempts, ...retry.attempts],
+            };
+        }
+        return { attempted: true, ok: execution.ok, command, diagnosticPath, guestStatus: execution.guestStatus, result: execution.result, attempts: execution.attempts, runAs: execution.runAs, visibleConnectFallback };
+    } finally {
+        rmSync(requestScriptPath, { force: true });
     }
-    if (existsSync(responsePath)) rmSync(requestScriptPath, { force: true });
-    return { attempted: true, ok: execution.ok, command, diagnosticPath, guestStatus: execution.guestStatus, result: execution.result, attempts: execution.attempts, runAs: execution.runAs, visibleConnectFallback };
 }
 
 async function sleep(ms) {
@@ -1405,7 +1408,11 @@ async function windowsHelperRequest(device, type, payload = {}, requestedTimeout
         requestFallback?.visibleConnectFallback ? `Request visible connect fallback: ok=${requestFallback.visibleConnectFallback.ok} autoMinimizeAfterVisible=${requestFallback.visibleConnectFallback.autoMinimizeAfterVisible === true} ${requestFallback.visibleConnectFallback.pid ? `pid=${requestFallback.visibleConnectFallback.pid}` : ""} ${requestFallback.visibleConnectFallback.error || ""}` : "",
         requestFallback?.attempts?.length ? `Request exec attempts: ${execAttemptSummary(requestFallback.attempts)}` : "",
     ];
-    return { helper, error: `Windows Sandbox helper did not respond within ${timeoutMs}ms. ${diagnostics.filter(Boolean).join(" | ")}` };
+    const error = `Windows Sandbox helper did not respond within ${timeoutMs}ms. ${diagnostics.filter(Boolean).join(" | ")}`;
+    rmSync(requestPath, { force: true });
+    rmSync(responsePath, { force: true });
+    rmSync(`${responsePath}.tmp`, { force: true });
+    return { helper, error };
 }
 
 function windowsPathBasename(value) {
@@ -2114,12 +2121,10 @@ async function handleWindowsToolUnlocked(name, args) {
             const safeLocalPath = localPolicy.path;
             const result = await windowsHelperRequest(device, "record_stop", { sessionId: device.recording.sessionId }, helperTimeoutMs || 10000);
             if (result.error) {
-                transitionRecordingGeneration(updateWindowsDevice, deviceId, previous, null);
-                return textResult(false, `${result.error}. Windows Sandbox recording state cleared for ${deviceId}.`);
+                return textResult(false, `${result.error}. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
             }
             if (!result.response.ok) {
-                transitionRecordingGeneration(updateWindowsDevice, deviceId, previous, null);
-                return textResult(false, `${result.response.error || "Windows helper recording stop failed"}. Windows Sandbox recording state cleared for ${deviceId}.`);
+                return textResult(false, `${result.response.error || "Windows helper recording stop failed"}. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
             }
             const hostArchivePath = verifiedHelperOutputPath(result.helper, result.response.recording?.archivePath || result.response.recording?.hostArchivePath, `${previous.sessionId}.zip`);
             if (!hostArchivePath) return textResult(false, `Windows helper recording output is missing or unsafe. Windows Sandbox recording state preserved for retry for ${deviceId}.`);
@@ -2160,14 +2165,17 @@ async function handleWindowsToolUnlocked(name, args) {
             }
             const staged = copyWindowsSandboxFile(localPolicy.path, hostUploadPath, "windows-helper-upload", WINDOWS_SANDBOX_UPLOAD_LIMIT_BYTES);
             if (!staged.ok) return textResult(false, `Windows helper upload staging failed: ${staged.error}`);
-            const result = await windowsHelperRequest(device, "upload", {
-                uploadPath: `${helper.guestUploadsDir}\\${uploadName}`,
-                remotePath: remotePolicy.path,
-            }, helperTimeoutMs);
-            if (result.error) return textResult(false, result.error);
-            rmSync(hostUploadPath, { force: true });
-            if (!result.response.ok) return textResult(false, result.response.error || "Windows helper upload failed");
-            return jsonResult({ uploaded: { localPath: localPolicy.path, remotePath: remotePolicy.path }, provider: "windows-helper", response: result.response });
+            try {
+                const result = await windowsHelperRequest(device, "upload", {
+                    uploadPath: `${helper.guestUploadsDir}\\${uploadName}`,
+                    remotePath: remotePolicy.path,
+                }, helperTimeoutMs);
+                if (result.error) return textResult(false, result.error);
+                if (!result.response.ok) return textResult(false, result.response.error || "Windows helper upload failed");
+                return jsonResult({ uploaded: { localPath: localPolicy.path, remotePath: remotePolicy.path }, provider: "windows-helper", response: result.response });
+            } finally {
+                rmSync(hostUploadPath, { force: true });
+            }
         }
 
         case "device_download": {

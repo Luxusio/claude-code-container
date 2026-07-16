@@ -5,6 +5,9 @@ import { join } from "path";
 import { parse } from "acorn";
 import { describe, expect, it } from "vitest";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../device-lab-mcp/src/policy/destructive.mjs";
+import { androidDeviceE2EPrerequisites } from "../../scripts/real-tests/android-device-e2e.mjs";
+import { androidEmulatorAppSelection } from "../../scripts/real-tests/android-emulator-e2e.mjs";
+import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.mjs";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
 
 const runner = join(repoRoot, "scripts", "test-level.js");
@@ -55,6 +58,10 @@ function dryRunNode(level: string) {
     });
     expect(result.status).toBe(0);
     return JSON.parse(result.stdout) as { level: number; mode: string; args: string[]; env: Record<string, string> };
+}
+
+function mcpTextResult(payload: unknown, isError = false) {
+    return { isError, content: [{ type: "text", text: typeof payload === "string" ? payload : JSON.stringify(payload) }] };
 }
 
 function advertisedDeviceLabTools() {
@@ -655,6 +662,66 @@ function testSupportText() {
 }
 
 describe("test level runner", () => {
+    it("does not stop a pre-existing foreign Windows Sandbox session during single-use recovery", async () => {
+        const foreignId = "11111111-1111-4111-8111-111111111111";
+        const stopped: string[] = [];
+        const runner = (_command: string, args: string[]) => {
+            if (args[0] === "list") return { status: 0, stdout: JSON.stringify([{ id: foreignId }]), stderr: "" };
+            if (args[0] === "stop") stopped.push(args[2]);
+            return { status: 0, stdout: "", stderr: "" };
+        };
+        const callTool = async (tool: string) => {
+            if (tool === "device_start") return mcpTextResult("CO_E_APPSINGLEUSE", true);
+            return mcpTextResult({ device: { id: "windows-real-sandbox-test", status: "stopped" } });
+        };
+
+        await expect(startWindowsSandboxE2EDevice(callTool, "windows-real-sandbox-test", {
+            wsb: "wsb",
+            runner,
+            retryDelayMs: 0,
+        })).rejects.toThrow(/CO_E_APPSINGLEUSE/);
+        expect(stopped).toEqual([]);
+    });
+
+    it("stops only the verified test-owned Windows Sandbox session when a foreign session appears concurrently", async () => {
+        const preExistingId = "11111111-1111-4111-8111-111111111111";
+        const ownedId = "22222222-2222-4222-8222-222222222222";
+        const concurrentForeignId = "33333333-3333-4333-8333-333333333333";
+        const stopped: string[] = [];
+        let listCount = 0;
+        const runner = (_command: string, args: string[]) => {
+            if (args[0] === "list") {
+                listCount += 1;
+                const ids = listCount === 1
+                    ? [preExistingId]
+                    : [preExistingId, ownedId, concurrentForeignId];
+                return { status: 0, stdout: JSON.stringify(ids.map((id) => ({ id }))), stderr: "" };
+            }
+            if (args[0] === "stop") stopped.push(args[2]);
+            return { status: 0, stdout: "", stderr: "" };
+        };
+        let startCount = 0;
+        const callTool = async (tool: string) => {
+            if (tool === "device_status") {
+                return mcpTextResult({ device: { id: "windows-real-sandbox-test", status: "running", sandboxId: ownedId } });
+            }
+            startCount += 1;
+            return startCount === 1
+                ? mcpTextResult("CO_E_APPSINGLEUSE", true)
+                : mcpTextResult({ device: { id: "windows-real-sandbox-test", status: "running", sandboxId: ownedId } });
+        };
+
+        const started = await startWindowsSandboxE2EDevice(callTool, "windows-real-sandbox-test", {
+            wsb: "wsb",
+            runner,
+            retryDelayMs: 0,
+        });
+        expect(started.device.sandboxId).toBe(ownedId);
+        expect(stopped).toEqual([ownedId]);
+        expect(stopped).not.toContain(preExistingId);
+        expect(stopped).not.toContain(concurrentForeignId);
+    });
+
     it("keeps level 0 mapped to the default vitest suite", () => {
         const plan = dryRun("0");
 
@@ -1006,7 +1073,7 @@ describe("test level runner", () => {
         ]);
         const expectedMissing = new Map<string, string[]>([
             ["android-emulator", []],
-            ["android-device", ["device_inventory", "device_wireless"]],
+            ["android-device", []],
             ["ios-simulator", ["device_inventory"]],
             ["ios-device", ["device_inventory", "device_wireless"]],
         ]);
@@ -1301,8 +1368,10 @@ describe("test level runner", () => {
     it("covers safe Android physical-device controls in the real-device E2E through MCP calls", () => {
         const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-device-e2e.mjs"), "utf-8");
         expect(text).toContain("CCC_REAL_ANDROID_DEVICE_SERIAL");
-        expect(text).toContain("CCC_REAL_DEVICE_LAB_FAIL_ON_SKIP");
-        expect(text).toContain("missing CCC_REAL_ANDROID_DEVICE_APK/CCC_REAL_ANDROID_DEVICE_PACKAGE");
+        expect(text).toContain("physical Android app proof unavailable before device mutation");
+        expect(text).toContain("wirelessCoverage: \"status-actions-device verified\"");
+        expect(text).not.toContain("if (appArtifactReady)");
+        expect(text.indexOf("androidDeviceE2EPrerequisites()")).toBeLessThan(text.indexOf("mkdirSync(artifactRoot"));
         for (const tool of [
             "device_attach",
             "device_status",
@@ -1375,6 +1444,48 @@ describe("test level runner", () => {
         ]) {
             expect(text).toContain(`callTool("${tool}"`);
         }
+    });
+
+    it("rejects incomplete Android app proof before physical-device mutation", () => {
+        expect(androidDeviceE2EPrerequisites({
+            CCC_REAL_ANDROID_DEVICE_APK: "missing.apk",
+            CCC_REAL_ANDROID_DEVICE_PACKAGE: "dev.ccc.fixture",
+        })).toEqual(expect.objectContaining({
+            available: false,
+            reason: expect.stringContaining("CCC_REAL_ANDROID_DEVICE_PERMISSION"),
+        }));
+    });
+
+    it("uses the emulator fixture only when no external app inputs were supplied", () => {
+        expect(androidEmulatorAppSelection({})).toEqual(expect.objectContaining({
+            available: true,
+            source: "fixture",
+        }));
+        expect(androidEmulatorAppSelection({ CCC_REAL_ANDROID_APK: "partial.apk" })).toEqual(expect.objectContaining({
+            available: false,
+            source: "external",
+            reason: expect.stringContaining("CCC_REAL_ANDROID_PACKAGE"),
+        }));
+
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-android-selection-"));
+        const apk = join(tempDir, "fixture.apk");
+        writeFileSync(apk, "fixture");
+        try {
+            expect(androidEmulatorAppSelection({
+                CCC_REAL_ANDROID_APK: apk,
+                CCC_REAL_ANDROID_PACKAGE: "dev.ccc.fixture",
+                CCC_REAL_ANDROID_PERMISSION: "android.permission.CAMERA",
+            })).toEqual(expect.objectContaining({
+                available: true,
+                source: "external",
+                app: expect.objectContaining({ path: apk }),
+            }));
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+
+        const emulatorText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
+        expect(emulatorText.indexOf("androidEmulatorAppSelection()")).toBeLessThan(emulatorText.indexOf("mkdtempSync("));
     });
 
     it("covers safe iOS Simulator mobile controls in the real simulator E2E through MCP calls", () => {

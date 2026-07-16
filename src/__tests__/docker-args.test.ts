@@ -388,6 +388,12 @@ describe("buildDockerRunArgs — structure", () => {
 // 3. Volume mounts — completeness
 // ===========================================================================
 describe("buildDockerRunArgs — volume mounts", () => {
+    it("persists the device-lab mount identity contract as a runtime label", () => {
+        const args = buildDockerRunArgs(makeOpts({ deviceLabMountIdentity: "identity-digest" }));
+        const labels = extractLabels(args);
+        expect(labels["ccc.device-lab.mount-identity"]).toBe("identity-digest");
+    });
+
     it("mounts project directory", () => {
         const args = buildDockerRunArgs(makeOpts());
         const mounts = extractVolumeMounts(args);
@@ -429,11 +435,20 @@ describe("buildDockerRunArgs — volume mounts", () => {
     });
 
     it("mounts device-lab state when provided", () => {
-        const args = buildDockerRunArgs(makeOpts({ deviceLabStateHostDir: "/home/user/.ccc/devices" }));
+        const args = buildDockerRunArgs(makeOpts({
+            deviceLabStateHostDir: "/home/user/.ccc/devices",
+            deviceLabOwnerId: "0123456789abcdef",
+            deviceLabOwnerAuthFile: "/home/user/.ccc/devices/broker/auth/0123456789abcdef.json",
+        }));
         const mounts = extractVolumeMounts(args);
         expect(mounts).toContain(
-            "/home/user/.ccc/devices:/home/ccc/.ccc/devices",
+            "/home/user/.ccc/devices:/home/ccc/.ccc/devices:ro",
         );
+        expect(mounts).toContain("/home/user/.ccc/devices/owners/0123456789abcdef:/home/ccc/.ccc/devices/owners/0123456789abcdef");
+        expect(mounts).toContain("/home/user/.ccc/devices/broker/auth/0123456789abcdef.json:/run/ccc-device-broker-auth/owner.json:ro");
+        expect(args).toContain("/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        expect(args).toContain("/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        expect(extractEnvVars(args).CCC_DEVICE_BROKER_AUTH_FILE).toBe("/run/ccc-device-broker-auth/owner.json");
     });
 
     it("mounts docker socket", () => {

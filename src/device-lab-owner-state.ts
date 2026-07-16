@@ -7,6 +7,7 @@ import {
     readSync,
 } from "fs";
 import type { Stats } from "fs";
+import { assertStateDirectoriesUnchanged, secureStateParentDirectory } from "./device-lab-shared-state.js";
 
 export const OWNER_DEVICE_STATE_FILE_LIMIT_BYTES = 256 * 1024;
 export const OWNER_DEVICE_ID_PATTERN = /^(?!\.\.?$)[A-Za-z0-9._-]{1,128}$/;
@@ -72,8 +73,11 @@ function validateDevicesPayload(parsed: unknown): unknown[] {
 export function readOwnerDeviceStateFile(file: string, limitBytes = OWNER_DEVICE_STATE_FILE_LIMIT_BYTES): unknown[] {
     let descriptor: number | null = null;
     try {
+        const directories = secureStateParentDirectory(file, { create: false });
+        assertStateDirectoriesUnchanged(directories);
         const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
         descriptor = openSync(file, fsConstants.O_RDONLY | noFollow);
+        assertStateDirectoriesUnchanged(directories);
         const opened = fstatSync(descriptor);
         const path = lstatSync(file);
         if (!sameOpenedFile(opened, path)) throw stateError("owner-devices-state-invalid");
@@ -85,7 +89,9 @@ export function readOwnerDeviceStateFile(file: string, limitBytes = OWNER_DEVICE
             if (error instanceof OwnerDeviceStateError) throw error;
             throw stateError("owner-devices-state-invalid", error);
         }
-        return validateDevicesPayload(parsed);
+        const devices = validateDevicesPayload(parsed);
+        assertStateDirectoriesUnchanged(directories);
+        return devices;
     } catch (error) {
         if (error instanceof OwnerDeviceStateError) throw error;
         if ((error as NodeJS.ErrnoException)?.code === "ENOENT" && descriptor === null) return [];

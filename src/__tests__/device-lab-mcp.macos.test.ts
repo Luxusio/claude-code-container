@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { handleMacosTool } from "../../device-lab-mcp/src/backends/macos-vm.mjs";
@@ -65,6 +65,114 @@ describe("macOS VM backend with fake Tart provider", () => {
             expect(result?.isError).toBe(true);
             expect((result?.content as Array<{ text?: string }>)[0].text).toContain("Unknown macOS device: missing-macos-device");
         }
+    });
+
+    it("recovers stale lifecycle claims before accepting a new mutation", async () => {
+        const deviceId = "macos-stale-lifecycle";
+        const created = await handleMacosTool("device_create", {
+            backend: "macos-vm",
+            name: "Stale Lifecycle",
+            deviceId,
+            provider: "tart",
+        });
+        expect(created?.isError).not.toBe(true);
+        updateMacosDevice(deviceId, (device) => ({
+            ...device,
+            status: "starting",
+            lifecycle: {
+                runtimeId: "interrupted-start",
+                operation: "start",
+                claimedAt: "2020-01-01T00:00:00.000Z",
+                previousStatus: "stopped",
+            },
+        }));
+
+        const logBefore = readFileSync(logPath, { encoding: "utf-8", flag: "a+" });
+        const started = await handleMacosTool("device_start", { deviceId });
+        expect(started?.isError, (started?.content as Array<{ text?: string }>)[0]?.text).not.toBe(true);
+        const persisted = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
+            devices: Array<{ id: string; lifecycle?: unknown; status: string; lastLifecycleRecovery?: { runtimeId: string } }>;
+        };
+        expect(persisted.devices.find((device) => device.id === deviceId)).toEqual(expect.objectContaining({
+            status: "running",
+            lastLifecycleRecovery: expect.objectContaining({ runtimeId: "interrupted-start" }),
+        }));
+        expect(persisted.devices.find((device) => device.id === deviceId)?.lifecycle).toBeUndefined();
+        const newLog = readFileSync(logPath, "utf-8").slice(logBefore.length);
+        expect(newLog).toContain(`tart stop ccc-`);
+        expect(newLog).toMatch(/tart run (?:--with-softnet )?ccc-/);
+
+        expect((await handleMacosTool("device_stop", { deviceId }))?.isError).not.toBe(true);
+        expect((await handleMacosTool("device_delete", { deviceId }))?.isError).not.toBe(true);
+        writeFileSync(logPath, "");
+    });
+
+    it("deletes a Tart clone target after the clone command times out", async () => {
+        const tartPath = join(context.binDir, "tart");
+        const originalTart = readFileSync(tartPath, "utf-8");
+        const resources = join(homeDir, "timeout-clone-resources");
+        mkdirSync(resources);
+        writeFileSync(tartPath, `#!${process.execPath}\n`
+            + `const fs = require("fs");\n`
+            + `const path = require("path");\n`
+            + `const args = process.argv.slice(2);\n`
+            + `fs.appendFileSync(process.env.FAKE_TART_LOG, "tart " + args.join(" ") + "\\n");\n`
+            + `const resource = (name) => path.join(process.env.FAKE_TART_TIMEOUT_RESOURCE_DIR, encodeURIComponent(name));\n`
+            + `if (args[0] === "run" && args[1] === "--help") process.exit(0);\n`
+            + `if (args[0] === "clone") { fs.writeFileSync(resource(args[2]), "partial"); const deadline = Date.now() + 10000; while (Date.now() < deadline) {} }\n`
+            + `if (args[0] === "delete") { fs.rmSync(resource(args[1]), {force:true}); process.exit(0); }\n`
+            + `process.exit(0);\n`);
+        chmodSync(tartPath, 0o755);
+        process.env.FAKE_TART_TIMEOUT_RESOURCE_DIR = resources;
+        process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS = "50";
+        process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS = "1000";
+        try {
+            const result = await handleMacosTool("device_base_image_create", {
+                backend: "macos-vm",
+                name: "Timeout Clone",
+                sourceImage: "ghcr.io/example/macos:latest",
+                provider: "tart",
+            });
+            expect(result?.isError).toBe(true);
+            expect((result?.content as Array<{ text?: string }>)[0].text).toContain("macos-tart-clone-failed");
+            expect(readdirSync(resources)).toEqual([]);
+            expect(readFileSync(logPath, "utf-8")).toContain("tart delete ccc-");
+        } finally {
+            writeFileSync(tartPath, originalTart);
+            chmodSync(tartPath, 0o755);
+            delete process.env.FAKE_TART_TIMEOUT_RESOURCE_DIR;
+            delete process.env.CCC_MACOS_VM_CLONE_TIMEOUT_MS;
+            delete process.env.CCC_MACOS_VM_DELETE_TIMEOUT_MS;
+            writeFileSync(logPath, "");
+        }
+    });
+
+    it("does not persist a Tart process that exits successfully during startup as running", async () => {
+        const deviceId = "macos-immediate-exit";
+        const created = await handleMacosTool("device_create", {
+            backend: "macos-vm",
+            name: "Immediate Exit",
+            deviceId,
+            provider: "tart",
+        });
+        expect(created?.isError).not.toBe(true);
+        process.env.FAKE_TART_RUN_EXIT_IMMEDIATELY = "1";
+        try {
+            const started = await handleMacosTool("device_start", { deviceId });
+            expect(started?.isError).toBe(true);
+            expect((started?.content as Array<{ text?: string }>)[0].text).toContain("exited before it was ready: exit 0");
+            const state = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
+                devices: Array<{ id: string; status: string; lifecycle?: unknown; runtime?: unknown }>;
+            };
+            const persisted = state.devices.find((device) => device.id === deviceId);
+            expect(persisted).toEqual(expect.objectContaining({ status: "stopped" }));
+            expect(persisted?.lifecycle).toBeUndefined();
+            expect(persisted?.runtime).toBeUndefined();
+        } finally {
+            delete process.env.FAKE_TART_RUN_EXIT_IMMEDIATELY;
+        }
+        expect((await handleMacosTool("device_delete", { deviceId }))?.isError).not.toBe(true);
+        writeFileSync(logPath, "");
     });
 
     it("serializes snapshot mutations with other device runtime operations", async () => {
@@ -242,6 +350,133 @@ describe("macOS VM backend with fake Tart provider", () => {
         expect(persisted("macos-generation-clone-target")).toBeUndefined();
         await cleanupSuccessor("macos-generation-clone-source");
         writeFileSync(logPath, "");
+    });
+
+    it("registers a restore candidate before primary deletion and resumes after interruption", async () => {
+        const tartPath = join(context.binDir, "tart");
+        const originalTart = readFileSync(tartPath, "utf-8");
+        const resourceDir = join(homeDir, "stateful-tart-resources");
+        const interruptionPath = join(homeDir, "stateful-tart-interrupted");
+        const cleanupInterruptionPath = join(homeDir, "stateful-tart-cleanup-interrupted");
+        mkdirSync(resourceDir);
+        writeFileSync(tartPath, `#!${process.execPath}\n`
+            + `const fs = require("fs");\n`
+            + `const path = require("path");\n`
+            + `const args = process.argv.slice(2);\n`
+            + `fs.appendFileSync(process.env.FAKE_TART_LOG, "tart " + args.join(" ") + "\\n");\n`
+            + `const resource = (name) => path.join(process.env.FAKE_TART_RESOURCE_DIR, encodeURIComponent(name));\n`
+            + `if (args[0] === "run" && args[1] === "--help") { console.log("Usage: tart run [--with-softnet]"); process.exit(0); }\n`
+            + `if (args[0] === "clone") {\n`
+            + `  if (!fs.existsSync(resource(args[1])) || fs.existsSync(resource(args[2]))) process.exit(7);\n`
+            + `  fs.writeFileSync(resource(args[2]), args[1]);\n`
+            + `  process.exit(0);\n`
+            + `}\n`
+            + `if (args[0] === "delete") {\n`
+            + `  if (!fs.existsSync(resource(args[1]))) process.exit(6);\n`
+            + `  if (args[1] === process.env.FAKE_TART_PRIMARY) {\n`
+            + `    const state = JSON.parse(fs.readFileSync(process.env.FAKE_TART_STATE, "utf8"));\n`
+            + `    const device = state.devices.find((item) => item.id === process.env.FAKE_TART_DEVICE_ID);\n`
+            + `    if (!device.restoreRecovery?.candidateProviderInstance) process.exit(20);\n`
+            + `  }\n`
+            + `  if (args[1] !== process.env.FAKE_TART_PRIMARY && fs.existsSync(resource(process.env.FAKE_TART_PRIMARY)) && !fs.existsSync(process.env.FAKE_TART_CLEANUP_INTERRUPTED)) {\n`
+            + `    const state = JSON.parse(fs.readFileSync(process.env.FAKE_TART_STATE, "utf8"));\n`
+            + `    const device = state.devices.find((item) => item.id === process.env.FAKE_TART_DEVICE_ID);\n`
+            + `    if (device.restoreRecovery?.phase === "activated") {\n`
+            + `      delete device.lifecycle;\n`
+            + `      fs.writeFileSync(process.env.FAKE_TART_STATE, JSON.stringify(state));\n`
+            + `      fs.writeFileSync(process.env.FAKE_TART_CLEANUP_INTERRUPTED, "1");\n`
+            + `      process.exit(0);\n`
+            + `    }\n`
+            + `  }\n`
+            + `  fs.rmSync(resource(args[1]));\n`
+            + `  if (args[1] === process.env.FAKE_TART_PRIMARY && !fs.existsSync(process.env.FAKE_TART_INTERRUPTED)) {\n`
+            + `    const state = JSON.parse(fs.readFileSync(process.env.FAKE_TART_STATE, "utf8"));\n`
+            + `    const device = state.devices.find((item) => item.id === process.env.FAKE_TART_DEVICE_ID);\n`
+            + `    delete device.lifecycle;\n`
+            + `    fs.writeFileSync(process.env.FAKE_TART_STATE, JSON.stringify(state));\n`
+            + `    fs.writeFileSync(process.env.FAKE_TART_INTERRUPTED, "1");\n`
+            + `  }\n`
+            + `  process.exit(0);\n`
+            + `}\n`
+            + `process.exit(0);\n`);
+        chmodSync(tartPath, 0o755);
+
+        const deviceId = "macos-stateful-restore";
+        process.env.FAKE_TART_RESOURCE_DIR = resourceDir;
+        process.env.FAKE_TART_INTERRUPTED = interruptionPath;
+        process.env.FAKE_TART_CLEANUP_INTERRUPTED = cleanupInterruptionPath;
+        process.env.FAKE_TART_DEVICE_ID = deviceId;
+        try {
+            const created = await handleMacosTool("device_create", {
+                backend: "macos-vm",
+                name: "Stateful Restore",
+                deviceId,
+                provider: "tart",
+            });
+            expect(created?.isError).not.toBe(true);
+            const createdPayload = JSON.parse(((created?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                device: { providerInstance: string };
+            };
+            const primary = createdPayload.device.providerInstance;
+            process.env.FAKE_TART_PRIMARY = primary;
+            process.env.FAKE_TART_STATE = macosStatePath();
+            writeFileSync(join(resourceDir, encodeURIComponent(primary)), "primary");
+
+            const snapshot = await handleMacosTool("device_snapshot_create", {
+                deviceId,
+                snapshotName: "Crash Point",
+            });
+            expect(snapshot?.isError).not.toBe(true);
+
+            const interrupted = await handleMacosTool("device_snapshot_restore", {
+                deviceId,
+                snapshotName: "Crash Point",
+            });
+            expect(interrupted?.isError).toBe(true);
+            const interruptedState = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
+                devices: Array<{ id: string; lifecycle?: unknown; restoreRecovery?: { candidateProviderInstance: string } }>;
+            };
+            const interruptedDevice = interruptedState.devices.find((item) => item.id === deviceId);
+            const candidate = interruptedDevice?.restoreRecovery?.candidateProviderInstance;
+            expect(candidate).toContain("-restore-");
+            expect(interruptedDevice?.lifecycle).toBeUndefined();
+            expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(false);
+            expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(true);
+
+            const interruptedCleanup = await handleMacosTool("device_snapshot_restore", {
+                deviceId,
+                snapshotName: "Crash Point",
+            });
+            expect(interruptedCleanup?.isError).toBe(true);
+            expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(true);
+            expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(true);
+            const activatedState = JSON.parse(readFileSync(macosStatePath(), "utf-8")) as {
+                devices: Array<{ id: string; restoreRecovery?: { phase: string } }>;
+            };
+            expect(activatedState.devices.find((item) => item.id === deviceId)?.restoreRecovery?.phase).toBe("activated");
+
+            const resumed = await handleMacosTool("device_snapshot_restore", {
+                deviceId,
+                snapshotName: "Crash Point",
+            });
+            expect(resumed?.isError).not.toBe(true);
+            expect(existsSync(join(resourceDir, encodeURIComponent(primary)))).toBe(true);
+            expect(existsSync(join(resourceDir, encodeURIComponent(candidate!)))).toBe(false);
+            const resumedPayload = JSON.parse(((resumed?.content as Array<{ text?: string }>)[0].text ?? "{}")) as {
+                device: { restoreRecovery: unknown; restoredFrom: { name: string } };
+            };
+            expect(resumedPayload.device.restoreRecovery).toBeNull();
+            expect(resumedPayload.device.restoredFrom.name).toBe("Crash Point");
+        } finally {
+            writeFileSync(tartPath, originalTart);
+            chmodSync(tartPath, 0o755);
+            delete process.env.FAKE_TART_RESOURCE_DIR;
+            delete process.env.FAKE_TART_INTERRUPTED;
+            delete process.env.FAKE_TART_CLEANUP_INTERRUPTED;
+            delete process.env.FAKE_TART_DEVICE_ID;
+            delete process.env.FAKE_TART_PRIMARY;
+            delete process.env.FAKE_TART_STATE;
+        }
     });
 
     it("plans, starts, stops, and diagnoses helper-required operations without provider calls on create", async () => {

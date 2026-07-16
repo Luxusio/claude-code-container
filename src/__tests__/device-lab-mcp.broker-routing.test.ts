@@ -35,6 +35,10 @@ describe("device-lab MCP broker routing", () => {
         return deviceLabOwnerId(repoRoot);
     }
 
+    function projectTestPath(name: string) {
+        return join(repoRoot, "results", name);
+    }
+
     function sendOwnerResolve(req: { method?: string; url?: string }, res: { setHeader(name: string, value: string): void; end(data?: string): void }) {
         if (req.method !== "POST" || req.url !== "/v1/owner/resolve") return false;
         res.setHeader("content-type", "application/json");
@@ -145,7 +149,7 @@ describe("device-lab MCP broker routing", () => {
                     backend: "android-emulator",
                     deviceId: "pixel-mcp-record",
                     remotePath: "/sdcard/mcp.mp4",
-                    localPath: "/tmp/mcp.mp4",
+                    localPath: projectTestPath("mcp.mp4"),
                     timeLimitSec: 9,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -165,7 +169,7 @@ describe("device-lab MCP broker routing", () => {
                     recording: expect.objectContaining({
                         active: true,
                         remotePath: "/sdcard/mcp.mp4",
-                        localPath: "/tmp/mcp.mp4",
+                        localPath: projectTestPath("mcp.mp4"),
                         timeLimitSec: 9,
                     }),
                 }),
@@ -190,7 +194,7 @@ describe("device-lab MCP broker routing", () => {
                 result: expect.objectContaining({
                     tool: "device_record_video_stop",
                     stopped: true,
-                    recording: expect.objectContaining({ active: false, localPath: "/tmp/mcp.mp4" }),
+                    recording: expect.objectContaining({ active: false, localPath: projectTestPath("mcp.mp4") }),
                 }),
             }));
             expect(killSpy).not.toHaveBeenCalled();
@@ -202,7 +206,7 @@ describe("device-lab MCP broker routing", () => {
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
                 mode: "exec",
                 provider: "adb",
-                args: ["-s", "emulator-5572", "pull", "/sdcard/mcp.mp4", "/tmp/mcp.mp4"],
+                args: ["-s", "emulator-5572", "pull", "/sdcard/mcp.mp4", projectTestPath("mcp.mp4")],
             }), expect.any(Object));
 
             const implicitStart = await client.callTool({
@@ -211,7 +215,7 @@ describe("device-lab MCP broker routing", () => {
                     backend: "android-emulator",
                     deviceId: "pixel-mcp-record",
                     remotePath: "/sdcard/implicit.mp4",
-                    localPath: "/tmp/implicit.mp4",
+                    localPath: projectTestPath("implicit.mp4"),
                     timeLimitSec: 5,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -221,7 +225,7 @@ describe("device-lab MCP broker routing", () => {
             expect(JSON.parse(((implicitStart.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
                 tool: "device_record_video_start",
                 provider: "adb-screenrecord",
-                recording: expect.objectContaining({ active: true, localPath: "/tmp/implicit.mp4" }),
+                recording: expect.objectContaining({ active: true, localPath: projectTestPath("implicit.mp4") }),
                 routedBy: "device-mutating-broker-implicit",
             }));
 
@@ -293,7 +297,7 @@ describe("device-lab MCP broker routing", () => {
                     viaBroker: true,
                     backend: "android-emulator",
                     deviceId: "android-route",
-                    path: "/tmp/Test.apk",
+                    path: projectTestPath("Test.apk"),
                     replace: false,
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
@@ -306,14 +310,14 @@ describe("device-lab MCP broker routing", () => {
                 params: expect.objectContaining({
                     backend: "android-emulator",
                     deviceId: "android-route",
-                    path: "/tmp/Test.apk",
+                    path: projectTestPath("Test.apk"),
                     replace: false,
                 }),
             });
             expect(deviceToolRunner).toHaveBeenCalledWith(owner, expect.objectContaining({
                 tool: "device_install_app",
                 deviceId: "android-route",
-                params: expect.objectContaining({ path: "/tmp/Test.apk", replace: false }),
+                params: expect.objectContaining({ path: projectTestPath("Test.apk"), replace: false }),
             }), expect.objectContaining({ backend: "android-emulator", stateKey: "android" }), expect.any(Object));
 
             const download = await client.callTool({
@@ -323,7 +327,7 @@ describe("device-lab MCP broker routing", () => {
                     backend: "android-emulator",
                     deviceId: "android-route",
                     remotePath: "/sdcard/out.txt",
-                    localPath: "/tmp/out.txt",
+                    localPath: projectTestPath("out.txt"),
                     hostCandidates: ["127.0.0.1"],
                     port: address.port,
                     timeoutMs: 500,
@@ -334,7 +338,7 @@ describe("device-lab MCP broker routing", () => {
                 tool: "device_download",
                 params: expect.objectContaining({
                     remotePath: "/sdcard/out.txt",
-                    localPath: "/tmp/out.txt",
+                    localPath: projectTestPath("out.txt"),
                 }),
             });
         } finally {
@@ -412,12 +416,12 @@ describe("device-lab MCP broker routing", () => {
             ["device_cursor_position", {}],
             ["device_window_list", {}],
             ["device_accessibility_snapshot", { maxDepth: 1, maxNodes: 5 }],
-            ["device_upload", { localPath: "/project/upload.txt", remotePath: "C:\\ccc\\upload.txt" }],
-            ["device_download", { remotePath: "C:\\ccc\\download.txt", localPath: "/project/download.txt" }],
+            ["device_upload", { localPath: projectTestPath("upload.txt"), remotePath: "C:\\ccc\\upload.txt" }],
+            ["device_download", { remotePath: "C:\\ccc\\download.txt", localPath: projectTestPath("download.txt") }],
         ] as const;
         const androidCases = [
             ["device_reset", { packageName: "com.example.route", confirmDestructive: true }],
-            ["device_install_app", { path: "/project/Test.apk", replace: true }],
+            ["device_install_app", { path: projectTestPath("Test.apk"), replace: true }],
             ["device_launch_app", { packageName: "com.example.route" }],
             ["mobile_clear_app_data", { packageName: "com.example.route", confirmDestructive: true }],
         ] as const;
@@ -582,7 +586,7 @@ describe("device-lab MCP broker routing", () => {
                 ["mobile_dump_ui", { appiumPort: 4729, serverPort: 8209, automationName: "UiAutomator2", provider: "appium", physical: true }],
                 ["mobile_wait_for_text", { text: "Ready", timeoutMs: 100, intervalMs: 50 }],
                 ["mobile_open_url", { url: "https://example.test/route" }],
-                ["mobile_install_app", { path: "/tmp/Route.apk" }],
+                ["mobile_install_app", { path: projectTestPath("Route.apk") }],
                 ["mobile_launch_app", { packageName: "com.example.route" }],
                 ["mobile_stop_app", { packageName: "com.example.route" }],
             ] as const;

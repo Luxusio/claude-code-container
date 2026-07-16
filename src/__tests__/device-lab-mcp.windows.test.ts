@@ -403,6 +403,7 @@ exit 0
 
         let forceInactiveRecordStatus = false;
         let omitRecordStopArchive = false;
+        let failRecordStop = false;
         const helperRequests: Array<Record<string, unknown>> = [];
         const responder = setInterval(() => {
             let files: string[] = [];
@@ -531,7 +532,10 @@ exit 0
                     }
                 }
                 if (request.type === "record_stop") {
-                    if (omitRecordStopArchive) {
+                    if (failRecordStop) {
+                        response.ok = false;
+                        response.error = "forced recording stop failure";
+                    } else if (omitRecordStopArchive) {
                         response.recording = { sessionId: request.sessionId, active: false, provider: "windows-helper-frame-archive" };
                     } else {
                         const archiveName = `${request.id}.zip`;
@@ -799,6 +803,32 @@ exit 0
         });
         expect(stopWithoutRecording.isError).toBe(true);
         expect((stopWithoutRecording.content as Array<{ text?: string }>)[0].text).toContain("No Windows Sandbox recording active");
+
+        const failedStopRecordingPath = join(homeDir, "failed-stop-windows-recording.zip");
+        const failedStopRecordStart = await client.callTool({
+            name: "device_record_video_start",
+            arguments: { deviceId: "windows-win-helper", localPath: failedStopRecordingPath, helperTimeoutMs: 1000 },
+        });
+        expect(failedStopRecordStart.isError).not.toBe(true);
+        failRecordStop = true;
+        const failedRecordStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(failedRecordStop.isError).toBe(true);
+        expect((failedRecordStop.content as Array<{ text?: string }>)[0].text).toContain("recording state preserved for retry");
+        const statusAfterFailedRecordStop = await client.callTool({
+            name: "device_record_video_status",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(JSON.parse(((statusAfterFailedRecordStop.content as Array<{ text?: string }>)[0].text ?? "{}")).recording).toEqual(expect.objectContaining({ active: true }));
+        failRecordStop = false;
+        const retriedFailedRecordStop = await client.callTool({
+            name: "device_record_video_stop",
+            arguments: { deviceId: "windows-win-helper", helperTimeoutMs: 1000 },
+        });
+        expect(retriedFailedRecordStop.isError).not.toBe(true);
+        expect(readFileSync(failedStopRecordingPath, "utf8")).toBe("fakezip");
 
         const retryRecordingPath = join(homeDir, "retry-windows-recording.zip");
         const retryRecordStart = await client.callTool({
@@ -1080,16 +1110,30 @@ exit 0
             expect(log).toMatch(/wsb exec --id [0-9a-f-]{36} --command powershell\.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File C:\\ccc\\scratch\\inbox\\[0-9a-f-]{36}\.json\.ps1/);
             expect(log).not.toContain("-WindowStyle Hidden -Command");
             expect(log).toContain("--run-as ExistingLogin");
-            const requestScriptName = readdirSync(startedPayload.device.helper.inboxDir)
-                .find((name) => name.endsWith(".json.ps1"));
-            expect(requestScriptName).toBeTruthy();
-            const requestScript = readFileSync(join(startedPayload.device.helper.inboxDir, requestScriptName as string), "utf-8");
-            expect(requestScript).toContain("$ErrorActionPreference = 'Stop'");
-            expect(requestScript).toContain("$DiagnosticPath = 'C:\\ccc\\scratch\\downloads\\");
-            expect(requestScript).toContain("Copy-Item -Force -LiteralPath $ToolsHelper -Destination $ScratchHelper");
-            expect(requestScript).toContain("Windows Sandbox helper request file is unavailable");
-            expect(requestScript).toContain("& $ScratchHelper -OnceRequestPath $RequestPath");
-            expect(requestScript).toContain("[System.IO.File]::WriteAllText($DiagnosticPath");
+            expect(readdirSync(startedPayload.device.helper.inboxDir).filter((name) => name.endsWith(".json") || name.endsWith(".json.ps1"))).toEqual([]);
+
+            const uploadSource = join(homeDir, "one-shot-timeout-upload.txt");
+            writeFileSync(uploadSource, "upload");
+            const upload = await client.callTool({
+                name: "device_upload",
+                arguments: {
+                    deviceId: "windows-one-shot",
+                    localPath: uploadSource,
+                    remotePath: "C:\\Users\\WDAGUtilityAccount\\late-upload.txt",
+                    helperTimeoutMs: 350,
+                },
+            });
+            expect(upload.isError).toBe(true);
+            expect(readdirSync(startedPayload.device.helper.inboxDir).filter((name) => name.endsWith(".json") || name.endsWith(".json.ps1"))).toEqual([]);
+            const uploadsDir = join(dirname(startedPayload.device.helper.inboxDir), "uploads");
+            expect(readdirSync(uploadsDir)).toEqual([]);
+
+            const lateRequests: string[] = [];
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            for (const name of readdirSync(startedPayload.device.helper.inboxDir)) {
+                if (name.endsWith(".json")) lateRequests.push(name);
+            }
+            expect(lateRequests).toEqual([]);
         } finally {
             if (started) {
                 await client.callTool({

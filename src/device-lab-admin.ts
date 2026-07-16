@@ -14,9 +14,10 @@ import {
 import { deviceLabOwnerBasis, deviceLabOwnerId as canonicalDeviceLabOwnerId } from "./device-lab-owner.js";
 import { inspectDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from "./device-lab-process-identity.js";
 import { assertOwnerDeviceStateWritable, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
-import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile } from "./device-lab-ownership-state.js";
+import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease } from "./device-lab-ownership-state.js";
 import { DeviceLabProjectEnumerationError, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
 import { withSharedMutationLock, writeJsonFileAtomically } from "./device-lab-shared-state.js";
+import { readDeviceLabStateFile } from "./device-lab-state-file.js";
 
 export const DEVICE_BACKENDS = [
     { stateKey: "android", name: "android-emulator", tools: ["adb", "emulator", "avdmanager"] },
@@ -87,6 +88,7 @@ export { DeviceLabProjectEnumerationError } from "./device-lab-project-state.js"
 
 const OPT_DIST_DEVICE_LAB_MCP_SERVER = "/opt/ccc/dist/device-lab-mcp/server.mjs";
 const OPT_SOURCE_DEVICE_LAB_MCP_SERVER = "/opt/ccc/device-lab-mcp/server.mjs";
+const cleanupWaiter = new Int32Array(new SharedArrayBuffer(4));
 
 export function deviceLabOwnerIdentity(cwd = process.cwd(), profile?: string): { ownerId: string; basis: string } {
     const projectPath = cwd || "/project";
@@ -164,6 +166,23 @@ function physicalLeaseLockFile(stateKey: string, hardwareId: string): string {
 
 function physicalLeaseMutationLockFile(stateKey: string, hardwareId: string): string {
     return join(homedir(), ".ccc/devices/physical-leases", stateKey, "locks", `${encodeURIComponent(hardwareId)}.mutation.lock`);
+}
+
+function physicalLeaseAggregateFile(stateKey: string): string {
+    return join(homedir(), ".ccc/devices/physical-leases", `${stateKey}.json`);
+}
+
+function physicalLeaseAggregateMutationLockFile(stateKey: string): string {
+    return join(homedir(), ".ccc/devices/physical-leases", `${stateKey}.mutation.lock`);
+}
+
+function readPhysicalLeaseAggregate(file: string, stateKey: string): PhysicalLeaseRecord[] {
+    return readDeviceLabStateFile(file, (value) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid physical lease aggregate");
+        const leases = (value as { leases?: unknown }).leases;
+        if (!Array.isArray(leases)) throw new TypeError("invalid physical lease aggregate");
+        return leases.map((lease) => validatePhysicalLease(lease, stateKey));
+    }, "physical-lease-aggregate") ?? [];
 }
 
 function readPhysicalLeaseLock(stateKey: string, hardwareId: string): PhysicalLeaseRecord | null {
@@ -868,15 +887,128 @@ function releasePhysicalLeaseForOwner(ownerId: string, backend: Backend, device:
     if (!hardwareId) return;
     const file = physicalLeaseLockFile(backend.stateKey, hardwareId);
     withSharedMutationLock(physicalLeaseMutationLockFile(backend.stateKey, hardwareId), () => {
-        const lease = readPhysicalLeaseStateFile(file, backend.stateKey, hardwareId);
-        const expectedClaimId = typeof device.leaseClaimId === "string" ? device.leaseClaimId : null;
-        const expectedClaimNonce = typeof device.leaseClaimNonce === "string" ? device.leaseClaimNonce : null;
-        const exactGeneration = expectedClaimId && expectedClaimNonce
-            ? lease?.claimId === expectedClaimId && lease?.claimNonce === expectedClaimNonce
-            : !lease?.claimId && !lease?.claimNonce;
-        if (lease?.ownerId === ownerId
-            && (!device.id || !lease.deviceId || lease.deviceId === device.id)
-            && exactGeneration) unlinkSync(file);
+        withSharedMutationLock(physicalLeaseAggregateMutationLockFile(backend.stateKey), () => {
+            const lease = readPhysicalLeaseStateFile(file, backend.stateKey, hardwareId) as PhysicalLeaseRecord | null;
+            if (!physicalLeaseMatchesOwnerDevice(ownerId, device, lease)) return;
+
+            const aggregateFile = physicalLeaseAggregateFile(backend.stateKey);
+            const previousLeases = readPhysicalLeaseAggregate(aggregateFile, backend.stateKey);
+            const nextLeases = previousLeases.filter((candidate) => candidate.hardwareId !== hardwareId
+                || !physicalLeaseMatchesOwnerDevice(ownerId, device, candidate));
+            const aggregateChanged = !isDeepStrictEqual(previousLeases, nextLeases);
+            if (aggregateChanged) writeJsonFileAtomically(aggregateFile, { leases: nextLeases });
+            try {
+                unlinkSync(file);
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+                if (aggregateChanged) {
+                    try {
+                        writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
+                    } catch (rollbackError) {
+                        throw new AggregateError([error, rollbackError], "physical-lease-aggregate-rollback-failed");
+                    }
+                }
+                throw error;
+            }
+        });
+    });
+}
+
+function physicalLeaseMatchesOwnerDevice(ownerId: string, device: DeviceRecord, lease: PhysicalLeaseRecord | null): boolean {
+    const expectedClaimId = typeof device.leaseClaimId === "string" ? device.leaseClaimId : null;
+    const expectedClaimNonce = typeof device.leaseClaimNonce === "string" ? device.leaseClaimNonce : null;
+    const exactGeneration = expectedClaimId && expectedClaimNonce
+        ? lease?.claimId === expectedClaimId && lease?.claimNonce === expectedClaimNonce
+        : !lease?.claimId && !lease?.claimNonce;
+    return lease?.ownerId === ownerId
+        && (!device.id || !lease.deviceId || lease.deviceId === device.id)
+        && exactGeneration;
+}
+
+function transitionOwnerDeviceRecordWithPhysicalLease(
+    ownerId: string,
+    backend: Backend,
+    expected: DeviceRecord,
+    replacement: DeviceRecord | null,
+): boolean {
+    const hardwareId = hardwareIdForPhysicalDevice(backend, expected);
+    if (!hardwareId) return transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
+
+    const leaseFile = physicalLeaseLockFile(backend.stateKey, hardwareId);
+    const aggregateFile = physicalLeaseAggregateFile(backend.stateKey);
+    return withSharedMutationLock(physicalLeaseMutationLockFile(backend.stateKey, hardwareId), () =>
+        withSharedMutationLock(physicalLeaseAggregateMutationLockFile(backend.stateKey), () => {
+            const lease = readPhysicalLeaseStateFile(leaseFile, backend.stateKey, hardwareId) as PhysicalLeaseRecord | null;
+            const previousLeases = readPhysicalLeaseAggregate(aggregateFile, backend.stateKey);
+            const nextLeases = previousLeases.filter((candidate) => candidate.hardwareId !== hardwareId
+                || !physicalLeaseMatchesOwnerDevice(ownerId, expected, candidate));
+            const aggregateChanged = !isDeepStrictEqual(previousLeases, nextLeases);
+            const leaseChanged = physicalLeaseMatchesOwnerDevice(ownerId, expected, lease);
+            if (!aggregateChanged && !leaseChanged) {
+                return transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
+            }
+            if (aggregateChanged) writeJsonFileAtomically(aggregateFile, { leases: nextLeases });
+
+            if (leaseChanged) {
+                try {
+                    unlinkSync(leaseFile);
+                } catch (error) {
+                    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+                        if (aggregateChanged) {
+                            try {
+                                writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
+                            } catch (rollbackError) {
+                                throw new AggregateError([error, rollbackError], "physical-lease-aggregate-rollback-failed");
+                            }
+                        }
+                        throw error;
+                    }
+                }
+            }
+
+            let transitionError: unknown;
+            let matched = false;
+            try {
+                matched = transitionOwnerDeviceRecord(ownerId, backend, expected, replacement).matched;
+            } catch (error) {
+                transitionError = error;
+            }
+            if (matched) return true;
+
+            const rollbackErrors: unknown[] = [];
+            if (leaseChanged) {
+                try {
+                    writeJsonFileAtomically(leaseFile, lease);
+                } catch (error) {
+                    rollbackErrors.push(error);
+                }
+            }
+            if (aggregateChanged) {
+                try {
+                    writeJsonFileAtomically(aggregateFile, { leases: previousLeases });
+                } catch (error) {
+                    rollbackErrors.push(error);
+                }
+            }
+            if (rollbackErrors.length > 0) {
+                throw new AggregateError(
+                    transitionError === undefined ? rollbackErrors : [transitionError, ...rollbackErrors],
+                    "physical-lease-owner-state-rollback-failed",
+                );
+            }
+            if (transitionError !== undefined) throw transitionError;
+            return false;
+        }));
+}
+
+function pruneOwnerDeviceRecord(ownerId: string, backend: Backend, expected: DeviceRecord): boolean {
+    if (!expected.id) return false;
+    return withAdminOwnerDeviceOperation(ownerId, backend.stateKey, expected.id, () => {
+        const current = readDevices(ownerId, backend.stateKey).find((candidate) => candidate.id === expected.id);
+        if (!current || !isDeepStrictEqual(current, expected)) return false;
+        if ((current.status !== "stopped" && current.status !== "detached") || hasMacosManagedProviderResources(backend, current)) return false;
+
+        return transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, current, null);
     });
 }
 
@@ -1028,9 +1160,80 @@ function brokerOwnedAppiumCleanupBlock(device: DeviceRecord): string | null {
     return observation.status === "match" ? "appium-runtime-active" : "appium-runtime-identity-unavailable";
 }
 
-function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandResult[] {
+type OwnedCleanupRuntime = {
+    label: "appium" | "recording" | "runtime";
+    runtime: Record<string, unknown>;
+    signal: NodeJS.Signals;
+    signalDirectly: boolean;
+};
+
+function ownedCleanupRuntimes(device: DeviceRecord): OwnedCleanupRuntime[] {
+    const runtimes: OwnedCleanupRuntime[] = [];
+    const recording = device.recording;
+    if (recording && typeof recording === "object" && !Array.isArray(recording)) {
+        const metadata = recording as Record<string, unknown>;
+        if (typeof metadata.runtimeId === "string" && typeof metadata.pid === "number" && metadata.processIdentity) {
+            runtimes.push({ label: "recording", runtime: metadata, signal: "SIGINT", signalDirectly: true });
+        }
+    }
+    const appium = device.appium;
+    if (appium && typeof appium === "object" && !Array.isArray(appium)) {
+        const metadata = appium as Record<string, unknown>;
+        if (metadata.processOwner === "device-lab-mcp"
+            && metadata.startedBy === "direct-provider"
+            && typeof metadata.runtimeId === "string"
+            && typeof metadata.serverPid === "number"
+            && metadata.processIdentity) {
+            runtimes.push({
+                label: "appium",
+                runtime: { ...metadata, pid: metadata.serverPid },
+                signal: "SIGTERM",
+                signalDirectly: true,
+            });
+        }
+    }
+    const runtime = device.runtime;
+    if (runtime && typeof runtime === "object" && !Array.isArray(runtime)) {
+        const metadata = runtime as Record<string, unknown>;
+        if (typeof metadata.runtimeId === "string" && typeof metadata.pid === "number" && metadata.processIdentity) {
+            runtimes.push({ label: "runtime", runtime: metadata, signal: "SIGTERM", signalDirectly: false });
+        }
+    }
+    return runtimes;
+}
+
+function runtimeCleanupBlock(device: DeviceRecord): string | null {
+    const recording = device.recording;
+    if (!recording || typeof recording !== "object" || Array.isArray(recording)) return null;
+    const metadata = recording as Record<string, unknown>;
+    if (metadata.processOwner !== "host-broker" || metadata.startedBy !== "broker.device.recording.start") return null;
+    const observation = inspectDeviceRuntimeProcessIdentity(metadata.processIdentity, metadata.pid);
+    if (observation.status === "exited" || observation.status === "mismatch") return null;
+    return observation.status === "match" ? "recording-runtime-active" : "recording-runtime-identity-unavailable";
+}
+
+function runtimeExited(runtime: OwnedCleanupRuntime): boolean {
+    const observation = inspectDeviceRuntimeProcessIdentity(runtime.runtime.processIdentity, runtime.runtime.pid);
+    return observation.status === "exited" || observation.status === "mismatch";
+}
+
+function waitForRuntimeExit(runtime: OwnedCleanupRuntime, timeoutMs: number): boolean {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    do {
+        if (runtimeExited(runtime)) return true;
+        if (Date.now() >= deadline) return false;
+        Atomics.wait(cleanupWaiter, 0, 0, Math.min(25, deadline - Date.now()));
+    } while (true);
+}
+
+function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs = 5000): { commands: CommandResult[]; reason?: string } {
     const results: CommandResult[] = [];
-    signalDeviceRuntimeProcess(match.device.recording, "SIGINT");
+    const runtimes = ownedCleanupRuntimes(match.device);
+    for (const runtime of runtimes) {
+        if (!runtime.signalDirectly || runtimeExited(runtime)) continue;
+        const signal = signalDeviceRuntimeProcess(runtime.runtime, runtime.signal);
+        if (!signal.ok) return { commands: results, reason: `${runtime.label}-process-signal-failed` };
+    }
 
     if (match.backend.stateKey === "android") {
         const adb = commandPath("adb");
@@ -1076,7 +1279,12 @@ function stopOwnedDevice(match: OwnerDeviceMatch, timeoutMs?: number): CommandRe
             }
         }
     }
-    return results;
+    for (const runtime of runtimes) {
+        if (!waitForRuntimeExit(runtime, timeoutMs)) {
+            return { commands: results, reason: `${runtime.label}-process-still-active` };
+        }
+    }
+    return { commands: results };
 }
 
 function lifecycleStopRequired(backend: Backend, device: DeviceRecord): boolean {
@@ -1115,6 +1323,20 @@ function cleanedDevice(backend: Backend, device: DeviceRecord): DeviceRecord {
     return stoppedDevice(device);
 }
 
+function commitCleanedDevice(
+    ownerId: string,
+    backend: Backend,
+    current: DeviceRecord,
+    releaseWindowsClaim: boolean,
+): boolean {
+    if (!hardwareIdForPhysicalDevice(backend, current)) {
+        const matched = transitionOwnerDeviceRecord(ownerId, backend, current, cleanedDevice(backend, current)).matched;
+        if (matched && releaseWindowsClaim) releaseWindowsSandboxLockForOwner(ownerId, backend, current);
+        return matched;
+    }
+    return transitionOwnerDeviceRecordWithPhysicalLease(ownerId, backend, current, cleanedDevice(backend, current));
+}
+
 function shouldCleanupDevice(backend: Backend, device: DeviceRecord): boolean {
     if ((backend.stateKey === "android-device" || backend.stateKey === "ios-device") && device.status === "attached") return true;
     return lifecycleActive(device) || hasVolatileProcessMetadata(device);
@@ -1140,14 +1362,19 @@ function stopOwnerDeviceRecord(
         if (appiumBlock) {
             return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands: [], reason: appiumBlock };
         }
-        const commands = stopOwnedDevice({ backend, devices: [current], index: 0, device: current }, timeoutMs);
+        const ownedRuntimeBlock = runtimeCleanupBlock(current);
+        if (ownedRuntimeBlock) {
+            return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands: [], reason: ownedRuntimeBlock };
+        }
+        const stopped = stopOwnedDevice({ backend, devices: [current], index: 0, device: current }, timeoutMs);
+        const commands = stopped.commands;
+        if (stopped.reason) {
+            return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: stopped.reason };
+        }
         if (lifecycleStopFailed(backend, current, commands)) {
             return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: "provider-stop-failed" };
         }
-        releasePhysicalLeaseForOwner(ownerId, backend, current);
-        if (releaseWindowsClaim) releaseWindowsSandboxLockForOwner(ownerId, backend, current);
-        const transition = transitionOwnerDeviceRecord(ownerId, backend, current, cleanedDevice(backend, current));
-        if (!transition.matched) {
+        if (!commitCleanedDevice(ownerId, backend, current, releaseWindowsClaim)) {
             return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "failed", commands, reason: "owner-device-state-conflict" };
         }
         return { id, backend: backend.name, previousStatus: current.status || "unknown", status: "stopped", commands };
@@ -1256,7 +1483,11 @@ export function deleteOwnerDevice(deviceId: string, cwd = process.cwd(), profile
         }
         const commands = match.backend.stateKey === "macos" ? deleteMacosProviderResources(current) : [];
         if (commands.some((command) => command.status !== 0)) return { ok: false as const, reason: "provider-delete-failed", commands };
-        releasePhysicalLeaseForOwner(ownerId, match.backend, current);
+        try {
+            releasePhysicalLeaseForOwner(ownerId, match.backend, current);
+        } catch {
+            return { ok: false as const, reason: "physical-lease-release-failed", commands };
+        }
         releaseWindowsSandboxLockForOwner(ownerId, match.backend, current);
         const transition = transitionOwnerDeviceRecord(ownerId, match.backend, current, null);
         if (!transition.matched) return { ok: false as const, reason: "owner-device-state-conflict", commands };
@@ -1284,14 +1515,12 @@ export function pruneOwnerDevices(cwd = process.cwd(), profile?: string): { ok: 
     const lines = [`owner: ${ownerId}`];
     let deleted = 0;
     for (const backend of DEVICE_BACKENDS) {
-        mutateDevices(ownerId, backend.stateKey, (devices) => devices.filter((device) => {
-            const prune = (device.status === "stopped" || device.status === "detached") && !hasMacosManagedProviderResources(backend, device);
-            if (prune) {
+        for (const device of readDevices(ownerId, backend.stateKey)) {
+            if (pruneOwnerDeviceRecord(ownerId, backend, device)) {
                 deleted += 1;
                 lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);
             }
-            return !prune;
-        }));
+        }
     }
     if (deleted === 0) lines.push("pruned: 0");
     return { ok: true, text: `${lines.join("\n")}\n` };
@@ -1339,15 +1568,12 @@ export function pruneAllProjectDevices(): { ok: boolean; text: string } {
     for (const ownerId of allOwnerIds()) {
         lines.push(`project: ${ownerId}`);
         for (const backend of DEVICE_BACKENDS) {
-            mutateDevices(ownerId, backend.stateKey, (devices) => devices.filter((device) => {
-                const prune = (device.status === "stopped" || device.status === "detached") && !hasMacosManagedProviderResources(backend, device);
-                if (prune) {
-                    releasePhysicalLeaseForOwner(ownerId, backend, device);
+            for (const device of readDevices(ownerId, backend.stateKey)) {
+                if (pruneOwnerDeviceRecord(ownerId, backend, device)) {
                     deleted += 1;
                     lines.push(`pruned: ${device.id || "(unknown)"}  backend=${backend.name}`);
                 }
-                return !prune;
-            }));
+            }
         }
     }
     if (deleted === 0) lines.push("pruned: 0");

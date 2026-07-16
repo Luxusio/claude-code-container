@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { SpawnSyncReturns } from "child_process";
 import { createHash } from "crypto";
+import { homedir } from "os";
+import { join } from "path";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
@@ -11,18 +13,26 @@ vi.mock("child_process", async (importOriginal) => {
 
 // Mock fs for startProjectContainer
 const mockExistsSync = vi.fn().mockReturnValue(true);
+const mockCloseSync = vi.fn();
+const mockFstatSync = vi.fn();
 const mockLstatSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockOpenSync = vi.fn();
 const mockReadFileSync = vi.fn();
+const mockRealpathSync = vi.fn();
 const mockStatSync = vi.fn();
 vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
         ...actual,
+        closeSync: (...args: unknown[]) => mockCloseSync(...args),
         existsSync: (...args: unknown[]) => mockExistsSync(...args),
+        fstatSync: (...args: unknown[]) => mockFstatSync(...args),
         lstatSync: (...args: unknown[]) => mockLstatSync(...args),
         mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
+        openSync: (...args: unknown[]) => mockOpenSync(...args),
         readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
+        realpathSync: (...args: unknown[]) => mockRealpathSync(...args),
         statSync: (...args: unknown[]) => mockStatSync(...args),
     };
 });
@@ -64,6 +74,7 @@ const {
 
 const { CLI_VERSION, CLIPBOARD_FILES_CONTAINER_DIR } = await import("../utils.js");
 const { getAllCredentialMounts } = await import("../tool-registry.js");
+const { deviceLabOwnerId } = await import("../device-lab-owner.js");
 const {
     _resetRuntimeCacheForTest,
     _setRuntimeInfoForTest,
@@ -74,6 +85,12 @@ function makeResult(
     stdout = "",
 ): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
+}
+
+function defaultDeviceLabMountIdentity(): string {
+    return createHash("sha256")
+        .update("directory:1:1|directory:1:1|file:1:1")
+        .digest("hex");
 }
 
 // docker inspect Mounts JSON containing every required mount destination the
@@ -92,6 +109,7 @@ function fullCredentialMountsJson(
         privileged?: boolean;
     } = {},
 ): string {
+    const deviceStateRoot = join(homedir(), ".ccc", "devices");
     const credMounts = getAllCredentialMounts().map((m) => ({
         Source: `/host${m.containerDir}`,
         Destination: m.containerDir,
@@ -105,7 +123,23 @@ function fullCredentialMountsJson(
     ];
     const deviceLabMounts = options.deviceLabState === false
         ? []
-        : [{ Source: "/host/home/user/.ccc/devices", Destination: "/home/ccc/.ccc/devices" }];
+        : [
+            { Source: deviceStateRoot, Destination: "/home/ccc/.ccc/devices", Type: "bind", RW: false },
+            { Source: "", Destination: "/home/ccc/.ccc/devices/owners", Type: "tmpfs", RW: true },
+            {
+                Source: join(deviceStateRoot, "owners", deviceLabOwnerId("/home/user/my-project")),
+                Destination: `/home/ccc/.ccc/devices/owners/${deviceLabOwnerId("/home/user/my-project")}`,
+                Type: "bind",
+                RW: true,
+            },
+            { Source: "", Destination: "/home/ccc/.ccc/devices/broker/auth", Type: "tmpfs", RW: true },
+            {
+                Source: join(deviceStateRoot, "broker", "auth", `${deviceLabOwnerId("/home/user/my-project")}.json`),
+                Destination: "/run/ccc-device-broker-auth/owner.json",
+                Type: "bind",
+                RW: false,
+            },
+        ];
     const labStateMounts = options.labState === false
         ? []
         : [{ Source: "ccc-my-project-c7e2f75b53b9-lab-state", Destination: "/home/ccc/.ccc/labs" }];
@@ -115,13 +149,17 @@ function fullCredentialMountsJson(
         `CCC_LAB_RUNNER_STATUS=${status}`,
         "CCC_LAB_STATE_DIR=/home/ccc/.ccc/labs",
         "CCC_LAB_NET_MODE=user",
+        "CCC_DEVICE_BROKER_AUTH_FILE=/run/ccc-device-broker-auth/owner.json",
     ];
     if (options.unsupportedReason) env.push(`CCC_LAB_RUNNER_UNSUPPORTED_REASON=${options.unsupportedReason}`);
     const devices = options.devices ?? (options.kvmDevice === false ? [] : [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" }]);
     const groupAdd = options.groupAdd ?? (status === "ready" && options.kvmDevice !== false ? ["108"] : []);
     return JSON.stringify({
         Mounts: [...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...deviceLabMounts, ...labStateMounts, ...extra],
-        Config: { Env: env },
+        Config: {
+            Env: env,
+            Labels: { "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity() },
+        },
         HostConfig: { Devices: devices, GroupAdd: groupAdd, Privileged: options.privileged === true },
     });
 }
@@ -132,11 +170,22 @@ describe("docker.ts module exports", () => {
         spawnSyncMock.mockReturnValue(makeResult(0));
         mockCleanupOwnerDevices.mockReset();
         mockExistsSync.mockReset().mockReturnValue(true);
+        mockCloseSync.mockReset();
+        mockOpenSync.mockReset().mockReturnValue(17);
         mockLstatSync.mockReset().mockReturnValue({
             isFile: () => true,
+            isDirectory: () => true,
             isSymbolicLink: () => false,
+            dev: 1,
+            ino: 1,
             size: 1024,
         });
+        mockFstatSync.mockReset().mockReturnValue({
+            isFile: () => true,
+            dev: 1,
+            ino: 1,
+        });
+        mockRealpathSync.mockReset().mockImplementation((path: string) => path);
         mockReadFileSync.mockReset().mockReturnValue(Buffer.from("managed-mcp-bundle"));
         mockStatSync.mockReset().mockReturnValue({ gid: 108 });
         _resetRuntimeCacheForTest();
@@ -1039,6 +1088,269 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
+        });
+
+        it("recreates a legacy container with writable shared device-lab state", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Mounts: Array<{ Destination: string; RW?: boolean }>;
+            };
+            const sharedState = inspected.Mounts.find((mount) => mount.Destination === "/home/ccc/.ccc/devices");
+            if (sharedState) sharedState.RW = true;
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0));
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop";
+            })).toBe(true);
+        });
+
+        it("recreates a container whose owner bind source belongs to another owner", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Mounts: Array<{ Source: string; Destination: string }>;
+            };
+            const ownerDestination = `/home/ccc/.ccc/devices/owners/${deviceLabOwnerId(projectPath)}`;
+            const ownerMount = inspected.Mounts.find((mount) => mount.Destination === ownerDestination);
+            if (ownerMount) ownerMount.Source = join(homedir(), ".ccc", "devices", "owners", "foreign-owner");
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0));
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+        });
+
+        it("recreates a container whose broker auth bind source is not the current owner secret", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Mounts: Array<{ Source: string; Destination: string }>;
+            };
+            const authMount = inspected.Mounts.find((mount) => mount.Destination === "/run/ccc-device-broker-auth/owner.json");
+            if (authMount) authMount.Source = join(homedir(), ".ccc", "devices", "broker", "auth", "foreign-owner.json");
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0));
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+        });
+
+        it("recreates an existing container whose bind identity label refers to obsolete inodes", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Config: { Labels: Record<string, string> };
+            };
+            inspected.Config.Labels["ccc.device-lab.mount-identity"] = "obsolete-identity";
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0));
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+        });
+
+        it("fails closed when the prepared owner directory is a symbolic link", () => {
+            const ownerRoot = join(homedir(), ".ccc", "devices", "owners", deviceLabOwnerId(projectPath));
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path !== ownerRoot,
+                isDirectory: () => path !== ownerRoot,
+                isSymbolicLink: () => path === ownerRoot,
+                dev: 1,
+                ino: 1,
+                size: 1024,
+            }));
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(/owner root must be a real directory/);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "run")).toBe(false);
+        });
+
+        it("fails closed when the owner auth path is a symbolic link", () => {
+            const authFile = join(homedir(), ".ccc", "devices", "broker", "auth", `${deviceLabOwnerId(projectPath)}.json`);
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path === authFile,
+                isDirectory: () => path !== authFile,
+                isSymbolicLink: () => path === authFile,
+                dev: 1,
+                ino: 1,
+                size: 1024,
+            }));
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(/owner auth file must be a real regular file/);
+            expect(mockOpenSync).not.toHaveBeenCalledWith(authFile, expect.anything());
+        });
+
+        it("fails closed when the owner auth file changes between lstat and open", () => {
+            mockFstatSync.mockReturnValue({ isFile: () => true, dev: 1, ino: 2 });
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(/owner auth file changed while it was being validated/);
+            expect(mockCloseSync).toHaveBeenCalledWith(17);
+        });
+
+        it.each(["linux", "win32"] as const)(
+            "rejects an atomic owner-directory replacement before container create on %s",
+            (platform) => {
+                vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+                const ownerRoot = join(homedir(), ".ccc", "devices", "owners", deviceLabOwnerId(projectPath));
+                let replaced = false;
+                mockExistsSync.mockImplementation((path: string) => {
+                    if (path === join(homedir(), ".ssh")) replaced = true;
+                    return false;
+                });
+                mockLstatSync.mockImplementation((path: string) => ({
+                    isFile: () => !path.endsWith(deviceLabOwnerId(projectPath)),
+                    isDirectory: () => !path.endsWith(".json"),
+                    isSymbolicLink: () => false,
+                    dev: 1,
+                    ino: replaced && path.toLowerCase() === ownerRoot.toLowerCase() ? 2 : 1,
+                    size: 1024,
+                }));
+                spawnSyncMock
+                    .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                    .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                    .mockReturnValueOnce(makeResult(0, ""))
+                    .mockReturnValueOnce(makeResult(0, ""))
+                    .mockReturnValueOnce(makeResult(0, ""))
+                    .mockReturnValue(makeResult(0));
+
+                expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                    /device-lab mount source changed after preflight validation/,
+                );
+                expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "run")).toBe(false);
+            },
+        );
+
+        it.each(["linux", "win32"] as const)(
+            "removes a newly-created container when a mount source is replaced during create on %s",
+            (platform) => {
+                vi.spyOn(process, "platform", "get").mockReturnValue(platform);
+                const ownerRoot = join(homedir(), ".ccc", "devices", "owners", deviceLabOwnerId(projectPath));
+                let replaced = false;
+                mockExistsSync.mockReturnValue(false);
+                mockLstatSync.mockImplementation((path: string) => ({
+                    isFile: () => path.endsWith(".json"),
+                    isDirectory: () => !path.endsWith(".json"),
+                    isSymbolicLink: () => false,
+                    dev: 1,
+                    ino: replaced && path.toLowerCase() === ownerRoot.toLowerCase() ? 2 : 1,
+                    size: 1024,
+                }));
+                spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                    const args = argsValue as string[];
+                    if (args?.[0] === "run") replaced = true;
+                    if (args?.[0] === "images") return makeResult(0, "sha256:abc\n");
+                    if (args?.[0] === "image" && args?.[1] === "inspect") return makeResult(0, "<no value>\n");
+                    return makeResult(0, "");
+                });
+
+                expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                    /device-lab mount source changed after preflight validation/,
+                );
+                expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                    const args = call[1] as string[];
+                    return args?.[0] === "rm" && args?.[1] === "-f";
+                })).toBe(true);
+            },
+        );
+
+        it("removes a newly-created container when the owner auth file identity changes during create", () => {
+            let replaced = false;
+            mockExistsSync.mockReturnValue(false);
+            mockFstatSync.mockImplementation(() => ({
+                isFile: () => true,
+                dev: 1,
+                ino: replaced ? 2 : 1,
+            }));
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: path.endsWith(".json") && replaced ? 2 : 1,
+                size: 1024,
+            }));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args?.[0] === "run") replaced = true;
+                if (args?.[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args?.[0] === "image" && args?.[1] === "inspect") return makeResult(0, "<no value>\n");
+                return makeResult(0, "");
+            });
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                /device-lab mount source changed after preflight validation/,
+            );
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "rm" && args?.[1] === "-f";
+            })).toBe(true);
+        });
+
+        it("recreates a container whose isolated broker auth mount is not selected by environment", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as { Config: { Env: string[] } };
+            inspected.Config.Env = inspected.Config.Env.filter((entry) => !entry.startsWith("CCC_DEVICE_BROKER_AUTH_FILE="));
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0));
+
+            startProjectContainer(projectPath, ensureDirs);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop";
+            })).toBe(true);
         });
 
         it("creates a new container when none exists", () => {

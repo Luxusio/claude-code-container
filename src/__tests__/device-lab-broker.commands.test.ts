@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { request } from "http";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { runInNewContext } from "vm";
@@ -952,6 +953,27 @@ describe("device-lab host broker lifecycle commands", () => {
                 params: expect.objectContaining({ localPath: hostAppPath }),
             }), expect.objectContaining({ stateKey: "windows", backend: "windows-sandbox" }), expect.any(Object));
 
+            const callsBeforeRejectedPaths = deviceToolRunner.mock.calls.length;
+            for (const params of [
+                { tool: "device_upload", localPath: "/etc/hosts", remotePath: "C:\\ccc\\uploads\\hosts" },
+                { tool: "device_screenshot", path: "C:\\outside\\capture.png" },
+            ]) {
+                const rejected = await fetch(endpoint, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                        method: "broker.device.tool.invoke",
+                        params: { backend: "windows-sandbox", deviceId: "win-readonly", ...params },
+                    }),
+                });
+                expect(rejected.status).toBe(400);
+                expect(await rejected.json()).toEqual(expect.objectContaining({
+                    ok: false,
+                    error: "device-tool-path-outside-project-mount",
+                }));
+            }
+            expect(deviceToolRunner).toHaveBeenCalledTimes(callsBeforeRejectedPaths);
+
             const unsupported = await fetch(endpoint, {
                 method: "POST",
                 headers,
@@ -1016,6 +1038,41 @@ describe("device-lab host broker lifecycle commands", () => {
 
             completeTool({ status: 200, payload: { ok: true } });
             expect((await toolRequest).status).toBe(200);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("times out incomplete HTTP request bodies", async () => {
+        const hostProjectPath = "/project/broker-request-body-timeout-test";
+        const ownerId = deviceLabOwnerId(hostProjectPath);
+        const server = createDeviceBrokerServer({
+            cwd: hostProjectPath,
+            host: "127.0.0.1",
+            port: 0,
+            requestBodyTimeoutMs: 50,
+        });
+        const baseUrl = await listen(server);
+        try {
+            const result = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+                const req = request(ownerRpcEndpoint(baseUrl, ownerId), {
+                    method: "POST",
+                    headers: {
+                        ...ownerRpcHeaders(ownerId),
+                        "content-type": "application/json",
+                        "content-length": "100",
+                    },
+                }, (res) => {
+                    const chunks: Buffer[] = [];
+                    res.on("data", (chunk: Buffer) => chunks.push(chunk));
+                    res.on("end", () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+                });
+                req.on("error", reject);
+                req.write("{");
+            });
+            expect(result.status).toBe(408);
+            expect(JSON.parse(result.body)).toEqual(expect.objectContaining({ ok: false, error: "request-body-timeout" }));
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -1811,8 +1868,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 ["device_cursor_position"],
                 ["device_window_list"],
                 ["device_accessibility_snapshot", { maxDepth: 1, maxNodes: 10 }],
-                ["device_upload", { localPath: "/tmp/in.txt", remotePath: "C:\\ccc\\in.txt" }],
-                ["device_download", { remotePath: "C:\\ccc\\out.txt", localPath: "/tmp/out.txt" }],
+                ["device_upload", { localPath: "in.txt", remotePath: "C:\\ccc\\in.txt" }],
+                ["device_download", { remotePath: "C:\\ccc\\out.txt", localPath: "out.txt" }],
             ];
             for (const [tool, extra = {}] of cases) {
                 const response = await fetch(endpoint, {
@@ -1879,8 +1936,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 ["device_cursor_position"],
                 ["device_window_list"],
                 ["device_accessibility_snapshot", { maxDepth: 1, maxNodes: 10 }],
-                ["device_upload", { localPath: "/tmp/in.txt", remotePath: "/tmp/in.txt" }],
-                ["device_download", { remotePath: "/tmp/out.txt", localPath: "/tmp/out.txt" }],
+                ["device_upload", { localPath: "in.txt", remotePath: "/tmp/in.txt" }],
+                ["device_download", { remotePath: "/tmp/out.txt", localPath: "out.txt" }],
             ];
             for (const [tool, extra = {}] of cases) {
                 const response = await fetch(endpoint, {
@@ -1984,8 +2041,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 ["device_status"],
                 ["device_exec", { command: "echo ok" }],
                 ["device_screenshot"],
-                ["device_upload", { localPath: "/tmp/in.txt", remotePath: "/sdcard/in.txt" }],
-                ["device_download", { remotePath: "/sdcard/out.txt", localPath: "/tmp/out.txt" }],
+                ["device_upload", { localPath: "in.txt", remotePath: "/sdcard/in.txt" }],
+                ["device_download", { remotePath: "/sdcard/out.txt", localPath: "out.txt" }],
                 ["device_reset", { packageName: "com.example.app", confirmDestructive: true }],
                 ["device_install_app", { path: containerApkPath, replace: false }, { path: hostApkPath, replace: false }],
                 ["device_launch_app", { packageName: "com.example.app" }],
@@ -2120,13 +2177,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 ["device_status"],
                 ["device_exec", { command: "echo ios" }],
                 ["device_screenshot"],
-                ["device_upload", { localPath: "/tmp/in.txt", remotePath: "/tmp/in.txt" }],
-                ["device_download", { remotePath: "/tmp/out.txt", localPath: "/tmp/out.txt" }],
+                ["device_upload", { localPath: "in.txt", remotePath: "/tmp/in.txt" }],
+                ["device_download", { remotePath: "/tmp/out.txt", localPath: "out.txt" }],
                 ["device_reset", { bundleId: "com.example.Sim", confirmDestructive: true }],
-                ["device_install_app", { path: "/tmp/Test.app" }],
+                ["device_install_app", { path: "Test.app" }],
                 ["device_launch_app", { bundleId: "com.example.Sim" }],
                 ["mobile_open_url", { url: "https://example.test" }],
-                ["mobile_install_app", { path: "/tmp/Mobile.app" }],
+                ["mobile_install_app", { path: "Mobile.app" }],
                 ["mobile_launch_app", { bundleId: "com.example.Mobile" }],
                 ["mobile_screenshot"],
                 ["mobile_session_status"],
@@ -2162,9 +2219,9 @@ describe("device-lab host broker lifecycle commands", () => {
             const iosRealTools: Array<[string, Record<string, unknown>?]> = [
                 ["device_status"],
                 ["device_screenshot"],
-                ["device_install_app", { path: "/tmp/Real.app" }],
+                ["device_install_app", { path: "Real.app" }],
                 ["device_launch_app", { bundleId: "com.example.Real" }],
-                ["mobile_install_app", { path: "/tmp/MobileReal.app" }],
+                ["mobile_install_app", { path: "MobileReal.app" }],
                 ["mobile_launch_app", { bundleId: "com.example.MobileReal" }],
                 ["mobile_screenshot"],
                 ["mobile_session_status"],
@@ -2251,7 +2308,10 @@ describe("device-lab host broker lifecycle commands", () => {
     });
 
     it("starts and stops broker-owned Android recordings without touching foreign owner devices", async () => {
-        const ownerA = deviceLabOwnerId("/project/broker-recording-test");
+        const hostProjectPath = "/project/broker-recording-test";
+        const ownerA = deviceLabOwnerId(hostProjectPath);
+        const containerRecordingPath = `${deviceLabProjectMountPath(hostProjectPath)}/artifacts/owned.mp4`;
+        const hostRecordingPath = join(hostProjectPath, "artifacts", "owned.mp4");
         const ownerB = "bbbbaaaaddddcccc";
         const commands: unknown[] = [];
         const commandRunner = vi.fn((command) => {
@@ -2269,7 +2329,7 @@ describe("device-lab host broker lifecycle commands", () => {
         });
         const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
         const server = createDeviceBrokerServer({
-            cwd: "/project/broker-recording-test",
+            cwd: hostProjectPath,
             host: "127.0.0.1",
             port: 0,
             providerPaths: { adb: "/fake/adb" },
@@ -2315,7 +2375,7 @@ describe("device-lab host broker lifecycle commands", () => {
                         backend: "android-emulator",
                         deviceId: "pixel-record",
                         remotePath: "/sdcard/owned.mp4",
-                        localPath: "/tmp/owned.mp4",
+                        localPath: containerRecordingPath,
                         timeLimitSec: 12,
                     },
                 }),
@@ -2335,7 +2395,7 @@ describe("device-lab host broker lifecycle commands", () => {
                         authority: "host-broker",
                         processOwner: "host-broker",
                         remotePath: "/sdcard/owned.mp4",
-                        localPath: "/tmp/owned.mp4",
+                        localPath: hostRecordingPath,
                         timeLimitSec: 12,
                         pid: 24680,
                     }),
@@ -2372,7 +2432,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 ok: true,
                 result: expect.objectContaining({
                     stopped: true,
-                    recording: expect.objectContaining({ active: false, localPath: "/tmp/owned.mp4" }),
+                    recording: expect.objectContaining({ active: false, localPath: hostRecordingPath }),
                     device: expect.objectContaining({ id: "pixel-record", recording: null }),
                 }),
             }));
@@ -2380,7 +2440,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commands).toEqual([
                 expect.objectContaining({ args: ["-s", "emulator-5580", "shell", "screenrecord", "--time-limit", "12", "/sdcard/owned.mp4"] }),
                 expect.objectContaining({ args: ["-s", "emulator-5580", "shell", "pkill", "-2", "screenrecord"] }),
-                expect.objectContaining({ args: ["-s", "emulator-5580", "pull", "/sdcard/owned.mp4", "/tmp/owned.mp4"] }),
+                expect.objectContaining({ args: ["-s", "emulator-5580", "pull", "/sdcard/owned.mp4", hostRecordingPath] }),
                 expect.objectContaining({ args: ["-s", "emulator-5580", "shell", "rm", "-f", "/sdcard/owned.mp4"] }),
             ]);
             expect(JSON.parse(readFileSync(join(backendRoot(ownerA, "android"), "devices.json"), "utf8")).devices[0].recording).toBeNull();
@@ -3748,15 +3808,19 @@ describe("device-lab host broker lifecycle commands", () => {
         const windowsRoot = backendRoot(ownerId, "windows");
         const configPath = join(windowsRoot, "registered.wsb");
         const sandboxId = "12345678-1234-4234-9234-1234567890cc";
+        const foreignSandboxId = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
         const runtimeSandboxId = "87654321-4321-4234-9234-abcdefabcdef";
         mkdirSync(windowsRoot, { recursive: true });
         writeFileSync(configPath, "<Configuration>registered</Configuration>");
         writeBrokerDevices(ownerId, "windows", [
             { id: "win-registered", backend: "windows-sandbox", status: "stopped", configPath, sandboxId },
         ]);
+        let listCalls = 0;
         const commandRunner = vi.fn((command) => {
             if (command.provider === "wsb" && command.args?.[0] === "list") {
-                return { mode: "exec", provider: "wsb", status: 0, stdout: JSON.stringify({ WindowsSandboxEnvironments: [{ Id: runtimeSandboxId }] }), stderr: "" };
+                listCalls += 1;
+                const ids = listCalls === 1 ? [foreignSandboxId] : [foreignSandboxId, runtimeSandboxId];
+                return { mode: "exec", provider: "wsb", status: 0, stdout: JSON.stringify({ WindowsSandboxEnvironments: ids.map((Id) => ({ Id })) }), stderr: "" };
             }
             if (command.provider === "powershell" && command.mode === "exec") {
                 return { mode: command.mode, provider: command.provider, status: 0, stdout: "[101,202]", stderr: "" };
@@ -3790,25 +3854,33 @@ describe("device-lab host broker lifecycle commands", () => {
             });
             expect(started.status).toBe(200);
             expect(commandRunner).toHaveBeenNthCalledWith(1, expect.objectContaining({
+                provider: "wsb",
+                args: ["list", "--raw"],
+            }), expect.any(Object));
+            expect(commandRunner).toHaveBeenNthCalledWith(2, expect.objectContaining({
                 mode: "exec",
                 provider: "powershell",
                 executable: "powershell.exe",
             }), expect.any(Object));
-            expect(commandRunner).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            expect(commandRunner).toHaveBeenNthCalledWith(3, expect.objectContaining({
                 provider: "wsb",
                 args: ["start", "--id", sandboxId, "--config", "<Configuration>registered</Configuration>"],
             }), expect.any(Object));
-            expect(commandRunner).toHaveBeenNthCalledWith(3, expect.objectContaining({
+            expect(commandRunner).toHaveBeenNthCalledWith(4, expect.objectContaining({
+                provider: "wsb",
+                args: ["list", "--raw"],
+            }), expect.any(Object));
+            expect(commandRunner).toHaveBeenNthCalledWith(5, expect.objectContaining({
                 mode: "detached",
                 provider: "powershell",
                 executable: "powershell.exe",
             }), expect.any(Object));
-            const watchdogCommand = commandRunner.mock.calls[2][0];
+            const watchdogCommand = commandRunner.mock.calls[4][0];
             const watchdogScript = Buffer.from(watchdogCommand.args[6], "base64").toString("utf16le");
             expect(watchdogScript).toContain("$BaselineHandles = @(101,202)");
-            expect(commandRunner).toHaveBeenNthCalledWith(4, expect.objectContaining({
+            expect(commandRunner).not.toHaveBeenCalledWith(expect.objectContaining({
                 provider: "wsb",
-                args: ["list", "--raw"],
+                args: ["stop", "--id", foreignSandboxId],
             }), expect.any(Object));
             const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string; status: string; minimized?: boolean; minimizeConfirmed?: boolean; minimizeWatchdog?: { pid?: number } }> };
             expect(state.devices[0]).toEqual(expect.objectContaining({
@@ -3857,6 +3929,73 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it("fails closed when Windows Sandbox start produces no new owned runtime", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-windows-no-new-runtime-test");
+        const windowsRoot = backendRoot(ownerId, "windows");
+        const configPath = join(windowsRoot, "no-new-runtime.wsb");
+        const foreignSandboxId = "12345678-1234-4234-9234-1234567890ee";
+        mkdirSync(windowsRoot, { recursive: true });
+        writeFileSync(configPath, "<Configuration>no new runtime</Configuration>");
+        writeBrokerDevices(ownerId, "windows", [
+            { id: "win-no-new-runtime", backend: "windows-sandbox", status: "stopped", configPath, sandboxId: foreignSandboxId, minimized: true },
+        ]);
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "wsb" && command.args?.[0] === "list") {
+                return { mode: "exec", provider: "wsb", status: 0, stdout: JSON.stringify({ WindowsSandboxEnvironments: [{ Id: foreignSandboxId }] }), stderr: "" };
+            }
+            if (command.provider === "powershell" && command.mode === "exec") {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: "[404]", stderr: "" };
+            }
+            return { mode: command.mode, provider: command.provider, status: 0, stdout: "", stderr: "" };
+        });
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-windows-no-new-runtime-test",
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { wsb: "wsb" },
+            commandRunner,
+            platform: "win32",
+        });
+        const baseUrl = await listen(server);
+        try {
+            const started = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "windows-sandbox", command: "device_start", deviceId: "win-no-new-runtime", dryRun: false },
+                }),
+            });
+            expect(started.status).toBe(502);
+            expect(await started.json()).toEqual(expect.objectContaining({
+                ok: false,
+                result: expect.objectContaining({
+                    execution: expect.objectContaining({
+                        command: expect.objectContaining({
+                            registration: expect.objectContaining({
+                                error: expect.stringContaining("existed before launch; no new owned runtime appeared"),
+                            }),
+                        }),
+                    }),
+                }),
+            }));
+            expect(commandRunner).not.toHaveBeenCalledWith(expect.objectContaining({
+                provider: "wsb",
+                args: ["stop", "--id", foreignSandboxId],
+            }), expect.any(Object));
+            expect(commandRunner).not.toHaveBeenCalledWith(expect.objectContaining({
+                mode: "detached",
+                provider: "powershell",
+            }), expect.any(Object));
+            const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ status: string; sandboxId: string }> };
+            expect(state.devices[0]).toEqual(expect.objectContaining({ status: "stopped", sandboxId: foreignSandboxId }));
+            expect(existsSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"))).toBe(false);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
     it("keeps a registered Windows Sandbox running when its minimize watchdog cannot start", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-windows-watchdog-failure-test");
         const windowsRoot = backendRoot(ownerId, "windows");
@@ -3867,12 +4006,18 @@ describe("device-lab host broker lifecycle commands", () => {
         writeBrokerDevices(ownerId, "windows", [
             { id: "win-watchdog-failure", backend: "windows-sandbox", status: "stopped", configPath, sandboxId, minimized: true },
         ]);
+        let listCalls = 0;
         const commandRunner = vi.fn((command) => {
-            if (command.provider === "powershell") {
+            if (command.provider === "powershell" && command.mode === "detached") {
                 return { mode: command.mode, provider: command.provider, status: null, error: "powershell unavailable", stdout: "", stderr: "" };
             }
+            if (command.provider === "powershell") {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: "[]", stderr: "" };
+            }
             if (command.provider === "wsb" && command.args?.[0] === "list") {
-                return { mode: "exec", provider: "wsb", status: 0, stdout: JSON.stringify({ WindowsSandboxEnvironments: [{ Id: sandboxId }] }), stderr: "" };
+                listCalls += 1;
+                const environments = listCalls === 1 ? [] : [{ Id: sandboxId }];
+                return { mode: "exec", provider: "wsb", status: 0, stdout: JSON.stringify({ WindowsSandboxEnvironments: environments }), stderr: "" };
             }
             return { mode: command.mode, provider: command.provider, status: 0, stdout: "", stderr: "" };
         });

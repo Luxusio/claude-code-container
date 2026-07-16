@@ -47,6 +47,11 @@ if [ "$1" = "run" ] && [ "$2" = "--help" ]; then
   echo "Usage: tart run [--with-softnet] [--no-graphics] VM"
   exit 0
 fi
+if [ "$1" = "run" ]; then
+  if [ "$FAKE_TART_RUN_EXIT_IMMEDIATELY" = "1" ]; then exit 0; fi
+  /bin/sleep 1
+  exit 0
+fi
 if [ "$1" = "ip" ]; then
   case "$*" in
     *macos-arp-fallback*)
@@ -132,6 +137,7 @@ export function cleanupFakeMacosMcpContext(context: FakeMacosMcpContext | undefi
     delete process.env.FAKE_TART_REPLACE_ON;
     delete process.env.FAKE_TART_REPLACEMENT_STATE;
     delete process.env.FAKE_TART_TARGET_STATE;
+    delete process.env.FAKE_TART_RUN_EXIT_IMMEDIATELY;
     rmSync(context.homeDir, { recursive: true, force: true });
     rmSync(context.binDir, { recursive: true, force: true });
 }

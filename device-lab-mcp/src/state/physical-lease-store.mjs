@@ -147,37 +147,66 @@ function writeLock(lock, lease) {
     writeJsonFileAtomically(lock, lease);
 }
 
-function removeAggregateLease(backend, owner, hardwareId, deviceId) {
+function sameState(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function replaceAggregateLease(leases, hardwareId, lease) {
+    const remaining = leases.filter((entry) => entry.hardwareId !== hardwareId);
+    return lease ? [...remaining, lease] : remaining;
+}
+
+function removeAggregateLease(leases, owner, hardwareId, deviceId) {
+    return leases.filter((lease) => {
+        if (lease.hardwareId !== hardwareId) return true;
+        if (lease.ownerId !== owner) return true;
+        if (deviceId && lease.deviceId !== deviceId) return true;
+        return false;
+    });
+}
+
+function restoreAggregateAfterFailure(backend, previousLeases, operationError) {
     try {
-        return withSharedMutationLock(aggregateMutationLockFile(backend), () => {
-            const leases = readPhysicalLeases(backend);
-            const remaining = leases.filter((lease) => {
-                if (lease.hardwareId !== hardwareId) return true;
-                if (lease.ownerId !== owner) return true;
-                if (deviceId && lease.deviceId !== deviceId) return true;
-                return false;
-            });
-            if (remaining.length !== leases.length) writePhysicalLeasesUnlocked(backend, remaining);
-            return remaining.length !== leases.length;
-        });
+        writePhysicalLeasesUnlocked(backend, previousLeases);
+    } catch (rollbackError) {
+        throw new AggregateError(
+            [operationError, rollbackError],
+            "physical-lease-aggregate-rollback-failed",
+        );
+    }
+    throw operationError;
+}
+
+function commitLeaseTransaction(backend, lock, previousLease, previousLeases, nextLease, nextLeases) {
+    const aggregateChanged = !sameState(previousLeases, nextLeases);
+    const lockChanged = !sameState(previousLease, nextLease);
+    if (aggregateChanged) writePhysicalLeasesUnlocked(backend, nextLeases);
+    if (!lockChanged) return;
+    try {
+        if (nextLease) {
+            writeLock(lock, nextLease);
+        } else {
+            try {
+                unlinkSync(lock);
+            } catch (error) {
+                if (error?.code !== "ENOENT") throw error;
+            }
+        }
     } catch (error) {
-        if (error instanceof DeviceLabStateFileError) return false;
+        if (aggregateChanged) restoreAggregateAfterFailure(backend, previousLeases, error);
         throw error;
     }
 }
 
-function upsertAggregateLease(backend, lease) {
-    try {
+function withLeaseTransaction(backend, hardwareId, operation) {
+    ensureLeaseDirectoryChain(backend, true);
+    const lock = lockFile(backend, hardwareId);
+    return withSharedMutationLock(mutationLockFile(backend, hardwareId), () =>
         withSharedMutationLock(aggregateMutationLockFile(backend), () => {
-            const leases = readPhysicalLeases(backend)
-                .filter((entry) => !(entry.hardwareId === lease.hardwareId && entry.ownerId === lease.ownerId));
-            writePhysicalLeasesUnlocked(backend, [...leases, lease]);
-        });
-        return true;
-    } catch (error) {
-        if (error instanceof DeviceLabStateFileError) return false;
-        throw error;
-    }
+            const lease = readLock(lock, backend, hardwareId);
+            const leases = readPhysicalLeases(backend);
+            return operation({ lock, lease, leases });
+        }));
 }
 
 export function prunePhysicalLeases(backend) {
@@ -187,16 +216,20 @@ export function prunePhysicalLeases(backend) {
     if (leases.length > 0) ensureLeaseDirectoryChain(backend, true);
     for (const lease of leases) {
         if (lease.ownerId !== owner || !leaseExpired(lease)) continue;
-        withSharedMutationLock(mutationLockFile(backend, lease.hardwareId), () => {
-            const current = readLock(lockFile(backend, lease.hardwareId), backend, lease.hardwareId);
+        withLeaseTransaction(backend, lease.hardwareId, ({ lock, lease: current, leases: currentLeases }) => {
             if (current?.ownerId === owner && leaseExpired(current)) {
-                try { unlinkSync(lockFile(backend, lease.hardwareId)); } catch { /* ignore missing lock */ }
+                const nextLeases = replaceAggregateLease(currentLeases, lease.hardwareId, null);
+                commitLeaseTransaction(backend, lock, current, currentLeases, null, nextLeases);
                 pruned.push({ ...current, expired: true, expiresAt: leaseExpiresAt(current) });
-            }
-            if (!current || current.ownerId !== owner || leaseExpired(current)) {
-                removeAggregateLease(backend, owner, lease.hardwareId, lease.deviceId);
+            } else if (!current) {
+                const nextLeases = replaceAggregateLease(currentLeases, lease.hardwareId, null);
+                commitLeaseTransaction(backend, lock, current, currentLeases, current, nextLeases);
+            } else if (current.ownerId !== owner) {
+                const nextLeases = removeAggregateLease(currentLeases, owner, lease.hardwareId, lease.deviceId);
+                commitLeaseTransaction(backend, lock, current, currentLeases, current, nextLeases);
             } else {
-                upsertAggregateLease(backend, current);
+                const nextLeases = replaceAggregateLease(currentLeases, lease.hardwareId, current);
+                commitLeaseTransaction(backend, lock, current, currentLeases, current, nextLeases);
             }
         });
     }
@@ -207,11 +240,8 @@ export function claimPhysicalLease(backend, hardwareId, deviceId, options = {}) 
     const owner = ownerId();
     const ttlMs = normalizedTtlMs(options.ttlMs);
     if (ttlMs === null) return { ok: false, error: "invalid-lease-ttl-ms" };
-    ensureLeaseDirectoryChain(backend, true);
-    const lock = lockFile(backend, hardwareId);
     const now = new Date().toISOString();
-    return withSharedMutationLock(mutationLockFile(backend, hardwareId), () => {
-        const existing = readLock(lock, backend, hardwareId);
+    return withLeaseTransaction(backend, hardwareId, ({ lock, lease: existing, leases }) => {
         if (existing && !leaseExpired(existing)) {
             if (existing.ownerId !== owner) return { ok: false, conflict: existing };
             if (deviceId && existing.deviceId && existing.deviceId !== deviceId) {
@@ -221,11 +251,9 @@ export function claimPhysicalLease(backend, hardwareId, deviceId, options = {}) 
                 return { ok: false, error: "physical-lease-operation-conflict", conflict: existing };
             }
             const refreshed = withExpiry(existing, ttlMs, now);
-            writeLock(lock, refreshed);
-            upsertAggregateLease(backend, refreshed);
+            commitLeaseTransaction(backend, lock, existing, leases, refreshed, replaceAggregateLease(leases, hardwareId, refreshed));
             return { ok: true, lease: refreshed, reused: true, heartbeat: true };
         }
-        if (existing) removeAggregateLease(backend, existing.ownerId, hardwareId, existing.deviceId);
         const expiringLease = withExpiry({
             backend,
             hardwareId,
@@ -235,8 +263,7 @@ export function claimPhysicalLease(backend, hardwareId, deviceId, options = {}) 
             ...(options.claimNonce ? { claimNonce: options.claimNonce } : {}),
             claimedAt: now,
         }, ttlMs, now);
-        writeLock(lock, expiringLease);
-        upsertAggregateLease(backend, expiringLease);
+        commitLeaseTransaction(backend, lock, existing, leases, expiringLease, replaceAggregateLease(leases, hardwareId, expiringLease));
         return { ok: true, lease: expiringLease };
     });
 }
@@ -272,15 +299,11 @@ export function heartbeatPhysicalLease(backend, hardwareId, deviceId, options = 
     const owner = ownerId();
     const ttlMs = normalizedTtlMs(options.ttlMs);
     if (ttlMs === null) return { ok: false, error: "invalid-lease-ttl-ms" };
-    ensureLeaseDirectoryChain(backend, true);
-    const lock = lockFile(backend, hardwareId);
-    return withSharedMutationLock(mutationLockFile(backend, hardwareId), () => {
-        const existing = readLock(lock, backend, hardwareId);
+    return withLeaseTransaction(backend, hardwareId, ({ lock, lease: existing, leases }) => {
         if (!existing) return { ok: false, error: "physical-lease-not-found" };
         if (existing.ownerId !== owner) {
             if (leaseExpired(existing)) {
-                try { unlinkSync(lock); } catch { /* ignore */ }
-                removeAggregateLease(backend, existing.ownerId, hardwareId, existing.deviceId);
+                commitLeaseTransaction(backend, lock, existing, leases, null, replaceAggregateLease(leases, hardwareId, null));
                 return { ok: false, error: "physical-lease-expired", pruned: true, lease: existing };
             }
             return { ok: false, conflict: existing };
@@ -295,29 +318,56 @@ export function heartbeatPhysicalLease(backend, hardwareId, deviceId, options = 
             return { ok: false, error: "physical-lease-operation-mismatch", lease: existing };
         }
         if (leaseExpired(existing)) {
-            try { unlinkSync(lock); } catch { /* ignore */ }
-            removeAggregateLease(backend, owner, hardwareId, deviceId);
+            commitLeaseTransaction(backend, lock, existing, leases, null, replaceAggregateLease(leases, hardwareId, null));
             return { ok: false, error: "physical-lease-expired", pruned: true, lease: existing };
         }
         const refreshed = withExpiry(existing, ttlMs);
-        writeLock(lock, refreshed);
-        upsertAggregateLease(backend, refreshed);
+        commitLeaseTransaction(backend, lock, existing, leases, refreshed, replaceAggregateLease(leases, hardwareId, refreshed));
         return { ok: true, lease: refreshed, heartbeat: true };
     });
 }
 
 export function releasePhysicalLease(backend, hardwareId, deviceId, options = {}) {
     const owner = ownerId();
-    ensureLeaseDirectoryChain(backend, true);
-    const lock = lockFile(backend, hardwareId);
-    return withSharedMutationLock(mutationLockFile(backend, hardwareId), () => {
-        const existing = readLock(lock, backend, hardwareId);
+    const released = withLeaseTransaction(backend, hardwareId, ({ lock, lease: existing, leases }) => {
         if (existing?.ownerId !== owner || (deviceId && existing.deviceId !== deviceId)) return false;
         if (options.claimId && existing.claimId !== options.claimId) return false;
         if (options.claimNonce && existing.claimNonce !== options.claimNonce) return false;
-        stopPhysicalLeaseHeartbeat(backend, hardwareId, deviceId);
-        try { unlinkSync(lock); } catch { /* ignore missing lock */ }
-        removeAggregateLease(backend, owner, hardwareId, deviceId);
+        commitLeaseTransaction(backend, lock, existing, leases, null, replaceAggregateLease(leases, hardwareId, null));
         return true;
     });
+    if (released) stopPhysicalLeaseHeartbeat(backend, hardwareId, deviceId);
+    return released;
+}
+
+export function releasePhysicalLeaseWithMutation(backend, hardwareId, deviceId, options = {}, mutation) {
+    if (typeof mutation !== "function") throw new TypeError("Physical lease release mutation requires a callback");
+    const owner = ownerId();
+    const released = withLeaseTransaction(backend, hardwareId, ({ lock, lease: existing, leases }) => {
+        if (!existing) return { ok: false, error: "physical-lease-not-found" };
+        if (existing.ownerId !== owner) return { ok: false, error: "physical-lease-owner-mismatch", lease: existing };
+        if (deviceId && existing.deviceId !== deviceId) return { ok: false, error: "physical-lease-device-mismatch", lease: existing };
+        if (options.claimId && existing.claimId !== options.claimId) return { ok: false, error: "physical-lease-claim-mismatch", lease: existing };
+        if (options.claimNonce && existing.claimNonce !== options.claimNonce) return { ok: false, error: "physical-lease-operation-mismatch", lease: existing };
+
+        const mutated = mutation(existing);
+        if (!mutated?.ok) {
+            return { ok: false, error: "physical-lease-release-mutation-rejected", mutation: mutated };
+        }
+        try {
+            commitLeaseTransaction(backend, lock, existing, leases, null, replaceAggregateLease(leases, hardwareId, null));
+        } catch (error) {
+            if (typeof mutated.rollback === "function") {
+                try {
+                    mutated.rollback();
+                } catch (rollbackError) {
+                    throw new AggregateError([error, rollbackError], "physical-lease-release-mutation-rollback-failed");
+                }
+            }
+            throw error;
+        }
+        return { ok: true, lease: existing, mutation: mutated };
+    });
+    if (released.ok) stopPhysicalLeaseHeartbeat(backend, hardwareId, deviceId);
+    return released;
 }

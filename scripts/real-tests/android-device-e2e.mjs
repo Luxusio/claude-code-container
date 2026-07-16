@@ -58,24 +58,29 @@ export function androidDeviceE2ECapability(level = Number(process.env.CCC_TEST_L
     return { available: true, reason: "ready", discovery, serial };
 }
 
+export function androidDeviceE2EPrerequisites(env = process.env) {
+    const app = {
+        path: (env.CCC_REAL_ANDROID_DEVICE_APK || env.CCC_REAL_ANDROID_APK || env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_APK || "").trim(),
+        packageName: (env.CCC_REAL_ANDROID_DEVICE_PACKAGE || env.CCC_REAL_ANDROID_PACKAGE || env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PACKAGE || "").trim(),
+        permission: (env.CCC_REAL_ANDROID_DEVICE_PERMISSION || env.CCC_REAL_ANDROID_PERMISSION || env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PERMISSION || "").trim(),
+    };
+    const missing = [
+        !app.path ? "CCC_REAL_ANDROID_DEVICE_APK" : "",
+        !app.packageName ? "CCC_REAL_ANDROID_DEVICE_PACKAGE" : "",
+        !app.permission ? "CCC_REAL_ANDROID_DEVICE_PERMISSION" : "",
+        app.path && !existsSync(app.path) ? `APK file not found: ${app.path}` : "",
+    ].filter(Boolean);
+    return missing.length > 0
+        ? { available: false, reason: `physical Android app proof unavailable before device mutation: ${missing.join(", ")}`, app }
+        : { available: true, reason: "ready", app };
+}
+
 export async function run(options = {}) {
     const cap = androidDeviceE2ECapability(options.level);
     if (!cap.available) return { status: "SKIP", reason: cap.reason, capability: cap };
-
-    const appApk = (process.env.CCC_REAL_ANDROID_DEVICE_APK || process.env.CCC_REAL_ANDROID_APK || process.env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_APK || "").trim();
-    const appPackage = (process.env.CCC_REAL_ANDROID_DEVICE_PACKAGE || process.env.CCC_REAL_ANDROID_PACKAGE || process.env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PACKAGE || "").trim();
-    const appPermission = (process.env.CCC_REAL_ANDROID_DEVICE_PERMISSION || process.env.CCC_REAL_ANDROID_PERMISSION || process.env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PERMISSION || "").trim();
-    const appArtifactReady = Boolean(appApk && appPackage);
-    const strictProof = process.env.CCC_REAL_DEVICE_LAB_FAIL_ON_SKIP === "1";
-    if (strictProof && (!appArtifactReady || !appPermission)) {
-        return {
-            status: "SKIP",
-            reason: [
-                !appArtifactReady ? "missing CCC_REAL_ANDROID_DEVICE_APK/CCC_REAL_ANDROID_DEVICE_PACKAGE" : "",
-                !appPermission ? "missing CCC_REAL_ANDROID_DEVICE_PERMISSION" : "",
-            ].filter(Boolean).join(", "),
-        };
-    }
+    const prerequisites = androidDeviceE2EPrerequisites();
+    if (!prerequisites.available) return { status: "SKIP", reason: prerequisites.reason, capability: cap };
+    const { path: appApk, packageName: appPackage, permission: appPermission } = prerequisites.app;
 
     const suffix = Date.now();
     const deviceId = `android-device-real-e2e-${suffix}`;
@@ -85,6 +90,7 @@ export async function run(options = {}) {
     const recordingPath = join(tempDir, `recording-${suffix}.mp4`);
     let attached = false;
     let recordingActive = false;
+    let primaryFailure = null;
 
     return withDeviceLabMcp(async ({ callTool }) => {
         const direct = { backend: "android-device" };
@@ -97,7 +103,17 @@ export async function run(options = {}) {
             assert.ok(hostDevices.some((device) => device.serial === cap.serial));
 
             const wireless = parsePayload(await callTool("device_wireless", direct));
-            assert.ok(Array.isArray(wireless.actions));
+            assert.strictEqual(wireless.provider, "adb");
+            assert.deepStrictEqual(
+                ["status", "usb-tcpip", "pair", "connect"].filter((action) => !wireless.actions?.includes(action)),
+                [],
+                "Android physical wireless status did not advertise every supported action",
+            );
+            const wirelessHostDevices = Array.isArray(wireless.hostDevices)
+                ? wireless.hostDevices
+                : wireless.hostDevices?.devices;
+            assert.ok(Array.isArray(wirelessHostDevices));
+            assert.ok(wirelessHostDevices.some((device) => device.serial === cap.serial && device.state === "device"));
 
             const attach = parsePayload(await callTool("device_attach", {
                 ...direct,
@@ -277,8 +293,7 @@ export async function run(options = {}) {
             assert.strictEqual(readFileSync(downloadTarget, "utf-8"), `ccc-android-device-file-${suffix}`);
             try { await callTool("device_exec", { ...direct, deviceId, command: `rm -f ${remotePath}` }); } catch { /* preserve primary failure */ }
 
-            let appCoverage = "skipped missing CCC_REAL_ANDROID_DEVICE_APK/CCC_REAL_ANDROID_DEVICE_PACKAGE";
-            if (appArtifactReady) {
+            {
                 const deviceInstall = parsePayload(await callTool("device_install_app", {
                     ...direct,
                     deviceId,
@@ -317,12 +332,10 @@ export async function run(options = {}) {
                 assert.strictEqual(waitForApp.running, true);
                 assert.ok(String(waitForApp.pid || "").trim());
 
-                if (appPermission) {
-                    const grant = parsePayload(await callTool("mobile_grant_permission", { ...direct, deviceId, packageName: appPackage, permission: appPermission }));
-                    assert.deepStrictEqual(grant.permission, { packageName: appPackage, permission: appPermission, action: "grant" });
-                    const revoke = parsePayload(await callTool("mobile_revoke_permission", { ...direct, deviceId, packageName: appPackage, permission: appPermission }));
-                    assert.deepStrictEqual(revoke.permission, { packageName: appPackage, permission: appPermission, action: "revoke" });
-                }
+                const grant = parsePayload(await callTool("mobile_grant_permission", { ...direct, deviceId, packageName: appPackage, permission: appPermission }));
+                assert.deepStrictEqual(grant.permission, { packageName: appPackage, permission: appPermission, action: "grant" });
+                const revoke = parsePayload(await callTool("mobile_revoke_permission", { ...direct, deviceId, packageName: appPackage, permission: appPermission }));
+                assert.deepStrictEqual(revoke.permission, { packageName: appPackage, permission: appPermission, action: "revoke" });
 
                 const stopApp = parsePayload(await callTool("mobile_stop_app", { ...direct, deviceId, packageName: appPackage }));
                 assert.strictEqual(stopApp.provider, "adb");
@@ -339,7 +352,6 @@ export async function run(options = {}) {
                 const uninstall = parsePayload(await callTool("mobile_uninstall_app", { ...direct, deviceId, packageName: appPackage, confirmDestructive: true }));
                 assert.strictEqual(uninstall.provider, "adb");
                 assert.strictEqual(uninstall.uninstalled, appPackage);
-                appCoverage = appPermission ? "install-launch-wait-permission-stop-reset-clear-uninstall verified" : "install-launch-wait-stop-reset-clear-uninstall verified";
             }
 
             const stop = parsePayload(await callTool("device_stop", { ...direct, deviceId }));
@@ -351,19 +363,35 @@ export async function run(options = {}) {
 
             return {
                 status: "PASS",
-                detail: `device=${deviceId} serial=${cap.serial} app=${appCoverage}`,
+                detail: `device=${deviceId} serial=${cap.serial} app=install-launch-wait-permission-stop-reset-clear-uninstall verified wireless=status-actions-device verified`,
                 serial: cap.serial,
                 deviceId,
-                appCoverage,
+                appCoverage: "install-launch-wait-permission-stop-reset-clear-uninstall verified",
+                wirelessCoverage: "status-actions-device verified",
             };
+        } catch (error) {
+            primaryFailure = error;
+            throw error;
         } finally {
+            const cleanupErrors = [];
             if (recordingActive) {
-                try { await callTool("device_record_video_stop", { ...direct, deviceId }); } catch { /* preserve primary failure */ }
+                try { await callTool("device_record_video_stop", { ...direct, deviceId }); } catch (error) {
+                    cleanupErrors.push(`recording stop: ${error.message}`);
+                }
             }
             if (attached) {
-                try { await callTool("device_detach", { ...direct, deviceId }); } catch { /* preserve primary failure */ }
+                try { await callTool("device_detach", { ...direct, deviceId }); } catch (error) {
+                    cleanupErrors.push(`device detach: ${error.message}`);
+                }
             }
-            rmSync(tempDir, { recursive: true, force: true });
+            try {
+                rmSync(tempDir, { recursive: true, force: true });
+            } catch (error) {
+                cleanupErrors.push(`temporary artifact removal: ${error.message}`);
+            }
+            if (cleanupErrors.length > 0) {
+                throw new Error(`Android physical-device E2E cleanup failed: ${cleanupErrors.join("; ")}${primaryFailure ? `; primary failure: ${primaryFailure.message}` : ""}`);
+            }
         }
     }, providerMcpSessionOptions(options, "ccc-real-android-device-e2e"));
 }
