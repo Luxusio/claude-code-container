@@ -38,7 +38,7 @@ function getContentHash() {
     for (const f of files) {
         hash.update(readFileSync(join(projectRoot, f)));
     }
-    for (const dir of ["src", "scripts"]) {
+    for (const dir of ["src", "scripts", "x11-mcp", "device-lab-mcp"]) {
         hashDirectory(hash, join(projectRoot, dir));
     }
     return hash.digest("hex").substring(0, 12);

@@ -7,7 +7,6 @@ import {
     readdirSync,
     readFileSync,
     copyFileSync,
-    statSync,
     rmSync,
     lstatSync,
     renameSync,
@@ -427,6 +426,10 @@ export function initWithSubmodules(dirPath: string): void {
         stdio: "pipe",
     });
     spawnSync("git", ["config", "user.name", "ccc"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], {
         cwd: resolved,
         stdio: "pipe",
     });

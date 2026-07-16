@@ -15,7 +15,19 @@ COPY scripts/localhost-proxy/ .
 RUN CGO_ENABLED=0 go build -ldflags='-s -w' -o ccc-proxy .
 
 # ==========================================================
-# Stage 3: Main image
+# Stage 3: Build bundled CCC MCP servers
+# ==========================================================
+FROM node:22-slim AS mcp-builder
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+COPY x11-mcp ./x11-mcp
+COPY device-lab-mcp ./device-lab-mcp
+COPY lab-mcp ./lab-mcp
+RUN npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp
+
+# ==========================================================
+# Stage 4: Main image
 # ==========================================================
 FROM ubuntu:24.04
 
@@ -80,6 +92,10 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y \
     scrot \
     iptables \
     nftables \
+    qemu-system-x86 \
+    qemu-utils \
+    ovmf \
+    cpu-checker \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --set iptables /usr/sbin/iptables-nft \
     && update-alternatives --set ip6tables /usr/sbin/ip6tables-nft \
@@ -130,6 +146,11 @@ WORKDIR /home/ccc
 
 # Trust all directories (container is isolated, ownership mismatches from bind mounts)
 RUN git config --global --add safe.directory '*'
+USER root
+RUN mkdir -p /home/ccc/.ccc/labs /host-stage && \
+    touch /host-stage/gitconfig && \
+    chown -R ccc:ccc /home/ccc/.ccc /host-stage
+USER ccc
 
 # ============================================================
 # LAYER 6: mise 설치 + 설정 (거의 안 바뀜)
@@ -154,20 +175,32 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
     ~/.local/bin/mise use -g uv@latest
 
 # ============================================================
-# LAYER 7.5: x11-mcp server (xdotool/scrot wrapper, baked into image)
-# /opt/ccc/x11-mcp/server.mjs is referenced by src/mcp-forward.ts and spawned
-# in-container via `mise exec node@22 -- node ...`. We bake it at build time
-# so the path is never dangling. Order matters for layer caching:
+# LAYER 7.5: CCC-managed MCP servers baked into image
+# /opt/ccc/dist/*/server.mjs paths are referenced by src/mcp-forward.ts and
+# spawned in-container via `mise exec node@22 -- node ...`. We bake bundled
+# dist servers at build time so list/call surfaces cannot drift from source
+# files copied into /opt/ccc/* for provider child helpers. Order matters:
 #   1) mkdir + chown (root)
 #   2) COPY package*.json + npm ci  ← cacheable, only invalidates on dep change
 #   3) COPY server.mjs              ← editing the server alone reuses npm layer
 # ============================================================
 USER root
-RUN mkdir -p /opt/ccc/x11-mcp && chown ccc:ccc /opt/ccc/x11-mcp
+RUN mkdir -p /opt/ccc/x11-mcp /opt/ccc/device-lab-mcp /opt/ccc/lab-mcp /opt/ccc/dist && chown -R ccc:ccc /opt/ccc
 USER ccc
+COPY --from=mcp-builder --chown=ccc:ccc /build/dist/x11-mcp /opt/ccc/dist/x11-mcp
+COPY --from=mcp-builder --chown=ccc:ccc /build/dist/device-lab-mcp /opt/ccc/dist/device-lab-mcp
+COPY --from=mcp-builder --chown=ccc:ccc /build/dist/lab-mcp /opt/ccc/dist/lab-mcp
 COPY --chown=ccc:ccc x11-mcp/package.json x11-mcp/package-lock.json /opt/ccc/x11-mcp/
 RUN cd /opt/ccc/x11-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
 COPY --chown=ccc:ccc x11-mcp/server.mjs /opt/ccc/x11-mcp/server.mjs
+COPY --chown=ccc:ccc device-lab-mcp/package.json device-lab-mcp/package-lock.json /opt/ccc/device-lab-mcp/
+RUN cd /opt/ccc/device-lab-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
+COPY --chown=ccc:ccc device-lab-mcp/server.mjs /opt/ccc/device-lab-mcp/server.mjs
+COPY --chown=ccc:ccc device-lab-mcp/src /opt/ccc/device-lab-mcp/src
+COPY --chown=ccc:ccc lab-mcp/package.json lab-mcp/package-lock.json /opt/ccc/lab-mcp/
+RUN cd /opt/ccc/lab-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
+COPY --chown=ccc:ccc lab-mcp/server.mjs /opt/ccc/lab-mcp/server.mjs
+COPY --chown=ccc:ccc lab-mcp/src /opt/ccc/lab-mcp/src
 
 # ============================================================
 # claude-code is installed at runtime and cached in mise volume.

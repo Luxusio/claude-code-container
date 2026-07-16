@@ -1,0 +1,10 @@
+{
+  "name": "@ccc/lab-mcp",
+  "version": "0.1.0",
+  "description": "Lazy lab MCP server for CCC lab-runner containers",
+  "type": "module",
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

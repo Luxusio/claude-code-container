@@ -39,7 +39,8 @@ const DATA_DIR = join(homedir(), ".ccc");
 const LOCKS_DIR = join(DATA_DIR, "locks");
 const PORT_FILE = join(DATA_DIR, "clipboard.port");
 const STARTING_LOCK = join(DATA_DIR, "clipboard.starting");
-const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+export const CLIPBOARD_SERVER_ORPHAN_GRACE_MS = 15000;
+const CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 const STARTUP_POLL_INTERVAL_MS = 100;
 const STARTUP_POLL_TIMEOUT_MS = 5000;
@@ -1042,8 +1043,6 @@ function readClipboardText(plat: ClipboardPlatform): Buffer | null {
 
 function readClipboardImage(plat: ClipboardPlatform, format: "png" | "bmp", targets: string[] = []): Buffer | null {
     let r: { stdout: Buffer; status: number };
-    const mimeType = format === "png" ? "image/png" : "image/bmp";
-
     switch (plat) {
         case "darwin": {
             if (format === "png") {
@@ -1092,10 +1091,23 @@ function gracefulShutdown(server: Server, idleTimer?: ReturnType<typeof setInter
     setTimeout(() => process.exit(0), 3000);
 }
 
+export function clipboardServerOrphanWatchdogState(
+    now: number,
+    noActiveSessionsSince: number | null,
+    hasActiveSessions: boolean,
+): { noActiveSessionsSince: number | null; shouldShutdown: boolean } {
+    if (hasActiveSessions) return { noActiveSessionsSince: null, shouldShutdown: false };
+    const since = noActiveSessionsSince ?? now;
+    return {
+        noActiveSessionsSince: since,
+        shouldShutdown: now - since >= CLIPBOARD_SERVER_ORPHAN_GRACE_MS,
+    };
+}
+
 // === HTTP Server ===
 
 function createClipboardServer(token: string, plat: ClipboardPlatform): { server: Server; start: (bindAddr: string) => Promise<number> } {
-    let lastRequestTime = Date.now();
+    let noActiveSessionsSince: number | null = null;
     let idleTimer: ReturnType<typeof setInterval>;
 
     // Pre-warm persistent PowerShell on Windows/WSL
@@ -1104,8 +1116,6 @@ function createClipboardServer(token: string, plat: ClipboardPlatform): { server
     }
 
     const server = createServer(async (req, res) => {
-        lastRequestTime = Date.now();
-
         const url = req.url ?? "";
         const method = req.method ?? "GET";
 
@@ -1188,15 +1198,17 @@ function createClipboardServer(token: string, plat: ClipboardPlatform): { server
         }
     });
 
-    // Idle timeout: self-terminate after 30 minutes of no requests,
-    // but ONLY if no active CCC sessions (lock files) exist.
+    // A detached server may outlive a crashed CLI. Active session locks keep it
+    // alive; an empty/stale lock set starts a short grace period before exit.
     idleTimer = setInterval(() => {
-        if (Date.now() - lastRequestTime > IDLE_TIMEOUT_MS) {
-            // Check for active sessions — don't die while someone is using CCC
-            if (hasAnyActiveSessionsExcept(null)) return;
-            gracefulShutdown(server, idleTimer);
-        }
-    }, 60000);
+        const state = clipboardServerOrphanWatchdogState(
+            Date.now(),
+            noActiveSessionsSince,
+            hasAnyActiveSessionsExcept(null),
+        );
+        noActiveSessionsSince = state.noActiveSessionsSince;
+        if (state.shouldShutdown) gracefulShutdown(server, idleTimer);
+    }, CLIPBOARD_SERVER_ORPHAN_CHECK_INTERVAL_MS);
 
     const start = (bindAddr: string): Promise<number> => {
         return new Promise((resolve, reject) => {

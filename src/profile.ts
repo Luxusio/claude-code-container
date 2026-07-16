@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { PROFILES_DIR } from "./utils.js";
+import { LAB_RUNNER_PROFILE_NAME, PROFILES_DIR } from "./utils.js";
 
 // === Types ===
 
@@ -28,6 +28,9 @@ export const BUILTIN_PROFILES: Readonly<Record<string, BuiltinProfile>> = {
                 CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
             },
         },
+    },
+    [LAB_RUNNER_PROFILE_NAME]: {
+        description: "Opt-in lab runner — enables bounded in-container VM runtime wiring when the host supports it",
     },
 };
 

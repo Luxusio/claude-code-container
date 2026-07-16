@@ -45,6 +45,10 @@ function initRepo(repoPath: string): void {
         cwd: repoPath,
         stdio: "pipe",
     });
+    spawnSync("git", ["config", "commit.gpgsign", "false"], {
+        cwd: repoPath,
+        stdio: "pipe",
+    });
     writeFileSync(join(repoPath, "init.txt"), "init");
     spawnSync("git", ["add", "."], { cwd: repoPath, stdio: "pipe" });
     spawnSync("git", ["commit", "-m", "init"], {
@@ -653,6 +657,10 @@ describe("createWorkspace", () => {
             cwd: originClone,
             stdio: "pipe",
         });
+        spawnSync("git", ["config", "commit.gpgsign", "false"], {
+            cwd: originClone,
+            stdio: "pipe",
+        });
         writeFileSync(join(originClone, "file.txt"), "content");
         spawnSync("git", ["add", "."], { cwd: originClone, stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "init"], {
@@ -936,6 +944,7 @@ describe("initWithSubmodules", () => {
         spawnSync("git", ["clone", bareRepo, repoInWorkspace], { stdio: "pipe" });
         spawnSync("git", ["config", "user.email", "t@t.com"], { cwd: repoInWorkspace, stdio: "pipe" });
         spawnSync("git", ["config", "user.name", "T"], { cwd: repoInWorkspace, stdio: "pipe" });
+        spawnSync("git", ["config", "commit.gpgsign", "false"], { cwd: repoInWorkspace, stdio: "pipe" });
         writeFileSync(join(repoInWorkspace, "file.txt"), "content");
         spawnSync("git", ["add", "."], { cwd: repoInWorkspace, stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "init"], { cwd: repoInWorkspace, stdio: "pipe" });

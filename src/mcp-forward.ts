@@ -24,11 +24,15 @@ const CHROME_DEVTOOLS_CONFIG: McpServerConfig = {
     ],
 };
 
-// X11 Display MCP config (always included, managed by ccc)
-const X11_DISPLAY_CONFIG: McpServerConfig = {
-    command: "mise",
-    args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/x11-mcp/server.mjs"],
-};
+const OPT_DEVICE_LAB_MCP_SERVER = "/opt/ccc/dist/device-lab-mcp/server.mjs";
+const OPT_LAB_MCP_SERVER = "/opt/ccc/dist/lab-mcp/server.mjs";
+
+function managedMcpServerConfig(serverPath: string): McpServerConfig {
+    return {
+        command: "mise",
+        args: ["--no-config", "exec", "node@22", "--", "node", serverPath],
+    };
+}
 
 const CODEX_MANAGED_BEGIN = "# ccc-managed-mcp begin";
 const CODEX_MANAGED_END = "# ccc-managed-mcp end";
@@ -62,7 +66,7 @@ export function rewriteLocalhostUrl(url: string): string {
  * - stdio servers: forward as-is (command + args)
  * - HTTP/SSE servers: rewrite localhost URLs
  */
-export function processServerForContainer(name: string, server: McpServerConfig): McpServerConfig {
+export function processServerForContainer(_name: string, server: McpServerConfig): McpServerConfig {
     // SSE/HTTP server: rewrite URL
     if (server.url) {
         return { ...server, url: rewriteLocalhostUrl(server.url) };
@@ -127,7 +131,7 @@ function stripCodexManagedBlock(configToml: string): string {
 }
 
 function isCodexManagedMcpTable(line: string): boolean {
-    return /^\[mcp_servers\.(?:"?(?:chrome-devtools|x11-display)"?)\]\s*$/.test(line.trim());
+    return /^\[mcp_servers\.(?:"?(?:chrome-devtools|x11-display|device-lab|lab)"?)\]\s*$/.test(line.trim());
 }
 
 function isTomlTableHeader(line: string): boolean {
@@ -233,15 +237,20 @@ export function buildMcpConfig(profile?: string): string[] {
     // 1. Always include chrome-devtools (ccc-managed)
     mcpServers["chrome-devtools"] = CHROME_DEVTOOLS_CONFIG;
 
-    // 2. Always include x11-display (ccc-managed)
-    mcpServers["x11-display"] = X11_DISPLAY_CONFIG;
+    // 2. Always include device-lab (ccc-managed, including display_* tools)
+    mcpServers["device-lab"] = managedMcpServerConfig(OPT_DEVICE_LAB_MCP_SERVER);
 
-    // 3. Forward host MCP servers
+    // 3. Always include lab (ccc-managed)
+    mcpServers["lab"] = managedMcpServerConfig(OPT_LAB_MCP_SERVER);
+
+    // 4. Forward host MCP servers
     const hostServers = readHostMcpServers();
     for (const [name, server] of Object.entries(hostServers)) {
         // Skip ccc-managed servers
         if (name === "chrome-devtools") continue;
         if (name === "x11-display") continue;
+        if (name === "device-lab") continue;
+        if (name === "lab") continue;
         // Skip playwright (legacy, removed)
         if (name === "playwright") continue;
 

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+proof/
+results/
 .DS_Store
 
 .claude/settings.local.json
@@ -30,3 +32,4 @@ doc/harness/.hygiene-session-count
 doc/harness/.hygiene-last-run
 doc/harness/.hygiene-observe.log
 doc/harness/runtime/
+doc/harness/goals/

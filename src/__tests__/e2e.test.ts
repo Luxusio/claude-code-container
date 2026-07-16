@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawnSync, execFileSync } from 'child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -30,6 +30,7 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number, env?:
     }
     childEnv.NODE_ENV = 'test'
     childEnv.CCC_RUNTIME = 'docker'
+    if (cccHomeDir) childEnv.HOME = cccHomeDir
     Object.assign(childEnv, options.env ?? {})
 
     const result = spawnSync(process.execPath, [CCC_PATH, ...args], {
@@ -47,7 +48,31 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number, env?:
 
 // Get test project path with unique hash
 let testProjectDir: string
+let cccHomeDir: string
 let gitHomeDir: string
+
+function stopIsolatedTestBroker(): void {
+    const runtimeFiles = [
+        join(cccHomeDir, '.ccc', 'devices', 'broker', 'runtime.json'),
+        join(gitHomeDir, '.ccc', 'devices', 'broker', 'runtime.json'),
+    ]
+    for (const runtimeFile of new Set(runtimeFiles)) {
+        if (!existsSync(runtimeFile)) continue
+        let runtime: { managedBy?: string, cwd?: string, pid?: number }
+        try {
+            runtime = JSON.parse(readFileSync(runtimeFile, 'utf8'))
+        } catch {
+            continue
+        }
+        if (runtime.managedBy !== 'ccc-host' || runtime.cwd !== testProjectDir || !Number.isInteger(runtime.pid) || Number(runtime.pid) <= 0) continue
+        if (process.platform === 'win32') {
+            spawnSync('taskkill', ['/PID', String(runtime.pid), '/T', '/F'], { windowsHide: true, timeout: 10000 })
+        } else {
+            try { process.kill(Number(runtime.pid), 'SIGTERM') } catch { /* already stopped */ }
+        }
+        rmSync(runtimeFile, { force: true })
+    }
+}
 
 describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
 
@@ -55,6 +80,7 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
         ensureBuilt()
         // Create a unique temp directory for test project
         testProjectDir = mkdtempSync(join(tmpdir(), 'ccc-test-'))
+        cccHomeDir = mkdtempSync(join(tmpdir(), 'ccc-home-'))
         gitHomeDir = mkdtempSync(join(tmpdir(), 'ccc-git-home-'))
         // Create a minimal project structure
         writeFileSync(join(testProjectDir, 'package.json'), JSON.stringify({ name: 'test-project' }))
@@ -72,8 +98,10 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
         if (testProjectDir) {
             // Stop and remove any test containers
             const result = runCcc(['rm'], { cwd: testProjectDir, timeout: 30000 })
+            stopIsolatedTestBroker()
             // Remove temp directory
             rmSync(testProjectDir, { recursive: true, force: true })
+            rmSync(cccHomeDir, { recursive: true, force: true })
             rmSync(gitHomeDir, { recursive: true, force: true })
         }
     })
@@ -137,7 +165,7 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
             )
 
             expect(result.status).toBe(0)
-            expect(result.stdout.trim()).toBe('ccc-e2e@example.com')
+            expect(result.stdout.trim().split(/\r?\n/).at(-1)).toBe('ccc-e2e@example.com')
         })
 
         it('ccc stop stops the container', { timeout: 30000 }, () => {

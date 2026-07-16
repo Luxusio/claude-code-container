@@ -6,9 +6,11 @@
 // `bindMountArgs()` / `runtimeExtraRunArgs()`.
 
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync } from "fs";
+import { createHash } from "crypto";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
+import { fileURLToPath } from "url";
 import {
     getProjectId,
     getClaudeDir,
@@ -20,6 +22,8 @@ import {
     DOCKER_REGISTRY_IMAGE,
     CLIPBOARD_FILES_DIR,
     CLIPBOARD_FILES_CONTAINER_DIR,
+    LAB_RUNNER_PROFILE_NAME,
+    LAB_RUNNER_STATE_CONTAINER_DIR,
 } from "./utils.js";
 import {
     runtimeCli,
@@ -28,8 +32,14 @@ import {
     isContainerHostRemote,
     getRuntimeInfo,
 } from "./container-runtime.js";
+import { cleanupOwnerDevices } from "./device-lab-admin.js";
+import { deviceLabContainerName } from "./device-lab-owner.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
+
+const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp", "lab-mcp"] as const;
+const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
+const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 
 // === Docker Args Builder ===
 
@@ -49,12 +59,29 @@ export interface DockerRunArgsOptions {
     clipboardPortFile?: string;
     clipboardFilesHostDir?: string;
     /**
+     * Optional in-container QEMU/KVM contract. Despite the historical
+     * `labRunner` name, this is now used for ordinary containers too so
+     * lab-mcp can run from the default CCC container when the host supports it.
+     */
+    labRunner?: LabRunnerRunConfig | null;
+    deviceLabStateHostDir?: string;
+    /**
      * Tells the in-container entrypoint to install the iptables NAT REDIRECT
      * and start ccc-proxy. Set on Docker Desktop / WSL2 / podman-machine
      * flavors where --network host doesn't actually share the host loopback;
      * left unset on docker-native and rootful podman where it does.
      */
     proxyEnabled?: boolean;
+}
+
+export interface LabRunnerRunConfig {
+    status: "ready" | "unsupported";
+    stateVolumeName: string;
+    stateContainerDir: string;
+    kvmDevicePath?: string;
+    kvmGroupId?: number;
+    networkMode: "user";
+    unsupportedReason?: string;
 }
 
 // Docker Compose-compatible labels for Docker Desktop grouping.
@@ -103,8 +130,14 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         args.push(...bindMountArgs(mount.hostPath, mount.containerPath, { readonly: true }));
     }
     args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
+    if (opts.deviceLabStateHostDir) {
+        args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices"));
+    }
     // Named volume — never gets :Z (mount helper auto-detects host-path vs name)
     args.push(...bindMountArgs(opts.miseVolumeName, "/home/ccc/.local/share/mise"));
+    if (opts.labRunner) {
+        args.push(...bindMountArgs(opts.labRunner.stateVolumeName, opts.labRunner.stateContainerDir));
+    }
     // Container-manager socket: Docker uses /var/run/docker.sock,
     // Podman substitutes its own socket on the host side but keeps the same
     // in-container path so docker CLI shims inside the container keep working.
@@ -135,9 +168,24 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     // mise checks this env var in-memory on each invocation and skips the
     // trust-file write path entirely.
     args.push("-e", `MISE_TRUSTED_CONFIG_PATHS=${opts.projectMountPath}`);
-
     if (opts.proxyEnabled) {
         args.push("-e", "CCC_PROXY_ENABLED=1");
+    }
+
+    if (opts.labRunner) {
+        args.push("-e", "CCC_LAB_RUNNER=1");
+        args.push("-e", `CCC_LAB_RUNNER_STATUS=${opts.labRunner.status}`);
+        args.push("-e", `CCC_LAB_STATE_DIR=${opts.labRunner.stateContainerDir}`);
+        args.push("-e", `CCC_LAB_NET_MODE=${opts.labRunner.networkMode}`);
+        if (opts.labRunner.unsupportedReason) {
+            args.push("-e", `CCC_LAB_RUNNER_UNSUPPORTED_REASON=${opts.labRunner.unsupportedReason}`);
+        }
+        if (opts.labRunner.status === "ready" && opts.labRunner.kvmDevicePath) {
+            args.push("--device", `${opts.labRunner.kvmDevicePath}:${opts.labRunner.kvmDevicePath}`);
+            if (opts.labRunner.kvmGroupId !== undefined) {
+                args.push("--group-add", String(opts.labRunner.kvmGroupId));
+            }
+        }
     }
 
     // Extra volume mounts (e.g., source .git for worktree workspaces)
@@ -158,6 +206,67 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     args.push(...getComposeLabels(opts.containerName, opts.fullPath));
     args.push(opts.imageName);
     return args;
+}
+
+export function isLabRunnerProfile(profile?: string): boolean {
+    return profile === LAB_RUNNER_PROFILE_NAME;
+}
+
+export function getLabRunnerStateVolumeName(containerName: string): string {
+    return `${containerName}-lab-state`;
+}
+
+export function buildContainerVmRunConfig(containerName: string): LabRunnerRunConfig {
+    const stateVolumeName = getLabRunnerStateVolumeName(containerName);
+    const unsupportedReason = getLabRunnerUnsupportedReason();
+    if (unsupportedReason) {
+        return {
+            status: "unsupported",
+            stateVolumeName,
+            stateContainerDir: LAB_RUNNER_STATE_CONTAINER_DIR,
+            networkMode: "user",
+            unsupportedReason,
+        };
+    }
+
+    const kvmDevicePath = "/dev/kvm";
+    let kvmGroupId: number | undefined;
+    try {
+        kvmGroupId = statSync(kvmDevicePath).gid;
+    } catch {
+        kvmGroupId = undefined;
+    }
+
+    return {
+        status: "ready",
+        stateVolumeName,
+        stateContainerDir: LAB_RUNNER_STATE_CONTAINER_DIR,
+        kvmDevicePath,
+        kvmGroupId,
+        networkMode: "user",
+    };
+}
+
+export function buildLabRunnerRunConfig(profile: string | undefined, containerName: string): LabRunnerRunConfig | null {
+    if (!isLabRunnerProfile(profile)) return null;
+    return buildContainerVmRunConfig(containerName);
+}
+
+export function getLabRunnerUnsupportedReason(): string | null {
+    const info = getRuntimeInfo();
+    if (process.platform !== "linux") {
+        return "nested virtualization from the CCC container requires a Linux container host";
+    }
+    if (info.remote) {
+        return `${info.flavor} is VM-backed; nested KVM is not exposed to CCC containers by default`;
+    }
+    if (info.rootless) {
+        return `${info.flavor} cannot safely expose /dev/kvm to the CCC container`;
+    }
+    if (!existsSync("/dev/kvm")) {
+        return "/dev/kvm is not available on the container host";
+    }
+    return null;
 }
 
 /**
@@ -181,9 +290,7 @@ function resolveHostSocketPath(): string {
 // === Container Name ===
 
 export function getContainerName(projectPath: string, profile?: string): string {
-    const base = `ccc-${getProjectId(projectPath)}`;
-    if (!profile) return base;
-    return `${base}--p--${profile}`;
+    return deviceLabContainerName(projectPath, profile);
 }
 
 // === Runtime Status Checks ===
@@ -446,34 +553,111 @@ export function syncClipboardShims(containerName: string, distDir: string): void
     }
 }
 
+function envMap(values: unknown): Map<string, string> {
+    const map = new Map<string, string>();
+    if (!Array.isArray(values)) return map;
+    for (const value of values) {
+        const text = String(value);
+        const idx = text.indexOf("=");
+        if (idx > 0) map.set(text.slice(0, idx), text.slice(idx + 1));
+    }
+    return map;
+}
+
+function hasKvmDevice(devices: unknown): boolean {
+    return JSON.stringify(devices ?? []).includes("/dev/kvm");
+}
+
+function deviceEntries(devices: unknown): Array<{ hostPath: string; containerPath: string }> {
+    if (!Array.isArray(devices)) return [];
+    return devices.map((device) => {
+        if (!device || typeof device !== "object") return null;
+        const entry = device as { PathOnHost?: unknown; PathInContainer?: unknown };
+        return {
+            hostPath: String(entry.PathOnHost || ""),
+            containerPath: String(entry.PathInContainer || ""),
+        };
+    }).filter((entry): entry is { hostPath: string; containerPath: string } => Boolean(entry));
+}
+
+function devicesMatchExpectedKvmOnly(devices: unknown, kvmDevicePath: string | undefined): boolean {
+    if (!kvmDevicePath) return false;
+    const actual = deviceEntries(devices);
+    return actual.length === 1
+        && actual[0].hostPath === kvmDevicePath
+        && actual[0].containerPath === kvmDevicePath;
+}
+
+function groupAddIncludes(groupAdd: unknown, groupId: number): boolean {
+    if (!Array.isArray(groupAdd)) return false;
+    return groupAdd.map(String).includes(String(groupId));
+}
+
+function groupAddMatchesExpected(groupAdd: unknown, groupId: number | undefined): boolean {
+    const actual = Array.isArray(groupAdd) ? groupAdd.map(String) : [];
+    const expected = groupId === undefined ? [] : [String(groupId)];
+    return actual.length === expected.length && expected.every((value) => actual.includes(value));
+}
+
 /**
- * Check if a container has all the required volume mounts.
+ * Check if an existing container has the required mounts and immutable VM
+ * contract. Env, device, and group wiring cannot be changed by `docker start`,
+ * so stale containers are recreated.
  */
-function containerHasMounts(
+function containerMatchesRunContract(
     containerName: string,
     requiredMounts: Array<{ hostPath: string; containerPath: string }>,
+    labRunner: LabRunnerRunConfig,
 ): boolean {
     const result = spawnSync(
         runtimeCli(),
-        ["inspect", "-f", "{{json .Mounts}}", containerName],
+        ["inspect", "-f", "{{json .}}", containerName],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (result.status !== 0) return false;
 
     try {
-        const mounts = JSON.parse((result.stdout ?? "").trim()) as Array<{
+        const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Mounts?: Array<{ Source: string; Destination: string }>;
+            Config?: { Env?: string[] };
+            HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
+        };
+        const mounts = inspected.Mounts || [];
+        const env = envMap(inspected.Config?.Env);
+        const devices = inspected.HostConfig?.Devices;
+        const groupAdd = inspected.HostConfig?.GroupAdd;
+        const destinations = new Set(mounts.map((m: {
             Source: string;
             Destination: string;
-        }>;
-        const destinations = new Set(mounts.map((m) => m.Destination));
+        }) => m.Destination));
         for (const req of requiredMounts) {
             if (!destinations.has(req.containerPath)) {
                 if (process.env.DEBUG) {
-                    console.error(`[ccc:debug] containerHasMounts: missing ${req.containerPath}`);
-                    console.error(`[ccc:debug] containerHasMounts: container destinations: ${[...destinations].join(", ")}`);
+                    console.error(`[ccc:debug] containerMatchesRunContract: missing ${req.containerPath}`);
+                    console.error(`[ccc:debug] containerMatchesRunContract: container destinations: ${[...destinations].join(", ")}`);
                 }
                 return false;
             }
+        }
+        const failContract = (reason: string) => {
+            if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
+            return false;
+        };
+        if (inspected.HostConfig?.Privileged === true) return failContract("stale privileged container");
+        if (env.get("CCC_LAB_RUNNER") !== "1") return failContract("missing CCC_LAB_RUNNER=1");
+        if (env.get("CCC_LAB_RUNNER_STATUS") !== labRunner.status) return failContract(`CCC_LAB_RUNNER_STATUS is ${env.get("CCC_LAB_RUNNER_STATUS") || "unset"}, expected ${labRunner.status}`);
+        if (env.get("CCC_LAB_STATE_DIR") !== labRunner.stateContainerDir) return failContract(`CCC_LAB_STATE_DIR is ${env.get("CCC_LAB_STATE_DIR") || "unset"}, expected ${labRunner.stateContainerDir}`);
+        if (env.get("CCC_LAB_NET_MODE") !== labRunner.networkMode) return failContract(`CCC_LAB_NET_MODE is ${env.get("CCC_LAB_NET_MODE") || "unset"}, expected ${labRunner.networkMode}`);
+        if (labRunner.unsupportedReason && env.get("CCC_LAB_RUNNER_UNSUPPORTED_REASON") !== labRunner.unsupportedReason) return failContract("unsupported reason changed");
+        if (!labRunner.unsupportedReason && env.has("CCC_LAB_RUNNER_UNSUPPORTED_REASON")) return failContract("stale unsupported reason env");
+        if (labRunner.status === "ready") {
+            if (!hasKvmDevice(devices)) return failContract("missing /dev/kvm device");
+            if (!devicesMatchExpectedKvmOnly(devices, labRunner.kvmDevicePath)) return failContract("unexpected VM device set");
+            if (labRunner.kvmGroupId !== undefined && !groupAddIncludes(groupAdd, labRunner.kvmGroupId)) return failContract(`missing kvm group ${labRunner.kvmGroupId}`);
+            if (!groupAddMatchesExpected(groupAdd, labRunner.kvmGroupId)) return failContract("unexpected extra VM group-add");
+        } else {
+            if (deviceEntries(devices).length > 0) return failContract("stale device on unsupported config");
+            if (Array.isArray(groupAdd) && groupAdd.length > 0) return failContract("stale group-add on unsupported config");
         }
         return true;
     } catch {
@@ -481,20 +665,48 @@ function containerHasMounts(
     }
 }
 
-// Why host ~/.gitconfig is staged, not mounted at /home/ccc/.gitconfig directly:
-// single-file bind mounts anchor the inode, so rename(2) — the call git uses to
-// atomically replace .gitconfig after writing .gitconfig.lock — returns EBUSY or
-// stalls. Inside the container, scripts/ccc-entrypoint.sh copies
-// /host-stage/gitconfig to /home/ccc/.gitconfig at startup, producing a regular
-// file on the same filesystem as /home/ccc that supports atomic replace.
+// Host ~/.gitconfig is copied after the container starts instead of bind-mounted.
+// Single-file bind mounts are not portable when CCC itself runs in a container
+// with a host Docker socket: the Docker daemon may not see the caller's path, or
+// may create a directory at the file destination. Copying through `docker cp`
+// produces a regular in-container file that git can atomically rewrite.
 // Directory mounts (~/.config/git/) don't have this problem and stay as-is.
 export function getHostGitIdentityMounts(): Array<{ hostPath: string; containerPath: string }> {
     const home = homedir();
     const candidates = [
-        { hostPath: join(home, ".gitconfig"), containerPath: "/host-stage/gitconfig" },
         { hostPath: join(home, ".config", "git"), containerPath: "/home/ccc/.config/git" },
     ];
     return candidates.filter((mount) => existsSync(mount.hostPath));
+}
+
+function syncHostGitConfig(containerName: string): void {
+    const hostGitConfig = join(homedir(), ".gitconfig");
+    if (!existsSync(hostGitConfig)) return;
+
+    const cli = runtimeCli();
+    const stagedPath = "/tmp/ccc-host-gitconfig";
+    const copied = spawnSync(cli, ["cp", hostGitConfig, `${containerName}:${stagedPath}`], { stdio: "ignore" });
+    if (copied.status !== 0) {
+        console.error("[ccc] WARNING: failed to copy host .gitconfig into container");
+        return;
+    }
+
+    const installed = spawnSync(
+        cli,
+        [
+            "exec",
+            "--user",
+            "root",
+            containerName,
+            "sh",
+            "-c",
+            `cp ${stagedPath} /home/ccc/.gitconfig && git config --file /home/ccc/.gitconfig --add safe.directory '*' && chown ccc:ccc /home/ccc/.gitconfig && rm -f ${stagedPath}`,
+        ],
+        { stdio: "ignore" },
+    );
+    if (installed.status !== 0) {
+        console.error("[ccc] WARNING: failed to install host .gitconfig inside container");
+    }
 }
 
 function fixSshPermissions(containerName: string): void {
@@ -527,6 +739,86 @@ function fixSshPermissions(containerName: string): void {
     }
 }
 
+/**
+ * Keep CCC-managed MCP entrypoints aligned with the host CLI package. The
+ * image remains a self-contained fallback, but a same-version development or
+ * hotfix build must not silently keep an older bundled MCP implementation.
+ */
+export function syncManagedMcpBundles(containerName: string): void {
+    const cli = runtimeCli();
+    for (const bundle of MANAGED_MCP_BUNDLES) {
+        const source = join(DIST_DIR, bundle, "server.mjs");
+        let sourceStat: ReturnType<typeof lstatSync>;
+        try {
+            sourceStat = lstatSync(source);
+        } catch (error) {
+            console.error(`[ccc] WARNING: managed MCP bundle is unavailable (${bundle}): ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+        }
+        if (!sourceStat.isFile() || sourceStat.isSymbolicLink() || sourceStat.size < 1 || sourceStat.size > MANAGED_MCP_BUNDLE_MAX_BYTES) {
+            console.error(`[ccc] WARNING: managed MCP bundle is invalid (${bundle}): expected a regular file between 1 and ${MANAGED_MCP_BUNDLE_MAX_BYTES} bytes`);
+            continue;
+        }
+
+        const staging = `/tmp/ccc-managed-${bundle}-${process.pid}.mjs`;
+        const destinationDir = `/opt/ccc/dist/${bundle}`;
+        const destination = `${destinationDir}/server.mjs`;
+        let sourceDigest: string;
+        try {
+            sourceDigest = createHash("sha256").update(readFileSync(source)).digest("hex");
+        } catch (error) {
+            console.error(`[ccc] WARNING: failed to hash managed MCP bundle (${bundle}): ${error instanceof Error ? error.message : String(error)}`);
+            continue;
+        }
+
+        const currentDigest = spawnSync(cli, ["exec", containerName, "sha256sum", destination], {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+            timeout: 5000,
+            windowsHide: true,
+        });
+        if (currentDigest.status === 0 && currentDigest.stdout.trim().split(/\s+/, 1)[0] === sourceDigest) {
+            continue;
+        }
+
+        const copied = spawnSync(cli, ["cp", source, `${containerName}:${staging}`], { stdio: "ignore" });
+        if (copied.status !== 0) {
+            console.error(`[ccc] WARNING: failed to stage managed MCP bundle inside container (${bundle})`);
+            continue;
+        }
+
+        const installed = spawnSync(
+            cli,
+            [
+                "exec",
+                "--user",
+                "root",
+                containerName,
+                "sh",
+                "-c",
+                `mkdir -p ${destinationDir} && chown ccc:ccc ${destinationDir} && install -m 0644 -o ccc -g ccc ${staging} ${destination} && rm -f ${staging}`,
+            ],
+            { stdio: "ignore" },
+        );
+        if (installed.status !== 0) {
+            spawnSync(cli, ["exec", "--user", "root", containerName, "rm", "-f", staging], { stdio: "ignore" });
+            console.error(`[ccc] WARNING: failed to install managed MCP bundle inside container (${bundle})`);
+            continue;
+        }
+
+        const installedDigest = spawnSync(cli, ["exec", containerName, "sha256sum", destination], {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+            timeout: 5000,
+            windowsHide: true,
+        });
+        if (installedDigest.status !== 0 || installedDigest.stdout.trim().split(/\s+/, 1)[0] !== sourceDigest) {
+            spawnSync(cli, ["exec", "--user", "root", containerName, "rm", "-f", destination], { stdio: "ignore" });
+            console.error(`[ccc] WARNING: managed MCP bundle verification failed; removed invalid destination (${bundle})`);
+        }
+    }
+}
+
 function recreateContainer(containerName: string, reason: string, onRecreate?: () => void): void {
     console.log(`Recreating container (${reason})...`);
     const cli = runtimeCli();
@@ -536,6 +828,14 @@ function recreateContainer(containerName: string, reason: string, onRecreate?: (
 }
 
 // === Container Lifecycle ===
+
+function cleanupDevicesBestEffort(projectPath: string, profile?: string): void {
+    try {
+        cleanupOwnerDevices(projectPath, 5000, profile);
+    } catch (err) {
+        console.error(`[ccc] device cleanup failed before container stop: ${err instanceof Error ? err.message : String(err)}`);
+    }
+}
 
 export function startProjectContainer(
     projectPath: string,
@@ -558,6 +858,7 @@ export function startProjectContainer(
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath, profile);
     const cli = runtimeCli();
+    const deviceLabStateHostDir = join(homedir(), ".ccc", "devices");
 
     const debug = !!process.env.DEBUG;
 
@@ -568,6 +869,7 @@ export function startProjectContainer(
     // registry would silently miss that tool's auth dir on subsequent runs.
     if (isContainerExists(containerName)) {
         const gitIdentityMounts = getHostGitIdentityMounts();
+        const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: Array<{ hostPath: string; containerPath: string }> = [
             ...getAllCredentialMounts().map((m) => ({
                 // hostPath isn't checked — only containerPath matters
@@ -576,11 +878,16 @@ export function startProjectContainer(
             })),
             ...gitIdentityMounts,
             ...(extraMounts ?? []),
+            { hostPath: deviceLabStateHostDir, containerPath: "/home/ccc/.ccc/devices" },
             { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR },
         ];
-        if (!containerHasMounts(containerName, requiredMounts)) {
+        requiredMounts.push({
+            hostPath: labRunner.stateVolumeName,
+            containerPath: labRunner.stateContainerDir,
+        });
+        if (!containerMatchesRunContract(containerName, requiredMounts, labRunner)) {
             if (debug) {
-                console.error(`[ccc:debug] Container ${containerName} missing required mounts:`);
+                console.error(`[ccc:debug] Container ${containerName} missing required mounts or VM run contract:`);
                 for (const m of requiredMounts) {
                     console.error(`[ccc:debug]   required destination: ${m.containerPath}`);
                 }
@@ -593,6 +900,8 @@ export function startProjectContainer(
 
     if (isContainerRunning(containerName)) {
         if (canExecContainer(containerName)) {
+            syncManagedMcpBundles(containerName);
+            syncHostGitConfig(containerName);
             return containerName;
         }
         recreateContainer(containerName, "container exec failed", onRecreate);
@@ -604,6 +913,8 @@ export function startProjectContainer(
         if (!canExecContainer(containerName)) {
             recreateContainer(containerName, "container exec failed after restart", onRecreate);
         } else {
+            syncManagedMcpBundles(containerName);
+            syncHostGitConfig(containerName);
             fixSshPermissions(containerName);
             return containerName;
         }
@@ -621,6 +932,7 @@ export function startProjectContainer(
 
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
+    mkdirSync(deviceLabStateHostDir, { recursive: true });
 
     const credentialMounts = getAllCredentialMounts().map(m => {
         const hostPath = resolveCredentialHostPath(m, profile);
@@ -641,6 +953,12 @@ export function startProjectContainer(
         }
     }
 
+    const labRunner = buildContainerVmRunConfig(containerName);
+    if (isLabRunnerProfile(profile) && labRunner.status === "unsupported") {
+        console.warn(`[ccc] lab-runner profile requested but nested VM support is unavailable: ${labRunner.unsupportedReason}`);
+        console.warn("[ccc] lab state volume will still be mounted; lab-mcp should report this provider as unsupported/SKIP.");
+    }
+
     const args = buildDockerRunArgs({
         containerName,
         fullPath,
@@ -656,10 +974,12 @@ export function startProjectContainer(
         extraMounts,
         clipboardPortFile,
         clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
+        labRunner,
+        deviceLabStateHostDir,
         // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
         // heuristics get it wrong (exotic VPN/networking setups, mirrored
         // mode we failed to recognize, etc).
-        proxyEnabled: isContainerHostRemote() && process.env.CCC_DISABLE_PROXY !== "1",
+        proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
     });
 
     const result = spawnSync(cli, args, { stdio: "inherit" });
@@ -668,6 +988,8 @@ export function startProjectContainer(
         process.exit(1);
     }
 
+    syncManagedMcpBundles(containerName);
+    syncHostGitConfig(containerName);
     fixSshPermissions(containerName);
 
     return containerName;
@@ -675,13 +997,15 @@ export function startProjectContainer(
 
 export function stopProjectContainer(projectPath: string, profile?: string): void {
     ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath), profile);
+    const fullPath = resolve(projectPath);
+    const containerName = getContainerName(fullPath, profile);
 
     if (!isContainerExists(containerName)) {
         console.log("Container not found");
         return;
     }
 
+    cleanupDevicesBestEffort(fullPath, profile);
     console.log("Stopping container...");
     spawnSync(runtimeCli(), ["stop", containerName], { stdio: "inherit" });
     console.log("Container stopped");

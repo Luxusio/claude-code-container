@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -229,6 +229,29 @@ describe('parseArgs', () => {
   })
 })
 
+describe('informationalCommand', () => {
+  it.each([
+    [['-h'], 'help'],
+    [['--help'], 'help'],
+    [['help'], 'help'],
+    [['-v'], 'version'],
+    [['--version'], 'version'],
+    [['version'], 'version'],
+    [['@feature', '--help'], 'help'],
+    [['@feature', '--version'], 'version'],
+    [['--env', 'CI=true', '--help'], 'help'],
+    [['--runtime', 'docker', '--version'], 'version'],
+    [['@feature', '--env', 'CI=true', '--help'], 'help'],
+  ] as const)('recognizes %j without preparing a workspace', (args, expected) => {
+    expect(informationalCommand([...args])).toBe(expected)
+  })
+
+  it('does not intercept tool-specific flags', () => {
+    expect(informationalCommand(['claude', '--version'])).toBeNull()
+    expect(informationalCommand(['npm', '--help'])).toBeNull()
+  })
+})
+
 describe('resolveExecTools', () => {
   it('does not wrap shell commands with the default tool', () => {
     const result = resolveExecTools(['bash'])
@@ -371,4 +394,3 @@ describe('buildToolInvocation', () => {
     ])
   })
 })
-
