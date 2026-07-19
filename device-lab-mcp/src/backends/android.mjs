@@ -843,52 +843,57 @@ async function handleAndroidToolUnlocked(name, args) {
             const claim = claimAndroidLifecycle(deviceId, device, "delete");
             if (!claim.transition.matched) return androidLifecycleConflict(deviceId, "delete-claim", claim.transition);
             let deleteCurrent = null;
-            if (force && device.status !== "stopped") {
+            if (force) {
                 discovery ||= androidDiscovery();
                 const serial = androidSerial(device);
                 let adbStop = null;
+                let adbLive = false;
                 if (discovery.adb && serial) {
                     const state = run(discovery.adb, ["-s", serial, "get-state"]);
+                    adbLive = state.status === 0;
                     if (state.status === 0) {
                         const stopped = run(discovery.adb, ["-s", serial, "emu", "kill"]);
                         adbStop = { status: stopped.status, stdout: stopped.stdout, stderr: stopped.stderr };
                     }
                 }
-                const runtimeStop = device.runtime
-                    ? await terminateOwnedRuntimeProcessTree(refreshOwnedRuntimeProcessIdentity(device.runtime), "Android Emulator", { timeoutMs: 3000 })
-                    : null;
-                const runtimePid = device.runtime?.pid || device.pid;
-                const adbProcessExited = adbStop?.status === 0 && runtimePid
-                    ? await waitForProcessExit(runtimePid, 3000)
-                    : false;
-                const runtimeStopped = runtimeStop?.exited === true || adbProcessExited;
-                const adbStopped = adbStop?.status === 0;
-                if ((runtimeStop && !runtimeStopped) || (!runtimeStop && !adbStopped)) {
-                    const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
-                    return textResult(false, JSON.stringify({
-                        ok: false,
-                        error: "android-emulator-force-delete-stop-failed",
-                        backend: "android-emulator",
-                        deviceId,
-                        adbStop,
-                        runtimeStop,
-                        stateReverted: restored.matched,
-                    }));
+                const needsStop = device.status !== "stopped" || adbLive;
+                if (needsStop) {
+                    const runtimeStop = device.runtime
+                        ? await terminateOwnedRuntimeProcessTree(refreshOwnedRuntimeProcessIdentity(device.runtime), "Android Emulator", { timeoutMs: 3000 })
+                        : null;
+                    const runtimePid = device.runtime?.pid || device.pid;
+                    const adbProcessExited = adbStop?.status === 0 && runtimePid
+                        ? await waitForProcessExit(runtimePid, 3000)
+                        : false;
+                    const runtimeStopped = runtimeStop?.exited === true || adbProcessExited;
+                    const adbStopped = adbStop?.status === 0;
+                    if ((runtimeStop && !runtimeStopped) || (!runtimeStop && !adbStopped)) {
+                        const restored = abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                        return textResult(false, JSON.stringify({
+                            ok: false,
+                            error: "android-emulator-force-delete-stop-failed",
+                            backend: "android-emulator",
+                            deviceId,
+                            adbStop,
+                            runtimeStop,
+                            stateReverted: restored.matched,
+                        }));
+                    }
+                    const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
+                    if (!current) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(findAndroidDevice(deviceId)), matched: false });
+                    const stopped = {
+                        ...current,
+                        status: "stopped",
+                        pid: null,
+                        runtime: null,
+                        bootReady: false,
+                        lifecycle: null,
+                        updatedAt: new Date().toISOString(),
+                    };
+                    const stoppedTransition = transitionAndroidDevice(deviceId, current, stopped);
+                    if (!stoppedTransition.matched) return androidLifecycleConflict(deviceId, "delete-stop", stoppedTransition);
+                    deleteCurrent = stopped;
                 }
-                const current = currentAndroidLifecycleDevice(deviceId, claim.lifecycle);
-                if (!current) return androidLifecycleConflict(deviceId, "delete-stop", { found: Boolean(findAndroidDevice(deviceId)), matched: false });
-                const stopped = {
-                    ...current,
-                    status: "stopped",
-                    pid: null,
-                    runtime: null,
-                    bootReady: false,
-                    lifecycle: null,
-                    updatedAt: new Date().toISOString(),
-                };
-                const stoppedTransition = transitionAndroidDevice(deviceId, current, stopped);
-                if (!stoppedTransition.matched) return androidLifecycleConflict(deviceId, "delete-stop", stoppedTransition);
-                deleteCurrent = stopped;
             }
             if (deleteAvd) {
                 const r = run(discovery.avdmanager, ["delete", "avd", "--name", device.avdName]);

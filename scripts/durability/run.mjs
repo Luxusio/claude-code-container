@@ -38,9 +38,13 @@ export function durabilityLaunchPlan(mode, args, options = {}) {
             build = { command: "npm", args: ["run", "build", "--silent"] };
         }
     }
+    const informational = args.includes("--dry-run") || args.includes("--help") || args.includes("-h");
     return {
         sourceCheckout,
         build,
+        brokerRepair: mode === "real" && platform === "win32" && !informational
+            ? { command: process.execPath, args: [distCli, "devices", "broker", "status"] }
+            : null,
         run: { command: process.execPath, args: [runner, ...args] },
     };
 }
@@ -57,6 +61,19 @@ export function main(args = process.argv.slice(2), dependencies = {}) {
         });
         if (built.error) throw built.error;
         if (built.status !== 0) return built.status ?? 1;
+    }
+    if (plan.brokerRepair) {
+        const repaired = spawnSyncImpl(plan.brokerRepair.command, plan.brokerRepair.args, {
+            cwd: dependencies.packageRoot || packageRoot,
+            encoding: "utf8",
+            timeout: 30_000,
+            windowsHide: true,
+        });
+        if (repaired.error) throw repaired.error;
+        if (repaired.status !== 0 || !/brokerReady:\s*true/.test(repaired.stdout || "")) {
+            process.stderr.write(repaired.stderr || repaired.stdout || "CCC host broker preflight failed\n");
+            return repaired.status ?? 1;
+        }
     }
     const executed = spawnSyncImpl(plan.run.command, plan.run.args, {
         cwd: dependencies.packageRoot || packageRoot,

@@ -449,6 +449,14 @@ describe("npm package contents", () => {
         expect(realMcpToolRequestTimeoutMs("device_create", { rpcTimeoutMs: 615000 })).toBe(615000);
     });
 
+    it("keeps real-provider transfer fixtures inside the broker-visible project root", async () => {
+        const { realProviderTempRoot } = await import("../../scripts/real-tests/helpers.mjs") as {
+            realProviderTempRoot: (options?: Record<string, unknown>) => string;
+        };
+        expect(realProviderTempRoot()).toBe(join(repoRoot, "results", ".tmp"));
+        expect(realProviderTempRoot({ brokerOnly: false })).toBe(join(repoRoot, "results", ".tmp"));
+    });
+
     it("runs the bundled device-lab MCP server with the advertised tool surface", { timeout: 30000 }, async () => {
         const { TOOLS } = await import("../../device-lab-mcp/src/tools.mjs") as {
             TOOLS: Array<{ name: string; inputSchema?: unknown }>;

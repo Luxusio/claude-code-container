@@ -953,6 +953,22 @@ describe("device-lab host broker lifecycle commands", () => {
                 params: expect.objectContaining({ localPath: hostAppPath }),
             }), expect.objectContaining({ stateKey: "windows", backend: "windows-sandbox" }), expect.any(Object));
 
+            const hostPathUpload = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    method: "broker.device.tool.invoke",
+                    params: { tool: "device_upload", backend: "windows-sandbox", deviceId: "win-readonly", localPath: hostAppPath, remotePath: "C:\\ccc\\uploads\\Host-App.exe" },
+                }),
+            });
+            expect(hostPathUpload.status).toBe(200);
+            expect(deviceToolRunner).toHaveBeenLastCalledWith(ownerId, expect.objectContaining({
+                tool: "device_upload",
+                deviceId: "win-readonly",
+                localPath: hostAppPath,
+                params: expect.objectContaining({ localPath: hostAppPath }),
+            }), expect.objectContaining({ stateKey: "windows", backend: "windows-sandbox" }), expect.any(Object));
+
             const callsBeforeRejectedPaths = deviceToolRunner.mock.calls.length;
             for (const params of [
                 { tool: "device_upload", localPath: "/etc/hosts", remotePath: "C:\\ccc\\uploads\\hosts" },
@@ -4508,6 +4524,9 @@ describe("device-lab host broker lifecycle commands", () => {
         mkdirSync(windowsRoot, { recursive: true });
         writeFileSync(firstConfigPath, "<Configuration>first</Configuration>");
         writeFileSync(secondConfigPath, "<Configuration>second</Configuration>");
+        const secondDeviceRoot = join(windowsRoot, "win-two");
+        mkdirSync(secondDeviceRoot, { recursive: true });
+        writeFileSync(join(secondDeviceRoot, "helper-artifact.txt"), "owned");
         writeBrokerDevices(ownerId, "windows", [
             { id: "win-one", backend: "windows-sandbox", status: "stopped", configPath: firstConfigPath },
             { id: "win-two", backend: "windows-sandbox", status: "stopped", configPath: secondConfigPath, sandboxId: "12345678-1234-4234-9234-1234567890bb" },
@@ -4597,8 +4616,19 @@ describe("device-lab host broker lifecycle commands", () => {
                 }),
             });
             expect(runningDelete.status).toBe(200);
+            expect(await runningDelete.json()).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({
+                    windowsDeviceArtifactCleanup: expect.objectContaining({
+                        ok: true,
+                        removed: true,
+                        deviceRoot: secondDeviceRoot,
+                    }),
+                }),
+            }));
             expect(commandRunner).toHaveBeenCalledTimes(4);
             expect((commandRunner.mock.calls[3][0] as { args: string[] }).args).toEqual(["stop", "--id", "12345678-1234-4234-9234-1234567890bb"]);
+            expect(existsSync(secondDeviceRoot)).toBe(false);
             const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string }> };
             expect(state.devices.some((device) => device.id === "win-two")).toBe(false);
 
@@ -4612,6 +4642,56 @@ describe("device-lab host broker lifecycle commands", () => {
             });
             expect(restartAfterDelete.status).toBe(200);
             expect(commandRunner).toHaveBeenCalledTimes(5);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("preserves Windows device state when owner artifact cleanup fails", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-windows-delete-cleanup-failure-test");
+        const windowsRoot = backendRoot(ownerId, "windows");
+        const deviceRoot = join(windowsRoot, "win-cleanup-failure");
+        mkdirSync(deviceRoot, { recursive: true });
+        writeFileSync(join(deviceRoot, "owned.txt"), "preserve");
+        writeBrokerDevices(ownerId, "windows", [
+            { id: "win-cleanup-failure", backend: "windows-sandbox", status: "stopped" },
+        ]);
+        const windowsDeviceArtifactCleaner = vi.fn(() => ({
+            ok: false,
+            removed: false,
+            deviceRoot,
+            error: "simulated-access-denied",
+        }));
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-windows-delete-cleanup-failure-test",
+            host: "127.0.0.1",
+            port: 0,
+            commandRunner: vi.fn((command) => ({ mode: command.mode, provider: command.provider, status: 0, stdout: "", stderr: "" })),
+            windowsDeviceArtifactCleaner,
+        });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "windows-sandbox", command: "device_delete", deviceId: "win-cleanup-failure", dryRun: false },
+                }),
+            });
+            expect(response.status).toBe(502);
+            expect(await response.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "windows-sandbox-device-artifact-cleanup-failed",
+                result: expect.objectContaining({
+                    windowsDeviceArtifactCleanup: expect.objectContaining({ error: "simulated-access-denied" }),
+                }),
+            }));
+            expect(windowsDeviceArtifactCleaner).toHaveBeenCalledWith(ownerId, "win-cleanup-failure");
+            expect(existsSync(deviceRoot)).toBe(true);
+            const state = JSON.parse(readFileSync(join(windowsRoot, "devices.json"), "utf8")) as { devices: Array<{ id: string }> };
+            expect(state.devices.some((device) => device.id === "win-cleanup-failure")).toBe(true);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

@@ -151,6 +151,15 @@ function sameState(left, right) {
     return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function sameLeaseIdentity(left, right) {
+    return left?.backend === right?.backend
+        && left?.hardwareId === right?.hardwareId
+        && left?.ownerId === right?.ownerId
+        && left?.deviceId === right?.deviceId
+        && left?.claimId === right?.claimId
+        && left?.claimNonce === right?.claimNonce;
+}
+
 function replaceAggregateLease(leases, hardwareId, lease) {
     const remaining = leases.filter((entry) => entry.hardwareId !== hardwareId);
     return lease ? [...remaining, lease] : remaining;
@@ -322,7 +331,9 @@ export function heartbeatPhysicalLease(backend, hardwareId, deviceId, options = 
             return { ok: false, error: "physical-lease-expired", pruned: true, lease: existing };
         }
         const refreshed = withExpiry(existing, ttlMs);
-        commitLeaseTransaction(backend, lock, existing, leases, refreshed, replaceAggregateLease(leases, hardwareId, refreshed));
+        const aggregateTracksLease = leases.some((lease) => sameLeaseIdentity(lease, existing));
+        const nextLeases = aggregateTracksLease ? replaceAggregateLease(leases, hardwareId, refreshed) : leases;
+        commitLeaseTransaction(backend, lock, existing, leases, refreshed, nextLeases);
         return { ok: true, lease: refreshed, heartbeat: true };
     });
 }
@@ -337,6 +348,40 @@ export function releasePhysicalLease(backend, hardwareId, deviceId, options = {}
         return true;
     });
     if (released) stopPhysicalLeaseHeartbeat(backend, hardwareId, deviceId);
+    return released;
+}
+
+export function releaseOwnedPhysicalLeaseResidue(backend, expected, options = {}) {
+    const owner = ownerId();
+    const hardwareId = expected?.hardwareId;
+    const deviceId = expected?.deviceId;
+    if (typeof hardwareId !== "string" || !hardwareId || typeof deviceId !== "string" || !deviceId) {
+        return { ok: false, error: "physical-lease-residue-identity-required" };
+    }
+    const matchesExpected = (lease) => lease?.ownerId === owner
+        && lease?.hardwareId === hardwareId
+        && lease?.deviceId === deviceId
+        && lease?.claimId === expected.claimId
+        && lease?.claimNonce === expected.claimNonce;
+    const released = withLeaseTransaction(backend, hardwareId, ({ lock, lease, leases }) => {
+        const hardwareLeases = leases.filter((candidate) => candidate.hardwareId === hardwareId);
+        const matches = leases.filter(matchesExpected);
+        if (matches.length === 0) return { ok: false, error: "physical-lease-residue-not-found" };
+        if (matches.length !== 1 || hardwareLeases.length !== 1) return { ok: false, error: "physical-lease-residue-ambiguous" };
+        if (options.requireLockAbsent === true && lease) {
+            return { ok: false, error: "physical-lease-residue-authoritative-lock-present", lease };
+        }
+        if (options.requireExpired === true && !leaseExpired(matches[0])) {
+            return { ok: false, error: "physical-lease-residue-active", lease: matches[0] };
+        }
+        if (lease && !matchesExpected(lease)) {
+            return { ok: false, error: "physical-lease-residue-lock-conflict", lease };
+        }
+        const nextLeases = leases.filter((candidate) => candidate !== matches[0]);
+        commitLeaseTransaction(backend, lock, lease, leases, null, nextLeases);
+        return { ok: true, lease: matches[0], authoritativeLockRemoved: Boolean(lease) };
+    });
+    if (released.ok) stopPhysicalLeaseHeartbeat(backend, hardwareId, deviceId);
     return released;
 }
 

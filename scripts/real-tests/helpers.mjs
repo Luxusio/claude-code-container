@@ -18,8 +18,8 @@ export const providerEnv = {
     CCC_LAB_STATE_DIR: stateRoot,
 };
 
-export function realProviderTempRoot(options = {}) {
-    const root = options.brokerOnly === true ? join(repoRoot, "results", ".tmp") : tmpdir();
+export function realProviderTempRoot() {
+    const root = join(repoRoot, "results", ".tmp");
     mkdirSync(root, { recursive: true });
     return root;
 }

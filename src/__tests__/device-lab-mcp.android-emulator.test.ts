@@ -1118,6 +1118,24 @@ exec "${realAdbPath}" "$@"
         expect(readFileSync(logPath, "utf8").slice(beforeLog.length)).toContain("adb -s emulator-5666 emu kill");
     });
 
+    it("force-deletes a live emulator even when persisted state says stopped", { timeout: TIMEOUT }, async () => {
+        const deviceId = "android-force-delete-stale-stopped";
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: { backend: "android-emulator", name: "Force Delete Stale Stopped", deviceId, port: 5670 },
+        });
+        expect(create.isError).not.toBe(true);
+        const beforeLog = readFileSync(logPath, "utf8");
+
+        const deleted = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, force: true, confirmDestructive: true },
+        });
+        expect(deleted.isError).not.toBe(true);
+        expect(parseToolJson(deleted)).toEqual(expect.objectContaining({ deleted: deviceId }));
+        expect(readFileSync(logPath, "utf8").slice(beforeLog.length)).toContain("adb -s emulator-5670 emu kill");
+    });
+
     it("preserves running state and the AVD when force-delete cannot terminate the owned process", { timeout: TIMEOUT }, async () => {
         const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "android-emulator" } });
         const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;

@@ -1,18 +1,29 @@
 import assert from "assert/strict";
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import test from "node:test";
 import {
+    androidAvdManagerInventoryInvocation,
+    cleanupTestTempArtifacts,
+    configureAndroidPhysicalDevice,
+    deleteAndroidAvdName,
+    formatResidueSummary,
     inspectTestOwnedResidue,
     listAndroidAvdNames,
+    listRunningAndroidAvdNames,
     main,
     parseRealProviderCycleArgs,
+    parseAndroidPhysicalDeviceInventory,
     realProviderCycleCommand,
+    recoverAndroidEmulatorResidue,
+    recoverAndroidPhysicalDeviceResidue,
+    selectAndroidPhysicalDevice,
     runCycle,
     terminateTimedOutProcessTree,
     verifySuccessfulProcessTree,
+    writeResidueDiagnostic,
 } from "./real-provider-cycles.mjs";
 
 function successfulCycle(overrides = {}) {
@@ -52,6 +63,73 @@ test("maps targets to the exact existing real-test modules", () => {
     }
 });
 
+test("auto-selects a deterministic authorized physical Android device", () => {
+    const devices = parseAndroidPhysicalDeviceInventory([
+        "List of devices attached",
+        "Z-SERIAL device usb:1-1",
+        "A-SERIAL device usb:1-2",
+        "emulator-5554 device product:sdk",
+        "OFFLINE offline usb:1-3",
+        "UNAUTHORIZED unauthorized usb:1-4",
+    ].join("\n"));
+    assert.deepEqual(devices.map((device) => device.serial), ["Z-SERIAL", "A-SERIAL"]);
+    assert.equal(selectAndroidPhysicalDevice(devices, [], "owner").serial, "A-SERIAL");
+    assert.equal(selectAndroidPhysicalDevice(devices, [
+        { hardwareId: "Z-SERIAL", ownerId: "owner" },
+        { hardwareId: "A-SERIAL", ownerId: "foreign" },
+    ], "owner").serial, "Z-SERIAL");
+    assert.equal(selectAndroidPhysicalDevice(devices, [
+        { hardwareId: "Z-SERIAL", ownerId: "foreign" },
+        { hardwareId: "A-SERIAL", ownerId: "foreign" },
+    ], "owner"), null);
+});
+
+test("configures the selected physical Android serial without overriding explicit configuration", () => {
+    const explicitEnv = { CCC_REAL_ANDROID_DEVICE_SERIAL: "EXPLICIT" };
+    assert.deepEqual(configureAndroidPhysicalDevice(explicitEnv, {
+        spawnSyncImpl: () => { throw new Error("ADB must not run"); },
+    }), { serial: "EXPLICIT", source: "configured", candidates: 1 });
+
+    const env = {};
+    assert.deepEqual(configureAndroidPhysicalDevice(env, {
+        discovery: { adb: "adb" },
+        owner: "owner",
+        readLeases: () => [],
+        spawnSyncImpl: () => ({ status: 0, stdout: "B device\nA device\n", stderr: "" }),
+    }), { serial: "A", source: "auto", candidates: 2 });
+    assert.equal(env.CCC_REAL_ANDROID_DEVICE_SERIAL, "A");
+    assert.throws(() => configureAndroidPhysicalDevice({}, {
+        discovery: { adb: "adb" },
+        readLeases: () => [],
+        spawnSyncImpl: () => ({ status: 0, stdout: "emulator-5554 device\nPHONE unauthorized\n", stderr: "" }),
+    }), /no authorized physical Android device/);
+    assert.throws(() => configureAndroidPhysicalDevice({}, {
+        discovery: { adb: "adb" },
+        owner: "owner",
+        readLeases: () => [{ hardwareId: "PHONE", ownerId: "foreign" }],
+        spawnSyncImpl: () => ({ status: 0, stdout: "PHONE device\n", stderr: "" }),
+    }), /leased by other owners/);
+});
+
+test("removes only immediate test-prefixed temporary artifacts", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-real-cycle-temp-"));
+    const artifact = join(root, "ccc-windows-sandbox-e2e-stale");
+    const unrelated = join(root, "unrelated");
+    try {
+        mkdirSync(artifact);
+        mkdirSync(unrelated);
+        cleanupTestTempArtifacts("windows-sandbox", [artifact], { tempRoot: root });
+        assert.equal(existsSync(artifact), false);
+        assert.equal(existsSync(unrelated), true);
+        assert.throws(
+            () => cleanupTestTempArtifacts("windows-sandbox", [unrelated], { tempRoot: root }),
+            /refusing to remove unverified test artifact/,
+        );
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("parses the Android SDK AVD inventory and fails closed on command errors", () => {
     assert.deepEqual(listAndroidAvdNames({
         avdmanager: "avdmanager",
@@ -61,6 +139,231 @@ test("parses the Android SDK AVD inventory and fails closed on command errors", 
         avdmanager: "avdmanager",
         spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "broken SDK" }),
     }), /Android AVD inventory failed: broken SDK/);
+});
+
+test("Windows Android AVD inventory invokes avdmanager batch files through cmd.exe", () => {
+    const avdmanager = "C:\\Users\\Test User\\Android\\Sdk\\cmdline-tools\\latest\\bin\\avdmanager.bat";
+    assert.deepEqual(androidAvdManagerInventoryInvocation(avdmanager, "win32"), {
+        command: "cmd.exe",
+        args: ["/d", "/s", "/c", `"${avdmanager}" list avd -c`],
+    });
+    let invocation;
+    assert.deepEqual(listAndroidAvdNames({
+        avdmanager,
+        platform: "win32",
+        spawnSyncImpl: (command, args) => {
+            invocation = { command, args };
+            return { status: 0, stdout: "Pixel_Windows\r\n", stderr: "" };
+        },
+    }), ["Pixel_Windows"]);
+    assert.equal(invocation.command, "cmd.exe");
+    assert.notEqual(invocation.command, avdmanager);
+});
+
+test("Windows Android AVD deletion invokes avdmanager batch files through cmd.exe", () => {
+    const avdmanager = "C:\\Android SDK\\avdmanager.bat";
+    let invocation;
+    deleteAndroidAvdName("ccc-owner-real-android-e2e-stale", {
+        avdmanager,
+        platform: "win32",
+        spawnSyncImpl: (command, args) => {
+            invocation = { command, args };
+            return { status: 0, stdout: "", stderr: "" };
+        },
+    });
+    assert.equal(invocation.command, "cmd.exe");
+    assert.match(invocation.args.at(-1), /delete avd --name ccc-owner-real-android-e2e-stale/);
+});
+
+test("lists live Android emulator AVD identities and fails closed on identity errors", () => {
+    const calls = [];
+    assert.deepEqual(listRunningAndroidAvdNames({
+        adb: "adb",
+        spawnSyncImpl: (_command, args) => {
+            calls.push(args);
+            if (args[0] === "devices") return { status: 0, stdout: "List of devices attached\nemulator-5554\tdevice\nphone\tdevice\n", stderr: "" };
+            return { status: 0, stdout: "Test_AVD\nOK\n", stderr: "" };
+        },
+    }), ["Test_AVD"]);
+    assert.deepEqual(calls, [["devices"], ["-s", "emulator-5554", "emu", "avd", "name"]]);
+    assert.throws(() => listRunningAndroidAvdNames({
+        adb: "adb",
+        spawnSyncImpl: (_command, args) => args[0] === "devices"
+            ? { status: 0, stdout: "emulator-5554\tdevice\n", stderr: "" }
+            : { status: 1, stdout: "", stderr: "offline" },
+    }), /identity inspection failed: offline/);
+});
+
+test("recovers only verified current-owner Android emulator E2E residue", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-android-recovery-home-"));
+    const tempRoot = mkdtempSync(join(tmpdir(), "ccc-android-recovery-temp-"));
+    const owner = "0123456789abcdef";
+    const deviceId = "android-real-e2e-stale";
+    const stateAvd = `ccc-${owner}-real-android-e2e-stale`;
+    const orphanAvd = `ccc-${owner}-real-android-e2e-orphan`;
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "android");
+    const statePath = join(backendRoot, "devices.json");
+    const artifact = join(backendRoot, deviceId);
+    const tempArtifact = join(tempRoot, "ccc-android-emulator-e2e-stale");
+    let avds = [stateAvd, orphanAvd, "user-avd"];
+    try {
+        mkdirSync(artifact, { recursive: true });
+        mkdirSync(tempArtifact);
+        writeFileSync(statePath, JSON.stringify({ devices: [{ id: deviceId, ownerId: owner, backend: "android-emulator", avdName: stateAvd, status: "stopped" }] }));
+        const deletedDevices = [];
+        const deletedAvds = [];
+        const result = await recoverAndroidEmulatorResidue({
+            home,
+            owner,
+            tempRoot,
+            listAndroidAvds: () => [...avds],
+            listRunningAndroidAvds: () => [],
+            deleteStateDevice: async (device) => {
+                deletedDevices.push(device.id);
+                avds = avds.filter((name) => name !== device.avdName);
+                writeFileSync(statePath, JSON.stringify({ devices: [] }));
+            },
+            deleteAndroidAvd: (name) => {
+                deletedAvds.push(name);
+                avds = avds.filter((candidate) => candidate !== name);
+            },
+        });
+        assert.deepEqual(deletedDevices, [deviceId]);
+        assert.deepEqual(deletedAvds, [orphanAvd]);
+        assert.deepEqual(avds, ["user-avd"]);
+        assert.deepEqual(result, { devices: 1, avds: 1, ownerArtifacts: 1, tempArtifacts: 1 });
+        assert.equal(existsSync(artifact), false);
+        assert.equal(existsSync(tempArtifact), false);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test("Android residue recovery rejects foreign state ownership and active orphan AVDs", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-android-recovery-guard-"));
+    const owner = "0123456789abcdef";
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "android");
+    const statePath = join(backendRoot, "devices.json");
+    const avd = `ccc-${owner}-real-android-e2e-active`;
+    try {
+        mkdirSync(backendRoot, { recursive: true });
+        writeFileSync(statePath, JSON.stringify({ devices: [{ id: "android-real-e2e-foreign", ownerId: "fedcba9876543210", avdName: avd }] }));
+        await assert.rejects(recoverAndroidEmulatorResidue({ home, owner, listAndroidAvds: () => [] }), /foreign owner/);
+        writeFileSync(statePath, JSON.stringify({ devices: [] }));
+        await assert.rejects(recoverAndroidEmulatorResidue({
+            home,
+            owner,
+            listAndroidAvds: () => [avd],
+            listRunningAndroidAvds: () => [avd],
+        }), /refusing to delete active orphan/);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("recovers verified current-owner Android physical E2E residue", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-android-device-recovery-home-"));
+    const tempRoot = mkdtempSync(join(tmpdir(), "ccc-android-device-recovery-temp-"));
+    const owner = "0123456789abcdef";
+    const deviceId = "android-device-real-e2e-stale";
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "android-device");
+    const statePath = join(backendRoot, "devices.json");
+    const artifact = join(backendRoot, deviceId);
+    const tempArtifact = join(tempRoot, "android-device-e2e-stale");
+    const lease = { backend: "android-device", hardwareId: "USB123", ownerId: owner, deviceId, claimId: "claim", claimNonce: "nonce", expiresAt: "2020-01-01T00:00:00.000Z" };
+    let leases = [lease];
+    try {
+        mkdirSync(artifact, { recursive: true });
+        mkdirSync(tempArtifact);
+        writeFileSync(statePath, JSON.stringify({ devices: [{
+            id: deviceId,
+            ownerId: owner,
+            backend: "android-device",
+            serial: "USB123",
+            leaseClaimId: "claim",
+            leaseClaimNonce: "nonce",
+        }] }));
+        const result = await recoverAndroidPhysicalDeviceResidue({
+            home,
+            owner,
+            tempRoot,
+            detachStateDevice: async () => writeFileSync(statePath, JSON.stringify({ devices: [] })),
+            readLeases: () => [...leases],
+            releaseLeaseResidue: (_backend, expected, releaseOptions) => {
+                assert.deepEqual(expected, { hardwareId: "USB123", deviceId, claimId: "claim", claimNonce: "nonce" });
+                assert.deepEqual(releaseOptions, { requireExpired: true });
+                leases = [];
+                return { ok: true };
+            },
+        });
+        assert.deepEqual(result, { devices: 1, leases: 1, ownerArtifacts: 1, tempArtifacts: 1 });
+        assert.equal(existsSync(artifact), false);
+        assert.equal(existsSync(tempArtifact), false);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test("recovers a fresh Android physical aggregate orphan only in lock-absent mode", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-android-device-fresh-orphan-"));
+    const owner = "0123456789abcdef";
+    const lease = {
+        backend: "android-device",
+        hardwareId: "USB123",
+        ownerId: owner,
+        deviceId: "android-device-real-e2e-fresh-orphan",
+        claimId: "claim",
+        claimNonce: "nonce",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    let leases = [lease];
+    try {
+        const result = await recoverAndroidPhysicalDeviceResidue({
+            home,
+            owner,
+            allowActiveAggregateOrphans: true,
+            readLeases: () => [...leases],
+            releaseLeaseResidue: (_backend, expected, releaseOptions) => {
+                assert.deepEqual(expected, {
+                    hardwareId: "USB123",
+                    deviceId: lease.deviceId,
+                    claimId: "claim",
+                    claimNonce: "nonce",
+                });
+                assert.deepEqual(releaseOptions, { requireLockAbsent: true });
+                leases = [];
+                return { ok: true };
+            },
+            snapshotTempArtifacts: () => new Set(),
+        });
+        assert.equal(result.leases, 1);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("Android physical recovery rejects foreign state and lease conflicts", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-android-device-recovery-guard-"));
+    const owner = "0123456789abcdef";
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "android-device");
+    const statePath = join(backendRoot, "devices.json");
+    try {
+        mkdirSync(backendRoot, { recursive: true });
+        writeFileSync(statePath, JSON.stringify({ devices: [{ id: "android-device-real-e2e-foreign", ownerId: "foreign", backend: "android-device", serial: "USB" }] }));
+        await assert.rejects(recoverAndroidPhysicalDeviceResidue({ home, owner }), /foreign owner/);
+        writeFileSync(statePath, JSON.stringify({ devices: [] }));
+        await assert.rejects(recoverAndroidPhysicalDeviceResidue({
+            home,
+            owner,
+            readLeases: () => [{ backend: "android-device", hardwareId: "USB", ownerId: owner, deviceId: "android-device-real-e2e-stale" }],
+            releaseLeaseResidue: () => ({ ok: false, error: "physical-lease-residue-lock-conflict" }),
+            snapshotTempArtifacts: () => new Set(),
+        }), /lock-conflict/);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
 });
 
 test("detects a test-created AVD that is absent from CCC state", () => {
@@ -78,6 +381,33 @@ test("detects a test-created AVD that is absent from CCC state", () => {
         assert.deepEqual(residue, ["sdk-avd:ccc-0123456789abcdef-real-android-e2e-123"]);
     } finally {
         rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("compacts large residue lists and preserves the full diagnostic in one bounded report", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-real-cycle-diagnostic-"));
+    const items = [
+        "device-state:android-real-e2e-stale",
+        ...Array.from({ length: 8 }, (_, index) => `owner-artifact:C:\\Users\\Test\\.ccc\\android\\android-real-e2e-${index}`),
+        "sdk-avd:ccc-owner-real-android-e2e-stale",
+        "temp-artifact:C:\\Users\\Test\\Temp\\ccc-android-emulator-e2e-stale",
+    ];
+    try {
+        const summary = formatResidueSummary(items);
+        assert.match(summary, /^11 items \(device-state=1, owner-artifact=8, sdk-avd=1, temp-artifact=1\)/);
+        assert.match(summary, /owner-artifact:android-real-e2e-0/);
+        assert.doesNotMatch(summary, /android-real-e2e-7/);
+        assert.ok(summary.length < 300);
+        const report = writeResidueDiagnostic({
+            target: "android-emulator",
+            cycle: 1,
+            phase: "preflight",
+        }, items, { root });
+        const payload = JSON.parse(readFileSync(report, "utf8"));
+        assert.deepEqual(payload.items, items);
+        assert.equal(readdirSync(root).length, 1);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
     }
 });
 
@@ -212,6 +542,7 @@ test("successful cycle fails on identity-verified descendant survivors without s
 test("successful cycle fails closed when process-tree verification is missing", async () => {
     await assert.rejects(
         main(["--target", "android-device", "--cycles", "1"], {
+            configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
             inspectTestOwnedResidue: () => [],
             snapshotTestTempArtifacts: () => new Set(),
             runCycle: async () => ({ code: 0, signal: null, timedOut: false, output: "" }),
@@ -235,6 +566,8 @@ test("Windows target refuses an existing Sandbox before provider execution", asy
     await assert.rejects(
         main(["--target", "windows-sandbox", "--cycles", "1"], {
             runCycle: async () => { invoked = true; return successfulCycle(); },
+            inspectTestOwnedResidue: () => [],
+            snapshotTestTempArtifacts: () => new Set(),
             runningWindowsSandboxSessions: () => [1234],
         }),
         /refusing cycle 1\/1 while a Windows Sandbox session is active/,
@@ -242,28 +575,141 @@ test("Windows target refuses an existing Sandbox before provider execution", asy
     assert.equal(invoked, false);
 });
 
-test("fails closed on test-owned state before cycle one", async () => {
-    let invoked = false;
-    await assert.rejects(
-        main(["--target", "android-emulator", "--cycles", "1"], {
-            inspectTestOwnedResidue: () => ["device-state:android-real-e2e-stale"],
-            snapshotTestTempArtifacts: () => new Set(),
-            runCycle: async () => { invoked = true; return successfulCycle(); },
-        }),
-        /test-owned residue before cycle 1: device-state:android-real-e2e-stale/,
-    );
-    assert.equal(invoked, false);
+test("Windows target lets the provider test recover prior E2E residue", async () => {
+    let cycleRuns = 0;
+    let residueInspections = 0;
+    const code = await main(["--target", "windows-sandbox", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => (++residueInspections === 1
+            ? ["device-state:windows-real-sandbox-stale", "host-lock:C:/host-locks/windows-sandbox.json"]
+            : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        runningWindowsSandboxSessions: () => (cycleRuns === 0 ? [1234] : []),
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(cycleRuns, 1);
+    assert.equal(residueInspections, 2);
 });
 
-test("fails closed on test-owned temporary artifacts before cycle one", async () => {
+test("Windows target removes stale test temp artifacts before residue recovery", async () => {
+    let artifactInspections = 0;
+    let cleaned = false;
+    const code = await main(["--target", "windows-sandbox", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => [],
+        snapshotTestTempArtifacts: () => (++artifactInspections === 1
+            ? new Set(["stale/ccc-windows-sandbox-e2e-old"])
+            : new Set()),
+        cleanupTestTempArtifacts: (_target, paths) => {
+            cleaned = true;
+            assert.deepEqual(paths, ["stale/ccc-windows-sandbox-e2e-old"]);
+        },
+        runningWindowsSandboxSessions: () => [],
+        runCycle: async () => successfulCycle(),
+    });
+    assert.equal(code, 0);
+    assert.equal(cleaned, true);
+    assert.equal(artifactInspections, 3);
+});
+
+test("fails closed when Android residue recovery cannot clear state before cycle one", async () => {
+    let invoked = false;
+    let inspections = 0;
+    await assert.rejects(
+        main(["--target", "android-emulator", "--cycles", "1"], {
+            inspectTestOwnedResidue: () => {
+                inspections += 1;
+                return ["device-state:android-real-e2e-stale"];
+            },
+            snapshotTestTempArtifacts: () => new Set(),
+            recoverAndroidEmulatorResidue: async () => ({ devices: 1 }),
+            writeResidueDiagnostic: () => "diagnostic.json",
+            runCycle: async () => { invoked = true; return successfulCycle(); },
+        }),
+        /Android recovery did not clear residue before cycle 1: device-state:android-real-e2e-stale/,
+    );
+    assert.equal(invoked, false);
+    assert.equal(inspections, 2);
+});
+
+test("runs the Android cycle after verified automatic residue recovery", async () => {
+    let inspections = 0;
+    let recovered = 0;
+    let cycleRuns = 0;
+    const code = await main(["--target", "android-emulator", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => (++inspections === 1 ? ["device-state:android-real-e2e-stale"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        recoverAndroidEmulatorResidue: async () => {
+            recovered += 1;
+            return { devices: 1, avds: 1 };
+        },
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(recovered, 1);
+    assert.equal(cycleRuns, 1);
+    assert.equal(inspections, 3);
+});
+
+test("runs the Android physical cycle after verified automatic residue recovery", async () => {
+    let inspections = 0;
+    let recovered = 0;
+    let cycleRuns = 0;
+    const code = await main(["--target", "android-device", "--cycles", "1"], {
+        configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
+        inspectTestOwnedResidue: () => (++inspections === 1 ? ["physical-lease-aggregate:stale"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        recoverAndroidPhysicalDeviceResidue: async (options) => {
+            assert.deepEqual(options, { allowActiveAggregateOrphans: true });
+            recovered += 1;
+            return { leases: 1 };
+        },
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(recovered, 1);
+    assert.equal(cycleRuns, 1);
+    assert.equal(inspections, 3);
+});
+
+test("recovers lock-absent Android physical residue after a successful cycle", async () => {
+    let inspections = 0;
+    let recoveries = 0;
+    const code = await main(["--target", "android-device", "--cycles", "1"], {
+        configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
+        inspectTestOwnedResidue: () => (++inspections === 2 ? ["physical-lease-aggregate:fresh"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        recoverAndroidPhysicalDeviceResidue: async (options) => {
+            assert.deepEqual(options, { allowActiveAggregateOrphans: true });
+            recoveries += 1;
+            return { leases: 1 };
+        },
+        runCycle: async () => successfulCycle(),
+    });
+    assert.equal(code, 0);
+    assert.equal(recoveries, 1);
+    assert.equal(inspections, 3);
+});
+
+test("fails closed when Android physical recovery cannot clear temporary artifacts", async () => {
     let invoked = false;
     await assert.rejects(
         main(["--target", "android-device", "--cycles", "1"], {
+            configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
             inspectTestOwnedResidue: () => [],
             snapshotTestTempArtifacts: () => new Set(["stale/android-device-e2e-artifact"]),
+            writeResidueDiagnostic: () => "diagnostic.json",
             runCycle: async () => { invoked = true; return successfulCycle(); },
         }),
-        /test-owned residue before cycle 1: temp-artifact:stale\/android-device-e2e-artifact/,
+        /Android physical recovery did not clear residue before cycle 1: temp-artifact:stale\/android-device-e2e-artifact/,
     );
     assert.equal(invoked, false);
 });
@@ -281,7 +727,7 @@ test("Windows target detects a Sandbox process after a successful cycle", async 
                 return successfulCycle();
             },
         }),
-        /Windows Sandbox session remained or appeared \(PIDs: 5678\)/,
+        /Windows Sandbox session remained or appeared \(IDs: 5678\)/,
     );
     assert.equal(cycleRuns, 1);
     assert.equal(processInspections, 2);
@@ -291,6 +737,7 @@ test("failed cycle still reports process cleanup errors and post-failure residue
     let inspections = 0;
     await assert.rejects(
         main(["--target", "android-device", "--cycles", "1"], {
+            configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
             inspectTestOwnedResidue: () => (++inspections === 1 ? [] : ["physical-lease:stale.json"]),
             snapshotTestTempArtifacts: () => new Set(),
             runCycle: async () => ({
@@ -319,6 +766,7 @@ test("failed cycle performs post-failure residue inspection even when runner thr
     let inspections = 0;
     await assert.rejects(
         main(["--target", "android-device", "--cycles", "1"], {
+            configureAndroidPhysicalDevice: () => ({ serial: "TEST", source: "auto", candidates: 1 }),
             inspectTestOwnedResidue: () => (++inspections === 1 ? [] : ["device-state:ios-real-e2e-leak"]),
             snapshotTestTempArtifacts: () => new Set(),
             runCycle: async () => { throw new Error("spawn failed"); },

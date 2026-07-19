@@ -15,7 +15,11 @@ const WSB_LIST_TIMEOUT_MS = 10000;
 const WSB_STOP_TIMEOUT_MS = 60000;
 
 function parsePayload(result) {
-    return parseToolPayload(result);
+    const payload = parseToolPayload(result);
+    if (payload?.ok === false) {
+        throw new Error([payload.error, payload.detail].filter(Boolean).join(": ") || "Windows Sandbox broker operation failed");
+    }
+    return payload;
 }
 
 function responseText(result) {
@@ -333,13 +337,34 @@ export async function cleanupPreviousWindowsSandboxE2E(options = {}) {
     }
     const windowsRoot = join(homeDir, ".ccc/devices/owners", owner, "windows");
     if (existsSync(windowsRoot)) {
+        let sessions = null;
+        const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
         for (const entry of readdirSync(windowsRoot).filter((name) => name.startsWith("windows-real-sandbox-"))) {
             if (!devices.some((device) => device.id === entry)) {
-                failures.push(new Error(`Windows Sandbox orphan evidence requires manual cleanup: ${join(windowsRoot, entry)}`));
+                let lock = null;
+                try {
+                    lock = JSON.parse(readFileSync(lockPath, "utf-8"));
+                } catch {
+                    // Absence is expected after a verified provider deletion.
+                }
+                if (lock?.deviceId === entry) {
+                    failures.push(new Error(`Windows Sandbox orphan evidence still has a host lock: ${join(windowsRoot, entry)}`));
+                    continue;
+                }
+                sessions ||= (options.listRunningSessions || listRunningWindowsSandboxSessions)(options.sessionOptions || {});
+                if (!sessions.ok || sessions.ids.length > 0) {
+                    failures.push(new Error(`Windows Sandbox orphan evidence cannot be removed while runtime absence is unverified: ${join(windowsRoot, entry)} (${sessions.error || sessions.ids.join(", ")})`));
+                    continue;
+                }
+                const removed = tryRemoveTree(join(windowsRoot, entry));
+                if (!removed.ok) failures.push(new Error(`Windows Sandbox orphan evidence removal failed for ${entry}: ${removed.error}`));
             }
         }
     }
-    if (failures.length > 0) throw new AggregateError(failures, "Previous Windows Sandbox E2E cleanup was not verified");
+    if (failures.length > 0) {
+        const detail = failures.map((error) => error?.message || String(error)).join("; ");
+        throw new AggregateError(failures, `Previous Windows Sandbox E2E cleanup was not verified: ${detail}`);
+    }
 }
 
 export async function startWindowsSandboxE2EDevice(callTool, deviceId, options = {}) {
@@ -382,7 +407,6 @@ export async function runWindowsSandboxE2E(options = {}) {
     if (!cap.available) return { status: "SKIP", reason: cap.reason, capability: cap };
 
     const deviceId = `windows-real-sandbox-${Date.now()}`;
-    const tempDir = mkdtempSync(join(realProviderTempRoot(options), "ccc-windows-sandbox-e2e-"));
     const helperTimeoutMs = options.helperTimeoutMs || 180000;
     const screenshotTimeoutMs = Math.min(helperTimeoutMs, 45000);
     let created = false;
@@ -399,8 +423,10 @@ export async function runWindowsSandboxE2E(options = {}) {
         };
         const direct = { backend: "windows-sandbox" };
         await cleanupPreviousWindowsSandboxE2E({ callTool });
+        const tempDir = mkdtempSync(join(realProviderTempRoot(options), "ccc-windows-sandbox-e2e-"));
         let primaryFailure = null;
         let passResult = null;
+        let currentStep = "create device";
         try {
             const createResult = parsePayload(await callTool("device_create", {
                 ...direct,
@@ -415,20 +441,24 @@ export async function runWindowsSandboxE2E(options = {}) {
             assert.strictEqual(createResult.device.id, deviceId);
             assert.strictEqual(createResult.device.status, "stopped");
 
+            currentStep = "inventory created device";
             const inventory = parsePayload(await callTool("device_inventory", direct));
             const inventoryDevices = inventory.devices || inventory.result?.devices;
             assert.ok(Array.isArray(inventoryDevices));
             assert.ok(inventoryDevices.some((device) => device.id === deviceId));
 
+            currentStep = "start device";
             const started = await startWindowsSandboxE2EDevice(callTool, deviceId);
             assert.strictEqual(started.device.status, "running");
             assert.ok(String(started.device.configPath || "").includes(`${deviceId}.wsb`));
 
+            currentStep = "read running status";
             const status = parsePayload(await callTool("device_status", { ...direct, deviceId }));
             assert.strictEqual(status.device.id, deviceId);
             assert.strictEqual(status.device.status, "running");
             assert.strictEqual(status.device.sandboxId, started.device.sandboxId);
 
+            currentStep = "execute helper command";
             parsePayload(await callTool("device_exec", {
                 ...direct,
                 deviceId,
@@ -436,38 +466,45 @@ export async function runWindowsSandboxE2E(options = {}) {
                 helperTimeoutMs,
             }));
 
+            currentStep = "capture screenshot";
             const screenshot = await callTool("device_screenshot", { ...direct, deviceId, helperTimeoutMs: screenshotTimeoutMs });
             const screenshotImage = findImageContent(screenshot);
             assert.ok(screenshotImage, `Windows Sandbox screenshot returned no image content: ${responseText(screenshot)}`);
             assert.strictEqual(screenshotImage.mimeType, "image/png");
             assert.ok(String(screenshotImage.data || "").length > 64);
 
+            currentStep = "click controls";
             for (const button of ["left", "right"]) {
                 const click = parsePayload(await callTool("device_click", { ...direct, deviceId, x: 20, y: 20, button, helperTimeoutMs }));
                 assert.strictEqual(click.provider, "windows-helper");
                 assert.deepStrictEqual(click.clicked, { x: 20, y: 20, button });
             }
 
+            currentStep = "double-click controls";
             for (const button of ["left", "right"]) {
                 const doubleClick = parsePayload(await callTool("device_double_click", { ...direct, deviceId, x: 30, y: 30, button, helperTimeoutMs }));
                 assert.strictEqual(doubleClick.provider, "windows-helper");
                 assert.deepStrictEqual(doubleClick.doubleClicked, { x: 30, y: 30, button });
             }
 
+            currentStep = "keyboard control";
             const key = parsePayload(await callTool("device_key", { ...direct, deviceId, key: "Escape", helperTimeoutMs }));
             assert.strictEqual(key.provider, "windows-helper");
             assert.strictEqual(key.key.key, "Escape");
 
+            currentStep = "text input";
             const type = parsePayload(await callTool("device_type", { ...direct, deviceId, text: "ccc-windows-type-e2e", helperTimeoutMs }));
             assert.strictEqual(type.provider, "windows-helper");
             assert.strictEqual(type.typed.text, "ccc-windows-type-e2e");
 
+            currentStep = "scroll controls";
             for (const direction of ["up", "down", "left", "right"]) {
                 const scroll = parsePayload(await callTool("device_scroll", { ...direct, deviceId, x: 40, y: 40, direction, amount: 1, helperTimeoutMs }));
                 assert.strictEqual(scroll.provider, "windows-helper");
                 assert.deepStrictEqual(scroll.scrolled, { x: 40, y: 40, direction, amount: 1 });
             }
 
+            currentStep = "upload file";
             const uploadSource = join(tempDir, "upload.txt");
             writeFileSync(uploadSource, "ccc-upload-ok");
             const uploadRemote = "C:\\Users\\WDAGUtilityAccount\\Desktop\\ccc-upload.txt";
@@ -482,6 +519,7 @@ export async function runWindowsSandboxE2E(options = {}) {
             assertReportedLocalPath(upload.uploaded.localPath, uploadSource, options.brokerOnly);
             assert.strictEqual(upload.uploaded.remotePath, uploadRemote);
 
+            currentStep = "verify uploaded file";
             const uploadVerificationTarget = join(tempDir, "upload-verification.txt");
             parsePayload(await callTool("device_download", {
                 ...direct,
@@ -492,6 +530,7 @@ export async function runWindowsSandboxE2E(options = {}) {
             }));
             assert.strictEqual(readFileSync(uploadVerificationTarget, "utf-8"), "ccc-upload-ok");
 
+            currentStep = "download file";
             const downloadRemote = "C:\\Users\\WDAGUtilityAccount\\Desktop\\ccc-download.txt";
             const downloadTarget = join(tempDir, "download.txt");
             const createDownloadRemote = parsePayload(await callTool("device_exec", {
@@ -512,18 +551,22 @@ export async function runWindowsSandboxE2E(options = {}) {
             assertReportedLocalPath(download.downloaded.localPath, downloadTarget, options.brokerOnly);
             assert.match(readFileSync(downloadTarget, "utf-8"), /ccc-download-ok/);
 
+            currentStep = "list windows";
             const windows = parsePayload(await callTool("device_window_list", { ...direct, deviceId, helperTimeoutMs }));
             assert.strictEqual(windows.provider, "windows-process-main-window");
             assert.ok(Array.isArray(windows.windows));
 
+            currentStep = "read cursor position";
             const cursor = parsePayload(await callTool("device_cursor_position", { ...direct, deviceId, helperTimeoutMs }));
             assert.strictEqual(cursor.provider, "windows-helper");
             assert.ok(cursor.cursor === null || typeof cursor.cursor === "object");
 
+            currentStep = "capture accessibility snapshot";
             const accessibility = parsePayload(await callTool("device_accessibility_snapshot", { ...direct, deviceId, maxDepth: 1, maxNodes: 20, helperTimeoutMs }));
             assert.strictEqual(accessibility.provider, "windows-uiautomation");
             assert.ok(accessibility.accessibility === null || typeof accessibility.accessibility === "object");
 
+            currentStep = "start recording";
             const recordingPath = join(tempDir, "windows-recording.zip");
             const recordingStart = windowsRecordingPayload(parsePayload(await callTool("device_record_video_start", {
                 ...direct,
@@ -538,11 +581,13 @@ export async function runWindowsSandboxE2E(options = {}) {
             assert.strictEqual(recordingStart.recording.active, true);
             await new Promise((resolve) => setTimeout(resolve, 1500));
 
+            currentStep = "read recording status";
             const recordingStatus = windowsRecordingPayload(parsePayload(await callTool("device_record_video_status", { ...direct, deviceId, helperTimeoutMs: 5000 })));
             const recordingState = windowsRecordingState(recordingStatus);
             assert.ok(recordingState, `Windows Sandbox recording status returned no recording: ${JSON.stringify(recordingStatus)}`);
             assert.strictEqual(recordingState.active, true, `Windows Sandbox recording is not active: ${JSON.stringify(recordingStatus)}`);
 
+            currentStep = "stop recording";
             const recordingStop = windowsRecordingPayload(parsePayload(await callTool("device_record_video_stop", {
                 ...direct,
                 deviceId,
@@ -555,15 +600,18 @@ export async function runWindowsSandboxE2E(options = {}) {
             assert.ok(existsSync(recordingPath));
             assert.ok(readFileSync(recordingPath).length > 0);
 
+            currentStep = "stop device";
             const stoppedPayload = parsePayload(await callTool("device_stop", { ...direct, deviceId }));
             assert.strictEqual(stoppedPayload.device.id, deviceId);
             assert.strictEqual(stoppedPayload.device.status, "stopped");
             stopped = true;
 
+            currentStep = "delete device";
             const deleteResult = parsePayload(await callTool("device_delete", { ...direct, deviceId, force: true, confirmDestructive: true }));
             assert.strictEqual(deleteResult.deleted, deviceId);
             deleted = true;
 
+            currentStep = "verify capability coverage";
             assert.deepStrictEqual(
                 advertisedCapabilities.filter((tool) => !calledCapabilities.has(tool)),
                 [],
@@ -572,7 +620,7 @@ export async function runWindowsSandboxE2E(options = {}) {
 
             passResult = { status: "PASS", deviceId, sandboxId: started.device.sandboxId, verifiedCapabilities: [...calledCapabilities].sort() };
         } catch (error) {
-            primaryFailure = error;
+            primaryFailure = new Error(`${currentStep}: ${error?.message || String(error)}`, { cause: error });
         } finally {
             let cleanupFailureError = null;
             if (created && !deleted) {

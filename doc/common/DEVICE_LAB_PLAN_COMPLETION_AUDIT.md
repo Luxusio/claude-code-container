@@ -1134,6 +1134,109 @@ until the final summary reports `skip=0`, `fail=0`, and
 - The public Windows `device_stop` path performs the same generation-checked
   reconciliation, allowing `ccc devices stop <id>` to recover interrupted
   state without adopting a foreign Sandbox runtime.
+- Windows durability permits test-prefixed residue to reach that verified E2E
+  cleanup path. It uses authoritative `wsb list --raw` GUIDs instead of stale
+  client UI PIDs, removes only fixed-prefix immediate temp children, and can
+  remove an orphan test directory only after both host-lock and runtime absence
+  are verified.
+- Its Windows launcher runs the built public broker-status repair after build
+  and before provider execution, so a source checkout replaces an incompatible
+  in-memory broker without a separate install or operator command.
+- Compact real-provider failures preserve bounded multiline assertion details,
+  and the Windows scenario prefixes failures with its current lifecycle or tool
+  stage so repeated live runs identify the failing contract without a separate
+  verbose rerun.
 - Cleanup validates remaining singleton evidence before removing owner state;
   foreign-host, prior-boot, malformed, or mismatched locks are preserved and
   fail closed.
+- Real-provider transfer fixtures now always live under `results/.tmp`, the
+  project boundary visible to the host broker. The broker accepts both the
+  canonical container mount path and a native host path inside its checkout,
+  while continuing to reject absolute paths outside that checkout. Windows
+  E2E also fails immediately on broker `ok: false` payloads instead of
+  misreporting a missing provider field. Regressions lock the broker path
+  translation and the Windows helper upload/download provider contract.
+  Package version `1.1.74` forced replacement of a `1.1.73` broker that
+  predated this routing fix.
+- Live `1.1.74` Windows durability completed the provider scenario but found
+  the canonical owner device directory after `device_delete`. Broker deletion
+  had removed the state record without removing helper/config/download
+  artifacts. Version `1.1.75` makes artifact removal part of the delete
+  transaction: it validates the owner path, removes and verifies the directory
+  before deleting state, and returns a bounded 502 failure while preserving
+  state if cleanup fails. Regressions prove both successful removal and
+  failure-state preservation.
+- A live Windows Level 3 run after the Sandbox durability proof exposed an
+  Android E2E-only allocation race: the scenario selected a host-socket-free
+  port before invoking MCP, without considering broker owner state or holding
+  the broker allocation lock. The real scenario now omits `port` from
+  `device_create` and makes the broker's state, ADB, and lock-aware allocator
+  the sole authority. It also marks a device as cleanup-owned only after a
+  successful create response. A regression locks the portless request
+  contract.
+- The first live Android-emulator durability run then failed before cycle one
+  because its AVD residue inventory passed `avdmanager.bat` directly to
+  Node's synchronous process API on Windows, which returns `EINVAL`. The
+  inventory now uses the same `cmd.exe /d /s /c` batch-launch contract as
+  provider commands, including quoted SDK paths. A regression verifies the
+  exact Windows invocation and prevents direct batch spawning.
+- Historical Android E2E failures can leave dozens of independently verified
+  test-owned records and directories. Durability still detects every item and
+  fails closed, but console diagnostics are now bounded: lists above four
+  entries show per-kind counts and one compact example per kind. The complete
+  list is retained in a single per-target/phase latest JSON report in the
+  system temporary durability diagnostic directory.
+- The next live Android durability preflight found 29 historical items: one
+  state record, 25 owner artifacts, one SDK AVD, and two temp directories. The
+  runner now performs a verified current-owner E2E-only recovery before cycle
+  one. State-backed devices must match the Android backend and exact device/AVD
+  suffix contract and are removed through the direct force-delete backend;
+  state-free AVDs must be absent from the live ADB AVD inventory. Owner
+  directories must be immediate non-symlink test-prefix children, and all
+  categories are reinspected before provider execution. Foreign, mismatched,
+  malformed, active-orphan, or unqueryable evidence remains untouched.
+- Android force-delete now probes ADB even when persisted status is `stopped`.
+  A live target is killed and verified before state/AVD deletion, preventing a
+  stale stopped record from leaving an emulator process behind. Regressions
+  cover stopped-but-live deletion, Windows batch AVD deletion, live AVD
+  identity inventory, verified state/orphan/artifact/temp recovery, foreign
+  ownership, active orphan refusal, and mandatory zero-residue reinspection.
+- Android physical-device durability no longer requires manual serial export.
+  If neither supported serial variable is set, the runner selects from
+  ADB-authorized non-emulator devices once before cycle one. Current-owner
+  leases take priority, followed by unleased devices in code-unit lexical
+  order, so multiple connected devices remain deterministic. A set containing
+  only known foreign-owner leases fails before mutation. The selected
+  serial is printed and injected only into the durability child environment;
+  explicit serial configuration continues to override automatic selection.
+- The first automatic physical-device durability preflight found two old
+  owner artifact directories and one expired aggregate-only lease whose
+  authoritative hardware lock was already absent. Physical durability now
+  reconciles verified current-owner `android-device-real-e2e-*` residue before
+  device selection. State-backed residue uses the normal fenced detach path;
+  aggregate-only residue is removed by an exact owner/hardware/device/claim
+  transaction that refuses fresh leases, duplicate hardware entries, and
+  successor or foreign locks. Artifacts are deleted only after lease/state
+  verification and the complete preflight is rerun. Regression tests cover
+  the observed lock-free aggregate case, active-lease refusal, generation-lock
+  conflict preservation, foreign state rejection, and mandatory zero-residue
+  reinspection before a provider cycle starts.
+- The next physical-device durability run selected the authorized USB device
+  but returned a strict skip because the physical scenario still required a
+  manually supplied APK/package/permission tuple. The physical scenario now
+  follows the emulator contract: no app inputs selects the repository's
+  checksum-verified, v1/v2/v3-signed fixture, a complete external tuple
+  overrides it, and a partial tuple fails before attachment. Compact
+  `--fail-on-skip` runs now print the skipped test and reason instead of only a
+  category count, so future prerequisite failures remain actionable.
+- The first fixture-backed physical-device durability cycle completed its
+  provider scenario but exposed a fresh test lease left only in the legacy
+  `android-device.json` aggregate. Broker-owned status heartbeats were
+  refreshing the authoritative hardware lock through the direct provider and
+  unintentionally creating that aggregate; broker detach then removed only the
+  lock. Heartbeats now update an aggregate entry only when one already exists.
+  Durability also reconciles aggregate-only current-owner test leases before
+  and after each cycle, but only when the authoritative lock is absent and the
+  exact owner/device/hardware/claim generation is unambiguous. Regression tests
+  cover non-synthesis, fresh orphan removal, authoritative-lock refusal, and
+  successful post-cycle recovery.

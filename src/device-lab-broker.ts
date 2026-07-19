@@ -545,6 +545,7 @@ export interface DeviceBrokerOptions {
     requestBodyTimeoutMs?: number;
     commandRunner?: ProviderCommandRunner;
     deviceToolRunner?: BrokerDeviceToolRunner;
+    windowsDeviceArtifactCleaner?: (ownerId: string, deviceId: string) => WindowsSandboxDeviceArtifactCleanup;
     platform?: NodeJS.Platform;
     cliPath?: string;
     portProcessResolver?: BrokerPortProcessResolver;
@@ -562,6 +563,7 @@ type NormalizedBrokerOptions = {
     requestBodyTimeoutMs: number;
     commandRunner: ProviderCommandRunner;
     deviceToolRunner: BrokerDeviceToolRunner;
+    windowsDeviceArtifactCleaner: (ownerId: string, deviceId: string) => WindowsSandboxDeviceArtifactCleanup;
     usesDefaultCommandRunner: boolean;
     platform: NodeJS.Platform;
     cliPath: string;
@@ -1363,6 +1365,7 @@ function normalizeBrokerOptions(options: DeviceBrokerOptions = {}): NormalizedBr
         requestBodyTimeoutMs,
         commandRunner: options.commandRunner || defaultProviderCommandRunner,
         deviceToolRunner: options.deviceToolRunner || defaultBrokerDeviceToolRunner,
+        windowsDeviceArtifactCleaner: options.windowsDeviceArtifactCleaner || cleanupBrokerWindowsDeviceArtifacts,
         usesDefaultCommandRunner: !options.commandRunner,
         platform: options.platform || process.platform,
         cliPath: options.cliPath || process.argv[1] || "ccc",
@@ -3472,11 +3475,16 @@ function translateContainerProjectPathForHost(value: unknown, normalized: Normal
     const absolute = posix.isAbsolute(value) || win32.isAbsolute(value);
     if (!absolute) return { ok: true, value };
     const projectMount = deviceLabProjectMountPath(normalized.cwd);
-    if (!posix.isAbsolute(value) || (value !== projectMount && !value.startsWith(`${projectMount}/`))) return { ok: false };
-    const rel = value.slice(projectMount.length).replace(/^\/+/, "");
-    const parts = rel.split("/").filter(Boolean);
-    if (parts.some((part) => part === "." || part === ".." || part.includes("\\"))) return { ok: false };
-    return { ok: true, value: joinHostProjectPath(normalized.cwd, rel) };
+    if (posix.isAbsolute(value) && (value === projectMount || value.startsWith(`${projectMount}/`))) {
+        const rel = value.slice(projectMount.length).replace(/^\/+/, "");
+        const parts = rel.split("/").filter(Boolean);
+        if (parts.some((part) => part === "." || part === ".." || part.includes("\\"))) return { ok: false };
+        return { ok: true, value: joinHostProjectPath(normalized.cwd, rel) };
+    }
+    if (isAbsolute(value) && pathWithin(normalized.cwd, value)) {
+        return { ok: true, value: resolve(value) };
+    }
+    return { ok: false };
 }
 
 function translateDeviceToolPathsForHost(parsed: DeviceToolParamSuccess, normalized: NormalizedBrokerOptions): DeviceToolParamSuccess | BrokerRpcResult {
@@ -3718,6 +3726,45 @@ function brokerWindowsHelperPaths(ownerId: string, deviceId: string) {
         guestToolsHelperScript: "C:\\ccc\\tools\\ccc-guest-helper.ps1",
         guestDownloadsDir: "C:\\ccc\\scratch\\downloads",
     };
+}
+
+type WindowsSandboxDeviceArtifactCleanup = {
+    ok: boolean;
+    removed: boolean;
+    deviceRoot: string;
+    error?: string;
+};
+
+export function cleanupBrokerWindowsDeviceArtifacts(
+    ownerId: string,
+    deviceId: string,
+    options: {
+        removeTree?: typeof rmSync;
+        pathExists?: typeof existsSync;
+    } = {},
+): WindowsSandboxDeviceArtifactCleanup {
+    const windowsRoot = join(brokerRoot(), "owners", ownerId, "windows");
+    const deviceRoot = brokerWindowsDeviceRoot(ownerId, deviceId);
+    const pathExists = options.pathExists || existsSync;
+    try {
+        assertDeviceLabPathWithinRoot(windowsRoot, deviceRoot, "windows-sandbox-device-artifacts");
+        if (!pathExists(deviceRoot)) return { ok: true, removed: false, deviceRoot };
+        if (lstatSync(deviceRoot).isSymbolicLink()) {
+            return { ok: false, removed: false, deviceRoot, error: "windows-sandbox-device-artifacts-path-invalid" };
+        }
+        (options.removeTree || rmSync)(deviceRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (pathExists(deviceRoot)) {
+            return { ok: false, removed: false, deviceRoot, error: "windows-sandbox-device-artifacts-remained" };
+        }
+        return { ok: true, removed: true, deviceRoot };
+    } catch (error) {
+        return {
+            ok: false,
+            removed: false,
+            deviceRoot,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
 }
 
 function brokerWindowsHelperAssetPath(normalized: NormalizedBrokerOptions): string {
@@ -9279,6 +9326,36 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
             };
         }
     }
+    const windowsDeviceArtifactCleanup = success
+        && parsed.backend === "windows-sandbox"
+        && parsed.command === "device_delete"
+        ? normalized.windowsDeviceArtifactCleaner(ownerId, parsed.deviceId)
+        : null;
+    if (windowsDeviceArtifactCleanup?.ok === false) {
+        return {
+            status: 502,
+            payload: {
+                ok: false,
+                error: "windows-sandbox-device-artifact-cleanup-failed",
+                ownerId,
+                backend: parsed.backend,
+                deviceId: parsed.deviceId,
+                result: {
+                    ...(payload.result || {}),
+                    device: redactBrokerDeviceSecrets(auxiliaryCleanup?.device || payload.result?.device),
+                    windowsDeviceArtifactCleanup,
+                    invoked: true,
+                    dryRun: false,
+                    execution: {
+                        mode: execution.mode,
+                        providerExecution: "executed",
+                        mutatesHost: true,
+                        command: execution,
+                    },
+                },
+            },
+        };
+    }
     let updatedDevice: unknown;
     try {
         updatedDevice = success
@@ -9338,6 +9415,7 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
                 ...(windowsMinimizeWatchdogCleanup ? { minimizeWatchdogCleanup: windowsMinimizeWatchdogCleanup } : {}),
                 ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
                 ...(physicalLeaseCleanup ? { physicalLeaseCleanup } : {}),
+                ...(windowsDeviceArtifactCleanup ? { windowsDeviceArtifactCleanup } : {}),
                 invoked: true,
                 dryRun: false,
                 execution: {

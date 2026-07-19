@@ -12,6 +12,12 @@ start time of the active run. This prevents two suites from attaching the same
 physical device, claiming the Windows Sandbox singleton, or reusing Android
 emulator ports concurrently.
 
+On Windows, the real-provider launcher also runs the built
+`ccc devices broker status` repair path after the source build and before the
+first cycle. This replaces an incompatible in-memory broker automatically; no
+separate install or broker command is required. Help and dry-run plans do not
+start or repair the broker.
+
 Run one target repeatedly with:
 
 ```sh
@@ -46,17 +52,56 @@ unsupported platform fails closed before spawning the provider runner rather
 than signaling an uncertain PID.
 
 For `android-emulator`, residue inspection also executes `avdmanager list avd -c`
-and rejects current-owner AVD names created by this E2E even when CCC state
-was already removed or incorrectly claims the AVD was deleted.
+and detects current-owner AVD names created by this E2E even when CCC state
+was already removed or incorrectly claims the AVD was deleted. Before a cycle,
+the runner automatically recovers only records whose owner, backend, device-ID
+suffix, and `ccc-<owner>-real-android-e2e-<suffix>` AVD identity all agree. It
+uses the direct Android backend's force-delete path, which stops an ADB-visible
+emulator even when persisted state incorrectly says `stopped`, then deletes and
+verifies the AVD and state transition. State-free test AVDs are deleted only
+after ADB proves they are not running. Immediate non-symlink owner artifacts
+and fixed-prefix temp directories are removed last, followed by a complete
+residue reinspection. Foreign, mismatched, malformed, active-orphan, or
+unqueryable resources are preserved and fail closed. On Windows, SDK `.bat`
+and `.cmd` launchers are executed through `cmd.exe`; Node never spawns those
+batch files directly.
 
 Missing residue metadata is normal. Existing metadata that is malformed,
 unreadable, or structurally invalid is treated as corruption and fails before
 provider execution instead of being interpreted as an empty state.
+Large residue sets are summarized by type with bounded examples in the
+terminal. The complete list is written to the single per-target/phase
+`residue-*-latest.json` report under the system temporary
+`ccc-device-lab-durability` directory.
 
-The runner inherits the current environment unchanged, including existing
-`CCC_REAL_*` configuration. In particular, `android-device` still requires the
-same physical-device serial and optional APK variables as the normal real test.
-No durability-specific environment variable is required.
+The runner inherits the current environment, including existing `CCC_REAL_*`
+configuration. For `android-device`, an explicitly configured serial still
+wins. Before selecting a device, the runner recovers current-owner records
+whose device IDs use the fixed
+`android-device-real-e2e-*` prefix. Persisted devices are detached through the
+normal physical Android backend. Aggregate-only leases are removed under the
+hardware and aggregate mutation locks only when owner, hardware ID, device ID,
+claim ID, and nonce match and no authoritative successor lock or second
+aggregate entry exists. A fresh aggregate-only lease can be removed only when
+its authoritative hardware lock is absent; a present lock always blocks
+recovery. Broker-owned lock heartbeats do not synthesize legacy aggregate
+entries. Immediate non-symlink owner artifacts and fixed-prefix temporary
+outputs are removed only after state and lease reconciliation, then all residue
+categories are reinspected before and after each cycle. Foreign ownership,
+duplicate hardware entries, generation conflicts, malformed metadata, linked
+artifacts, and active authoritative locks are preserved and fail closed.
+
+When no serial is configured, the runner inventories ADB, excludes
+emulators and non-`device` states, prefers a device already leased by the
+current owner, then an unleased device, using deterministic code-unit lexical
+order within each group. If every authorized device is known to be leased by
+another owner, it fails before mutation. It prints the selected serial once
+before the first cycle and reuses it for every cycle. When no app variables are
+configured, the physical-device scenario materializes the repository's
+checksum-verified, v1/v2/v3-signed fixture APK and uses its fixed package and
+camera permission. A complete external APK/package/permission tuple still
+overrides the fixture; a partial tuple fails before attachment. No
+durability-specific environment variable is required.
 
 iOS Simulator, physical iOS, and macOS VM repeat targets are intentionally not
 exposed yet. Their existing real E2E modules run only on macOS, while this
@@ -67,11 +112,19 @@ reparenting/PID-reuse tests; the normal one-shot iOS/macOS Level 2 and Level 3
 tests remain available meanwhile.
 
 The Windows target checks for Windows Sandbox processes immediately before and
-after every cycle and fails if any are present. This detects stale, leaked, and
-concurrently introduced sessions without stopping or adopting them, and
-prevents the existing recovery path from stopping a Sandbox session that the
-durability run does not own. Do not launch another Sandbox concurrently with
-this test.
+after every cycle. A session without matching `windows-real-sandbox-*` owner
+state fails preflight and is never stopped or adopted. Runtime presence is
+measured by `wsb list --raw` session GUIDs, not by lingering Sandbox client UI
+processes. Interrupted test residue
+may enter the provider E2E cleanup path, which validates the current host
+generation and exact owner/device/GUID lock before stopping and deleting that
+session. Immediate system-temp children with the fixed
+`ccc-windows-sandbox-e2e-*` prefix are removed before recovery; arbitrary paths
+are rejected. A successful Windows `device_delete` also synchronously removes
+the canonical owner-scoped device directory before deleting its state record.
+Artifact cleanup failure preserves the state record and fails the operation so
+the next verified recovery can retry. Do not launch another Sandbox
+concurrently with this test.
 
 Validate command selection without creating or touching a provider:
 

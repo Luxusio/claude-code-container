@@ -2,6 +2,7 @@ import assert from "assert";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { basename, join, resolve } from "path";
 import { androidDiscovery } from "../../device-lab-mcp/src/backends/android.mjs";
+import { materializeAndroidAppFixture } from "./android-app-fixture.mjs";
 import { parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.mjs";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.mjs";
 
@@ -64,6 +65,8 @@ export function androidDeviceE2EPrerequisites(env = process.env) {
         packageName: (env.CCC_REAL_ANDROID_DEVICE_PACKAGE || env.CCC_REAL_ANDROID_PACKAGE || env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PACKAGE || "").trim(),
         permission: (env.CCC_REAL_ANDROID_DEVICE_PERMISSION || env.CCC_REAL_ANDROID_PERMISSION || env.CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PERMISSION || "").trim(),
     };
+    const supplied = Object.values(app).filter(Boolean).length;
+    if (supplied === 0) return { available: true, reason: "use deterministic fixture", source: "fixture", app: null };
     const missing = [
         !app.path ? "CCC_REAL_ANDROID_DEVICE_APK" : "",
         !app.packageName ? "CCC_REAL_ANDROID_DEVICE_PACKAGE" : "",
@@ -71,22 +74,32 @@ export function androidDeviceE2EPrerequisites(env = process.env) {
         app.path && !existsSync(app.path) ? `APK file not found: ${app.path}` : "",
     ].filter(Boolean);
     return missing.length > 0
-        ? { available: false, reason: `physical Android app proof unavailable before device mutation: ${missing.join(", ")}`, app }
-        : { available: true, reason: "ready", app };
+        ? { available: false, reason: `external physical Android app proof is incomplete before device mutation: ${missing.join(", ")}`, source: "external", app }
+        : { available: true, reason: "external app ready", source: "external", app };
+}
+
+export function prepareAndroidDeviceApp(appSelection, tempDir, materialize = materializeAndroidAppFixture) {
+    try {
+        return appSelection.source === "external" ? appSelection.app : materialize(tempDir);
+    } catch (error) {
+        rmSync(tempDir, { recursive: true, force: true });
+        throw error;
+    }
 }
 
 export async function run(options = {}) {
     const cap = androidDeviceE2ECapability(options.level);
     if (!cap.available) return { status: "SKIP", reason: cap.reason, capability: cap };
-    const prerequisites = androidDeviceE2EPrerequisites();
-    if (!prerequisites.available) return { status: "SKIP", reason: prerequisites.reason, capability: cap };
-    const { path: appApk, packageName: appPackage, permission: appPermission } = prerequisites.app;
+    const appSelection = androidDeviceE2EPrerequisites();
+    if (!appSelection.available) return { status: "SKIP", reason: appSelection.reason, capability: cap };
 
     const suffix = Date.now();
     const deviceId = `android-device-real-e2e-${suffix}`;
     const artifactRoot = resolve("results", "device-lab-real");
     mkdirSync(artifactRoot, { recursive: true });
     const tempDir = mkdtempSync(join(artifactRoot, "android-device-e2e-"));
+    const app = prepareAndroidDeviceApp(appSelection, tempDir);
+    const { path: appApk, packageName: appPackage, permission: appPermission } = app;
     const recordingPath = join(tempDir, `recording-${suffix}.mp4`);
     let attached = false;
     let recordingActive = false;
@@ -363,7 +376,7 @@ export async function run(options = {}) {
 
             return {
                 status: "PASS",
-                detail: `device=${deviceId} serial=${cap.serial} app=install-launch-wait-permission-stop-reset-clear-uninstall verified wireless=status-actions-device verified`,
+                detail: `device=${deviceId} serial=${cap.serial} app=${appSelection.source}:install-launch-wait-permission-stop-reset-clear-uninstall verified wireless=status-actions-device verified`,
                 serial: cap.serial,
                 deviceId,
                 appCoverage: "install-launch-wait-permission-stop-reset-clear-uninstall verified",

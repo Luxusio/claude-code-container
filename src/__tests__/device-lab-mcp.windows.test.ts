@@ -700,6 +700,13 @@ exit 0
             arguments: { deviceId: "windows-win-helper", localPath: uploadSource, remotePath: "C:\\Users\\WDAGUtilityAccount\\upload.txt", helperTimeoutMs: 1000 },
         });
         expect(upload.isError).not.toBe(true);
+        expect(JSON.parse(((upload.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "windows-helper",
+            uploaded: expect.objectContaining({
+                localPath: uploadSource,
+                remotePath: "C:\\Users\\WDAGUtilityAccount\\upload.txt",
+            }),
+        }));
         expect(readdirSync(started.device.helper.uploadsDir)).toEqual([]);
 
         const downloadTarget = join(homeDir, "download.txt");
@@ -708,6 +715,13 @@ exit 0
             arguments: { deviceId: "windows-win-helper", remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt", localPath: downloadTarget, helperTimeoutMs: 1000 },
         });
         expect(download.isError).not.toBe(true);
+        expect(JSON.parse(((download.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+            provider: "windows-helper",
+            downloaded: expect.objectContaining({
+                remotePath: "C:\\Users\\WDAGUtilityAccount\\remote.txt",
+                localPath: downloadTarget,
+            }),
+        }));
         expect(readFileSync(downloadTarget, "utf-8")).toBe("downloaded");
 
         const oversizedDownloadTarget = join(homeDir, "oversized-download.bin");

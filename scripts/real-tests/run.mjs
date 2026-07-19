@@ -14,8 +14,7 @@ const toolCallRecords = [];
 const toolSessionRecords = [];
 
 function compactMessage(value, limit = 300) {
-    const firstLine = String(value || "unknown error").split(/\r?\n/).find(Boolean) || "unknown error";
-    const normalized = firstLine.replace(/\s+/g, " ").trim();
+    const normalized = String(value || "unknown error").replace(/\s+/g, " ").trim() || "unknown error";
     return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
 }
 
@@ -459,7 +458,7 @@ for (const file of files) {
                     ...(step?.detail ? { detail: step.detail } : {}),
                     ...(Array.isArray(step?.tools) ? { tools: uniqueSorted(step.tools) } : {}),
                 });
-                if (!compact || stepStatus === "FAIL") {
+                if (!compact || stepStatus === "FAIL" || (failOnSkip && stepStatus === "SKIP")) {
                     console.log(`${stepStatus} ${mod.name || file}: ${step?.name || "unnamed step"}${stepReason}${stepDetail}`);
                 }
             }
@@ -477,7 +476,7 @@ for (const file of files) {
                 ...(result?.detail ? { detail: result.detail } : {}),
                 ...(moduleTools.length > 0 ? { tools: moduleTools } : {}),
             });
-            if (!compact || normalizedStatus === "FAIL") {
+            if (!compact || normalizedStatus === "FAIL" || (failOnSkip && normalizedStatus === "SKIP")) {
                 const effectiveReasonText = effectiveReason ? ` - ${compact ? compactMessage(effectiveReason) : effectiveReason}` : reason;
                 console.log(`${normalizedStatus} ${mod.name || file}${effectiveReasonText}${detail}`);
             }

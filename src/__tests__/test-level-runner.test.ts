@@ -1,12 +1,12 @@
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { parse } from "acorn";
 import { describe, expect, it } from "vitest";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../device-lab-mcp/src/policy/destructive.mjs";
-import { androidDeviceE2EPrerequisites } from "../../scripts/real-tests/android-device-e2e.mjs";
-import { androidEmulatorAppSelection } from "../../scripts/real-tests/android-emulator-e2e.mjs";
+import { androidDeviceE2EPrerequisites, prepareAndroidDeviceApp } from "../../scripts/real-tests/android-device-e2e.mjs";
+import { androidEmulatorAppSelection, androidEmulatorCreateRequest } from "../../scripts/real-tests/android-emulator-e2e.mjs";
 import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.mjs";
 import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.mjs";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
@@ -1371,7 +1371,8 @@ describe("test level runner", () => {
     it("covers safe Android physical-device controls in the real-device E2E through MCP calls", () => {
         const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-device-e2e.mjs"), "utf-8");
         expect(text).toContain("CCC_REAL_ANDROID_DEVICE_SERIAL");
-        expect(text).toContain("physical Android app proof unavailable before device mutation");
+        expect(text).toContain("use deterministic fixture");
+        expect(text).toContain("prepareAndroidDeviceApp(appSelection, tempDir)");
         expect(text).toContain("wirelessCoverage: \"status-actions-device verified\"");
         expect(text).not.toContain("if (appArtifactReady)");
         expect(text.indexOf("androidDeviceE2EPrerequisites()")).toBeLessThan(text.indexOf("mkdirSync(artifactRoot"));
@@ -1459,6 +1460,41 @@ describe("test level runner", () => {
         }));
     });
 
+    it("uses the signed fixture when no physical Android app inputs are supplied", () => {
+        expect(androidDeviceE2EPrerequisites({})).toEqual(expect.objectContaining({
+            available: true,
+            source: "fixture",
+            app: null,
+        }));
+    });
+
+    it("preserves physical Android external-app aliases and cleans failed fixture materialization", () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-android-device-selection-"));
+        const apk = join(tempDir, "external.apk");
+        writeFileSync(apk, "fixture");
+        try {
+            for (const env of [
+                { CCC_REAL_ANDROID_DEVICE_APK: apk, CCC_REAL_ANDROID_DEVICE_PACKAGE: "dev.external", CCC_REAL_ANDROID_DEVICE_PERMISSION: "android.permission.CAMERA" },
+                { CCC_REAL_ANDROID_APK: apk, CCC_REAL_ANDROID_PACKAGE: "dev.external", CCC_REAL_ANDROID_PERMISSION: "android.permission.CAMERA" },
+                { CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_APK: apk, CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PACKAGE: "dev.external", CCC_REAL_DEVICE_LAB_ANDROID_DEVICE_PERMISSION: "android.permission.CAMERA" },
+            ]) {
+                expect(androidDeviceE2EPrerequisites(env)).toEqual(expect.objectContaining({
+                    available: true,
+                    source: "external",
+                    app: expect.objectContaining({ path: apk, packageName: "dev.external" }),
+                }));
+            }
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+
+        const failedTemp = mkdtempSync(join(tmpdir(), "ccc-android-device-fixture-failure-"));
+        expect(() => prepareAndroidDeviceApp({ source: "fixture", app: null }, failedTemp, () => {
+            throw new Error("fixture failure");
+        })).toThrow("fixture failure");
+        expect(existsSync(failedTemp)).toBe(false);
+    });
+
     it("uses the emulator fixture only when no external app inputs were supplied", () => {
         expect(androidEmulatorAppSelection({})).toEqual(expect.objectContaining({
             available: true,
@@ -1489,6 +1525,22 @@ describe("test level runner", () => {
 
         const emulatorText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
         expect(emulatorText.indexOf("androidEmulatorAppSelection()")).toBeLessThan(emulatorText.indexOf("mkdtempSync("));
+    });
+
+    it("delegates real Android emulator port allocation to the broker", () => {
+        const request = androidEmulatorCreateRequest({
+            name: "Port Allocated Pixel",
+            deviceId: "android-port-allocated",
+            systemImage: "system-images;android-35;google_apis;x86_64",
+        });
+        expect(request).toEqual({
+            backend: "android-emulator",
+            name: "Port Allocated Pixel",
+            deviceId: "android-port-allocated",
+            systemImage: "system-images;android-35;google_apis;x86_64",
+            createAvd: true,
+        });
+        expect(request).not.toHaveProperty("port");
     });
 
     it("covers safe iOS Simulator mobile controls in the real simulator E2E through MCP calls", () => {
@@ -1923,8 +1975,10 @@ describe("test level runner", () => {
         try {
             const passFile = join(tempDir, "pass.mjs");
             const stepFailFile = join(tempDir, "step-fail.mjs");
+            const multilineFailFile = join(tempDir, "multiline-fail.mjs");
             writeFileSync(passFile, "export const name='pass'; export async function run(){ return { status: 'PASS', detail: 'provider=tart' }; }\n");
             writeFileSync(stepFailFile, "export const name='step-fail'; export async function run(){ return { status: 'FAIL', steps: [{ name: 'inner', status: 'FAIL', reason: 'boom', detail: 'device=abc' }] }; }\n");
+            writeFileSync(multilineFailFile, "export const name='multiline-fail'; export async function run(){ throw new Error('Expected values to be strictly equal:\\n+ actual\\n- expected'); }\n");
 
             const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), passFile, stepFailFile], {
                 cwd: repoRoot,
@@ -1945,6 +1999,13 @@ describe("test level runner", () => {
             expect(compactResult.stdout).not.toContain("PASS pass");
             expect(compactResult.stdout).toContain("FAIL step-fail: inner - boom");
             expect(compactResult.stdout).toContain("SUMMARY real-tests total=2 pass=1 skip=0 fail=1 failOnSkip=false");
+
+            const multilineResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--compact", multilineFailFile], {
+                cwd: repoRoot,
+                encoding: "utf-8",
+            });
+            expect(multilineResult.status).toBe(1);
+            expect(multilineResult.stderr).toContain("FAIL multiline-fail - Expected values to be strictly equal: + actual - expected");
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
@@ -2003,7 +2064,7 @@ describe("test level runner", () => {
             expect(defaultResult.stdout).not.toContain("strictSkipFailures");
             expect(defaultResult.stdout).not.toContain("strictCoverageFailures");
 
-            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-skip", skipFile, stepSkipFile], {
+            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--compact", "--fail-on-skip", skipFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });

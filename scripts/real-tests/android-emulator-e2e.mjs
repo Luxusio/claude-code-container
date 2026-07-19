@@ -1,7 +1,5 @@
 import assert from "assert";
-import { spawnSync } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
-import { createServer } from "net";
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import {
@@ -181,27 +179,14 @@ export function androidEmulatorAppSelection(env = process.env) {
         : { available: true, reason: "external app ready", source: "external", app };
 }
 
-async function portAvailable(port) {
-    return new Promise((resolvePromise) => {
-        const server = createServer();
-        server.once("error", () => resolvePromise(false));
-        server.listen(port, "127.0.0.1", () => {
-            server.close(() => resolvePromise(true));
-        });
-    });
-}
-
-async function findAndroidEmulatorPort(adb) {
-    const used = new Set();
-    if (adb) {
-        const devices = spawnSync(adb, ["devices"], { encoding: "utf-8", env: process.env, windowsHide: true });
-        for (const match of String(devices.stdout || "").matchAll(/\bemulator-(\d+)\b/g)) used.add(Number(match[1]));
-    }
-    for (let port = 5584; port <= 5682; port += 2) {
-        if (used.has(port)) continue;
-        if (await portAvailable(port) && await portAvailable(port + 1)) return port;
-    }
-    return null;
+export function androidEmulatorCreateRequest({ name, deviceId, systemImage }) {
+    return {
+        backend: "android-emulator",
+        name,
+        deviceId,
+        systemImage,
+        createAvd: true,
+    };
 }
 
 export async function runAndroidEmulatorE2E(options = {}) {
@@ -214,8 +199,6 @@ export async function runAndroidEmulatorE2E(options = {}) {
         }
         : androidEmulatorE2ECapability(options.level);
     if (!cap.available) return { status: "SKIP", reason: cap.reason, capability: cap };
-    const port = options.brokerOnly === true ? undefined : await findAndroidEmulatorPort(cap.discovery.adb);
-    if (options.brokerOnly !== true && !port) return { status: "SKIP", reason: "no free Android emulator console port found" };
     const appSelection = androidEmulatorAppSelection();
     if (!appSelection.available) return { status: "SKIP", reason: appSelection.reason, capability: cap };
     const stamp = Date.now();
@@ -241,15 +224,12 @@ export async function runAndroidEmulatorE2E(options = {}) {
         };
         const direct = { backend: "android-emulator" };
         try {
-            const createdPayload = parsePayload(await callTool("device_create", {
-                ...direct,
+            const createdPayload = parsePayload(await callTool("device_create", androidEmulatorCreateRequest({
                 name,
                 deviceId,
-                ...(port ? { port } : {}),
                 systemImage: cap.systemImage.package,
-                createAvd: true,
-            }));
-            created = true;
+            })));
+            created = createdPayload?.ok === true;
             const createdDevice = deviceFromPayload(createdPayload, "device_create");
             assert.strictEqual(createdDevice.id, deviceId);
             assert.ok(Number.isInteger(createdDevice.port));

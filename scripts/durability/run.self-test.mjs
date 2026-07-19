@@ -43,6 +43,12 @@ test("Windows source checkout invokes npm CLI through Node instead of spawning n
             "--silent",
         ]);
         assert.notEqual(plan.build.command, "npm.cmd");
+        assert.deepEqual(plan.brokerRepair.args, [
+            join(root, "dist", "index.js"),
+            "devices",
+            "broker",
+            "status",
+        ]);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
@@ -102,6 +108,55 @@ test("launcher stops after a failed source build", () => {
     }
 });
 
+test("Windows real-provider launcher repairs the broker after build and before execution", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-durability-broker-repair-"));
+    try {
+        mkdirSync(join(root, "src"));
+        writeFileSync(join(root, "tsconfig.json"), "{}");
+        const calls = [];
+        const status = main(["real", "--target", "windows-sandbox", "--cycles", "1"], {
+            packageRoot: root,
+            platform: "win32",
+            npmExecPath: "C:\\npm-cli.js",
+            spawnSyncImpl: (_command, args) => {
+                calls.push(args);
+                return args.includes("status")
+                    ? { status: 0, stdout: "brokerReady: true\n", stderr: "" }
+                    : { status: 0 };
+            },
+        });
+        assert.equal(status, 0);
+        assert.equal(calls.length, 3);
+        assert.deepEqual(calls[1].slice(-3), ["devices", "broker", "status"]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("Windows real-provider launcher stops when broker repair fails", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-durability-broker-fail-"));
+    try {
+        mkdirSync(join(root, "src"));
+        writeFileSync(join(root, "tsconfig.json"), "{}");
+        let calls = 0;
+        const status = main(["real", "--target", "windows-sandbox", "--cycles", "1"], {
+            packageRoot: root,
+            platform: "win32",
+            npmExecPath: "C:\\npm-cli.js",
+            spawnSyncImpl: () => {
+                calls += 1;
+                return calls === 1
+                    ? { status: 0 }
+                    : { status: 1, stdout: "brokerReady: false\n", stderr: "broker incompatible\n" };
+            },
+        });
+        assert.equal(status, 1);
+        assert.equal(calls, 2);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
 test("real-provider launcher acquires exclusivity before build and marks the child", () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-durability-exclusive-"));
     try {
@@ -110,18 +165,21 @@ test("real-provider launcher acquires exclusivity before build and marks the chi
         const events = [];
         const status = runDurabilityLauncher(["real", "--target", "windows-sandbox", "--cycles", "1"], {
             packageRoot: root,
+            platform: "win32",
             npmExecPath: "/opt/npm/bin/npm-cli.js",
             withExclusiveRealProviderRunSync: (_label, operation) => {
                 events.push("lock");
                 return operation();
             },
-            spawnSyncImpl: () => {
+            spawnSyncImpl: (_command, args) => {
                 events.push(process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD === "1" ? "spawn-locked" : "spawn-unlocked");
-                return { status: 0 };
+                return args.includes("status")
+                    ? { status: 0, stdout: "brokerReady: true\n", stderr: "" }
+                    : { status: 0 };
             },
         });
         assert.equal(status, 0);
-        assert.deepEqual(events, ["lock", "spawn-locked", "spawn-locked"]);
+        assert.deepEqual(events, ["lock", "spawn-locked", "spawn-locked", "spawn-locked"]);
         assert.equal(process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD, undefined);
     } finally {
         rmSync(root, { recursive: true, force: true });

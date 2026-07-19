@@ -313,14 +313,35 @@ describe("Windows Sandbox real E2E cleanup preflight", () => {
         }
     });
 
-    it("preserves orphan directories because runtime absence cannot be verified", async () => {
+    it("preserves orphan directories while a Sandbox runtime remains", async () => {
         const homeDir = join(tmpdir(), `ccc-windows-e2e-orphan-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         const owner = "windows-e2e-cleanup-owner";
         const orphan = join(homeDir, ".ccc/devices/owners", owner, "windows", "windows-real-sandbox-orphan");
         try {
             mkdirSync(orphan, { recursive: true });
-            await expect(cleanupPreviousWindowsSandboxE2E({ homeDir, ownerId: owner })).rejects.toThrow(/cleanup was not verified/);
+            await expect(cleanupPreviousWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                listRunningSessions: () => ({ ok: true, ids: ["55555555-5555-4555-8555-555555555555"] }),
+            })).rejects.toThrow(/runtime absence is unverified/);
             expect(existsSync(orphan)).toBe(true);
+        } finally {
+            rmSync(homeDir, { recursive: true, force: true });
+        }
+    });
+
+    it("removes a test orphan after wsb verifies no runtime remains", async () => {
+        const homeDir = join(tmpdir(), `ccc-windows-e2e-orphan-clean-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        const owner = "windows-e2e-cleanup-owner";
+        const orphan = join(homeDir, ".ccc/devices/owners", owner, "windows", "windows-real-sandbox-orphan");
+        try {
+            mkdirSync(orphan, { recursive: true });
+            await cleanupPreviousWindowsSandboxE2E({
+                homeDir,
+                ownerId: owner,
+                listRunningSessions: () => ({ ok: true, ids: [] }),
+            });
+            expect(existsSync(orphan)).toBe(false);
         } finally {
             rmSync(homeDir, { recursive: true, force: true });
         }

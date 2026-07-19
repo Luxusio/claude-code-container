@@ -9,6 +9,7 @@ import {
     heartbeatPhysicalLease,
     prunePhysicalLeases,
     readPhysicalLeases,
+    releaseOwnedPhysicalLeaseResidue,
     releasePhysicalLease,
     releasePhysicalLeaseWithMutation,
     startPhysicalLeaseHeartbeat,
@@ -123,6 +124,166 @@ describe("device-lab MCP direct physical lease store", () => {
         expect(releasePhysicalLease("android-device", "USB123", "android-usb")).toBe(true);
         expect(existsSync(lockPath("android-device", "USB123"))).toBe(false);
         expect(readPhysicalLeases("android-device")).toEqual([]);
+    });
+
+    it("releases exact current-owner residue when its authoritative lock is missing", () => {
+        const aggregateFile = aggregatePath("android-device");
+        const lease = {
+            backend: "android-device",
+            hardwareId: "USB-ORPHAN",
+            ownerId: ownerId(),
+            deviceId: "android-device-real-e2e-orphan",
+            claimId: "orphan-claim",
+            claimNonce: "orphan-nonce",
+            expiresAt: "2020-01-01T00:00:00.000Z",
+        };
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases"), { recursive: true });
+        writeFileSync(aggregateFile, JSON.stringify({ leases: [lease] }));
+
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", lease, { requireExpired: true })).toEqual(expect.objectContaining({
+            ok: true,
+            authoritativeLockRemoved: false,
+        }));
+        expect(readPhysicalLeases("android-device")).toEqual([]);
+    });
+
+    it("refuses to recover a fresh current-owner lease", () => {
+        const claimed = claimPhysicalLease("android-device", "USB-ACTIVE", "android-device-real-e2e-active", {
+            claimNonce: "active-generation",
+        });
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", claimed.lease, { requireExpired: true })).toEqual(expect.objectContaining({
+            ok: false,
+            error: "physical-lease-residue-active",
+        }));
+        expect(existsSync(lockPath("android-device", "USB-ACTIVE"))).toBe(true);
+        expect(readPhysicalLeases("android-device")).toHaveLength(1);
+    });
+
+    it("does not synthesize a legacy aggregate while heartbeating a broker-owned lock", () => {
+        const hardwareId = "USB-BROKER";
+        const deviceId = "android-device-real-e2e-broker";
+        const now = new Date().toISOString();
+        const lease = {
+            backend: "android-device",
+            hardwareId,
+            ownerId: ownerId(),
+            deviceId,
+            claimId: "broker-claim",
+            claimNonce: "broker-generation",
+            claimedAt: now,
+            heartbeatAt: now,
+            updatedAt: now,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            ttlMs: 60_000,
+        };
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks"), { recursive: true });
+        writeFileSync(lockPath("android-device", hardwareId), JSON.stringify(lease));
+
+        expect(heartbeatPhysicalLease("android-device", hardwareId, deviceId, {
+            claimId: lease.claimId,
+            claimNonce: lease.claimNonce,
+        })).toEqual(expect.objectContaining({ ok: true, heartbeat: true }));
+        expect(existsSync(aggregatePath("android-device"))).toBe(false);
+    });
+
+    it("does not replace a stale aggregate generation while heartbeating a broker lock", () => {
+        const hardwareId = "USB-BROKER-GENERATION";
+        const deviceId = "android-device-real-e2e-broker-generation";
+        const now = new Date().toISOString();
+        const brokerLease = {
+            backend: "android-device",
+            hardwareId,
+            ownerId: ownerId(),
+            deviceId,
+            claimId: "broker-claim",
+            claimNonce: "broker-generation",
+            claimedAt: now,
+            heartbeatAt: now,
+            updatedAt: now,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            ttlMs: 60_000,
+        };
+        const staleAggregate = {
+            ...brokerLease,
+            claimId: "stale-claim",
+            claimNonce: "stale-generation",
+        };
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases/android-device/locks"), { recursive: true });
+        writeFileSync(lockPath("android-device", hardwareId), JSON.stringify(brokerLease));
+        writeFileSync(aggregatePath("android-device"), JSON.stringify({ leases: [staleAggregate] }));
+
+        expect(heartbeatPhysicalLease("android-device", hardwareId, deviceId, {
+            claimId: brokerLease.claimId,
+            claimNonce: brokerLease.claimNonce,
+        })).toEqual(expect.objectContaining({ ok: true, heartbeat: true }));
+        expect(readPhysicalLeases("android-device")).toEqual([staleAggregate]);
+    });
+
+    it("removes a fresh aggregate orphan only when its authoritative lock is absent", () => {
+        const aggregateFile = aggregatePath("android-device");
+        const lease = {
+            backend: "android-device",
+            hardwareId: "USB-FRESH-ORPHAN",
+            ownerId: ownerId(),
+            deviceId: "android-device-real-e2e-fresh-orphan",
+            claimId: "fresh-orphan-claim",
+            claimNonce: "fresh-orphan-generation",
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        };
+        mkdirSync(join(homedir(), ".ccc/devices/physical-leases"), { recursive: true });
+        writeFileSync(aggregateFile, JSON.stringify({ leases: [lease] }));
+
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", lease, { requireLockAbsent: true })).toEqual(expect.objectContaining({
+            ok: true,
+            authoritativeLockRemoved: false,
+        }));
+        expect(readPhysicalLeases("android-device")).toEqual([]);
+
+        const claimed = claimPhysicalLease("android-device", "USB-AUTHORITATIVE", "android-device-real-e2e-authoritative", {
+            claimNonce: "authoritative-generation",
+        });
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", claimed.lease, { requireLockAbsent: true })).toEqual(expect.objectContaining({
+            ok: false,
+            error: "physical-lease-residue-authoritative-lock-present",
+        }));
+    });
+
+    it("fails closed when a residue aggregate conflicts with an authoritative lock", () => {
+        const claimed = claimPhysicalLease("android-device", "USB-CONFLICT", "current-device", {
+            claimNonce: "current-generation",
+        });
+        const aggregateFile = aggregatePath("android-device");
+        const stale = {
+            ...claimed.lease,
+            deviceId: "android-device-real-e2e-stale",
+            claimId: "stale-claim",
+            claimNonce: "stale-generation",
+        };
+        writeFileSync(aggregateFile, JSON.stringify({ leases: [stale] }));
+
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", stale)).toEqual(expect.objectContaining({
+            ok: false,
+            error: "physical-lease-residue-lock-conflict",
+        }));
+        expect(JSON.parse(readFileSync(lockPath("android-device", "USB-CONFLICT"), "utf8"))).toEqual(claimed.lease);
+        expect(readPhysicalLeases("android-device")).toEqual([stale]);
+    });
+
+    it("does not treat a generation-bearing successor lock as legacy residue", () => {
+        const claimed = claimPhysicalLease("android-device", "USB-LEGACY", "android-device-real-e2e-legacy", {
+            claimNonce: "successor-generation",
+        });
+        const legacy = { ...claimed.lease };
+        delete legacy.claimId;
+        delete legacy.claimNonce;
+        writeFileSync(aggregatePath("android-device"), JSON.stringify({ leases: [legacy] }));
+
+        expect(releaseOwnedPhysicalLeaseResidue("android-device", legacy)).toEqual(expect.objectContaining({
+            ok: false,
+            error: "physical-lease-residue-lock-conflict",
+        }));
+        expect(JSON.parse(readFileSync(lockPath("android-device", "USB-LEGACY"), "utf8"))).toEqual(claimed.lease);
+        expect(readPhysicalLeases("android-device")).toEqual([legacy]);
     });
 
     it("fences same-owner attach operations and token-bound lease mutations", () => {
