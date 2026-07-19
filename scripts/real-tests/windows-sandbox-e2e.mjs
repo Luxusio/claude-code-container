@@ -1,6 +1,6 @@
 import assert from "assert";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
-import { homedir } from "os";
+import { hostname, homedir, uptime } from "os";
 import { basename, join } from "path";
 import { hiddenSpawnSync, realProviderTempRoot } from "./helpers.mjs";
 import {
@@ -113,7 +113,43 @@ export function stopRunningWindowsSandboxSessions(options = {}) {
         if (result.status === 0) stopped.push(id);
         else failed.push({ id, error: result.stderr || result.stdout || result.error?.message || `wsb stop failed: ${result.status}` });
     }
-    return { ok: failed.length === 0, stopped, failed };
+    const verified = listRunningWindowsSandboxSessions(options);
+    if (!verified.ok) return { ok: false, stopped, failed, error: verified.error };
+    const survivors = verified.ids.filter((id) => verifiedIds.has(id) && !preExistingIds.has(id));
+    return {
+        ok: failed.length === 0 && survivors.length === 0,
+        stopped,
+        failed,
+        survivors,
+        ...(survivors.length > 0 ? { error: `verified Windows Sandbox sessions remain: ${survivors.join(", ")}` } : {}),
+    };
+}
+
+function currentBootId() {
+    try {
+        return readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
+    } catch {
+        return `${hostname()}:${Math.floor((Date.now() - uptime() * 1000) / 1000)}`;
+    }
+}
+
+function sameBootIdentity(left, right) {
+    if (left === right) return true;
+    const leftMatch = typeof left === "string" ? left.match(/^(.*):(\d+)$/) : null;
+    const rightMatch = typeof right === "string" ? right.match(/^(.*):(\d+)$/) : null;
+    return Boolean(leftMatch && rightMatch
+        && leftMatch[1] === rightMatch[1]
+        && Math.abs(Number(leftMatch[2]) - Number(rightMatch[2])) <= 5);
+}
+
+function verifiedInterruptedWindowsSandboxLock(lock, owner, deviceId) {
+    return lock?.provider === "windows-sandbox"
+        && lock?.host === hostname()
+        && sameBootIdentity(lock?.bootId, currentBootId())
+        && lock?.ownerId === owner
+        && lock?.deviceId === deviceId
+        && typeof lock?.claimId === "string" && /^[a-f0-9]{16,128}$/i.test(lock.claimId)
+        && typeof lock?.sandboxId === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(lock.sandboxId);
 }
 
 export function verifiedWindowsSandboxSessionId(statusPayload, deviceId) {
@@ -181,6 +217,21 @@ function tryRemoveTree(path) {
 }
 
 function removeVerifiedWindowsSandboxE2EEvidence(homeDir, owner, deviceId) {
+    const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+    if (existsSync(lockPath)) {
+        let lock;
+        try {
+            lock = JSON.parse(readFileSync(lockPath, "utf-8"));
+        } catch (error) {
+            throw new Error(`Windows Sandbox ownership evidence is malformed at ${lockPath}: ${error?.message || error}`);
+        }
+        if (lock?.ownerId === owner && lock?.deviceId === deviceId) {
+            if (!verifiedInterruptedWindowsSandboxLock(lock, owner, deviceId)) {
+                throw new Error(`Windows Sandbox ownership evidence does not match the current host generation: ${lockPath}`);
+            }
+            rmSync(lockPath, { force: true });
+        }
+    }
     const removed = tryRemoveTree(windowsDeviceDir(homeDir, owner, deviceId));
     if (!removed.ok) {
         throw new Error(`verified provider cleanup succeeded but device evidence removal failed for ${deviceId}: ${removed.error}`);
@@ -192,14 +243,6 @@ function removeVerifiedWindowsSandboxE2EEvidence(homeDir, owner, deviceId) {
             owner,
             readWindowsStateDevices(homeDir, owner).filter((device) => device?.id !== deviceId),
         );
-    }
-    const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
-    if (!existsSync(lockPath)) return;
-    try {
-        const lock = JSON.parse(readFileSync(lockPath, "utf-8"));
-        if (lock?.ownerId === owner && lock?.deviceId === deviceId) rmSync(lockPath, { force: true });
-    } catch {
-        // Preserve malformed ownership evidence for manual inspection.
     }
 }
 
@@ -255,6 +298,27 @@ export async function cleanupPreviousWindowsSandboxE2E(options = {}) {
     const failures = [];
     for (const device of devices) {
         try {
+            if (device?.status === "stopped") {
+                const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
+                let lock = null;
+                try {
+                    lock = JSON.parse(readFileSync(lockPath, "utf-8"));
+                } catch {
+                    // Missing or malformed evidence is preserved for the normal cleanup checks.
+                }
+                const sandboxId = verifiedInterruptedWindowsSandboxLock(lock, owner, device.id)
+                    ? lock.sandboxId
+                    : null;
+                if (sandboxId) {
+                    const stopped = (options.stopRunningSessions || stopRunningWindowsSandboxSessions)({
+                        ...(options.sessionOptions || {}),
+                        verifiedSessionIds: [sandboxId],
+                    });
+                    if (!stopped.ok) {
+                        throw new Error(`verified stale Windows Sandbox runtime stop failed for ${device.id}: ${stopped.error || JSON.stringify(stopped.failed || [])}`);
+                    }
+                }
+            }
             await cleanupCurrentWindowsSandboxE2E({
                 homeDir,
                 ownerId: owner,

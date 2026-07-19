@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { androidDiscovery } from "../../device-lab-mcp/src/backends/android.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
+import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.mjs";
 import {
     describeProcessIdentities,
     identityForPid,
@@ -584,7 +585,15 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-    main().then((code) => { process.exitCode = code; }).catch((error) => {
+    const args = process.argv.slice(2);
+    const parsed = (() => {
+        try { return parseRealProviderCycleArgs(args); } catch { return null; }
+    })();
+    const execute = () => main(args);
+    const run = parsed?.help || parsed?.dryRun || process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD === "1"
+        ? execute()
+        : withExclusiveRealProviderRun(`real-provider durability (${parsed?.target || "unknown target"})`, execute);
+    run.then((code) => { process.exitCode = code; }).catch((error) => {
         console.error(`FAIL ${error?.message || String(error)}`);
         process.exitCode = 1;
     });

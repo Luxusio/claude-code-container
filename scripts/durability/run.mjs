@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
+import { withExclusiveRealProviderRunSync } from "../real-tests/exclusive-real-provider-run.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDir, "../..");
@@ -66,10 +67,30 @@ export function main(args = process.argv.slice(2), dependencies = {}) {
     return executed.status ?? 1;
 }
 
+export function runDurabilityLauncher(args = process.argv.slice(2), dependencies = {}) {
+    const [mode, ...forwardedArgs] = args;
+    const realProviderRun = mode === "real"
+        && !forwardedArgs.includes("--dry-run")
+        && !forwardedArgs.includes("--help")
+        && !forwardedArgs.includes("-h");
+    if (!realProviderRun) return main(args, dependencies);
+    const withExclusive = dependencies.withExclusiveRealProviderRunSync || withExclusiveRealProviderRunSync;
+    return withExclusive("real-provider durability", () => {
+        const previous = process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD;
+        process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD = "1";
+        try {
+            return main(args, dependencies);
+        } finally {
+            if (previous === undefined) delete process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD;
+            else process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD = previous;
+        }
+    });
+}
+
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
     try {
-        process.exitCode = main();
+        process.exitCode = runDurabilityLauncher();
     } catch (error) {
         console.error(`FAIL durability launcher: ${error.message}`);
         process.exitCode = 1;

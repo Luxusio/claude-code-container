@@ -826,6 +826,23 @@ function sameBrokerWindowsSandboxLockOwner(lock: Record<string, unknown> | null,
         && (!lock?.sandboxId || !sandboxId || lock.sandboxId === sandboxId);
 }
 
+function brokerWindowsSandboxIdForStop(ownerId: string, device: unknown): string | null {
+    const recorded = field(device, "sandboxId");
+    if (isGuid(recorded)) return recorded;
+    if (field(device, "status") !== "stopped") return null;
+    const lock = readBrokerWindowsSandboxLock();
+    const sandboxId = field(lock, "sandboxId");
+    const claimId = field(lock, "claimId");
+    return lock?.provider === "windows-sandbox"
+        && lock?.host === hostname()
+        && sameBootIdentity(lock?.bootId, currentBootId())
+        && Boolean(claimId && /^[a-f0-9]{16,128}$/i.test(claimId))
+        && isGuid(sandboxId)
+        && sameBrokerWindowsSandboxLockOwner(lock, ownerId, device, sandboxId)
+        ? sandboxId
+        : null;
+}
+
 function claimBrokerWindowsSandboxLock(ownerId: string, device: unknown, sandboxId?: string): { ok: true } | { ok: false; error: string; lock: Record<string, unknown> | null } {
     return withSharedMutationLock(brokerWindowsSandboxMutationLockPath(), () => {
         const lockPath = brokerWindowsSandboxLockPath();
@@ -7104,7 +7121,7 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
         }
         const wsb = executableFor("wsb", normalized);
         if (parsed.command === "device_stop" || (parsed.command === "device_delete" && shouldStopOwnerDevice(parsed.stateKey, (device as { status?: unknown })?.status))) {
-            const sandboxId = field(device, "sandboxId");
+            const sandboxId = brokerWindowsSandboxIdForStop(ownerId, device);
             if (!isGuid(sandboxId)) return { error: "missing-provider-metadata", missing: ["sandboxId GUID"] };
             return { mode: "exec", provider: "wsb", executable: wsb, args: ["stop", "--id", sandboxId], sandboxId };
         }

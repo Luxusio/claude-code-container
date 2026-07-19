@@ -2,7 +2,7 @@ import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { request } from "http";
-import { tmpdir } from "os";
+import { hostname, tmpdir, uptime } from "os";
 import { dirname, join } from "path";
 import { runInNewContext } from "vm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -3923,6 +3923,71 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(stoppedState.devices[0]).toEqual(expect.objectContaining({ status: "stopped", minimizeWatchdog: null }));
             expect(existsSync(join(windowsRoot, "win-registered", "downloads", "ccc-minimize-watchdog.cancel"))).toBe(true);
             expect(existsSync(join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json"))).toBe(false);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("recovers a stopped Windows record from its matching broker singleton lock", async () => {
+        const cwd = "/project/broker-windows-stopped-runtime-recovery";
+        const ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "win-stopped-runtime-recovery";
+        const sandboxId = "12345678-1234-4234-9234-1234567890ac";
+        writeBrokerDevices(ownerId, "windows", [
+            { id: deviceId, backend: "windows-sandbox", status: "stopped", authority: "host-broker" },
+        ]);
+        let bootId: string;
+        try {
+            bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf-8").trim();
+        } catch {
+            bootId = `${hostname()}:${Math.floor((Date.now() - uptime() * 1000) / 1000)}`;
+        }
+        const lockPath = join(process.env.HOME!, ".ccc/devices/host-locks/windows-sandbox.json");
+        mkdirSync(dirname(lockPath), { recursive: true });
+        writeFileSync(lockPath, JSON.stringify({
+            provider: "windows-sandbox",
+            host: hostname(),
+            bootId,
+            ownerId,
+            deviceId,
+            sandboxId,
+            claimId: "abcdef0123456789abcdef0123456789",
+            pid: process.pid,
+            acquiredAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+        }));
+        const commandRunner = vi.fn((command) => ({
+            mode: command.mode,
+            provider: command.provider,
+            status: 0,
+            stdout: "",
+            stderr: "",
+        }));
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { wsb: "wsb" },
+            commandRunner,
+            platform: "win32",
+        });
+        const baseUrl = await listen(server);
+        try {
+            const stopped = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "windows-sandbox", command: "device_stop", deviceId, dryRun: false },
+                }),
+            });
+            expect(stopped.status).toBe(200);
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                provider: "wsb",
+                args: ["stop", "--id", sandboxId],
+            }), expect.any(Object));
+            expect(existsSync(lockPath)).toBe(false);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

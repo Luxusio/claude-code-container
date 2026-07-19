@@ -695,7 +695,9 @@ describe("test level runner", () => {
                 listCount += 1;
                 const ids = listCount === 1
                     ? [preExistingId]
-                    : [preExistingId, ownedId, concurrentForeignId];
+                    : stopped.includes(ownedId)
+                        ? [preExistingId, concurrentForeignId]
+                        : [preExistingId, ownedId, concurrentForeignId];
                 return { status: 0, stdout: JSON.stringify(ids.map((id) => ({ id }))), stderr: "" };
             }
             if (args[0] === "stop") stopped.push(args[2]);

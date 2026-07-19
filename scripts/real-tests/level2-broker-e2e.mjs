@@ -447,6 +447,7 @@ export async function runBrokerE2E(options = {}) {
                 backend: "android-device",
                 name: "Level 2 Broker E2E Missing Android Device",
                 deviceId: "level2-broker-e2e-missing-android-device",
+                serial: "ccc-level2-definitely-missing-android-serial",
             }));
             assert.strictEqual(attachDiagnostic.ok, false, JSON.stringify(attachDiagnostic));
             assert.ok([
@@ -749,7 +750,7 @@ export async function runBrokerE2E(options = {}) {
                 ["device_stop", { ...publicRoute, backend: "windows-sandbox", deviceId: fakeWindows }],
                 ["device_delete", { ...publicRoute, backend: "android-emulator", deviceId: fakeAndroid, confirmDestructive: true }],
                 ["device_delete", { ...publicRoute, backend: "windows-sandbox", deviceId: fakeWindows, confirmDestructive: true }],
-                ["device_attach", { ...publicRoute, backend: "android-device", name: "Level 2 public attach diagnostic", deviceId: `${fakeAndroid}-attach` }],
+                ["device_attach", { ...publicRoute, backend: "android-device", name: "Level 2 public attach diagnostic", deviceId: `${fakeAndroid}-attach`, serial: "ccc-level2-definitely-missing-android-serial" }],
                 ["device_detach", { ...publicRoute, backend: "android-device", deviceId: `${fakeAndroid}-detach` }],
                 ["device_exec", { ...publicRoute, backend: "android-emulator", deviceId: fakeAndroid, command: "true", helperTimeoutMs: 1 }],
                 ["device_record_video_start", { ...publicRoute, backend: "android-emulator", deviceId: fakeAndroid, remotePath: "/sdcard/level2-public.mp4", timeLimitSec: 1 }],

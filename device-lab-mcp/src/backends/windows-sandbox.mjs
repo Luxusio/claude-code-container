@@ -1549,6 +1549,18 @@ function bindWindowsLifecycleSingleton(deviceId, claim, original) {
 }
 
 function stopWindowsSandboxDevice(device) {
+    if (device.status === "stopped") {
+        const singleton = readWindowsSingletonLock();
+        if (singleton?.claimId === device.singletonClaimId
+            && isGuid(singleton?.sandboxId)
+            && sameWindowsSingletonOwner(singleton, device, singleton.sandboxId)) {
+            device = {
+                ...device,
+                status: "running",
+                sandboxId: singleton.sandboxId,
+            };
+        }
+    }
     if (device.status !== "stopped" && !windowsSingletonGenerationMatches(device)) {
         return {
             ok: false,

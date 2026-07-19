@@ -1403,6 +1403,37 @@ exit 0
         expect(cleanup.isError).not.toBe(true);
     });
 
+    it("reconciles an interrupted stopped record from its matching singleton generation", { timeout: TIMEOUT }, async () => {
+        const deviceId = `windows-stopped-runtime-recovery-${Date.now()}`;
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: { backend: "windows-sandbox", name: "Windows stopped runtime recovery", deviceId },
+        });
+        expect(create.isError).not.toBe(true);
+        const start = await client.callTool({ name: "device_start", arguments: { deviceId } });
+        expect(start.isError).not.toBe(true);
+        const started = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}")) as { device: { sandboxId: string } };
+
+        const statePath = windowsStatePath();
+        const state = JSON.parse(readFileSync(statePath, "utf-8")) as { devices: Array<Record<string, unknown>> };
+        state.devices = state.devices.map((device) => device.id === deviceId
+            ? { ...device, status: "stopped", sandboxId: undefined, singletonClaimId: undefined }
+            : device);
+        writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+        const before = readFileSync(logPath, { encoding: "utf-8", flag: "a+" });
+        const stop = await client.callTool({ name: "device_stop", arguments: { deviceId } });
+        expect(stop.isError, (stop.content as Array<{ text?: string }>)[0]?.text).not.toBe(true);
+        expect(readFileSync(logPath, { encoding: "utf-8", flag: "a+" }).slice(before.length)).toContain(`wsb stop --id ${started.device.sandboxId}`);
+        expect(existsSync(join(homeDir, ".ccc", "devices", "host-locks", "windows-sandbox.json"))).toBe(false);
+
+        const cleanup = await client.callTool({
+            name: "device_delete",
+            arguments: { deviceId, confirmDestructive: true },
+        });
+        expect(cleanup.isError).not.toBe(true);
+    });
+
     it("rejects malformed Windows Sandbox ownership state without replacing it", { timeout: TIMEOUT }, async () => {
         const lockPath = join(homeDir, ".ccc/devices/host-locks/windows-sandbox.json");
         const create = await client.callTool({

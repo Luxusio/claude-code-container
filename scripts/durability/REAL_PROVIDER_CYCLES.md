@@ -5,6 +5,13 @@
 > target changes device state and may install, launch, reset, and uninstall the
 > APK configured through the existing `CCC_REAL_*` variables.
 
+Only one real-provider suite may run at a time for a host user. `test:level3`
+and `test:durability:device-lab:real` share a lock under
+`~/.ccc/devices/test-runs`. A second run fails immediately with the PID and
+start time of the active run. This prevents two suites from attaching the same
+physical device, claiming the Windows Sandbox singleton, or reusing Android
+emulator ports concurrently.
+
 Run one target repeatedly with:
 
 ```sh

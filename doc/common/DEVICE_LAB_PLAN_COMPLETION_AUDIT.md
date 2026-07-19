@@ -1118,3 +1118,22 @@ are not used.
 Run full strict proof on hosts with the required providers and leased hardware
 until the final summary reports `skip=0`, `fail=0`, and
 `strictSkipFailures=0`.
+
+## 2026-07-19 Real-Provider Run Serialization
+
+- Level 3 and real-provider durability runs now share one host-user execution
+  lock and fail fast when another destructive provider suite is active.
+- The regression reproduces the overlap in-process and verifies that sync and
+  async launch paths use the same lock and release it after completion.
+- Missing-device attach diagnostics now always pass an explicit impossible
+  Android serial. They cannot select and attach the only real USB device on a
+  developer host.
+- Interrupted Windows cleanup now reconciles a lock-verified Sandbox GUID even
+  when owner state was prematurely persisted as `stopped`; only matching
+  current-owner test evidence is eligible for this recovery.
+- The public Windows `device_stop` path performs the same generation-checked
+  reconciliation, allowing `ccc devices stop <id>` to recover interrupted
+  state without adopting a foreign Sandbox runtime.
+- Cleanup validates remaining singleton evidence before removing owner state;
+  foreign-host, prior-boot, malformed, or mismatched locks are preserved and
+  fail closed.

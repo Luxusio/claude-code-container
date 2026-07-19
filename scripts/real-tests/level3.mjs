@@ -1,6 +1,7 @@
 import { spawnSync } from "child_process";
 import { join, resolve } from "path";
 import { repoRoot } from "./helpers.mjs";
+import { withExclusiveRealProviderRunSync } from "./exclusive-real-provider-run.mjs";
 
 const resultFiles = process.argv.slice(2);
 const assertMatrix = join(repoRoot, "scripts", "real-tests", "assert-matrix.mjs");
@@ -70,15 +71,22 @@ function ensureHostBrokerReady() {
     return result.status ?? 1;
 }
 
-if (resultFiles.length > 0) {
-    process.exit(run(process.execPath, [assertMatrix, ...resultFiles.map((file) => resolve(file))]));
+function runLevel3() {
+    const buildStatus = buildLevel3Artifacts();
+    if (buildStatus !== 0) return buildStatus;
+    const brokerStatus = ensureHostBrokerReady();
+    if (brokerStatus !== 0) return brokerStatus;
+
+    const vitest = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
+    const config = join(repoRoot, "scripts", "real-tests", "vitest.level3.config.mjs");
+    return run(process.execPath, [vitest, "run", "--config", config]);
 }
 
-const buildStatus = buildLevel3Artifacts();
-if (buildStatus !== 0) process.exit(buildStatus);
-const brokerStatus = ensureHostBrokerReady();
-if (brokerStatus !== 0) process.exit(brokerStatus);
-
-const vitest = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
-const config = join(repoRoot, "scripts", "real-tests", "vitest.level3.config.mjs");
-process.exit(run(process.execPath, [vitest, "run", "--config", config]));
+try {
+    process.exitCode = resultFiles.length > 0
+        ? run(process.execPath, [assertMatrix, ...resultFiles.map((file) => resolve(file))])
+        : withExclusiveRealProviderRunSync("test:level3", runLevel3);
+} catch (error) {
+    process.stderr.write(`FAIL ${error?.message || String(error)}\n`);
+    process.exitCode = 1;
+}

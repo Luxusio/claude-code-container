@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import test from "node:test";
-import { durabilityLaunchPlan, main } from "./run.mjs";
+import { durabilityLaunchPlan, main, runDurabilityLauncher } from "./run.mjs";
 
 test("source checkout builds before forwarding all durability arguments", () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-durability-source-"));
@@ -97,6 +97,32 @@ test("launcher stops after a failed source build", () => {
         });
         assert.equal(status, 7);
         assert.equal(calls, 1);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("real-provider launcher acquires exclusivity before build and marks the child", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-durability-exclusive-"));
+    try {
+        mkdirSync(join(root, "src"));
+        writeFileSync(join(root, "tsconfig.json"), "{}");
+        const events = [];
+        const status = runDurabilityLauncher(["real", "--target", "windows-sandbox", "--cycles", "1"], {
+            packageRoot: root,
+            npmExecPath: "/opt/npm/bin/npm-cli.js",
+            withExclusiveRealProviderRunSync: (_label, operation) => {
+                events.push("lock");
+                return operation();
+            },
+            spawnSyncImpl: () => {
+                events.push(process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD === "1" ? "spawn-locked" : "spawn-unlocked");
+                return { status: 0 };
+            },
+        });
+        assert.equal(status, 0);
+        assert.deepEqual(events, ["lock", "spawn-locked", "spawn-locked"]);
+        assert.equal(process.env.CCC_REAL_PROVIDER_RUN_LOCK_HELD, undefined);
     } finally {
         rmSync(root, { recursive: true, force: true });
     }
