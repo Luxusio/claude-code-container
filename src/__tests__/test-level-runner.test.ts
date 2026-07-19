@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../device-lab-mcp/src/policy/destructive.mjs";
 import { androidDeviceE2EPrerequisites } from "../../scripts/real-tests/android-device-e2e.mjs";
 import { androidEmulatorAppSelection } from "../../scripts/real-tests/android-emulator-e2e.mjs";
+import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.mjs";
 import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.mjs";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
 
@@ -1608,6 +1609,18 @@ describe("test level runner", () => {
         expect(text).toContain("device_click current display alias buttons");
         expect(text).toContain("device_double_click current display alias buttons");
         expect(text).toContain("device_scroll current display alias directions");
+    });
+
+    it("reports an unavailable current display E2E as skipped at both levels", () => {
+        expect(currentDisplayPrerequisiteResult(["xdotool", "scrot"])).toEqual({
+            status: "SKIP",
+            reason: "missing xdotool, scrot",
+            steps: [{
+                name: "current display prerequisites",
+                status: "SKIP",
+                reason: "missing xdotool, scrot",
+            }],
+        });
     });
 
     it("covers safe desktop read-only tools in Windows and macOS real E2E through MCP calls", () => {

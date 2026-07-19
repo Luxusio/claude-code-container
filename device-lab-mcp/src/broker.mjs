@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, unlinkSync } from "fs";
 import { homedir } from "os";
 import { delimiter, dirname, join, resolve } from "path";
-import { ownerBasis, ownerId, PACKAGE_ROOT } from "./context.mjs";
+import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "./context.mjs";
 import { writeJsonFileAtomically } from "./state/shared-mutation-lock.mjs";
 import { readDeviceLabStateFile } from "./state/state-file.mjs";
 
@@ -786,9 +786,10 @@ async function terminateVerifiedBrokerRuntime(runtime, timeoutMs = 3000) {
     return { ...termination, verified };
 }
 
-async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
+export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const attempts = [];
+    let lastResult = null;
     while (Date.now() <= deadline) {
         const remainingMs = Math.max(1, deadline - Date.now());
         const resolved = await resolveBrokerOwner({
@@ -796,11 +797,20 @@ async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
             port,
             timeoutMs: Math.min(1000, remainingMs),
         });
-        attempts.push(...(resolved.attempts || []));
+        lastResult = resolved;
+        for (const attempt of resolved.attempts || []) {
+            attempts.push(attempt);
+            if (attempts.length > MAX_PROBE_CANDIDATES) attempts.shift();
+        }
         if (resolved.ok) return { ...resolved, attempts };
         if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(100, remainingMs)));
     }
-    return { ok: false, error: "broker-owner-resolve-readiness-timeout", selected: null, attempts };
+    return {
+        ok: false,
+        error: lastResult?.error || "broker-owner-resolve-readiness-timeout",
+        selected: lastResult?.selected || null,
+        attempts,
+    };
 }
 
 async function ensureBroker(options = {}) {
@@ -1063,7 +1073,9 @@ async function ensureBroker(options = {}) {
                 ok: false,
                 ownerId: owner,
                 error: "broker-launch-owner-resolve-timeout",
-                detail: brokerLogTail(logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`,
+                detail: ownerResolve.selected
+                    ? `${ownerResolve.error}: ${JSON.stringify(ownerResolve.selected)}`
+                    : brokerLogTail(logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`,
                 runtime,
                 ownerResolve,
                 attempts: [...before.attempts, ...stale, ...ready.attempts, { reason: "broker-owner-resolve-readiness-timeout", ownerResolve }],
@@ -1234,7 +1246,7 @@ function ownerToken(owner) {
 async function resolveBrokerOwner(probeOptions) {
     const attempts = [];
     const requestBody = JSON.stringify({
-        projectMountPath: process.cwd() || "/project",
+        projectMountPath: projectMountPath(),
         profile: process.env.CCC_PROFILE || null,
     });
     for (const host of probeOptions.hostCandidates) {

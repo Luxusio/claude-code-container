@@ -10697,9 +10697,8 @@ export function startDeviceBrokerServe(
     const { host, port } = parseBrokerServeArgs(args);
     const startedAt = new Date().toISOString();
     const ownerId = deviceBrokerOwnerId(cwd, profile);
-    registerDeviceBrokerOwner(cwd, profile, ownerId);
-    deviceBrokerOwnerToken(ownerId);
     const server = factory({ cwd, profile, host, port, startedAt });
+    deviceBrokerOwnerToken(ownerId);
     server.listen(port, host, () => {
         writeHostBrokerRuntime({
             name: DEVICE_BROKER_NAME,

@@ -6,6 +6,10 @@ Run the non-destructive broker soak test with:
 npm run test:durability:device-lab
 ```
 
+The launcher builds a source checkout before testing. On Windows it executes
+the npm CLI JavaScript reported by `npm_execpath` through the current Node
+binary, avoiding direct `.cmd` spawning and shell quoting.
+
 The default run performs 100 rounds with eight concurrent requests. Each round
 exercises broker health, status, authenticated status RPC, and authenticated
 echo RPC. Requests and response bodies are bounded.

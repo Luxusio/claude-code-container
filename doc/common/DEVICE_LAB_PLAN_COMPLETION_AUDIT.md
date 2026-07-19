@@ -1100,6 +1100,21 @@ are not used.
   `git diff --check` passed. The platform skips remain honest environmental
   limits rather than evidence for unavailable iOS/macOS/physical-device hosts.
 
+## 2026-07-19 Windows Owner-Resolve Regression
+
+- Host-side MCP processes now send the canonical `/project/<project-id>` mount
+  to `/v1/owner/resolve`. They no longer send a native Windows checkout path,
+  which the broker correctly rejects as a noncanonical owner request.
+- Owner-resolve readiness retains at most eight attempts and preserves the last
+  HTTP status and broker error instead of replacing them with a generic timeout
+  and an oversized repeated diagnostic.
+- Broker startup registers its launch owner once, and failed isolated broker
+  E2E runs preserve their temporary home so auth, registration, runtime, and
+  log evidence remains inspectable.
+- Regressions cover Windows host-path canonicalization, canonical owner-resolve
+  request bodies, bounded failure diagnostics, and all-skipped parent/child
+  result consistency.
+
 Run full strict proof on hosts with the required providers and leased hardware
 until the final summary reports `skip=0`, `fail=0`, and
 `strictSkipFailures=0`.

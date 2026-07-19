@@ -279,6 +279,7 @@ export async function runBrokerE2E(options = {}) {
     const steps = [];
     let mcpOwnedBrokerLaunched = false;
     let localBrokerPid = null;
+    let preserveTestHome = false;
     const leaseHardwareId = `ccc-real-broker-e2e-${Date.now()}`;
 
     try {
@@ -947,11 +948,16 @@ export async function runBrokerE2E(options = {}) {
             }
         }
         ccc.cleanup?.();
-        rmSync(testHome, { recursive: true, force: true });
+        preserveTestHome = steps.some((step) => step.status === "FAIL");
+        if (!preserveTestHome) rmSync(testHome, { recursive: true, force: true });
     }
 
+    const aggregate = aggregateStepResult(steps);
     return {
-        ...aggregateStepResult(steps),
+        ...aggregate,
+        ...(preserveTestHome ? {
+            reason: [aggregate.reason, `isolated broker state preserved at ${testHome}`].filter(Boolean).join("; "),
+        } : {}),
         steps,
         scriptedTools: [...scriptedTools].sort(),
         scriptedArgumentFacets,

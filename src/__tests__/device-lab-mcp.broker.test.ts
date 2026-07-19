@@ -13,7 +13,8 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
-import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions } from "../../device-lab-mcp/src/broker.mjs";
+import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
+import { projectMountPath } from "../../device-lab-mcp/src/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
 
@@ -63,6 +64,37 @@ describe("device-lab MCP", () => {
             join(repoRoot, "dist", "index.js"),
             "devices", "broker", "serve", "--host", "127.0.0.1", "--port", "17373",
         ]);
+    });
+
+    it("bounds owner-resolve readiness diagnostics and preserves the last HTTP failure", async () => {
+        const requestBodies: Array<{ projectMountPath?: string }> = [];
+        const server = createServer((req, res) => {
+            const chunks: Buffer[] = [];
+            req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            req.on("end", () => {
+                requestBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+                res.statusCode = 503;
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: false, error: "owner-auth-provisioning-failed" }));
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+        try {
+            const result = await waitForBrokerOwnerResolve("127.0.0.1", port, 250);
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "owner-auth-provisioning-failed",
+                selected: expect.objectContaining({ status: 503 }),
+            }));
+            expect(result.attempts.length).toBeGreaterThan(0);
+            expect(result.attempts.length).toBeLessThanOrEqual(8);
+            expect(requestBodies.length).toBeGreaterThan(0);
+            expect(requestBodies.every((body) => body.projectMountPath === projectMountPath())).toBe(true);
+            expect(requestBodies.every((body) => body.projectMountPath?.startsWith("/project/"))).toBe(true);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
     });
 
     it("reports persistent device-lab storage boundaries without starting the broker", { timeout: TIMEOUT }, async () => {

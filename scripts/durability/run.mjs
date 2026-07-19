@@ -15,6 +15,7 @@ const RUNNERS = Object.freeze({
 
 export function durabilityLaunchPlan(mode, args, options = {}) {
     const root = options.packageRoot || packageRoot;
+    const platform = options.platform || process.platform;
     const runner = RUNNERS[mode];
     if (!runner) throw new Error(`mode must be one of: ${Object.keys(RUNNERS).join(", ")}`);
     const sourceCheckout = existsSync(join(root, "src")) && existsSync(join(root, "tsconfig.json"));
@@ -22,11 +23,23 @@ export function durabilityLaunchPlan(mode, args, options = {}) {
     if (!sourceCheckout && !existsSync(distCli)) {
         throw new Error(`installed package is missing the built CLI: ${distCli}`);
     }
+    const npmExecPath = options.npmExecPath ?? process.env.npm_execpath;
+    let build = null;
+    if (sourceCheckout) {
+        if (npmExecPath) {
+            build = {
+                command: options.nodeExecPath || process.execPath,
+                args: [npmExecPath, "run", "build", "--silent"],
+            };
+        } else if (platform === "win32") {
+            throw new Error("source checkout build on Windows requires npm_execpath; run this command through npm");
+        } else {
+            build = { command: "npm", args: ["run", "build", "--silent"] };
+        }
+    }
     return {
         sourceCheckout,
-        build: sourceCheckout
-            ? { command: process.platform === "win32" ? "npm.cmd" : "npm", args: ["run", "build", "--silent"] }
-            : null,
+        build,
         run: { command: process.execPath, args: [runner, ...args] },
     };
 }

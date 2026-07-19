@@ -10,10 +10,53 @@ test("source checkout builds before forwarding all durability arguments", () => 
     try {
         mkdirSync(join(root, "src"));
         writeFileSync(join(root, "tsconfig.json"), "{}");
-        const plan = durabilityLaunchPlan("real", ["--target", "android-emulator", "--cycles", "2"], { packageRoot: root });
+        const plan = durabilityLaunchPlan("real", ["--target", "android-emulator", "--cycles", "2"], {
+            packageRoot: root,
+            npmExecPath: "/opt/npm/bin/npm-cli.js",
+            nodeExecPath: "/opt/node/bin/node",
+        });
         assert.equal(plan.sourceCheckout, true);
-        assert.deepEqual(plan.build.args, ["run", "build", "--silent"]);
+        assert.equal(plan.build.command, "/opt/node/bin/node");
+        assert.deepEqual(plan.build.args, ["/opt/npm/bin/npm-cli.js", "run", "build", "--silent"]);
         assert.deepEqual(plan.run.args.slice(-4), ["--target", "android-emulator", "--cycles", "2"]);
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("Windows source checkout invokes npm CLI through Node instead of spawning npm.cmd", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-durability-windows-source-"));
+    try {
+        mkdirSync(join(root, "src"));
+        writeFileSync(join(root, "tsconfig.json"), "{}");
+        const plan = durabilityLaunchPlan("real", ["--target", "windows-sandbox", "--cycles", "2"], {
+            packageRoot: root,
+            platform: "win32",
+            npmExecPath: "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+            nodeExecPath: "C:\\Program Files\\nodejs\\node.exe",
+        });
+        assert.equal(plan.build.command, "C:\\Program Files\\nodejs\\node.exe");
+        assert.deepEqual(plan.build.args, [
+            "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js",
+            "run",
+            "build",
+            "--silent",
+        ]);
+        assert.notEqual(plan.build.command, "npm.cmd");
+    } finally {
+        rmSync(root, { recursive: true, force: true });
+    }
+});
+
+test("Windows direct invocation fails closed when npm CLI identity is unavailable", () => {
+    const root = mkdtempSync(join(tmpdir(), "ccc-durability-windows-no-npm-"));
+    try {
+        mkdirSync(join(root, "src"));
+        writeFileSync(join(root, "tsconfig.json"), "{}");
+        assert.throws(
+            () => durabilityLaunchPlan("broker", [], { packageRoot: root, platform: "win32", npmExecPath: "" }),
+            /requires npm_execpath/,
+        );
     } finally {
         rmSync(root, { recursive: true, force: true });
     }

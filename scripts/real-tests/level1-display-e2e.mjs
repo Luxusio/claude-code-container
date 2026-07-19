@@ -45,14 +45,14 @@ async function assertCursorAt(callTool, expected, label) {
     assert.deepStrictEqual(cursorPoint(cursor), expected, label);
 }
 
+export function currentDisplayPrerequisiteResult(missing) {
+    const steps = [{ name: "current display prerequisites", status: "SKIP", reason: `missing ${missing.join(", ")}` }];
+    return { ...aggregateStepResult(steps), steps };
+}
+
 export async function run() {
     const missing = ["xdotool", "scrot"].filter((command) => !commandPath(command));
-    if (missing.length > 0) {
-        return {
-            status: "PASS",
-            steps: [{ name: "current display prerequisites", status: "SKIP", reason: `missing ${missing.join(", ")}` }],
-        };
-    }
+    if (missing.length > 0) return currentDisplayPrerequisiteResult(missing);
 
     const steps = [];
     await withDeviceLabMcp(async ({ callTool }) => {

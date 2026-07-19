@@ -22,7 +22,11 @@ function projectId(projectPath) {
 export function ownerBasis(cwd = process.cwd(), profile = process.env.CCC_PROFILE || undefined) {
     const id = projectId(cwd);
     const containerName = profile ? `ccc-${id}--p--${profile}` : `ccc-${id}`;
-    return `${containerName}:/project/${id}`;
+    return `${containerName}:${projectMountPath(cwd)}`;
+}
+
+export function projectMountPath(cwd = process.cwd()) {
+    return `/project/${projectId(cwd)}`;
 }
 
 export function ownerId() {
