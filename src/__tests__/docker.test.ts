@@ -935,7 +935,7 @@ describe("docker.ts module exports", () => {
 
             syncManagedMcpBundles("ccc-test");
 
-            for (const bundle of ["x11-mcp", "device-lab-mcp", "lab-mcp"]) {
+            for (const bundle of ["x11-mcp", "device-lab-mcp"]) {
                 const copy = spawnSyncMock.mock.calls.find((call: unknown[]) => {
                     const args = call[1] as string[];
                     return args?.[0] === "cp"
@@ -952,7 +952,7 @@ describe("docker.ts module exports", () => {
                 });
                 expect(install).toBeDefined();
             }
-            expect(digestCalls).toBe(6);
+            expect(digestCalls).toBe(4);
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args?.[0] === "exec" && args.includes("rm") && args.includes("/opt/ccc/dist/device-lab-mcp/server.mjs");
@@ -968,7 +968,7 @@ describe("docker.ts module exports", () => {
 
             syncManagedMcpBundles("ccc-test");
 
-            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
             expect(spawnSyncMock.mock.calls.every((call: unknown[]) => (call[1] as string[]).includes("sha256sum"))).toBe(true);
         });
 
@@ -990,7 +990,7 @@ describe("docker.ts module exports", () => {
 
             syncManagedMcpBundles("ccc-test");
 
-            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => (call[1] as string[])[0] === "cp")).toHaveLength(3);
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => (call[1] as string[])[0] === "cp")).toHaveLength(2);
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[]).includes("install"))).toBe(false);
             expect(console.error).toHaveBeenCalledWith(expect.stringContaining("failed to stage managed MCP bundle"));
         });
@@ -1003,7 +1003,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args[0] === "exec" && args.includes("rm") && args.some((arg) => arg.endsWith("/server.mjs"));
-            })).toHaveLength(3);
+            })).toHaveLength(2);
             expect(console.error).toHaveBeenCalledWith(expect.stringContaining("bundle verification failed"));
         });
     });
@@ -1034,7 +1034,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
-            })).toHaveLength(3);
+            })).toHaveLength(2);
         });
 
         it("starts a stopped container and returns its name", () => {
@@ -1059,7 +1059,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
-            })).toHaveLength(3);
+            })).toHaveLength(2);
         });
 
         it("recreates container when credential mounts are missing (drift after tool registry update)", () => {
@@ -1376,7 +1376,7 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
-            })).toHaveLength(3);
+            })).toHaveLength(2);
             const runArgs = runCall![1] as string[];
             expect(runArgs.some((arg) => /^CCC_DEVICE_LAB_OWNER_BASIS=/.test(arg))).toBe(false);
             expect(runArgs).toContain(`${name}-lab-state:/home/ccc/.ccc/labs`);

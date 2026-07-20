@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const repoRoot = join(__dirname, "../..");
 const TIMEOUT = 30000;
 
-describe("lab-mcp foundation", () => {
+describe("device-lab Linux VM foundation", () => {
     let client: Client;
     let homeDir: string;
     let stateRoot: string;
@@ -19,7 +19,7 @@ describe("lab-mcp foundation", () => {
         mkdirSync(stateRoot, { recursive: true });
         const transport = new StdioClientTransport({
             command: process.execPath,
-            args: [join(repoRoot, "lab-mcp/server.mjs")],
+            args: [join(repoRoot, "device-lab-mcp/server.mjs")],
             env: {
                 HOME: homeDir,
                 NODE_ENV: "test",
@@ -36,35 +36,34 @@ describe("lab-mcp foundation", () => {
         rmSync(homeDir, { recursive: true, force: true });
     }, TIMEOUT);
 
-    it("lists lab lifecycle tools", { timeout: TIMEOUT }, async () => {
+    it("lists Linux VM device tools without exposing legacy lab tools", { timeout: TIMEOUT }, async () => {
         const result = await client.listTools();
         const names = result.tools.map((tool) => tool.name);
         expect(names).toEqual(expect.arrayContaining([
-            "lab_status",
-            "lab_list",
-            "lab_image_list",
-            "lab_image_import",
-            "lab_create",
-            "lab_disk_materialize",
-            "lab_start",
-            "lab_reboot",
-            "lab_stop",
-            "lab_delete",
-            "lab_list_targets",
-            "lab_probe_readiness",
-            "lab_open_session",
-            "lab_snapshot_create",
-            "lab_snapshot_restore",
-            "lab_snapshot_delete",
-            "lab_sync_workspace",
-            "lab_export_artifacts",
-            "lab_guest_push",
-            "lab_guest_pull",
-            "lab_guest_exec",
-            "lab_guest_agent_status",
-            "lab_guest_agent_provision",
+            "device_image_list",
+            "device_image_import",
+            "device_create",
+            "device_disk_materialize",
+            "device_start",
+            "device_reboot",
+            "device_stop",
+            "device_delete",
+            "device_target_list",
+            "device_readiness_probe",
+            "device_session_open",
+            "device_snapshot_create",
+            "device_snapshot_restore",
+            "device_snapshot_delete",
+            "device_workspace_sync",
+            "device_artifacts_export",
+            "device_upload",
+            "device_download",
+            "device_exec",
+            "device_guest_agent_status",
+            "device_guest_agent_provision",
         ]));
-        const createTool = result.tools.find((tool) => tool.name === "lab_create");
+        expect(names.some((name) => name.startsWith("lab_"))).toBe(false);
+        const createTool = result.tools.find((tool) => tool.name === "device_create");
         expect(createTool?.inputSchema).toEqual(expect.objectContaining({
             properties: expect.objectContaining({
                 guestSshHost: expect.objectContaining({ maxLength: 255 }),
@@ -78,30 +77,30 @@ describe("lab-mcp foundation", () => {
                 guestAgentAutoProvision: expect.objectContaining({ type: "boolean" }),
             }),
         }));
-        const guestExecTool = result.tools.find((tool) => tool.name === "lab_guest_exec");
+        const guestExecTool = result.tools.find((tool) => tool.name === "device_exec");
         expect(guestExecTool?.inputSchema).toEqual(expect.objectContaining({
-            required: ["labId", "command"],
+            required: ["deviceId", "command"],
             properties: expect.objectContaining({
                 command: expect.objectContaining({ maxLength: 4096 }),
                 timeoutMs: expect.objectContaining({ minimum: 1, maximum: 600000 }),
             }),
         }));
-        const openSessionTool = result.tools.find((tool) => tool.name === "lab_open_session");
+        const openSessionTool = result.tools.find((tool) => tool.name === "device_session_open");
         expect(openSessionTool?.inputSchema).toEqual(expect.objectContaining({
             properties: expect.objectContaining({
                 sessionType: expect.objectContaining({ enum: ["monitor", "metadata", "guest-ssh", "guest-agent"] }),
             }),
         }));
-        const guestAgentStatusTool = result.tools.find((tool) => tool.name === "lab_guest_agent_status");
+        const guestAgentStatusTool = result.tools.find((tool) => tool.name === "device_guest_agent_status");
         expect(guestAgentStatusTool?.inputSchema).toEqual(expect.objectContaining({
-            required: ["labId"],
+            required: ["backend", "deviceId"],
             properties: expect.objectContaining({
                 timeoutMs: expect.objectContaining({ minimum: 1, maximum: 600000 }),
             }),
         }));
-        const guestAgentProvisionTool = result.tools.find((tool) => tool.name === "lab_guest_agent_provision");
+        const guestAgentProvisionTool = result.tools.find((tool) => tool.name === "device_guest_agent_provision");
         expect(guestAgentProvisionTool?.inputSchema).toEqual(expect.objectContaining({
-            required: ["labId"],
+            required: ["backend", "deviceId"],
             properties: expect.objectContaining({
                 timeoutMs: expect.objectContaining({ minimum: 1, maximum: 600000 }),
             }),
@@ -109,24 +108,22 @@ describe("lab-mcp foundation", () => {
     });
 
     it("reports unsupported by default and still stores named lab metadata", { timeout: TIMEOUT }, async () => {
-        const status = await client.callTool({ name: "lab_status", arguments: {} });
+        const status = await client.callTool({ name: "device_inventory", arguments: { backend: "linux-vm" } });
         const statusPayload = JSON.parse(((status.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(statusPayload).toEqual(expect.objectContaining({
             ok: true,
-            provider: "container-qemu",
-            available: false,
-            status: "unsupported",
-            stateRoot,
+            backend: "linux-vm",
+            discovery: expect.objectContaining({ provider: "container-qemu", available: false, status: "unsupported", stateRoot }),
         }));
 
-        const created = await client.callTool({ name: "lab_create", arguments: { name: "MCP Lab" } });
+        const created = await client.callTool({ name: "device_create", arguments: { backend: "linux-vm", name: "MCP Lab" } });
         const createPayload = JSON.parse(((created.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(createPayload).toEqual(expect.objectContaining({
             ok: true,
-            lab: expect.objectContaining({ id: "mcp-lab", runtimeState: "stopped" }),
+            device: expect.objectContaining({ id: "mcp-lab", deviceId: "mcp-lab", backend: "linux-vm", runtimeState: "stopped" }),
         }));
 
-        const start = await client.callTool({ name: "lab_start", arguments: { labId: "mcp-lab" } });
+        const start = await client.callTool({ name: "device_start", arguments: { backend: "linux-vm", deviceId: "mcp-lab" } });
         expect(start.isError).toBe(true);
         const startPayload = JSON.parse(((start.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(startPayload).toEqual(expect.objectContaining({
@@ -134,7 +131,7 @@ describe("lab-mcp foundation", () => {
             error: "lab-provider-unsupported",
         }));
 
-        const materialize = await client.callTool({ name: "lab_disk_materialize", arguments: { labId: "mcp-lab" } });
+        const materialize = await client.callTool({ name: "device_disk_materialize", arguments: { backend: "linux-vm", deviceId: "mcp-lab" } });
         expect(materialize.isError).toBe(true);
         const materializePayload = JSON.parse(((materialize.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(materializePayload).toEqual(expect.objectContaining({
@@ -142,7 +139,7 @@ describe("lab-mcp foundation", () => {
             error: "source-image-not-found",
         }));
 
-        const guestPush = await client.callTool({ name: "lab_guest_push", arguments: { labId: "mcp-lab", guestPath: "/workspace" } });
+        const guestPush = await client.callTool({ name: "device_upload", arguments: { backend: "linux-vm", deviceId: "mcp-lab", localPath: stateRoot, remotePath: "/workspace" } });
         expect(guestPush.isError).toBe(true);
         const guestPushPayload = JSON.parse(((guestPush.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(guestPushPayload).toEqual(expect.objectContaining({
@@ -150,25 +147,25 @@ describe("lab-mcp foundation", () => {
             error: "lab-not-running",
         }));
 
-        const targets = await client.callTool({ name: "lab_list_targets", arguments: {} });
+        const targets = await client.callTool({ name: "device_target_list", arguments: { backend: "linux-vm" } });
         const targetsPayload = JSON.parse(((targets.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(targetsPayload).toEqual(expect.objectContaining({
             ok: true,
             targets: [expect.objectContaining({ labId: "mcp-lab", targetKind: "lab-vm", readiness: "stopped" })],
         }));
 
-        const session = await client.callTool({ name: "lab_open_session", arguments: { labId: "mcp-lab", sessionId: "metadata-session", sessionType: "metadata" } });
+        const session = await client.callTool({ name: "device_session_open", arguments: { backend: "linux-vm", deviceId: "mcp-lab", sessionId: "metadata-session", sessionType: "metadata" } });
         const sessionPayload = JSON.parse(((session.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(sessionPayload).toEqual(expect.objectContaining({
             ok: true,
             session: expect.objectContaining({
                 id: "metadata-session",
                 state: "unavailable",
-                authority: "lab-mcp-metadata",
+                authority: "device-lab-metadata",
             }),
         }));
 
-        const readiness = await client.callTool({ name: "lab_probe_readiness", arguments: { labId: "mcp-lab" } });
+        const readiness = await client.callTool({ name: "device_readiness_probe", arguments: { backend: "linux-vm", deviceId: "mcp-lab" } });
         expect(readiness.isError).toBe(true);
         const readinessPayload = JSON.parse(((readiness.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(readinessPayload).toEqual(expect.objectContaining({
@@ -183,8 +180,8 @@ describe("lab-mcp foundation", () => {
         writeFileSync(join(stateRoot, "incoming", "mcp-base.qcow2"), "mcp-base");
 
         const imported = await client.callTool({
-            name: "lab_image_import",
-            arguments: { name: "MCP Base", sourcePath: "incoming/mcp-base.qcow2" },
+            name: "device_image_import",
+            arguments: { backend: "linux-vm", name: "MCP Base", sourcePath: "incoming/mcp-base.qcow2" },
         });
         const importedPayload = JSON.parse(((imported.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(importedPayload).toEqual(expect.objectContaining({
@@ -192,7 +189,7 @@ describe("lab-mcp foundation", () => {
             image: expect.objectContaining({ id: "mcp-base", copied: true, format: "qcow2" }),
         }));
 
-        const listed = await client.callTool({ name: "lab_image_list", arguments: {} });
+        const listed = await client.callTool({ name: "device_image_list", arguments: { backend: "linux-vm" } });
         const listedPayload = JSON.parse(((listed.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(listedPayload).toEqual(expect.objectContaining({
             ok: true,
@@ -200,13 +197,13 @@ describe("lab-mcp foundation", () => {
         }));
 
         const created = await client.callTool({
-            name: "lab_create",
-            arguments: { name: "MCP Image Lab", baseImageId: "mcp-base" },
+            name: "device_create",
+            arguments: { backend: "linux-vm", name: "MCP Image Lab", baseImageId: "mcp-base" },
         });
         const createdPayload = JSON.parse(((created.content as Array<{ text?: string }>)[0].text ?? "{}"));
         expect(createdPayload).toEqual(expect.objectContaining({
             ok: true,
-            lab: expect.objectContaining({
+            device: expect.objectContaining({
                 id: "mcp-image-lab",
                 image: expect.objectContaining({ baseImageId: "mcp-base" }),
             }),

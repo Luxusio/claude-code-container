@@ -34,7 +34,7 @@ const LEVELS = {
             "src/__tests__/device-lab.real-android-emulator-e2e.test.ts",
             "src/__tests__/device-lab.real-macos-vm-e2e.test.ts",
             "src/__tests__/device-lab.real-windows-sandbox.test.ts",
-            "src/__tests__/lab-mcp.real-linux-vm.test.ts",
+            "src/__tests__/device-lab-mcp.real-linux-vm.test.ts",
         ],
         nodeFiles: [
             "scripts/real-tests/level0-package-smoke.ts",
@@ -62,7 +62,7 @@ const LEVELS = {
             "src/__tests__/device-lab.real-android-emulator-e2e.test.ts",
             "src/__tests__/device-lab.real-macos-vm-e2e.test.ts",
             "src/__tests__/device-lab.real-windows-sandbox.test.ts",
-            "src/__tests__/lab-mcp.real-linux-vm.test.ts",
+            "src/__tests__/device-lab-mcp.real-linux-vm.test.ts",
             "src/__tests__/device-lab.real-destructive.test.ts",
         ],
         nodeFiles: [

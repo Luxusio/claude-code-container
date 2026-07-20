@@ -16,7 +16,7 @@ import {
     snapshotLab,
     startLab,
     stopLab,
-} from "./provider.mjs";
+} from "./linux-vm.mjs";
 
 function defaultCommandRunner(command, args) {
     if (basename(command) === "qemu-img" && args[0] === "create") {

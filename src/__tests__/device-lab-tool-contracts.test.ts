@@ -25,7 +25,7 @@ describe("device-lab public output contracts", () => {
         const advertised = TOOLS.map((tool: { name: string }) => tool.name).sort();
         const contracted = Object.keys(DEVICE_LAB_OUTPUT_CONTRACTS).sort();
         expect(contracted).toEqual(advertised);
-        expect(contracted).toHaveLength(81);
+        expect(contracted).toHaveLength(92);
     });
 
     it("returns typed lifecycle and session payloads", () => {

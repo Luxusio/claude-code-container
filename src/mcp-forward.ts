@@ -25,7 +25,6 @@ const CHROME_DEVTOOLS_CONFIG: McpServerConfig = {
 };
 
 const OPT_DEVICE_LAB_MCP_SERVER = "/opt/ccc/dist/device-lab-mcp/server.mjs";
-const OPT_LAB_MCP_SERVER = "/opt/ccc/dist/lab-mcp/server.mjs";
 
 function managedMcpServerConfig(serverPath: string): McpServerConfig {
     return {
@@ -240,10 +239,7 @@ export function buildMcpConfig(profile?: string): string[] {
     // 2. Always include device-lab (ccc-managed, including display_* tools)
     mcpServers["device-lab"] = managedMcpServerConfig(OPT_DEVICE_LAB_MCP_SERVER);
 
-    // 3. Always include lab (ccc-managed)
-    mcpServers["lab"] = managedMcpServerConfig(OPT_LAB_MCP_SERVER);
-
-    // 4. Forward host MCP servers
+    // 3. Forward host MCP servers
     const hostServers = readHostMcpServers();
     for (const [name, server] of Object.entries(hostServers)) {
         // Skip ccc-managed servers

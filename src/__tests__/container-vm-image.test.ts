@@ -26,8 +26,8 @@ describe("container VM image prerequisites", () => {
         const content = readRepoFile(path);
 
         expect(content).toContain("FROM node:22-slim AS mcp-builder");
-        expect(content).toContain("npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp");
+        expect(content).toContain("npm run build:x11-mcp && npm run build:device-lab-mcp");
         expect(content).toContain("COPY --from=mcp-builder --chown=ccc:ccc /build/dist/device-lab-mcp /opt/ccc/dist/device-lab-mcp");
-        expect(content).toContain("COPY --from=mcp-builder --chown=ccc:ccc /build/dist/lab-mcp /opt/ccc/dist/lab-mcp");
+        expect(content).not.toContain("/dist/lab-mcp");
     });
 });

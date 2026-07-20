@@ -80,7 +80,7 @@ describe("npm package contents", () => {
         expect(files).toContain("dist/index.js");
         expect(files).toContain("dist/x11-mcp/server.mjs");
         expect(files).toContain("dist/device-lab-mcp/server.mjs");
-        expect(files).toContain("dist/lab-mcp/server.mjs");
+        expect(files).not.toContain("dist/lab-mcp/server.mjs");
         expect(files).toContain("Dockerfile");
         expect(files).toContain("Containerfile");
         expect(files).toContain("x11-mcp/package.json");
@@ -97,6 +97,7 @@ describe("npm package contents", () => {
         expect(files).toContain("device-lab-mcp/src/backends/ios-device.mjs");
         expect(files).toContain("device-lab-mcp/src/backends/windows-sandbox.mjs");
         expect(files).toContain("device-lab-mcp/src/backends/macos-vm.mjs");
+        expect(files).toContain("device-lab-mcp/src/backends/linux-vm.mjs");
         expect(files).toContain("device-lab-mcp/src/state/ios-state.mjs");
         expect(files).toContain("device-lab-mcp/src/state/macos-state.mjs");
         expect(files).toContain("device-lab-mcp/src/state/ios-device-state.mjs");
@@ -126,12 +127,7 @@ describe("npm package contents", () => {
         expect(files).toContain("scripts/real-tests/level2-windows-sandbox.ts");
         expect(files).toContain("scripts/real-tests/level2-real-linux-vm.ts");
         expect(files).toContain("scripts/real-tests/level3-real-destructive.ts");
-        expect(files).toContain("lab-mcp/package.json");
-        expect(files).toContain("lab-mcp/package-lock.json");
-        expect(files).toContain("lab-mcp/server.mjs");
-        expect(files).toContain("lab-mcp/src/server.mjs");
-        expect(files).toContain("lab-mcp/src/provider.mjs");
-        expect(files).toContain("lab-mcp/src/tools.mjs");
+        expect([...files].some((file) => file.startsWith("lab-mcp/"))).toBe(false);
     });
 
     it("runs packaged informational CLI commands without creating runtime state", () => {

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
     formatLabMcpSmokeReport,
     runLabMcpSmoke,
-} from "../../lab-mcp/src/smoke.mjs";
+} from "../../device-lab-mcp/src/backends/linux-vm-smoke.mjs";
 
-describe("lab-mcp provider smoke runner", () => {
+describe("device-lab Linux VM provider smoke runner", () => {
     it("passes the fake-provider lifecycle without external VM prerequisites", async () => {
         const report = await runLabMcpSmoke();
 

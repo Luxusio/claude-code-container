@@ -421,9 +421,9 @@ Lab-runner container profile status:
   a supported default container or lab-runner profile can run container-local
   VMs without manual package installation or user-provided environment
   variables.
-- `lab-mcp` is now a separate CCC-managed MCP package registered alongside
-  `device-lab-mcp`. It is always discoverable in generated Claude/Codex MCP
-  config, but container-QEMU VM starts are gated by the internal
+- The former standalone `lab-mcp` package has been retired. Container-QEMU is
+  exposed as the `linux-vm` backend of the single public `device-lab` MCP, and
+  VM starts remain gated by the internal
   `CCC_LAB_RUNNER=1` and `CCC_LAB_RUNNER_STATUS=ready` diagnostics injected by
   CCC. Default containers receive those diagnostics too, so they can run
   container-QEMU labs when bounded KVM is available and otherwise report
@@ -466,8 +466,8 @@ Lab-runner container profile status:
   provisioning command through the same guest SSH channel, records sanitized
   provisioning state/history, and `lab_start` runs it automatically only when
   the lab opted into `guestAgentAutoProvision`.
-- `npm run smoke:lab-mcp` runs a fake-provider lab-mcp smoke job for CI and
-  local automation. It uses temporary lab state plus injected fake QEMU and guest
+- The device-lab Linux VM backend smoke suite runs a fake-provider job for CI
+  and local automation. It uses temporary lab state plus injected fake QEMU and guest
   transport runners to exercise provider status, image import, lab creation,
   disk materialization, start, readiness, guest push/pull, snapshot, stop, and
   delete without requiring KVM, real QEMU, SSH, or host virtualization tools.
@@ -3237,3 +3237,10 @@ remain unchanged where they are the behavior under test.
     before rollback. The exception path performs no compensating owner-state
     mutation, so a concurrently installed successor recording generation is
     preserved unchanged.
+63. Linux container-QEMU is a `device-lab` backend, not a second public MCP.
+    The backend name is `linux-vm`; it shares canonical owner identity, locking,
+    lifecycle, inventory, file transfer, snapshot, and error-result contracts
+    with the other device providers. The standalone `lab-mcp` registration,
+    build output, package surface, and legacy `lab_*` tools are retired. The
+    `ccc labs` CLI remains only as a non-starting KVM/QEMU readiness diagnostic
+    for the `device-lab` Linux VM backend.

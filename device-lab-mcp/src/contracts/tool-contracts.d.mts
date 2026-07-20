@@ -1,4 +1,4 @@
-export type DeviceBackend = "android-emulator" | "android-device" | "ios-simulator" | "ios-device" | "windows-sandbox" | "macos-vm";
+export type DeviceBackend = "android-emulator" | "android-device" | "ios-simulator" | "ios-device" | "windows-sandbox" | "macos-vm" | "linux-vm";
 export type ObjectOutput = Record<string, unknown>;
 export interface DeviceRecord {
     id: string;
@@ -37,6 +37,7 @@ export interface ImageToolResult { content: Array<{ type: string; data?: string;
 
 export interface DeviceLabToolOutputMap {
     device_backends: ObjectOutput; device_broker_status: ObjectOutput; device_list: DeviceListOutput; device_inventory: ObjectOutput; device_wireless: ObjectOutput;
+    device_image_list: ObjectOutput; device_image_import: ObjectOutput; device_disk_materialize: ObjectOutput; device_reboot: ObjectOutput; device_target_list: ObjectOutput; device_readiness_probe: ObjectOutput; device_session_open: ObjectOutput; device_workspace_sync: ObjectOutput; device_artifacts_export: ObjectOutput; device_guest_agent_status: ObjectOutput; device_guest_agent_provision: ObjectOutput;
     display_current: DeviceRecord; display_screenshot: ImageToolResult; display_click: ObjectOutput; display_double_click: ObjectOutput; display_key: ObjectOutput; display_type: ObjectOutput; display_scroll: ObjectOutput; display_cursor_position: ObjectOutput;
     device_create: LifecycleOutput; device_attach: LifecycleOutput; device_detach: ObjectOutput; device_delete: DeleteOutput; device_start: LifecycleOutput; device_stop: LifecycleOutput; device_status: LifecycleOutput;
     device_exec: ObjectOutput; device_screenshot: ImageToolResult; device_click: ObjectOutput; device_double_click: ObjectOutput; device_key: ObjectOutput; device_type: ObjectOutput; device_scroll: ObjectOutput; device_cursor_position: ObjectOutput; device_window_list: ObjectOutput; device_accessibility_snapshot: ObjectOutput;

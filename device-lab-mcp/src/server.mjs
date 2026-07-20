@@ -6,6 +6,7 @@ import { androidRealBackend, handleAndroidRealTool, listAndroidRealDevices } fro
 import { handleIosTool, iosBackend, listIosDevices } from "./backends/ios-simulator.mjs";
 import { handleIosRealTool, iosRealBackend, listIosRealDevices } from "./backends/ios-device.mjs";
 import { handleMacosTool, listMacosDevices, macosBackend } from "./backends/macos-vm.mjs";
+import { handleLinuxVmManagementTool, handleLinuxVmTool, linuxVmBackend, listLinuxVmDevices } from "./backends/linux-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "./backends/windows-sandbox.mjs";
 import { brokerApple, brokerAppium, brokerCommand, brokerDeviceTool, brokerLease, brokerPhysical, brokerRpc, brokerShutdown, brokerStatus, implicitBrokerProbeOptions } from "./broker.mjs";
 import { ownerId } from "./context.mjs";
@@ -353,6 +354,7 @@ function lifecycleBackendDevices() {
         ["ios-device", listIosRealDevices()],
         ["windows-sandbox", listWindowsDevices()],
         ["macos-vm", listMacosDevices()],
+        ["linux-vm", listLinuxVmDevices()],
     ];
 }
 
@@ -372,6 +374,7 @@ function directBackendList() {
         iosRealBackend(),
         windowsBackend(),
         macosBackend(),
+        linuxVmBackend(),
     ];
 }
 
@@ -381,6 +384,7 @@ function wantsBrokerBackends(args) {
 
 async function handleDeviceBackends(args = {}) {
     const directBackends = directBackendList();
+    const containerBackends = directBackends.filter((backend) => backend.host === "container");
     const explicitBroker = wantsBrokerBackends(args);
     const brokerOptOut = optsOutOfImplicitBroker(args);
     if (brokerOptOut) {
@@ -403,7 +407,10 @@ async function handleDeviceBackends(args = {}) {
                 broker,
                 source: "host-broker-provider-discovery",
                 routedBy: "device-backends-broker",
-                backends: [directBackends[0], ...brokerBackends.result.backends],
+                backends: [
+                    ...containerBackends,
+                    ...brokerBackends.result.backends.filter((backend) => !containerBackends.some((local) => local.name === backend.name)),
+                ],
                 hostBackends: brokerBackends.result,
                 localBackends: directBackends,
             });
@@ -414,7 +421,7 @@ async function handleDeviceBackends(args = {}) {
             broker,
             source: "broker-provider-discovery-failed",
             routedBy: "device-backends-broker",
-            backends: [directBackends[0]],
+            backends: containerBackends,
             brokerBackendsError: brokerBackends,
             localBackends: directBackends,
         });
@@ -425,7 +432,7 @@ async function handleDeviceBackends(args = {}) {
         broker,
         source: broker.available ? "host-broker-provider-discovery" : "broker-unavailable",
         routedBy: "device-backends-broker",
-        backends: broker.available ? directBackends : [directBackends[0]],
+        backends: broker.available ? directBackends : containerBackends,
         localBackends: directBackends,
     });
 }
@@ -1265,6 +1272,12 @@ async function dispatchTool(name, rawArgs) {
     const policy = evaluateDestructivePolicy(name, args);
     if (!policy.ok) return policyDeniedResult(policy);
 
+    const linuxVmManagementResult = await handleLinuxVmManagementTool(name, args);
+    if (linuxVmManagementResult) return linuxVmManagementResult;
+
+    const linuxVmResult = await handleLinuxVmTool(name, args);
+    if (linuxVmResult) return linuxVmResult;
+
     if (wantsCurrentDisplayDevice(name, args)) return handleCurrentDisplayDeviceTool(name, args);
 
     if (wantsBrokerLifecycle(name, args)) return handleBrokerLifecycleTool(name, args);
@@ -1406,6 +1419,7 @@ export async function startServer() {
                             ...listIosRealDevices(),
                             ...listWindowsDevices(),
                             ...listMacosDevices(),
+                            ...listLinuxVmDevices(),
                         ],
                     });
 

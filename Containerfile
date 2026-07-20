@@ -23,8 +23,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY x11-mcp ./x11-mcp
 COPY device-lab-mcp ./device-lab-mcp
-COPY lab-mcp ./lab-mcp
-RUN npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp
+RUN npm run build:x11-mcp && npm run build:device-lab-mcp
 
 # ==========================================================
 # Stage 4: Main image
@@ -185,11 +184,10 @@ RUN --mount=type=secret,id=github_token,uid=1000,mode=0444 \
 #   3) COPY server.mjs              ← editing the server alone reuses npm layer
 # ============================================================
 USER root
-RUN mkdir -p /opt/ccc/x11-mcp /opt/ccc/device-lab-mcp /opt/ccc/lab-mcp /opt/ccc/dist && chown -R ccc:ccc /opt/ccc
+RUN mkdir -p /opt/ccc/x11-mcp /opt/ccc/device-lab-mcp /opt/ccc/dist && chown -R ccc:ccc /opt/ccc
 USER ccc
 COPY --from=mcp-builder --chown=ccc:ccc /build/dist/x11-mcp /opt/ccc/dist/x11-mcp
 COPY --from=mcp-builder --chown=ccc:ccc /build/dist/device-lab-mcp /opt/ccc/dist/device-lab-mcp
-COPY --from=mcp-builder --chown=ccc:ccc /build/dist/lab-mcp /opt/ccc/dist/lab-mcp
 COPY --chown=ccc:ccc x11-mcp/package.json x11-mcp/package-lock.json /opt/ccc/x11-mcp/
 RUN cd /opt/ccc/x11-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
 COPY --chown=ccc:ccc x11-mcp/server.mjs /opt/ccc/x11-mcp/server.mjs
@@ -197,10 +195,6 @@ COPY --chown=ccc:ccc device-lab-mcp/package.json device-lab-mcp/package-lock.jso
 RUN cd /opt/ccc/device-lab-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
 COPY --chown=ccc:ccc device-lab-mcp/server.mjs /opt/ccc/device-lab-mcp/server.mjs
 COPY --chown=ccc:ccc device-lab-mcp/src /opt/ccc/device-lab-mcp/src
-COPY --chown=ccc:ccc lab-mcp/package.json lab-mcp/package-lock.json /opt/ccc/lab-mcp/
-RUN cd /opt/ccc/lab-mcp && ~/.local/bin/mise exec node@22 -- npm ci --omit=dev --no-audit --no-fund
-COPY --chown=ccc:ccc lab-mcp/server.mjs /opt/ccc/lab-mcp/server.mjs
-COPY --chown=ccc:ccc lab-mcp/src /opt/ccc/lab-mcp/src
 
 # ============================================================
 # claude-code is installed at runtime and cached in mise volume.

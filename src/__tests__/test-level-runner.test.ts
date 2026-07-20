@@ -6,6 +6,7 @@ import { parse } from "acorn";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../device-lab-mcp/src/policy/destructive.mjs";
+import { LINUX_VM_CAPABILITIES } from "../../device-lab-mcp/src/backends/linux-vm.mjs";
 import { androidDeviceE2EPrerequisites, prepareAndroidDeviceApp } from "../../scripts/real-tests/android-device-e2e.ts";
 import { androidEmulatorAppSelection, androidEmulatorCreateRequest } from "../../scripts/real-tests/android-emulator-e2e.ts";
 import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.ts";
@@ -318,7 +319,6 @@ function filesUnder(dir: string, suffixes: string[]): string[] {
 function productionDeviceLabText() {
     const files = [
         ...filesUnder(join(repoRoot, "device-lab-mcp"), [".mjs"]),
-        ...filesUnder(join(repoRoot, "lab-mcp", "src"), [".mjs"]),
         ...filesUnder(join(repoRoot, "scripts", "real-tests"), [".ts"]),
         join(repoRoot, "src", "device-lab-owner.ts"),
         join(repoRoot, "src", "device-lab-broker.ts"),
@@ -392,7 +392,7 @@ function deviceLabBackendCapabilityTools() {
 }
 
 function brokerCommandForwardedInputKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
+    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
     const match = /export async function brokerCommand[\s\S]*?return brokerRpcRequest\(\{([\s\S]*?)\n\s*\}\);\n\}/.exec(text);
     expect(match).not.toBeNull();
     const body = match?.[1] || "";
@@ -423,7 +423,7 @@ function brokerAppiumActionKeys() {
 }
 
 function brokerAppiumForwardedInputKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
+    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
     const match = /export async function brokerAppium[\s\S]*?params:\s*\{([\s\S]*?)\n\s*\},\n\s*\}\);\n\}/.exec(text);
     expect(match).not.toBeNull();
     const body = match?.[1] || "";
@@ -464,7 +464,7 @@ function brokerWrapperActionKeys(functionName: string) {
 }
 
 function brokerWrapperForwardedInputKeys(functionName: string) {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8");
+    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "broker.mjs"), "utf-8").replace(/\r\n/g, "\n");
     const match = new RegExp(`export async function ${functionName}[\\s\\S]*?params:\\s*\\{([\\s\\S]*?)\\n\\s*\\},\\n\\s*\\}\\);\\n\\}`).exec(text);
     expect(match).not.toBeNull();
     const body = match?.[1] || "";
@@ -493,7 +493,7 @@ function publicBrokerRpcMethodKeys() {
 }
 
 function brokerMobileRequestToolKeys() {
-    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "server.mjs"), "utf-8");
+    const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "server.mjs"), "utf-8").replace(/\r\n/g, "\n");
     const match = /function brokerMobileRequest\(name, args, backend\) \{([\s\S]*?)\n\}\n\nfunction brokerMobilePayload/.exec(text);
     expect(match).not.toBeNull();
     return [...new Set([...(match?.[1] || "").matchAll(/\bname === "([^"]+)"/g)].map((item) => item[1]))].sort();
@@ -525,7 +525,8 @@ function deviceLabMcpBackendCapabilities() {
         "import { iosRealBackend } from './device-lab-mcp/src/backends/ios-device.mjs';",
         "import { windowsBackend } from './device-lab-mcp/src/backends/windows-sandbox.mjs';",
         "import { macosBackend } from './device-lab-mcp/src/backends/macos-vm.mjs';",
-        "const backends = [androidBackend(), androidRealBackend(), iosBackend(), iosRealBackend(), windowsBackend(), macosBackend()];",
+        "import { linuxVmBackend } from './device-lab-mcp/src/backends/linux-vm.mjs';",
+        "const backends = [androidBackend(), androidRealBackend(), iosBackend(), iosRealBackend(), windowsBackend(), macosBackend(), linuxVmBackend()];",
         "console.log(JSON.stringify(backends.map(({ name, capabilities }) => [name, [...capabilities].sort()])));",
     ].join("")], {
         cwd: repoRoot,
@@ -563,6 +564,7 @@ function deviceLabBackendHandlerCases() {
         ["ios-device", functionSwitchCaseLabels(join(backendRoot, "ios-device.mjs"), "handleIosRealToolUnlocked")],
         ["windows-sandbox", functionSwitchCaseLabels(join(backendRoot, "windows-sandbox.mjs"), "handleWindowsToolUnlocked")],
         ["macos-vm", functionSwitchCaseLabels(join(backendRoot, "macos-vm.mjs"), "handleMacosToolUnlocked")],
+        ["linux-vm", [...LINUX_VM_CAPABILITIES].sort()],
     ]);
 }
 
@@ -605,6 +607,7 @@ function backendAdvertisedSupportDrift() {
         ["ios-device", quotedArrayConstant(brokerText, "IOS_REAL_CAPABILITIES")],
         ["windows-sandbox", desktopCapabilities],
         ["macos-vm", new Set([...desktopCapabilities, ...quotedArrayConstant(brokerText, "MACOS_VM_CAPABILITIES")])],
+        ["linux-vm", new Set(LINUX_VM_CAPABILITIES)],
     ]);
     const schemas = deviceLabToolBackendEnums();
     const backends = [...capabilityCases.keys()];
@@ -756,7 +759,7 @@ describe("test level runner", () => {
             "src/__tests__/device-lab.real-android-emulator-e2e.test.ts",
             "src/__tests__/device-lab.real-macos-vm-e2e.test.ts",
             "src/__tests__/device-lab.real-windows-sandbox.test.ts",
-            "src/__tests__/lab-mcp.real-linux-vm.test.ts",
+            "src/__tests__/device-lab-mcp.real-linux-vm.test.ts",
         ]));
         expect(level3.args).toEqual(expect.arrayContaining([
             "src/__tests__/device-lab.real-destructive.test.ts",
@@ -2153,7 +2156,7 @@ describe("test level runner", () => {
                 encoding: "utf-8",
             });
             expect(strictResult.status).toBe(1);
-            expect(strictResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false strictCoverageFailures=82");
+            expect(strictResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false strictCoverageFailures=93");
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
@@ -2316,7 +2319,7 @@ describe("test level runner", () => {
                 encoding: "utf-8",
             });
             expect(result.status).toBe(1);
-            expect(result.stdout).toContain("strictCoverageFailures=89");
+            expect(result.stdout).toContain("strictCoverageFailures=100");
             const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
                 toolCoverage: {
                     invalidScriptedArgumentFacets: string[];

@@ -200,15 +200,11 @@ describe("buildMcpConfig", () => {
         expect(entry.args).toContain("/opt/ccc/dist/device-lab-mcp/server.mjs");
     });
 
-    it("uses the bundled lab MCP server when it is available", () => {
-        existsSync.mockImplementation((p: string) => p.endsWith("/dist/lab-mcp/server.mjs"));
+    it("does not register a standalone lab MCP server", () => {
         buildMcpConfig();
         const config = getWrittenConfig();
         const servers = config.mcpServers as Record<string, unknown>;
-        expect(servers["lab"]).toEqual({
-            command: "mise",
-            args: ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/lab-mcp/server.mjs"],
-        });
+        expect(servers["lab"]).toBeUndefined();
     });
 
     it("writes ccc-managed MCP servers to Codex config.toml", () => {
@@ -223,24 +219,20 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).not.toContain('"/opt/ccc/x11-mcp/server.mjs"');
         expect(codexConfig).toContain("[mcp_servers.device-lab]");
         expect(codexConfig).toContain('"/opt/ccc/dist/device-lab-mcp/server.mjs"');
-        expect(codexConfig).toContain("[mcp_servers.lab]");
-        expect(codexConfig).toContain('"/opt/ccc/dist/lab-mcp/server.mjs"');
+        expect(codexConfig).not.toContain("[mcp_servers.lab]");
+        expect(codexConfig).not.toContain("/dist/lab-mcp/server.mjs");
         expect(codexConfig).toContain("# ccc-managed-mcp end");
     });
 
     it("writes bundled MCP server paths to Codex config.toml when available", () => {
-        existsSync.mockImplementation((p: string) => (
-            p.endsWith("/dist/device-lab-mcp/server.mjs")
-            || p.endsWith("/dist/lab-mcp/server.mjs")
-        ));
+        existsSync.mockImplementation((p: string) => p.endsWith("/dist/device-lab-mcp/server.mjs"));
 
         buildMcpConfig();
 
         const codexConfig = getWrittenCodexConfig();
         expect(codexConfig).toContain("/dist/device-lab-mcp/server.mjs");
-        expect(codexConfig).toContain("/dist/lab-mcp/server.mjs");
+        expect(codexConfig).not.toContain("/dist/lab-mcp/server.mjs");
         expect(codexConfig).not.toContain('"/opt/ccc/device-lab-mcp/server.mjs"');
-        expect(codexConfig).not.toContain('"/opt/ccc/lab-mcp/server.mjs"');
     });
 
     it("does not rewrite Codex config.toml when the generated config is unchanged", () => {
@@ -296,9 +288,7 @@ describe("buildMcpConfig", () => {
             'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/device-lab-mcp/server.mjs"]',
         );
         expect(codexConfig).not.toContain("/opt/ccc/x11-mcp/server.mjs");
-        expect(codexConfig).toContain(
-            'args = ["--no-config", "exec", "node@22", "--", "node", "/opt/ccc/dist/lab-mcp/server.mjs"]',
-        );
+        expect(codexConfig).not.toContain("/dist/lab-mcp/server.mjs");
     });
 
     it("preserves user Codex config while replacing the prior ccc-managed block", () => {
@@ -368,7 +358,7 @@ describe("buildMcpConfig", () => {
         expect(codexConfig.match(/\[mcp_servers\.chrome-devtools\]/g)).toHaveLength(1);
         expect(codexConfig.match(/\[mcp_servers\.x11-display\]/g)).toBeNull();
         expect(codexConfig.match(/\[mcp_servers\.device-lab\]/g)).toHaveLength(1);
-        expect(codexConfig.match(/\[mcp_servers\.lab\]/g)).toHaveLength(1);
+        expect(codexConfig.match(/\[mcp_servers\.lab\]/g)).toBeNull();
         expect(codexConfig).not.toContain('args = ["old"]');
         expect(codexConfig).toContain("[mcp_servers.user-server]");
         expect(codexConfig).toContain('[projects."/project/example"]');
@@ -464,7 +454,7 @@ describe("buildMcpConfig", () => {
         expect(servers["device-lab"]).toBeDefined();
     });
 
-    it("does not forward host lab (ccc manages its own)", () => {
+    it("does not forward the retired host lab MCP name", () => {
         existsSync.mockImplementation((p: string) => {
             if (p.endsWith(".claude.json")) return true;
             return false;
@@ -482,9 +472,7 @@ describe("buildMcpConfig", () => {
         buildMcpConfig();
         const config = getWrittenConfig();
         const servers = config.mcpServers as Record<string, unknown>;
-        const entry = servers["lab"] as { command: string; args: string[] };
-        expect(entry.command).toBe("mise");
-        expect(entry.args).toContain("/opt/ccc/dist/lab-mcp/server.mjs");
+        expect(servers["lab"]).toBeUndefined();
     });
 
     it("does not forward playwright (legacy, removed)", () => {

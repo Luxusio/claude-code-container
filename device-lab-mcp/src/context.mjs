@@ -29,8 +29,8 @@ export function projectMountPath(cwd = process.cwd()) {
     return `/project/${projectId(cwd)}`;
 }
 
-export function ownerId() {
-    return createHash("sha256").update(ownerBasis()).digest("hex").slice(0, 16);
+export function ownerId(env = process.env, cwd = process.cwd()) {
+    return createHash("sha256").update(ownerBasis(cwd, env.CCC_PROFILE || undefined)).digest("hex").slice(0, 16);
 }
 
 export function slug(value) {

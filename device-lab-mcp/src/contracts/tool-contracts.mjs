@@ -12,6 +12,12 @@ const contractGroups = {
     "broker-status-v1": ["device_broker_status"],
     "device-list-v1": ["device_list"],
     "device-inventory-v1": ["device_inventory"],
+    "vm-image-list-v1": ["device_image_list"],
+    "vm-image-import-v1": ["device_image_import"],
+    "vm-operation-v1": ["device_disk_materialize", "device_reboot", "device_workspace_sync", "device_artifacts_export", "device_guest_agent_status", "device_guest_agent_provision"],
+    "vm-target-list-v1": ["device_target_list"],
+    "vm-readiness-v1": ["device_readiness_probe"],
+    "vm-session-v1": ["device_session_open"],
     "wireless-status-v1": ["device_wireless"],
     "display-target-v1": ["display_current"],
     "image-content-v1": ["display_screenshot", "device_screenshot", "mobile_screenshot"],
@@ -63,6 +69,11 @@ export const DEVICE_LAB_OUTPUT_CONTRACTS = Object.freeze(Object.fromEntries(
 
 const requiredFieldsByContract = {
     "device-list-v1": ["devices"],
+    "vm-image-list-v1": ["images"],
+    "vm-image-import-v1": ["image"],
+    "vm-target-list-v1": ["targets"],
+    "vm-readiness-v1": ["readiness"],
+    "vm-session-v1": ["session"],
     "display-target-v1": ["id"],
     "cursor-position-v1": ["x", "y"],
     "lifecycle-device-v1": ["device"],
@@ -86,7 +97,7 @@ const requiredFieldsByContract = {
 };
 
 const deviceObjectContracts = new Set(["lifecycle-device-v1", "physical-attach-v1", "base-image-device-v1", "snapshot-restore-v1"]);
-const arrayFields = new Set(["devices", "results"]);
+const arrayFields = new Set(["devices", "images", "results", "targets"]);
 
 export function validateDeviceLabToolOutput(tool, payload) {
     const contract = DEVICE_LAB_OUTPUT_CONTRACTS[tool];

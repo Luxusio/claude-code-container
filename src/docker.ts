@@ -48,7 +48,7 @@ import { deviceLabContainerName, deviceLabOwnerId } from "./device-lab-owner.js"
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
 
-const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp", "lab-mcp"] as const;
+const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp"] as const;
 const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
 const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
@@ -248,7 +248,7 @@ export interface DockerRunArgsOptions {
     /**
      * Optional in-container QEMU/KVM contract. Despite the historical
      * `labRunner` name, this is now used for ordinary containers too so
-     * lab-mcp can run from the default CCC container when the host supports it.
+     * the device-lab Linux VM backend can run from the default CCC container.
      */
     labRunner?: LabRunnerRunConfig | null;
     deviceLabStateHostDir?: string;
@@ -1223,7 +1223,7 @@ export function startProjectContainer(
     const labRunner = buildContainerVmRunConfig(containerName);
     if (isLabRunnerProfile(profile) && labRunner.status === "unsupported") {
         console.warn(`[ccc] lab-runner profile requested but nested VM support is unavailable: ${labRunner.unsupportedReason}`);
-        console.warn("[ccc] lab state volume will still be mounted; lab-mcp should report this provider as unsupported/SKIP.");
+        console.warn("[ccc] lab state volume will still be mounted; device-lab should report linux-vm as unsupported/SKIP.");
     }
 
     const args = buildDockerRunArgs({

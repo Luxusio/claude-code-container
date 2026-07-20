@@ -25,9 +25,10 @@ import {
     startLab,
     stopLab,
     deleteLab,
-} from "../../lab-mcp/src/provider.mjs";
+} from "../../device-lab-mcp/src/backends/linux-vm.mjs";
+import { ownerId as deviceLabOwnerId } from "../../device-lab-mcp/src/context.mjs";
 
-describe("lab-mcp container-QEMU provider", () => {
+describe("device-lab Linux VM container-QEMU provider", () => {
     const roots: string[] = [];
 
     function tempRoot() {
@@ -35,6 +36,32 @@ describe("lab-mcp container-QEMU provider", () => {
         roots.push(root);
         return root;
     }
+
+    it("uses the canonical device-lab owner identity", () => {
+        const env = { CCC_PROFILE: "linux-vm-owner" };
+        expect(ownerId(env)).toBe(deviceLabOwnerId(env));
+    });
+
+    it("refuses forced deletion when the recorded runtime process identity is unverified", () => {
+        const root = tempRoot();
+        const env = { CCC_PROFILE: "unverified-runtime-delete" };
+        const created = createLab({ name: "Unverified Runtime Delete" }, { env, stateRoot: root });
+        expect(created.ok).toBe(true);
+        const metadata = join(root, "owners", ownerId(env), "labs", created.lab.id, "lab.json");
+        writeFileSync(metadata, `${JSON.stringify({
+            ...JSON.parse(readFileSync(metadata, "utf-8")),
+            runtimeState: "running",
+            runtime: { pid: process.pid, processIdentity: null },
+        }, null, 2)}\n`);
+
+        const deleted = deleteLab({ labId: created.lab.id, force: true }, { env, stateRoot: root });
+        expect(deleted).toEqual(expect.objectContaining({
+            ok: false,
+            error: "lab-delete-stop-failed",
+            stop: expect.objectContaining({ error: "lab-stop-process-identity-unverified" }),
+        }));
+        expect(existsSync(metadata)).toBe(true);
+    });
 
     afterEach(() => {
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -716,7 +743,7 @@ describe("lab-mcp container-QEMU provider", () => {
                 labId: "target-vm",
                 targetKind: "lab-vm",
                 state: "unavailable",
-                authority: "lab-mcp-metadata",
+                authority: "device-lab-metadata",
                 attach: expect.objectContaining({ kind: "metadata", available: true }),
             }),
         }));
@@ -756,7 +783,7 @@ describe("lab-mcp container-QEMU provider", () => {
             session: expect.objectContaining({
                 id: "monitor-session",
                 state: "open",
-                authority: "lab-mcp-metadata",
+                authority: "device-lab-metadata",
                 attach: expect.objectContaining({
                     kind: "bounded-monitor-proxy-required",
                     available: false,
@@ -838,15 +865,15 @@ describe("lab-mcp container-QEMU provider", () => {
                 id: "guest-ssh-session",
                 sessionType: "guest-ssh",
                 state: "open",
-                authority: "lab-mcp-bounded-guest-ssh",
+                authority: "device-lab-bounded-guest-ssh",
                 attach: expect.objectContaining({
                     kind: "bounded-guest-ssh",
                     available: true,
                     requestedTargetReady: true,
                     rawShellAvailable: false,
-                    commandTool: "lab_guest_exec",
-                    transferTools: ["lab_guest_push", "lab_guest_pull"],
-                    capabilities: ["lab_guest_exec", "lab_guest_push", "lab_guest_pull"],
+                    commandTool: "device_exec",
+                    transferTools: ["device_upload", "device_download"],
+                    capabilities: ["device_exec", "device_upload", "device_download"],
                     host: "127.0.0.1",
                     port: 2222,
                     user: "ccc",
@@ -1077,17 +1104,17 @@ describe("lab-mcp container-QEMU provider", () => {
                 id: "agent-session",
                 sessionType: "guest-agent",
                 state: "open",
-                authority: "lab-mcp-bounded-guest-agent",
+                authority: "device-lab-bounded-guest-agent",
                 attach: expect.objectContaining({
                     kind: "bounded-guest-agent",
                     available: true,
                     rawShellAvailable: false,
                     rawSocketAvailable: false,
-                    statusTool: "lab_guest_agent_status",
-                    provisionTool: "lab_guest_agent_provision",
-                    commandTool: "lab_guest_exec",
-                    transferTools: ["lab_guest_push", "lab_guest_pull"],
-                    capabilities: ["lab_guest_agent_status", "lab_guest_agent_provision", "lab_guest_exec", "lab_guest_push", "lab_guest_pull"],
+                    statusTool: "device_guest_agent_status",
+                    provisionTool: "device_guest_agent_provision",
+                    commandTool: "device_exec",
+                    transferTools: ["device_upload", "device_download"],
+                    capabilities: ["device_guest_agent_status", "device_guest_agent_provision", "device_exec", "device_upload", "device_download"],
                     agent: expect.objectContaining({
                         name: "ccc-agent",
                         protocol: "bounded-ssh-health-command",

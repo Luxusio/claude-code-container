@@ -71,7 +71,7 @@ ccc ui                     # Launch the desktop app (Tauri 2). Set CCC_DEV=1 for
 ## Container VM Labs
 
 CCC configures ordinary project containers and the built-in `lab-runner`
-profile with the same lazy lab-mcp VM contract. On supported native Linux
+profile with the same lazy `device-lab` Linux VM contract. On supported native Linux
 hosts, containers receive a durable owner-scoped lab state volume plus bounded
 `/dev/kvm` access for in-container QEMU. On unsupported hosts, CCC still mounts
 the lab state volume and injects clear unsupported diagnostics, without using
@@ -83,7 +83,7 @@ zero-configuration VM capability contract.
 `ccc labs` and `ccc labs smoke` inspect this contract without starting a VM.
 The smoke output reports the default project container and the built-in
 `lab-runner` profile separately, so agents can tell whether ordinary in-container
-`lab-mcp` VM work is available or should remain SKIP on the current host.
+`device-lab` `linux-vm` work is available or should remain SKIP on the current host.
 
 ## Real Device Lab Tests
 

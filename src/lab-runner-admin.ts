@@ -132,8 +132,8 @@ export function formatLabRunnerSmoke(cwd = process.cwd()): string {
             : `lab-runner-nested-kvm: SKIP ${snapshot.unsupportedReason || "unsupported"}`,
         `vm-network: PASS ${snapshot.networkMode} networking (no host TUN exposure)`,
         snapshot.defaultContainer.status === "ready"
-            ? "container-qemu-provider-gate: PASS lab-mcp can report ready when in-container qemu is present"
-            : "container-qemu-provider-gate: SKIP lab-mcp must report unsupported until CCC_LAB_RUNNER_STATUS=ready",
+            ? "container-qemu-provider-gate: PASS device-lab linux-vm can report ready when in-container qemu is present"
+            : "container-qemu-provider-gate: SKIP device-lab linux-vm must report unsupported until CCC_LAB_RUNNER_STATUS=ready",
         "vm-startup: not-run (smoke is non-starting)",
         `result: ${snapshot.defaultContainer.status === "ready" && snapshot.status === "ready" ? "PASS" : "SKIP"}`,
         "",

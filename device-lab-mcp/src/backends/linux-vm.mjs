@@ -1,11 +1,16 @@
-import { createHash } from "crypto";
+import { randomUUID } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "path";
+import { ownerId as canonicalOwnerId } from "../context.mjs";
+import { textResult } from "../responses.mjs";
+import { withOwnerDeviceOperation } from "../state/device-store.mjs";
+import { readProcessIdentity, signalOwnedRuntimeProcess } from "../state/process-identity.mjs";
 
-export const DEFAULT_LAB_STATE_DIR = "/home/ccc/.ccc/labs";
+export const DEFAULT_LAB_STATE_DIR = join(homedir(), ".ccc/labs");
 export const PROVIDER_NAME = "container-qemu";
+export const LINUX_VM_BACKEND = "linux-vm";
 const DEFAULT_FILE_POLICY = {
     maxFiles: 5000,
     maxFileBytes: 16 * 1024 * 1024,
@@ -34,18 +39,8 @@ function nowIso(options = {}) {
     return options.now || new Date().toISOString();
 }
 
-function projectId(projectPath) {
-    const resolved = resolve(projectPath || "/project");
-    const name = basename(resolved).toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const hash = createHash("sha256").update(resolved).digest("hex").slice(0, 12);
-    return `${name}-${hash}`;
-}
-
 export function ownerId(env = process.env, cwd = process.cwd()) {
-    const id = projectId(cwd || "/project");
-    const profile = env.CCC_PROFILE ? `--p--${env.CCC_PROFILE}` : "";
-    const basis = `ccc-${id}${profile}:/project/${id}`;
-    return createHash("sha256").update(String(basis)).digest("hex").slice(0, 16);
+    return canonicalOwnerId(env, cwd);
 }
 
 export function slug(value) {
@@ -116,12 +111,22 @@ function readJson(file) {
 
 function writeLab(ctx, lab) {
     mkdirSync(ownerLabDir(ctx, lab.id), { recursive: true });
-    writeFileSync(metadataPath(ctx, lab.id), `${JSON.stringify(lab, null, 2)}\n`, { mode: 0o600 });
+    writeJsonAtomically(metadataPath(ctx, lab.id), lab);
 }
 
 function writeImage(ctx, image) {
     mkdirSync(ownerImageDir(ctx, image.id), { recursive: true });
-    writeFileSync(imageMetadataPath(ctx, image.id), `${JSON.stringify(image, null, 2)}\n`, { mode: 0o600 });
+    writeJsonAtomically(imageMetadataPath(ctx, image.id), image);
+}
+
+function writeJsonAtomically(file, value) {
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+        writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+        renameSync(temporary, file);
+    } finally {
+        rmSync(temporary, { force: true });
+    }
 }
 
 function readLab(ctx, labId) {
@@ -1243,8 +1248,8 @@ function guestSshSessionAttach(lab, target, ctx, options = {}) {
         requestedTargetReady: target.attachable,
         rawShellAvailable: false,
         capabilities: [],
-        commandTool: "lab_guest_exec",
-        transferTools: ["lab_guest_push", "lab_guest_pull"],
+        commandTool: "device_exec",
+        transferTools: ["device_upload", "device_download"],
     };
     if (!target.attachable) {
         return { ...base, reason: "lab-not-running" };
@@ -1266,8 +1271,8 @@ function guestSshSessionAttach(lab, target, ctx, options = {}) {
         user: ssh.user,
         keyConfigured: Boolean(ssh.keyPath),
         readinessCommandConfigured: Boolean(ssh.readinessCommand),
-        capabilities: ["lab_guest_exec", "lab_guest_push", "lab_guest_pull"],
-        note: "Use bounded lab_guest_exec and guest transfer tools; raw interactive shell access is not exposed.",
+        capabilities: ["device_exec", "device_upload", "device_download"],
+        note: "Use bounded device execution and transfer tools; raw interactive shell access is not exposed.",
     };
 }
 
@@ -1279,10 +1284,10 @@ function guestAgentSessionAttach(lab, target, ctx, options = {}) {
         rawShellAvailable: false,
         rawSocketAvailable: false,
         capabilities: [],
-        statusTool: "lab_guest_agent_status",
-        provisionTool: "lab_guest_agent_provision",
-        commandTool: "lab_guest_exec",
-        transferTools: ["lab_guest_push", "lab_guest_pull"],
+        statusTool: "device_guest_agent_status",
+        provisionTool: "device_guest_agent_provision",
+        commandTool: "device_exec",
+        transferTools: ["device_upload", "device_download"],
     };
     if (!target.attachable) {
         return { ...base, reason: "lab-not-running" };
@@ -1312,8 +1317,8 @@ function guestAgentSessionAttach(lab, target, ctx, options = {}) {
             lastStatus: agent.lastStatus || null,
             lastProvision: agent.lastProvision || null,
         },
-        capabilities: ["lab_guest_agent_status", "lab_guest_agent_provision", "lab_guest_exec", "lab_guest_push", "lab_guest_pull"],
-        note: "Use bounded lab_guest_agent_status and lab guest tools; raw daemon sockets and interactive shells are not exposed.",
+        capabilities: ["device_guest_agent_status", "device_guest_agent_provision", "device_exec", "device_upload", "device_download"],
+        note: "Use bounded device guest-agent and transfer tools; raw daemon sockets and interactive shells are not exposed.",
     };
 }
 
@@ -1492,8 +1497,13 @@ function recordReadiness(ctx, lab, readiness) {
 
 function defaultCommandRunner(command, args, runOptions) {
     const child = spawn(command, args, { cwd: runOptions.cwd, env: runOptions.env, detached: true, stdio: "ignore" });
+    const processIdentity = readProcessIdentity(child.pid);
+    if (!processIdentity) {
+        try { process.kill(-child.pid, "SIGKILL"); } catch { /* process already exited */ }
+        return { ok: false, error: "runtime-process-identity-unavailable", command, args };
+    }
     child.unref();
-    return { ok: true, pid: child.pid, command, args };
+    return { ok: true, pid: child.pid, processIdentity, command, args };
 }
 
 export function startLab(args = {}, options = {}) {
@@ -1541,7 +1551,14 @@ export function startLab(args = {}, options = {}) {
         ...startLabState,
         runtimeState: "running",
         updatedAt: timestamp,
-        runtime: { pid: started.pid || null, command: status.qemu, args: startArgs, startedAt: timestamp },
+        runtime: {
+            runtimeId: randomUUID(),
+            pid: started.pid || null,
+            processIdentity: started.processIdentity || null,
+            command: status.qemu,
+            args: startArgs,
+            startedAt: timestamp,
+        },
     };
     writeLab(ctx, lab);
     const shouldAutoProvision = lab.guest?.agent?.autoProvision === true && Boolean(lab.guest?.agent?.provisionCommand);
@@ -1632,8 +1649,8 @@ export function openSession(args = {}, options = {}) {
         state: sessionStateFor(sessionType, target, attach),
         createdAt: timestamp,
         authority: sessionType === "guest-ssh"
-            ? "lab-mcp-bounded-guest-ssh"
-            : sessionType === "guest-agent" ? "lab-mcp-bounded-guest-agent" : "lab-mcp-metadata",
+            ? "device-lab-bounded-guest-ssh"
+            : sessionType === "guest-agent" ? "device-lab-bounded-guest-agent" : "device-lab-metadata",
         attach,
     };
     const lab = appendLabSession(ctx, loaded.lab, session);
@@ -1651,11 +1668,17 @@ export function stopLab(args = {}, options = {}) {
     if (loaded.lab.runtimeState !== "running" || !pid) {
         return { ok: true, ownerId: ctx.owner, lab: publicLab(loaded.lab), stopped: false };
     }
-    const kill = options.killProcess || ((targetPid) => process.kill(targetPid, args.force ? "SIGKILL" : "SIGTERM"));
-    try {
-        kill(pid);
-    } catch (error) {
-        if (error?.code !== "ESRCH") return { ok: false, error: "lab-stop-failed", message: error.message };
+    if (typeof options.killProcess === "function") {
+        try {
+            options.killProcess(pid);
+        } catch (error) {
+            if (error?.code !== "ESRCH") return { ok: false, error: "lab-stop-failed", message: error.message };
+        }
+    } else {
+        const signaled = signalOwnedRuntimeProcess(loaded.lab.runtime, args.force ? "SIGKILL" : "SIGTERM");
+        if (!signaled.signaled && signaled.reason !== "runtime-process-exited") {
+            return { ok: false, error: "lab-stop-process-identity-unverified", reason: signaled.reason, labId: loaded.lab.id };
+        }
     }
     const lab = { ...loaded.lab, runtimeState: "stopped", updatedAt: nowIso(options), runtime: null };
     writeLab(ctx, lab);
@@ -1666,7 +1689,11 @@ export function deleteLab(args = {}, options = {}) {
     const ctx = context(options);
     const loaded = readLab(ctx, String(args.labId || ""));
     if (!loaded.ok) return loaded;
-    if (loaded.lab.runtimeState === "running" && args.force !== true) return { ok: false, error: "lab-running", labId: loaded.lab.id };
+    if (loaded.lab.runtimeState === "running") {
+        if (args.force !== true) return { ok: false, error: "lab-running", labId: loaded.lab.id };
+        const stopped = stopLab({ labId: loaded.lab.id, force: true }, options);
+        if (!stopped.ok) return { ok: false, error: "lab-delete-stop-failed", labId: loaded.lab.id, stop: stopped };
+    }
     rmSync(ownerLabDir(ctx, loaded.lab.id), { recursive: true, force: true });
     return { ok: true, ownerId: ctx.owner, labId: loaded.lab.id, deleted: true };
 }
@@ -2120,29 +2147,148 @@ export function guestAgentProvision(args = {}, options = {}) {
     return { ok: status.state !== "failed", ownerId: ctx.owner, lab: publicLab(next), status };
 }
 
-export function handleLabTool(name, args = {}, options = {}) {
-    if (name === "lab_status") return { ...labProviderStatus(options), labs: listLabs(options).labs };
-    if (name === "lab_list") return listLabs(options);
-    if (name === "lab_image_list") return listImages(options);
-    if (name === "lab_image_import") return importImage(args, options);
-    if (name === "lab_create") return createLab(args, options);
-    if (name === "lab_disk_materialize") return materializeDisk(args, options);
-    if (name === "lab_start") return startLab(args, options);
-    if (name === "lab_reboot") return rebootLab(args, options);
-    if (name === "lab_stop") return stopLab(args, options);
-    if (name === "lab_delete") return deleteLab(args, options);
-    if (name === "lab_list_targets") return listTargets(args, options);
-    if (name === "lab_probe_readiness") return probeReadiness(args, options);
-    if (name === "lab_open_session") return openSession(args, options);
-    if (name === "lab_snapshot_create") return snapshotLab("create", args, options);
-    if (name === "lab_snapshot_restore") return snapshotLab("restore", args, options);
-    if (name === "lab_snapshot_delete") return snapshotLab("delete", args, options);
-    if (name === "lab_sync_workspace") return syncWorkspace(args, options);
-    if (name === "lab_export_artifacts") return exportArtifacts(args, options);
-    if (name === "lab_guest_push") return guestPush(args, options);
-    if (name === "lab_guest_pull") return guestPull(args, options);
-    if (name === "lab_guest_exec") return guestExec(args, options);
-    if (name === "lab_guest_agent_status") return guestAgentStatus(args, options);
-    if (name === "lab_guest_agent_provision") return guestAgentProvision(args, options);
-    return { ok: false, error: "unknown-lab-tool", tool: name };
+export const LINUX_VM_CAPABILITIES = [
+    "device_inventory",
+    "device_create",
+    "device_delete",
+    "device_start",
+    "device_stop",
+    "device_status",
+    "device_exec",
+    "device_upload",
+    "device_download",
+    "device_snapshot_create",
+    "device_snapshot_restore",
+    "device_snapshot_delete",
+    "device_image_list",
+    "device_image_import",
+    "device_disk_materialize",
+    "device_reboot",
+    "device_target_list",
+    "device_readiness_probe",
+    "device_session_open",
+    "device_workspace_sync",
+    "device_artifacts_export",
+    "device_guest_agent_status",
+    "device_guest_agent_provision",
+];
+
+function deviceFromLab(lab) {
+    return {
+        ...lab,
+        deviceId: lab.id,
+        backend: LINUX_VM_BACKEND,
+        provider: lab.provider || PROVIDER_NAME,
+        capabilities: LINUX_VM_CAPABILITIES,
+    };
+}
+
+function deviceResult(result) {
+    if (!result || typeof result !== "object") return result;
+    const next = { ...result, backend: LINUX_VM_BACKEND };
+    if (result.lab) next.device = deviceFromLab(result.lab);
+    if (Array.isArray(result.labs)) next.devices = result.labs.map(deviceFromLab);
+    return next;
+}
+
+function linuxVmMcpResult(result) {
+    const value = deviceResult(result);
+    return textResult(value?.ok !== false, JSON.stringify(value, null, 2));
+}
+
+function linuxVmArgs(args = {}) {
+    const { deviceId, localPath, remotePath, ...rest } = args;
+    return {
+        ...rest,
+        ...(deviceId ? { labId: deviceId } : {}),
+        ...(localPath ? { sourcePath: localPath } : {}),
+        ...(remotePath ? { guestPath: remotePath } : {}),
+    };
+}
+
+function ownsLinuxVm(args = {}, options = {}) {
+    if (args.backend === LINUX_VM_BACKEND) return true;
+    if (typeof args.deviceId !== "string") return false;
+    return listLabs(options).labs.some((lab) => lab.id === args.deviceId);
+}
+
+export function linuxVmBackend(options = {}) {
+    const status = labProviderStatus(options);
+    return {
+        name: LINUX_VM_BACKEND,
+        host: "container",
+        creatable: true,
+        available: status.available,
+        lazy: true,
+        status: status.status,
+        missing: status.available ? [] : [status.unsupportedReason].filter(Boolean),
+        provider: PROVIDER_NAME,
+        capabilities: LINUX_VM_CAPABILITIES,
+    };
+}
+
+export function listLinuxVmDevices(options = {}) {
+    return listLabs(options).labs.map(deviceFromLab);
+}
+
+function handleLinuxVmToolUnlocked(name, args = {}, options = {}) {
+    const linuxArgs = linuxVmArgs(args);
+    if (name === "device_inventory") {
+        if (args.backend !== LINUX_VM_BACKEND) return undefined;
+        const status = labProviderStatus(options);
+        return linuxVmMcpResult({ ...listLabs(options), discovery: status });
+    }
+    if (name === "device_create") {
+        if (args.backend !== LINUX_VM_BACKEND) return undefined;
+        return linuxVmMcpResult(createLab({ ...linuxArgs, labId: args.deviceId }, options));
+    }
+    if (!ownsLinuxVm(args, options)) return undefined;
+
+    let result;
+    if (name === "device_status") {
+        const device = listLinuxVmDevices(options).find((candidate) => candidate.id === args.deviceId);
+        result = device ? { ok: true, ownerId: device.ownerId, device } : { ok: false, error: "device-not-found", deviceId: args.deviceId };
+    } else if (name === "device_start") result = startLab(linuxArgs, options);
+    else if (name === "device_stop") result = stopLab(linuxArgs, options);
+    else if (name === "device_delete") result = deleteLab(linuxArgs, options);
+    else if (name === "device_reboot") result = rebootLab(linuxArgs, options);
+    else if (name === "device_disk_materialize") result = materializeDisk(linuxArgs, options);
+    else if (name === "device_snapshot_create") result = snapshotLab("create", linuxArgs, options);
+    else if (name === "device_snapshot_restore") result = snapshotLab("restore", linuxArgs, options);
+    else if (name === "device_snapshot_delete") result = snapshotLab("delete", linuxArgs, options);
+    else if (name === "device_target_list") result = listTargets(linuxArgs, options);
+    else if (name === "device_readiness_probe") result = probeReadiness(linuxArgs, options);
+    else if (name === "device_session_open") result = openSession(linuxArgs, options);
+    else if (name === "device_workspace_sync") result = syncWorkspace(linuxArgs, options);
+    else if (name === "device_artifacts_export") result = exportArtifacts(linuxArgs, options);
+    else if (name === "device_exec") result = guestExec({ ...linuxArgs, timeoutMs: args.helperTimeoutMs ?? args.timeoutMs }, options);
+    else if (name === "device_upload") result = guestPush(linuxArgs, options);
+    else if (name === "device_download") {
+        result = guestPull({ ...linuxArgs, guestPath: args.remotePath, destinationPath: args.localPath }, options);
+    } else if (name === "device_guest_agent_status") result = guestAgentStatus(linuxArgs, options);
+    else if (name === "device_guest_agent_provision") result = guestAgentProvision(linuxArgs, options);
+    else return undefined;
+    return linuxVmMcpResult(result);
+}
+
+const LINUX_VM_READ_ONLY_TOOLS = new Set(["device_inventory", "device_status", "device_target_list"]);
+
+export async function handleLinuxVmTool(name, args = {}, options = {}) {
+    if (LINUX_VM_READ_ONLY_TOOLS.has(name)) return handleLinuxVmToolUnlocked(name, args, options);
+    const deviceId = typeof args.deviceId === "string"
+        ? args.deviceId
+        : name === "device_create" && typeof args.name === "string"
+            ? slug(args.name)
+            : null;
+    if (!deviceId || (args.backend !== LINUX_VM_BACKEND && !ownsLinuxVm(args, options))) {
+        return handleLinuxVmToolUnlocked(name, args, options);
+    }
+    return withOwnerDeviceOperation("linux", deviceId, () => handleLinuxVmToolUnlocked(name, args, options));
+}
+
+export async function handleLinuxVmManagementTool(name, args = {}, options = {}) {
+    if (args.backend !== LINUX_VM_BACKEND) return undefined;
+    if (name === "device_image_list") return linuxVmMcpResult(listImages(options));
+    if (name !== "device_image_import") return undefined;
+    return withOwnerDeviceOperation("linux", "__images__", () => linuxVmMcpResult(importImage(args, options)));
 }
