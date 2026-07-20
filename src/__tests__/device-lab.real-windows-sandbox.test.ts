@@ -12,7 +12,7 @@ import {
     windowsRecordingState,
     windowsSandboxSessionIdsFromListOutput,
     windowsSandboxE2ECapability,
-} from "../../scripts/real-tests/windows-sandbox-e2e.mjs";
+} from "../../scripts/real-tests/windows-sandbox-e2e.ts";
 import { windowsBackend } from "../../device-lab-mcp/src/backends/windows-sandbox.mjs";
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");

@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
     androidEmulatorE2ECapability,
     runAndroidEmulatorE2E,
-} from "../../scripts/real-tests/android-emulator-e2e.mjs";
+} from "../../scripts/real-tests/android-emulator-e2e.ts";
 import {
     macosVmE2ECapability,
     runMacosVmE2E,
-} from "../../scripts/real-tests/macos-vm-e2e.mjs";
+} from "../../scripts/real-tests/macos-vm-e2e.ts";
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");
 const androidCap = androidEmulatorE2ECapability(level);

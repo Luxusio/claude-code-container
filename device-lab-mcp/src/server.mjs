@@ -1154,7 +1154,7 @@ async function handleBrokerMobileTool(name, args) {
             backend: resolvedBackend,
             deviceId,
         });
-        return jsonResult({ ...result, routedBy: "mobile-broker-appium" });
+        return jsonResult({ deviceId, ...result, routedBy: "mobile-broker-appium" });
     }
     const mapped = name === "mobile_wait_for_text" ? null : brokerMobileRequest(name, args || {}, resolvedBackend);
     if (mapped?.error) return textResult(false, mapped.error);
@@ -1240,7 +1240,16 @@ async function handleBrokerMobileTool(name, args) {
         if (!value) return textResult(false, "Appium did not return screenshot data");
         return { content: [{ type: "image", data: String(value), mimeType: "image/png" }] };
     }
-    return jsonResult(brokerMobilePayload(name, resolvedBackend, request, { requests: requests.length }));
+    const appId = appIdForBackend(args, resolvedBackend);
+    return jsonResult(brokerMobilePayload(name, resolvedBackend, request, {
+        requests: requests.length,
+        ...(name === "mobile_open_url" ? { openedUrl: args.url } : {}),
+        ...(name === "mobile_install_app" ? { installed: args.path } : {}),
+        ...(name === "mobile_launch_app" ? { launched: appId } : {}),
+        ...(name === "mobile_uninstall_app" ? { uninstalled: appId } : {}),
+        ...(name === "mobile_stop_app" ? { stopped: appId } : {}),
+        ...(name === "mobile_set_location" ? { location: { latitude: Number(args.latitude), longitude: Number(args.longitude) } } : {}),
+    }));
 }
 
 async function dispatchTool(name, rawArgs) {

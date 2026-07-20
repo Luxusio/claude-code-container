@@ -1008,7 +1008,7 @@ async function handleAndroidRealToolUnlocked(name, args) {
             const { deviceId } = args;
             const device = findAndroidRealDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult(appiumStatus(device));
+            return jsonResult({ deviceId, ...appiumStatus(device) });
         }
 
         case "mobile_dump_ui": {

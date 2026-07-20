@@ -4,7 +4,7 @@ import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
-import { withExclusiveRealProviderRunSync } from "../real-tests/exclusive-real-provider-run.mjs";
+import { withExclusiveRealProviderRunSync } from "../real-tests/exclusive-real-provider-run.ts";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(scriptDir, "../..");

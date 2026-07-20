@@ -133,7 +133,7 @@ npm run test:durability:device-lab:real -- --target android-emulator --cycles 2 
 npm run test:durability:device-lab:real:self
 ```
 
-The npm scripts should invoke `scripts/durability/run.mjs` as documented in
+The npm scripts should invoke `scripts/durability/run.ts` as documented in
 [README.md](./README.md), so source checkouts build first while installed npm
 packages validate and reuse their shipped `dist/index.js`.
 

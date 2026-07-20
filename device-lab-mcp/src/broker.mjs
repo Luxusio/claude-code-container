@@ -57,6 +57,7 @@ const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "windows-provider-launcher-path-fencing-v1",
     "canonical-owner-device-ids-v1",
     "ios-simulator-owner-identity-fencing-v1",
+    "ios-simulator-provider-create-v1",
     "physical-appium-lease-fencing-v1",
     "physical-device-tool-lease-fencing-v1",
     "physical-lifecycle-use-lease-refresh-v1",

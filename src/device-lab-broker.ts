@@ -14,6 +14,7 @@ import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from 
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile } from "./device-lab-state-file.js";
 import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
+import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
 export const DEVICE_BROKER_DEFAULT_HOST = "127.0.0.1";
@@ -107,6 +108,7 @@ const DEVICE_BROKER_CAPABILITY_APPIUM_HTTP_TRANSPORT_FENCING = "bounded-no-redir
 const DEVICE_BROKER_CAPABILITY_WINDOWS_PROVIDER_LAUNCHER_FENCING = "windows-provider-launcher-path-fencing-v1";
 const DEVICE_BROKER_CAPABILITY_CANONICAL_OWNER_DEVICE_IDS = "canonical-owner-device-ids-v1";
 const DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_OWNER_IDENTITY_FENCING = "ios-simulator-owner-identity-fencing-v1";
+const DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_PROVIDER_CREATE = "ios-simulator-provider-create-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_APPIUM_LEASE_FENCING = "physical-appium-lease-fencing-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_DEVICE_TOOL_LEASE_FENCING = "physical-device-tool-lease-fencing-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_LIFECYCLE_USE_LEASE_REFRESH = "physical-lifecycle-use-lease-refresh-v1";
@@ -177,6 +179,7 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_WINDOWS_PROVIDER_LAUNCHER_FENCING,
     DEVICE_BROKER_CAPABILITY_CANONICAL_OWNER_DEVICE_IDS,
     DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_OWNER_IDENTITY_FENCING,
+    DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_PROVIDER_CREATE,
     DEVICE_BROKER_CAPABILITY_PHYSICAL_APPIUM_LEASE_FENCING,
     DEVICE_BROKER_CAPABILITY_PHYSICAL_DEVICE_TOOL_LEASE_FENCING,
     DEVICE_BROKER_CAPABILITY_PHYSICAL_LIFECYCLE_USE_LEASE_REFRESH,
@@ -2211,6 +2214,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_WINDOWS_PROVIDER_LAUNCHER_FENCING,
             DEVICE_BROKER_CAPABILITY_CANONICAL_OWNER_DEVICE_IDS,
             DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_OWNER_IDENTITY_FENCING,
+            DEVICE_BROKER_CAPABILITY_IOS_SIMULATOR_PROVIDER_CREATE,
             DEVICE_BROKER_CAPABILITY_PHYSICAL_APPIUM_LEASE_FENCING,
             DEVICE_BROKER_CAPABILITY_PHYSICAL_DEVICE_TOOL_LEASE_FENCING,
             DEVICE_BROKER_CAPABILITY_PHYSICAL_LIFECYCLE_USE_LEASE_REFRESH,
@@ -4005,6 +4009,15 @@ function rollbackProviderCreateAfterConflict(
             executable: providerCommand.executable,
             args: ["delete", "avd", "--name", String(device.avdName)],
         }, { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+        return { attempted: true, ok: commandSucceeded(result), result };
+    }
+    if (parsed.backend === "ios-simulator") {
+        if (existing?.udid === device.udid) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
+        const udid = typeof device.udid === "string" ? device.udid : "";
+        if (!udid) return { attempted: false, ok: false, reason: "created-simulator-udid-missing" };
+        const executable = typeof providerCommand.executable === "string" ? providerCommand.executable : "";
+        if (!executable) return { attempted: false, ok: false, reason: "created-simulator-provider-command-missing" };
+        const result = normalized.commandRunner(iosSimulatorDeleteCommand(executable, udid), { timeoutMs: normalized.commandTimeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
         return { attempted: true, ok: commandSucceeded(result), result };
     }
     if (parsed.backend === "macos-vm") {
@@ -7034,6 +7047,13 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
         }
         return { mode: "exec", provider: "avdmanager", executable: avdmanager, args, input: "no\n" };
     }
+    if (parsed.backend === "ios-simulator" && create.createSimulator === true) {
+        const name = String(create.name || parsed.deviceId);
+        const simulatorName = typeof create.simulatorName === "string" && create.simulatorName
+            ? create.simulatorName
+            : `${brokerIosSimulatorPrefix(ownerId)}${brokerSlug(name)}`;
+        return iosSimulatorCreateCommand({ simulatorName, ownerPrefix: brokerIosSimulatorPrefix(ownerId), deviceType: create.deviceType, runtime: create.runtime, executable: executableFor("xcrun", normalized) });
+    }
     if (parsed.backend === "macos-vm") {
         const provider = create.provider === "auto" || !create.provider ? "tart" : String(create.provider);
         if (!DEVICE_BROKER_MACOS_PROVIDERS.has(provider)) {
@@ -8919,9 +8939,19 @@ function lifecycleCommandInvokeUnlocked(ownerId: string, params: unknown, normal
                 };
             }
         }
-        const persistedParsed = parsed.backend === "android-emulator" && payload.result?.create && typeof payload.result.create === "object"
+        let persistedParsed = parsed.backend === "android-emulator" && payload.result?.create && typeof payload.result.create === "object"
             ? { ...parsed, create: payload.result.create as Record<string, unknown> }
             : parsed;
+        if (parsed.backend === "ios-simulator" && parsed.create?.createSimulator === true && execution.mode !== "noop") {
+            const udid = iosSimulatorCreatedUdid(execution.stdout);
+            if (!udid) {
+                return {
+                    status: 502,
+                    payload: { ok: false, error: "ios-simulator-create-invalid-udid", ownerId, deviceId: parsed.deviceId },
+                };
+            }
+            persistedParsed = { ...parsed, create: { ...(parsed.create || {}), udid } };
+        }
         const device = createOwnerDeviceRecord(ownerId, persistedParsed) as Record<string, unknown>;
         let claim;
         try {

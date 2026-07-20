@@ -15,7 +15,7 @@ import {
     runWithInput,
     runWithTimeout,
 } from "../../device-lab-mcp/src/commands.mjs";
-import { commandPath as realTestCommandPath, hiddenSpawnSync } from "../../scripts/real-tests/helpers.mjs";
+import { commandPath as realTestCommandPath, hiddenSpawnSync } from "../../scripts/real-tests/helpers.ts";
 
 vi.mock("child_process", () => ({
     spawnSync: vi.fn(),

@@ -6,13 +6,13 @@ import { describe, expect, it } from "vitest";
 import { androidBackend } from "../../device-lab-mcp/src/backends/android.mjs";
 import { androidRealBackend } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { windowsBackend } from "../../device-lab-mcp/src/backends/windows-sandbox.mjs";
-import { androidDeviceE2ECapability, androidDevicePayload, androidDeviceReportedPathMatches, androidDeviceStartSucceeded, androidDeviceStatusCommand, androidDeviceStopPreservedPhysicalDevice } from "../../scripts/real-tests/android-device-e2e.mjs";
+import { androidDeviceE2ECapability, androidDevicePayload, androidDeviceReportedPathMatches, androidDeviceStartSucceeded, androidDeviceStatusCommand, androidDeviceStopPreservedPhysicalDevice } from "../../scripts/real-tests/android-device-e2e.ts";
 import {
     ANDROID_APP_FIXTURE_PACKAGE,
     ANDROID_APP_FIXTURE_PERMISSION,
     ANDROID_APP_FIXTURE_SHA256,
     materializeAndroidAppFixture,
-} from "../../scripts/real-tests/android-app-fixture.mjs";
+} from "../../scripts/real-tests/android-app-fixture.ts";
 
 function scriptedToolCalls(relativePath: string) {
     const source = readFileSync(join(process.cwd(), relativePath), "utf-8");
@@ -21,9 +21,9 @@ function scriptedToolCalls(relativePath: string) {
 
 describe("real provider capability coverage", () => {
     it.each([
-        ["Android emulator", androidBackend().capabilities, "scripts/real-tests/android-emulator-e2e.mjs"],
-        ["Android physical device", androidRealBackend().capabilities, "scripts/real-tests/android-device-e2e.mjs"],
-        ["Windows Sandbox", windowsBackend().capabilities, "scripts/real-tests/windows-sandbox-e2e.mjs"],
+        ["Android emulator", androidBackend().capabilities, "scripts/real-tests/android-emulator-e2e.ts"],
+        ["Android physical device", androidRealBackend().capabilities, "scripts/real-tests/android-device-e2e.ts"],
+        ["Windows Sandbox", windowsBackend().capabilities, "scripts/real-tests/windows-sandbox-e2e.ts"],
     ])("keeps every advertised %s capability in its real E2E scenario", (_provider, capabilities, script) => {
         const calls = scriptedToolCalls(script as string);
         expect((capabilities as string[]).filter((tool) => !calls.has(tool))).toEqual([]);

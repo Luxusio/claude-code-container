@@ -36,7 +36,7 @@ describe("device-lab admin smoke diagnostics", () => {
         const cwd = "/project/admin-smoke-installed-mcp-pass-test";
         fixture.setupFixture(cwd);
         const serverPath = join(fixture.homeDir, "server.mjs");
-        const scriptPath = join(fixture.homeDir, "installed-mcp-smoke.mjs");
+        const scriptPath = join(fixture.homeDir, "installed-mcp-smoke.ts");
         writeFileSync(serverPath, "export {};\n");
         writeFileSync(scriptPath, "console.log(JSON.stringify({ status: 'PASS' }));\n");
 
@@ -55,7 +55,7 @@ describe("device-lab admin smoke diagnostics", () => {
         const cwd = "/project/admin-smoke-installed-mcp-fail-test";
         fixture.setupFixture(cwd);
         const serverPath = join(fixture.homeDir, "server.mjs");
-        const scriptPath = join(fixture.homeDir, "installed-mcp-smoke.mjs");
+        const scriptPath = join(fixture.homeDir, "installed-mcp-smoke.ts");
         writeFileSync(serverPath, "export {};\n");
         writeFileSync(scriptPath, [
             "console.error('AssertionError: x11-current-display must expose device_status alias capability');",

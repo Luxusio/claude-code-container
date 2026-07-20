@@ -11,17 +11,17 @@ const LEVELS = {
         name: "level0",
         description: "default unit and fake-provider contract tests",
         files: [],
-        nodeFiles: ["scripts/real-tests/level0-package-smoke.mjs"],
+        nodeFiles: ["scripts/real-tests/level0-package-smoke.ts"],
     },
     1: {
         name: "level1",
         description: "opt-in non-destructive real-provider readiness tests",
         files: ["src/__tests__/device-lab.real-provider-readiness.test.ts"],
         nodeFiles: [
-            "scripts/real-tests/level0-package-smoke.mjs",
-            "scripts/real-tests/level1-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-dist-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-display-e2e.mjs",
+            "scripts/real-tests/level0-package-smoke.ts",
+            "scripts/real-tests/level1-real-provider-readiness.ts",
+            "scripts/real-tests/level1-dist-real-provider-readiness.ts",
+            "scripts/real-tests/level1-display-e2e.ts",
         ],
     },
     2: {
@@ -37,19 +37,19 @@ const LEVELS = {
             "src/__tests__/lab-mcp.real-linux-vm.test.ts",
         ],
         nodeFiles: [
-            "scripts/real-tests/level0-package-smoke.mjs",
-            "scripts/real-tests/level1-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-dist-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-display-e2e.mjs",
-            "scripts/real-tests/level2-host-integration-slots.mjs",
-            "scripts/real-tests/level2-broker-e2e.mjs",
-            "scripts/real-tests/level2-dist-broker-e2e.mjs",
-            "scripts/real-tests/level2-ios-e2e.mjs",
-            "scripts/real-tests/level2-android-emulator-e2e.mjs",
-            "scripts/real-tests/level2-android-device-e2e.mjs",
-            "scripts/real-tests/level2-macos-vm-e2e.mjs",
-            "scripts/real-tests/level2-windows-sandbox.mjs",
-            "scripts/real-tests/level2-real-linux-vm.mjs",
+            "scripts/real-tests/level0-package-smoke.ts",
+            "scripts/real-tests/level1-real-provider-readiness.ts",
+            "scripts/real-tests/level1-dist-real-provider-readiness.ts",
+            "scripts/real-tests/level1-display-e2e.ts",
+            "scripts/real-tests/level2-host-integration-slots.ts",
+            "scripts/real-tests/level2-broker-e2e.ts",
+            "scripts/real-tests/level2-dist-broker-e2e.ts",
+            "scripts/real-tests/level2-ios-e2e.ts",
+            "scripts/real-tests/level2-android-emulator-e2e.ts",
+            "scripts/real-tests/level2-android-device-e2e.ts",
+            "scripts/real-tests/level2-macos-vm-e2e.ts",
+            "scripts/real-tests/level2-windows-sandbox.ts",
+            "scripts/real-tests/level2-real-linux-vm.ts",
         ],
     },
     3: {
@@ -66,19 +66,19 @@ const LEVELS = {
             "src/__tests__/device-lab.real-destructive.test.ts",
         ],
         nodeFiles: [
-            "scripts/real-tests/level0-package-smoke.mjs",
-            "scripts/real-tests/level1-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-dist-real-provider-readiness.mjs",
-            "scripts/real-tests/level1-display-e2e.mjs",
-            "scripts/real-tests/level2-host-integration-slots.mjs",
-            "scripts/real-tests/level2-broker-e2e.mjs",
-            "scripts/real-tests/level2-dist-broker-e2e.mjs",
-            "scripts/real-tests/level2-ios-e2e.mjs",
-            "scripts/real-tests/level2-android-device-e2e.mjs",
-            "scripts/real-tests/level2-macos-vm-e2e.mjs",
-            "scripts/real-tests/level2-windows-sandbox.mjs",
-            "scripts/real-tests/level2-real-linux-vm.mjs",
-            "scripts/real-tests/level3-real-destructive.mjs",
+            "scripts/real-tests/level0-package-smoke.ts",
+            "scripts/real-tests/level1-real-provider-readiness.ts",
+            "scripts/real-tests/level1-dist-real-provider-readiness.ts",
+            "scripts/real-tests/level1-display-e2e.ts",
+            "scripts/real-tests/level2-host-integration-slots.ts",
+            "scripts/real-tests/level2-broker-e2e.ts",
+            "scripts/real-tests/level2-dist-broker-e2e.ts",
+            "scripts/real-tests/level2-ios-e2e.ts",
+            "scripts/real-tests/level2-android-device-e2e.ts",
+            "scripts/real-tests/level2-macos-vm-e2e.ts",
+            "scripts/real-tests/level2-windows-sandbox.ts",
+            "scripts/real-tests/level2-real-linux-vm.ts",
+            "scripts/real-tests/level3-real-destructive.ts",
         ],
     },
 };
@@ -114,7 +114,7 @@ function commandFor(level, options = {}) {
         args: mode === "vitest"
             ? [vitest, "run", ...(level > 0 ? ["--reporter", "verbose"] : []), ...config.files]
             : [
-                join(root, "scripts", "real-tests", "run.mjs"),
+                join(root, "scripts", "real-tests", "run.ts"),
                 ...(options.compact ? ["--compact"] : []),
                 ...(options.failOnSkip ? ["--fail-on-skip"] : []),
                 ...(options.failOnCoverageGap ? ["--fail-on-coverage-gap"] : []),
@@ -145,7 +145,7 @@ if (summarizeJsonIndex >= 0) {
         console.error(usage());
         process.exit(1);
     }
-    const result = spawnSync(process.execPath, [join(root, "scripts", "real-tests", "summarize-json.mjs"), summarizeJsonFile], {
+    const result = spawnSync(process.execPath, [join(root, "scripts", "real-tests", "summarize-json.ts"), summarizeJsonFile], {
         cwd: root,
         stdio: "inherit",
         windowsHide: true,
@@ -158,7 +158,7 @@ if (assertJsonIndex >= 0) {
         process.exit(1);
     }
     const result = spawnSync(process.execPath, [
-        join(root, "scripts", "real-tests", "assert-json.mjs"),
+        join(root, "scripts", "real-tests", "assert-json.ts"),
         assertJsonFile,
         ...(args.includes("--quiet") ? ["--quiet"] : []),
         ...(args.includes("--platform-result") ? ["--platform-result"] : []),

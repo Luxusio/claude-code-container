@@ -8,7 +8,7 @@ import {
     realProviderRunLockPath,
     withExclusiveRealProviderRun,
     withExclusiveRealProviderRunSync,
-} from "../real-tests/exclusive-real-provider-run.mjs";
+} from "../real-tests/exclusive-real-provider-run.ts";
 
 test("level3 and durability share one fail-fast real-provider lock", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-provider-lock-"));
@@ -58,7 +58,7 @@ test("real-provider lock releases when the protected operation throws", () => {
 
 test("real-provider lock excludes a separate process", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-provider-cross-process-lock-"));
-    const helperUrl = new URL("../real-tests/exclusive-real-provider-run.mjs", import.meta.url).href;
+    const helperUrl = new URL("../real-tests/exclusive-real-provider-run.ts", import.meta.url).href;
     try {
         withExclusiveRealProviderRunSync("parent level3", () => {
             const script = `
@@ -82,7 +82,7 @@ test("real-provider lock excludes a separate process", () => {
 
 test("real-provider lock recovers after an owner process exits without releasing", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-real-provider-dead-owner-lock-"));
-    const helperUrl = new URL("../real-tests/exclusive-real-provider-run.mjs", import.meta.url).href;
+    const helperUrl = new URL("../real-tests/exclusive-real-provider-run.ts", import.meta.url).href;
     try {
         const script = `
             const { withExclusiveRealProviderRunSync } = await import(${JSON.stringify(helperUrl)});

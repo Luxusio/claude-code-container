@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": [
+    "scripts/real-tests/**/*.ts",
+    "scripts/real-tests/**/*.d.mts",
+    "device-lab-mcp/src/contracts/**/*.d.mts"
+  ]
+}

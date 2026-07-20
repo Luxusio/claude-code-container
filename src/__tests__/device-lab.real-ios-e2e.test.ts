@@ -2,9 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
     iosRealDeviceE2ECapability,
     iosSimulatorE2ECapability,
+    parseXctracePhysicalIosDevices,
     runIosRealDeviceE2E,
     runIosSimulatorE2E,
-} from "../../scripts/real-tests/ios-e2e.mjs";
+} from "../../scripts/real-tests/ios-e2e.ts";
+
+describe("real iOS device auto-selection", () => {
+    it("selects only physical iOS UDIDs from the xctrace device section", () => {
+        expect(parseXctracePhysicalIosDevices(`== Devices ==
+Luxusui-MacBookPro (15.5) (12345678-1234-1234-1234-123456789abc)
+Test iPhone (18.5) (00008110-001234567890801E)
+== Simulators ==
+iPhone 16 Pro Simulator (18.5) (aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee)
+`)).toEqual([{ name: "Test iPhone", udid: "00008110-001234567890801E" }]);
+    });
+});
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");
 const simulatorCap = iosSimulatorE2ECapability(level);

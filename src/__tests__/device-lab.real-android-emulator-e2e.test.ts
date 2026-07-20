@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     androidEmulatorE2ECapability,
     runAndroidEmulatorE2E,
-} from "../../scripts/real-tests/android-emulator-e2e.mjs";
+} from "../../scripts/real-tests/android-emulator-e2e.ts";
 import { androidBackend } from "../../device-lab-mcp/src/backends/android.mjs";
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");

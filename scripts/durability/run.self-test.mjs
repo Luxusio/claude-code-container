@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import test from "node:test";
-import { durabilityLaunchPlan, main, runDurabilityLauncher } from "./run.mjs";
+import { durabilityLaunchPlan, main, runDurabilityLauncher } from "./run.ts";
 
 test("source checkout builds before forwarding all durability arguments", () => {
     const root = mkdtempSync(join(tmpdir(), "ccc-durability-source-"));

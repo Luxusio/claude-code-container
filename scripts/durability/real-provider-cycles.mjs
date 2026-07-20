@@ -9,8 +9,8 @@ import { androidDiscovery, handleAndroidTool } from "../../device-lab-mcp/src/ba
 import { handleAndroidRealTool } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
 import { readPhysicalLeases, releaseOwnedPhysicalLeaseResidue } from "../../device-lab-mcp/src/state/physical-lease-store.mjs";
-import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.mjs";
-import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.mjs";
+import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.ts";
+import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.ts";
 import {
     describeProcessIdentities,
     identityForPid,
@@ -23,28 +23,28 @@ import {
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "../..");
-const realTestRunner = join(repoRoot, "scripts", "real-tests", "run.mjs");
+const realTestRunner = join(repoRoot, "scripts", "real-tests", "run.ts");
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const PROCESS_SAMPLE_INTERVAL_MS = 50;
 const RESIDUE_INLINE_LIMIT = 4;
 
 export const REAL_PROVIDER_TARGETS = Object.freeze({
     "android-emulator": {
-        module: "scripts/real-tests/level2-android-emulator-e2e.mjs",
+        module: "scripts/real-tests/level2-android-emulator-e2e.ts",
         backendState: "android",
         devicePrefix: "android-real-e2e-",
         tempPrefixes: ["ccc-android-emulator-e2e-"],
         destructive: "Creates, boots, controls, stops, and deletes a disposable Android emulator and AVD.",
     },
     "android-device": {
-        module: "scripts/real-tests/level2-android-device-e2e.mjs",
+        module: "scripts/real-tests/level2-android-device-e2e.ts",
         backendState: "android-device",
         devicePrefix: "android-device-real-e2e-",
         tempPrefixes: ["android-device-e2e-"],
         destructive: "Uses the configured physical Android device, changes device/app state, and may install/uninstall the configured APK.",
     },
     "windows-sandbox": {
-        module: "scripts/real-tests/level2-windows-sandbox.mjs",
+        module: "scripts/real-tests/level2-windows-sandbox.ts",
         backendState: "windows",
         devicePrefix: "windows-real-sandbox-",
         tempPrefixes: ["ccc-windows-sandbox-e2e-"],

@@ -408,7 +408,7 @@ function packageRoot(): string {
 }
 
 function installedMcpSmokeScriptPath(options: SmokeFormatOptions): string {
-    return options.mcpSmokeScriptPath || join(packageRoot(), "scripts", "real-tests", "installed-mcp-smoke.mjs");
+    return options.mcpSmokeScriptPath || join(packageRoot(), "scripts", "real-tests", "installed-mcp-smoke.ts");
 }
 
 function installedDeviceLabMcpServerPath(options: SmokeFormatOptions): string {

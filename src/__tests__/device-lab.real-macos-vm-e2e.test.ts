@@ -10,7 +10,7 @@ import {
     selectAutoTartSourceImageFromListResults,
     sshConfig,
     sourceImage,
-} from "../../scripts/real-tests/macos-vm-e2e.mjs";
+} from "../../scripts/real-tests/macos-vm-e2e.ts";
 
 const level = Number(process.env.CCC_TEST_LEVEL || "0");
 const cap = macosVmE2ECapability(level);
@@ -58,6 +58,19 @@ describe("macOS VM Tart E2E source image auto-selection", () => {
             reason: expect.stringContaining("multiple local Tart images"),
             candidates: ["macos-base-a", "work-vm"],
         }));
+    });
+
+    it("prefers a stopped CCC macOS base without selecting unrelated user VMs or registry entries", () => {
+        expect(selectAutoTartSourceImage([
+            { name: "ccc-macos-base", state: "stopped", source: "local" },
+            { name: "ccc-525bceb2afd55cdb-user-device", state: "stopped", source: "local" },
+            { name: "work-vm", state: "stopped", source: "local" },
+            { name: "ghcr.io/cirruslabs/macos-sonoma-base:latest", state: "stopped", source: "OCI" },
+        ])).toEqual({
+            source: "ccc-macos-base",
+            candidates: ["ccc-macos-base"],
+            auto: true,
+        });
     });
 
     it("falls through to later Tart list variants when an earlier successful command has no parseable images", () => {

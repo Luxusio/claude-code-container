@@ -437,18 +437,45 @@ async function waitForAppium(url) {
     return false;
 }
 
-async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) {
+export async function waitForIosApp(xcrun, target, bundleId, timeoutMs = 10000, intervalMs = 500) {
     const deadline = Date.now() + Math.max(0, timeoutMs);
     let last = null;
+    const executableHint = String(bundleId).split(".").filter(Boolean).at(-1) || String(bundleId);
     while (Date.now() <= deadline) {
-        const r = run(xcrun, ["simctl", "spawn", target, "pgrep", "-f", bundleId]);
-        last = r;
-        if (r.status === 0 && r.stdout.trim()) {
-            return { running: true, pid: r.stdout.trim(), stdout: r.stdout, stderr: r.stderr, status: r.status };
+        for (const args of [
+            ["simctl", "spawn", target, "pgrep", "-f", bundleId],
+            ["simctl", "spawn", target, "pgrep", "-i", "-f", executableHint],
+        ]) {
+            const r = run(xcrun, args);
+            last = r;
+            if (r.status === 0 && r.stdout.trim()) {
+                return { running: true, pid: r.stdout.trim(), stdout: r.stdout, stderr: r.stderr, status: r.status };
+            }
+        }
+        for (const domain of ["user/501", "gui/501", "system"]) {
+            const launchctl = run(xcrun, ["simctl", "spawn", target, "launchctl", "print", domain]);
+            last = launchctl;
+            if (launchctl.status === 0 && String(launchctl.stdout || "").toLowerCase().includes(String(bundleId).toLowerCase())) {
+                return {
+                    running: true,
+                    pid: null,
+                    stdout: "",
+                    stderr: launchctl.stderr,
+                    status: launchctl.status,
+                    observedBy: `launchctl-${domain}`,
+                };
+            }
         }
         await sleep(Math.max(50, intervalMs));
     }
-    return { running: false, timeoutMs, stdout: last?.stdout || "", stderr: last?.stderr || "", status: last?.status ?? null };
+    return {
+        running: false,
+        timeoutMs,
+        stdout: String(last?.stdout || "").slice(-512),
+        stderr: String(last?.stderr || "").slice(-512),
+        status: last?.status ?? null,
+        observedBy: "pgrep-and-launchctl",
+    };
 }
 
 async function ensureIosAppiumSession(deviceId) {
@@ -1406,7 +1433,7 @@ async function handleIosToolUnlocked(name, args) {
             const { deviceId } = args;
             const device = findIosDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult(iosAppiumStatus(device));
+            return jsonResult({ deviceId, ...iosAppiumStatus(device) });
         }
 
         case "mobile_dump_ui": {

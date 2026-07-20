@@ -104,28 +104,28 @@ describe("npm package contents", () => {
         expect(files).toContain("device-lab-mcp/src/display/x11.mjs");
         expect(files).toContain("scripts/test-level.js");
         expect(files).toContain("scripts/run-vitest.mjs");
-        expect(files).toContain("scripts/real-tests/run.mjs");
-        expect(files).toContain("scripts/real-tests/assert-json.mjs");
-        expect(files).toContain("scripts/real-tests/summarize-json.mjs");
-        expect(files).toContain("scripts/real-tests/installed-mcp-smoke.mjs");
-        expect(files).toContain("scripts/real-tests/helpers.mjs");
+        expect(files).toContain("scripts/real-tests/run.ts");
+        expect(files).toContain("scripts/real-tests/assert-json.ts");
+        expect(files).toContain("scripts/real-tests/summarize-json.ts");
+        expect(files).toContain("scripts/real-tests/installed-mcp-smoke.ts");
+        expect(files).toContain("scripts/real-tests/helpers.ts");
         expect(files).toContain("scripts/real-tests/hidden-child-processes.cjs");
-        expect(files).toContain("scripts/real-tests/device-lab-mcp-client.mjs");
-        expect(files).toContain("scripts/real-tests/android-emulator-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/ios-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/macos-vm-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/windows-sandbox-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/level0-package-smoke.mjs");
-        expect(files).toContain("scripts/real-tests/level1-real-provider-readiness.mjs");
-        expect(files).toContain("scripts/real-tests/level2-host-integration-slots.mjs");
-        expect(files).toContain("scripts/real-tests/level2-ios-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/level2-android-emulator-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/android-device-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/level2-android-device-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/level2-macos-vm-e2e.mjs");
-        expect(files).toContain("scripts/real-tests/level2-windows-sandbox.mjs");
-        expect(files).toContain("scripts/real-tests/level2-real-linux-vm.mjs");
-        expect(files).toContain("scripts/real-tests/level3-real-destructive.mjs");
+        expect(files).toContain("scripts/real-tests/device-lab-mcp-client.ts");
+        expect(files).toContain("scripts/real-tests/android-emulator-e2e.ts");
+        expect(files).toContain("scripts/real-tests/ios-e2e.ts");
+        expect(files).toContain("scripts/real-tests/macos-vm-e2e.ts");
+        expect(files).toContain("scripts/real-tests/windows-sandbox-e2e.ts");
+        expect(files).toContain("scripts/real-tests/level0-package-smoke.ts");
+        expect(files).toContain("scripts/real-tests/level1-real-provider-readiness.ts");
+        expect(files).toContain("scripts/real-tests/level2-host-integration-slots.ts");
+        expect(files).toContain("scripts/real-tests/level2-ios-e2e.ts");
+        expect(files).toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
+        expect(files).toContain("scripts/real-tests/android-device-e2e.ts");
+        expect(files).toContain("scripts/real-tests/level2-android-device-e2e.ts");
+        expect(files).toContain("scripts/real-tests/level2-macos-vm-e2e.ts");
+        expect(files).toContain("scripts/real-tests/level2-windows-sandbox.ts");
+        expect(files).toContain("scripts/real-tests/level2-real-linux-vm.ts");
+        expect(files).toContain("scripts/real-tests/level3-real-destructive.ts");
         expect(files).toContain("lab-mcp/package.json");
         expect(files).toContain("lab-mcp/package-lock.json");
         expect(files).toContain("lab-mcp/server.mjs");
@@ -415,7 +415,7 @@ describe("npm package contents", () => {
     });
 
     it("summarizes native JSON MCP content for real-test proof metadata", async () => {
-        const { parseToolPayload, parseToolResult, realMcpToolRequestTimeoutMs, summarizeToolResultForProof } = await import("../../scripts/real-tests/device-lab-mcp-client.mjs") as {
+        const { parseToolPayload, parseToolResult, realMcpToolRequestTimeoutMs, summarizeToolResultForProof } = await import("../../scripts/real-tests/device-lab-mcp-client.ts") as {
             parseToolPayload: (result: unknown) => Record<string, unknown>;
             parseToolResult: (result: unknown, options?: Record<string, unknown>) => Record<string, unknown>;
             realMcpToolRequestTimeoutMs: (name: string, args?: Record<string, unknown>) => number;
@@ -450,7 +450,7 @@ describe("npm package contents", () => {
     });
 
     it("keeps real-provider transfer fixtures inside the broker-visible project root", async () => {
-        const { realProviderTempRoot } = await import("../../scripts/real-tests/helpers.mjs") as {
+        const { realProviderTempRoot } = await import("../../scripts/real-tests/helpers.ts") as {
             realProviderTempRoot: (options?: Record<string, unknown>) => string;
         };
         expect(realProviderTempRoot()).toBe(join(repoRoot, "results", ".tmp"));
@@ -461,7 +461,7 @@ describe("npm package contents", () => {
         const { TOOLS } = await import("../../device-lab-mcp/src/tools.mjs") as {
             TOOLS: Array<{ name: string; inputSchema?: unknown }>;
         };
-        const { parseToolPayload, withDeviceLabMcp } = await import("../../scripts/real-tests/device-lab-mcp-client.mjs") as {
+        const { parseToolPayload, withDeviceLabMcp } = await import("../../scripts/real-tests/device-lab-mcp-client.ts") as {
             parseToolPayload: (result: unknown) => Record<string, unknown>;
             withDeviceLabMcp: (
                 callback: (ctx: {
@@ -471,7 +471,7 @@ describe("npm package contents", () => {
                 options?: { env?: Record<string, string>; name?: string; serverPath?: string },
             ) => Promise<void>;
         };
-        const { installedMcpSmokeSample: distSmokeSample } = await import("../../scripts/real-tests/installed-mcp-smoke.mjs") as {
+        const { installedMcpSmokeSample: distSmokeSample } = await import("../../scripts/real-tests/installed-mcp-smoke.ts") as {
             installedMcpSmokeSample: (toolName: string) => Record<string, unknown>;
         };
         const homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-dist-smoke-"));
@@ -589,7 +589,7 @@ describe("npm package contents", () => {
     });
 
     it("runs the installed MCP smoke contract against the bundled server", { timeout: 30000 }, async () => {
-        const { runInstalledMcpSmoke } = await import("../../scripts/real-tests/installed-mcp-smoke.mjs") as {
+        const { runInstalledMcpSmoke } = await import("../../scripts/real-tests/installed-mcp-smoke.ts") as {
             runInstalledMcpSmoke: (options: { env?: Record<string, string>; name?: string; serverPath?: string }) => Promise<{
                 status: string;
                 tools: number;

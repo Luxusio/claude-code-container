@@ -58,7 +58,7 @@ is preserved and the final error prints its artifact path. Broker stderr, owner
 authentication files, runtime metadata, and logs therefore remain available
 for diagnosis.
 
-Repository and installed-package execution use `scripts/durability/run.mjs`.
+Repository and installed-package execution use `scripts/durability/run.ts`.
 The launcher rebuilds only when both `src/` and `tsconfig.json` identify a
 source checkout. In an installed npm package it requires the shipped
 `dist/index.js`, skips build, and forwards all remaining CLI arguments. The
@@ -66,8 +66,8 @@ package scripts should integrate it as follows:
 
 ```json
 {
-  "test:durability:device-lab": "node scripts/durability/run.mjs broker",
-  "test:durability:device-lab:real": "node scripts/durability/run.mjs real"
+  "test:durability:device-lab": "node scripts/durability/run.ts broker",
+  "test:durability:device-lab:real": "node scripts/durability/run.ts real"
 }
 ```
 

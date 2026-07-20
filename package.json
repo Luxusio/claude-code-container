@@ -31,7 +31,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp",
+    "build": "tsc && npm run typecheck:real-tests && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp && npm run build:lab-mcp",
     "build:x11-mcp": "node node_modules/esbuild-wasm/bin/esbuild x11-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/x11-mcp/server.mjs --banner:js=\"// x11-mcp-version: 2\"",
     "build:device-lab-mcp": "node node_modules/esbuild-wasm/bin/esbuild device-lab-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/device-lab-mcp/server.mjs --banner:js=\"// device-lab-mcp-version: 1\"",
     "build:lab-mcp": "node node_modules/esbuild-wasm/bin/esbuild lab-mcp/server.mjs --bundle --platform=node --format=esm --outfile=dist/lab-mcp/server.mjs --banner:js=\"// lab-mcp-version: 1\"",
@@ -39,9 +39,10 @@
     "test:level0": "node scripts/test-level.js 0",
     "test:level1": "node scripts/test-level.js 1",
     "test:level2": "node scripts/test-level.js 2",
-    "test:level3": "node scripts/real-tests/level3.mjs",
-    "test:durability:device-lab": "node scripts/durability/run.mjs broker",
-    "test:durability:device-lab:real": "node scripts/durability/run.mjs real",
+    "test:level3": "node scripts/real-tests/level3.ts",
+    "typecheck:real-tests": "tsc -p tsconfig.real-tests.json",
+    "test:durability:device-lab": "node scripts/durability/run.ts broker",
+    "test:durability:device-lab:real": "node scripts/durability/run.ts real",
     "test:durability:device-lab:real:self": "node --test scripts/durability/*.self-test.mjs",
     "smoke:lab-mcp": "node lab-mcp/src/smoke.mjs",
     "test:watch": "node scripts/run-vitest.mjs",

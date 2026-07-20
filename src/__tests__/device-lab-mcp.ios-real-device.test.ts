@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { handleIosRealTool } from "../../device-lab-mcp/src/backends/ios-device.mjs";
-import { iosRealDeviceE2ECapability } from "../../scripts/real-tests/ios-e2e.mjs";
+import { iosRealDeviceE2ECapability } from "../../scripts/real-tests/ios-e2e.ts";
 import { cleanupFakeIosMcpContext, createFakeIosMcpContext, TIMEOUT, type FakeIosMcpContext } from "./helpers/fake-ios-mcp-fixture.js";
 
 function parseToolJson(result: { content?: unknown }) {

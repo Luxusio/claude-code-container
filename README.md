@@ -181,7 +181,7 @@ To verify the actual installed MCP server used by a running container image,
 run the installed-server smoke directly:
 
 ```bash
-node scripts/real-tests/installed-mcp-smoke.mjs /opt/ccc/dist/device-lab-mcp/server.mjs
+node scripts/real-tests/installed-mcp-smoke.ts /opt/ccc/dist/device-lab-mcp/server.mjs
 ```
 
 This catches stale image installs where `tools/list` advertises a public tool
@@ -193,12 +193,16 @@ different installed server path.
 On macOS, Level 2 now includes real iOS Simulator and Tart-backed macOS VM E2E
 coverage when the host has the required tools. iOS Simulator tests require a
 full active Xcode install with `xcrun simctl` available. Physical iOS smoke
-coverage requires `xcrun xctrace` and `CCC_REAL_IOS_DEVICE_UDID=<udid>` for a
-leased test device; deeper Appium/XCUITest automation still reports its own
+coverage requires `xcrun xctrace`. Exactly one visible physical iOS device is
+selected automatically; when multiple devices are visible,
+`CCC_REAL_IOS_DEVICE_UDID=<udid>` selects the leased test device explicitly.
+Deeper Appium/XCUITest automation still reports its own
 `xcodebuild`/driver prerequisites separately. macOS VM E2E tests require Tart
-(`brew install cirruslabs/cli/tart`). If exactly one usable local Tart image is
-present, the E2E selects it automatically; if multiple local candidates exist
-it skips and reports the candidate names instead of guessing. Set
+(`brew install cirruslabs/cli/tart`). A stopped local image explicitly named as
+a macOS base/template, such as `ccc-macos-base`, is preferred automatically as
+a read-only clone source; unrelated user VMs and registry entries are not
+mutated. If multiple equally preferred local candidates exist, the E2E skips
+and reports their names instead of guessing. Set
 `CCC_REAL_MACOS_VM_SOURCE_IMAGE=<image-or-vm>` to choose explicitly; the older
 `CCC_REAL_TART_SOURCE_IMAGE` name is still accepted. The macOS VM E2E always
 prepares SSH helper metadata using a default short user derived from the

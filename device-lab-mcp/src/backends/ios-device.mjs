@@ -704,7 +704,7 @@ async function handleIosRealToolUnlocked(name, args) {
             const { deviceId } = args;
             const device = findIosRealDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult(appiumStatus(device));
+            return jsonResult({ deviceId, ...appiumStatus(device) });
         }
 
         case "device_exec": {

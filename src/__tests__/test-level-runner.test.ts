@@ -3,15 +3,23 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "os";
 import { join } from "path";
 import { parse } from "acorn";
+import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
 import { DESTRUCTIVE_POLICY_SCHEMA_EXAMPLES, evaluateDestructivePolicy } from "../../device-lab-mcp/src/policy/destructive.mjs";
-import { androidDeviceE2EPrerequisites, prepareAndroidDeviceApp } from "../../scripts/real-tests/android-device-e2e.mjs";
-import { androidEmulatorAppSelection, androidEmulatorCreateRequest } from "../../scripts/real-tests/android-emulator-e2e.mjs";
-import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.mjs";
-import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.mjs";
+import { androidDeviceE2EPrerequisites, prepareAndroidDeviceApp } from "../../scripts/real-tests/android-device-e2e.ts";
+import { androidEmulatorAppSelection, androidEmulatorCreateRequest } from "../../scripts/real-tests/android-emulator-e2e.ts";
+import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.ts";
+import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.ts";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
 
 const runner = join(repoRoot, "scripts", "test-level.js");
+
+function parseModule(text: string) {
+    const javascript = transpileModule(text, {
+        compilerOptions: { module: ModuleKind.ESNext, target: ScriptTarget.ES2023 },
+    }).outputText;
+    return parse(javascript, { ecmaVersion: "latest", sourceType: "module" });
+}
 const HIDDEN_LEGACY_TRANSPORT_KEYS = new Set([
     "broker",
     "viaBroker",
@@ -40,7 +48,7 @@ const HIDDEN_PROVIDER_REAL_E2E_TRANSPORT_KEYS = new Set(
     [...HIDDEN_LEGACY_TRANSPORT_KEYS].filter((key) => key !== "port" && key !== "timeoutMs"),
 );
 const OPT_IN_REAL_TEST_UTILITY_FILES = new Set([
-    "installed-mcp-smoke.mjs",
+    "installed-mcp-smoke.ts",
 ]);
 
 function dryRun(level: string) {
@@ -208,10 +216,10 @@ function objectExpressionLiteralValues(objectExpression: Record<string, unknown>
 function realTestCallToolArgumentKeys() {
     const root = join(repoRoot, "scripts", "real-tests");
     return readdirSync(root)
-        .filter((file) => file.endsWith(".mjs"))
+        .filter((file) => file.endsWith(".ts"))
         .flatMap((file) => {
             const text = readFileSync(join(root, file), "utf-8");
-            const ast = parse(text, { ecmaVersion: "latest", sourceType: "module" });
+            const ast = parseModule(text);
             const bindings = literalObjectBindings(ast);
             const calls: Array<{ file: string; tool: string; keys: string[] }> = [];
             walkAst(ast, (node) => {
@@ -232,10 +240,10 @@ function realTestCallToolArgumentKeys() {
 function realTestCallToolLiteralValues() {
     const root = join(repoRoot, "scripts", "real-tests");
     return readdirSync(root)
-        .filter((file) => file.endsWith(".mjs"))
+        .filter((file) => file.endsWith(".ts"))
         .flatMap((file) => {
             const text = readFileSync(join(root, file), "utf-8");
-            const ast = parse(text, { ecmaVersion: "latest", sourceType: "module" });
+            const ast = parseModule(text);
             const bindings = literalObjectBindings(ast);
             const calls: Array<{ file: string; tool: string; values: Record<string, string | number | boolean | null> }> = [];
             walkAst(ast, (node) => {
@@ -293,7 +301,7 @@ function alwaysDestructivePolicyTools() {
 function realTestText() {
     const root = join(repoRoot, "scripts", "real-tests");
     return readdirSync(root)
-        .filter((file) => file.endsWith(".mjs"))
+        .filter((file) => file.endsWith(".ts"))
         .map((file) => readFileSync(join(root, file), "utf-8"))
         .join("\n");
 }
@@ -311,7 +319,7 @@ function productionDeviceLabText() {
     const files = [
         ...filesUnder(join(repoRoot, "device-lab-mcp"), [".mjs"]),
         ...filesUnder(join(repoRoot, "lab-mcp", "src"), [".mjs"]),
-        ...filesUnder(join(repoRoot, "scripts", "real-tests"), [".mjs"]),
+        ...filesUnder(join(repoRoot, "scripts", "real-tests"), [".ts"]),
         join(repoRoot, "src", "device-lab-owner.ts"),
         join(repoRoot, "src", "device-lab-broker.ts"),
         join(repoRoot, "src", "device-lab-admin.ts"),
@@ -338,7 +346,7 @@ function literalStringArrayValues(node: Record<string, unknown> | undefined): st
 
 function deviceLabServerLiteralSets() {
     const text = readFileSync(join(repoRoot, "device-lab-mcp", "src", "server.mjs"), "utf-8");
-    const ast = parse(text, { ecmaVersion: "latest", sourceType: "module" });
+    const ast = parseModule(text);
     const sets: Array<{ name: string; values: string[] }> = [];
     walkAst(ast, (node) => {
         if (node.type !== "VariableDeclarator") return;
@@ -364,7 +372,7 @@ function deviceLabBackendCapabilityTools() {
     const capabilities: Array<{ file: string; values: string[] }> = [];
     for (const file of files) {
         const text = readFileSync(file, "utf-8");
-        const ast = parse(text, { ecmaVersion: "latest", sourceType: "module" });
+        const ast = parseModule(text);
         walkAst(ast, (node) => {
             if (node.type === "VariableDeclarator") {
                 const id = node.id as Record<string, unknown> | undefined;
@@ -529,7 +537,7 @@ function deviceLabMcpBackendCapabilities() {
 
 function functionSwitchCaseLabels(file: string, functionName: string) {
     const text = readFileSync(file, "utf-8");
-    const ast = parse(text, { ecmaVersion: "latest", sourceType: "module" });
+    const ast = parseModule(text);
     let functionNode: Record<string, unknown> | null = null;
     walkAst(ast, (node) => {
         if (functionNode || node.type !== "FunctionDeclaration") return;
@@ -631,7 +639,7 @@ function hostBrokerBackendCapabilities() {
 function realTestFilesWithCallTool() {
     const root = join(repoRoot, "scripts", "real-tests");
     return readdirSync(root)
-        .filter((file) => file.endsWith(".mjs"))
+        .filter((file) => file.endsWith(".ts"))
         .filter((file) => /callTool\(/.test(readFileSync(join(root, file), "utf-8")))
         .sort();
 }
@@ -643,7 +651,7 @@ function reachableRealTestFilesFrom(entryFiles: string[]) {
         if (reachable.has(file)) return;
         reachable.add(file);
         const text = readFileSync(join(root, file), "utf-8");
-        for (const match of text.matchAll(/from\s+["']\.\/([^"']+\.mjs)["']/g)) {
+        for (const match of text.matchAll(/from\s+["']\.\/([^"']+\.ts)["']/g)) {
             visit(match[1]);
         }
     };
@@ -769,34 +777,34 @@ describe("test level runner", () => {
         const level2 = dryRunNode("2");
 
         expect(level2.mode).toBe("node-test");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/run.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-real-provider-readiness.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-host-integration-slots.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-ios-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-emulator-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-macos-vm-e2e.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-windows-sandbox.mjs");
-        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-real-linux-vm.mjs");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/run.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-real-provider-readiness.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-host-integration-slots.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-ios-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-macos-vm-e2e.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-windows-sandbox.ts");
+        expect(level2.args.join("\n")).toContain("scripts/real-tests/level2-real-linux-vm.ts");
 
         const level3 = dryRunNode("3");
         expect(level3.mode).toBe("node-test");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.mjs");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.mjs");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.mjs");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.mjs");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.mjs");
-        expect(level3.args.join("\n")).not.toContain("scripts/real-tests/level2-android-emulator-e2e.mjs");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.mjs");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.ts");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level1-dist-real-provider-readiness.ts");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-broker-e2e.ts");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-dist-broker-e2e.ts");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.ts");
+        expect(level3.args.join("\n")).not.toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.ts");
     });
 
     it("always uses the current checkout CLI for real broker autolaunch", async () => {
-        const { localCccPathEnv } = await import("../../scripts/real-tests/helpers.mjs") as {
+        const { localCccPathEnv } = await import("../../scripts/real-tests/helpers.ts") as {
             localCccPathEnv: (env?: NodeJS.ProcessEnv) => { ok: boolean; source?: string; env?: NodeJS.ProcessEnv; cleanup: () => void };
         };
         const originalPath = process.platform === "win32" ? "C:\\global-ccc" : "/global-ccc";
@@ -829,7 +837,7 @@ describe("test level runner", () => {
         const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")) as {
             scripts?: Record<string, string>;
         };
-        expect(pkg.scripts?.["test:level3"]).toBe("node scripts/real-tests/level3.mjs");
+        expect(pkg.scripts?.["test:level3"]).toBe("node scripts/real-tests/level3.ts");
         expect(Object.keys(pkg.scripts || {}).filter((name) => name.startsWith("test:level"))).toEqual([
             "test:level0",
             "test:level1",
@@ -839,13 +847,14 @@ describe("test level runner", () => {
     });
 
     it("treats the explicit Level 3 command as destructive authorization without an environment switch", () => {
-        const level3Text = readFileSync(join(repoRoot, "scripts", "real-tests", "level3.mjs"), "utf-8");
-        const vitestText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-vitest.mjs"), "utf-8");
-        const configText = readFileSync(join(repoRoot, "scripts", "real-tests", "vitest.level3.config.mjs"), "utf-8");
-        const destructiveText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.mjs"), "utf-8");
+        const level3Text = readFileSync(join(repoRoot, "scripts", "real-tests", "level3.ts"), "utf-8");
+        const vitestText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-vitest.ts"), "utf-8");
+        const configText = readFileSync(join(repoRoot, "scripts", "real-tests", "vitest.level3.config.ts"), "utf-8");
+        const destructiveText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts"), "utf-8");
         expect(level3Text).toContain('vitest, "run", "--config", config');
-        expect(level3Text).toContain("buildLevel3Artifacts()");
-        expect(level3Text).toContain('"node_modules", "typescript", "bin", "tsc"');
+        expect(level3Text).toContain("buildLevel3Artifacts(repoRoot, { env })");
+        expect(level3Text).toContain("ensureHostBrokerReady(repoRoot, { env })");
+        expect(level3Text).toContain('from "./support/level3-host.ts"');
         expect(vitestText).toMatch(/runner,\s*"3"/);
         expect(vitestText).toContain('"--platform-result"');
         expect(vitestText).toContain("for (const record of records)");
@@ -855,17 +864,17 @@ describe("test level runner", () => {
         expect(vitestText).not.toContain('it("runs the real provider suite"');
         expect(vitestText).not.toContain('"--fail-on-coverage-gap"');
         expect(vitestText).toContain('key !== "VITEST" && !key.startsWith("VITEST_")');
-        expect(configText).toContain('include: ["scripts/real-tests/level3-vitest.mjs"]');
+        expect(configText).toContain('include: ["scripts/real-tests/level3-vitest.ts"]');
         expect(configText).toContain("testTimeout: 30 * 60 * 1000");
         expect(destructiveText).toContain("destructive: true");
         expect(destructiveText).toContain("snapshot: true");
     });
 
     it("resolves the real-test repository root from Windows file URLs", async () => {
-        const { repositoryRootFromModuleUrl } = await import("../../scripts/real-tests/helpers.mjs") as {
+        const { repositoryRootFromModuleUrl } = await import("../../scripts/real-tests/helpers.ts") as {
             repositoryRootFromModuleUrl: (moduleUrl: string, options?: { windows?: boolean }) => string;
         };
-        const moduleUrl = "file:///C:/Users/TestUser/Project/_Project/claude-code-container/scripts/real-tests/helpers.mjs";
+        const moduleUrl = "file:///C:/Users/TestUser/Project/_Project/claude-code-container/scripts/real-tests/helpers.ts";
 
         expect(repositoryRootFromModuleUrl(moduleUrl, { windows: true })).toBe(
             "C:\\Users\\TestUser\\Project\\_Project\\claude-code-container\\",
@@ -873,7 +882,7 @@ describe("test level runner", () => {
     });
 
     it("requires packaged real-provider evidence while retaining source and dist tool coverage", async () => {
-        const { assertResultMatrix } = await import("../../scripts/real-tests/assert-matrix.mjs") as {
+        const { assertResultMatrix } = await import("../../scripts/real-tests/assert-matrix.ts") as {
             assertResultMatrix: (shards: unknown[], options?: Record<string, unknown>) => Record<string, unknown>;
         };
         const shard = {
@@ -909,7 +918,7 @@ describe("test level runner", () => {
         }));
 
         const wrongFile = structuredClone(shard);
-        wrongFile.toolCoverage.calls[1].file = "/results/level2-broker-e2e.mjs";
+        wrongFile.toolCoverage.calls[1].file = "/results/level2-broker-e2e.ts";
         expect(assertResultMatrix([wrongFile], options)).toEqual(expect.objectContaining({
             ok: false,
             failures: expect.arrayContaining(["missingProviderEvidence:test-provider:dist=1"]),
@@ -936,23 +945,23 @@ describe("test level runner", () => {
         expect(plan.mode).toBe("node-test");
         expect(plan.args).toContain("--json-summary");
         expect(plan.args).toEqual(expect.arrayContaining(["--json-summary-file", "results/summary.json"]));
-        expect(plan.args.join("\n")).toContain("scripts/real-tests/run.mjs");
-        expect(plan.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.mjs");
+        expect(plan.args.join("\n")).toContain("scripts/real-tests/run.ts");
+        expect(plan.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
     });
 
     it("runs device-lab real E2E operations through the MCP server instead of backend handlers", () => {
         for (const file of [
-            "android-emulator-e2e.mjs",
-            "ios-e2e.mjs",
-            "windows-sandbox-e2e.mjs",
-            "macos-vm-e2e.mjs",
+            "android-emulator-e2e.ts",
+            "ios-e2e.ts",
+            "windows-sandbox-e2e.ts",
+            "macos-vm-e2e.ts",
         ]) {
             const text = readFileSync(join(repoRoot, "scripts", "real-tests", file), "utf-8");
             expect(text).toContain("withDeviceLabMcp");
             expect(text).not.toContain("CCC_DEVICE_LAB_OWNER_BASIS");
             expect(text).not.toMatch(/\bhandle(?:Android|Ios|IosReal|Windows|Macos)Tool\b/);
         }
-        const helperText = readFileSync(join(repoRoot, "scripts", "real-tests", "device-lab-mcp-client.mjs"), "utf-8");
+        const helperText = readFileSync(join(repoRoot, "scripts", "real-tests", "device-lab-mcp-client.ts"), "utf-8");
         expect(helperText).toContain("serverPath");
         expect(helperText).toContain("CCC_REAL_DEVICE_LAB_MCP_SERVER");
         expect(helperText).not.toContain("NODE_ENV");
@@ -1069,10 +1078,10 @@ describe("test level runner", () => {
     it("keeps provider real E2E scripts aligned with backend capability surfaces", () => {
         const capabilities = deviceLabMcpBackendCapabilities();
         const scripts = new Map<string, string>([
-            ["android-emulator", "android-emulator-e2e.mjs"],
-            ["android-device", "android-device-e2e.mjs"],
-            ["ios-simulator", "ios-e2e.mjs"],
-            ["ios-device", "ios-e2e.mjs"],
+            ["android-emulator", "android-emulator-e2e.ts"],
+            ["android-device", "android-device-e2e.ts"],
+            ["ios-simulator", "ios-e2e.ts"],
+            ["ios-device", "ios-e2e.ts"],
         ]);
         const expectedMissing = new Map<string, string[]>([
             ["android-emulator", []],
@@ -1287,7 +1296,7 @@ describe("test level runner", () => {
     });
 
     it("covers safe Android mobile controls in the real emulator E2E through MCP calls", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.ts"), "utf-8");
         expect(text).toContain('}, providerMcpSessionOptions(options, "ccc-real-android-emulator-e2e"));');
         expect(text).not.toContain('new Promise((resolvePromise) => {\n        const server = createServer();\n        server.once("error", () => resolvePromise(false));\n        server.listen(port, "127.0.0.1", () => {\n            server.close(() => resolvePromise(true));\n        });\n    }, providerMcpSessionOptions');
         for (const tool of [
@@ -1332,9 +1341,9 @@ describe("test level runner", () => {
 
     it("covers destructive Android emulator controls only through the explicit level 3 path", () => {
         const level3 = dryRunNode("3");
-        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.mjs");
-        const destructiveText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.mjs"), "utf-8");
-        const androidText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
+        expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.ts");
+        const destructiveText = readFileSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts"), "utf-8");
+        const androidText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.ts"), "utf-8");
         expect(destructiveText).toContain("destructive: true");
         for (const tool of [
             "mobile_power",
@@ -1346,7 +1355,7 @@ describe("test level runner", () => {
     });
 
     it("covers Android app install, launch, reset, and uninstall with a deterministic fixture or configured APK", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.ts"), "utf-8");
         expect(text).toContain("CCC_REAL_ANDROID_APK");
         expect(text).toContain("CCC_REAL_ANDROID_PACKAGE");
         expect(text).toContain("CCC_REAL_ANDROID_PERMISSION");
@@ -1369,7 +1378,7 @@ describe("test level runner", () => {
     });
 
     it("covers safe Android physical-device controls in the real-device E2E through MCP calls", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-device-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "android-device-e2e.ts"), "utf-8");
         expect(text).toContain("CCC_REAL_ANDROID_DEVICE_SERIAL");
         expect(text).toContain("use deterministic fixture");
         expect(text).toContain("prepareAndroidDeviceApp(appSelection, tempDir)");
@@ -1431,7 +1440,7 @@ describe("test level runner", () => {
     });
 
     it("covers iOS Simulator app install, launch, reset, and uninstall when a disposable .app is configured", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.ts"), "utf-8");
         expect(text).toContain("CCC_REAL_IOS_SIMULATOR_APP");
         expect(text).toContain("CCC_REAL_IOS_SIMULATOR_BUNDLE_ID");
         expect(text).toContain("CCC_REAL_DEVICE_LAB_FAIL_ON_SKIP");
@@ -1523,7 +1532,7 @@ describe("test level runner", () => {
             rmSync(tempDir, { recursive: true, force: true });
         }
 
-        const emulatorText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.mjs"), "utf-8");
+        const emulatorText = readFileSync(join(repoRoot, "scripts", "real-tests", "android-emulator-e2e.ts"), "utf-8");
         expect(emulatorText.indexOf("androidEmulatorAppSelection()")).toBeLessThan(emulatorText.indexOf("mkdtempSync("));
     });
 
@@ -1544,7 +1553,7 @@ describe("test level runner", () => {
     });
 
     it("covers safe iOS Simulator mobile controls in the real simulator E2E through MCP calls", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.ts"), "utf-8");
         for (const tool of [
             "mobile_session_status",
             "mobile_dump_ui",
@@ -1580,7 +1589,7 @@ describe("test level runner", () => {
     });
 
     it("covers safe iOS physical-device Appium controls in the real-device E2E through MCP calls", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "ios-e2e.ts"), "utf-8");
         expect(text).toContain("CCC_REAL_IOS_DEVICE_BUNDLE_ID");
         expect(text).toContain("CCC_REAL_DEVICE_LAB_FAIL_ON_SKIP");
         expect(text).toContain("missing iOS real-device Appium/XCUITest prerequisites");
@@ -1614,7 +1623,7 @@ describe("test level runner", () => {
     });
 
     it("covers macOS VM snapshot restore in the destructive real E2E path", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "macos-vm-e2e.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "macos-vm-e2e.ts"), "utf-8");
         for (const tool of [
             "device_snapshot_create",
             "device_snapshot_restore",
@@ -1622,13 +1631,13 @@ describe("test level runner", () => {
         ]) {
             expect(text).toContain(`callTool("${tool}"`);
         }
-        expect(text).toContain("options.snapshot === true");
+        expect(text).toContain("typedOptions.snapshot === true");
     });
 
     it("covers the current X11 display tools in a real MCP E2E", () => {
         const level1 = dryRunNode("1");
-        expect(level1.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.mjs");
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.mjs"), "utf-8");
+        expect(level1.args.join("\n")).toContain("scripts/real-tests/level1-display-e2e.ts");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-display-e2e.ts"), "utf-8");
         for (const tool of [
             "display_current",
             "display_screenshot",
@@ -1678,7 +1687,7 @@ describe("test level runner", () => {
     });
 
     it("covers safe desktop read-only tools in Windows and macOS real E2E through MCP calls", () => {
-        for (const file of ["windows-sandbox-e2e.mjs", "macos-vm-e2e.mjs"]) {
+        for (const file of ["windows-sandbox-e2e.ts", "macos-vm-e2e.ts"]) {
             const text = readFileSync(join(repoRoot, "scripts", "real-tests", file), "utf-8");
             for (const tool of [
                 "device_click",
@@ -1694,12 +1703,12 @@ describe("test level runner", () => {
                 expect(text).toContain(`callTool("${tool}"`);
             }
         }
-        const windowsText = readFileSync(join(repoRoot, "scripts", "real-tests", "windows-sandbox-e2e.mjs"), "utf-8");
+        const windowsText = readFileSync(join(repoRoot, "scripts", "real-tests", "windows-sandbox-e2e.ts"), "utf-8");
         expect(windowsText).toContain("status.device.sandboxId");
         expect(windowsText).toContain("upload.uploaded.remotePath");
         expect(windowsText).toContain("download.downloaded.localPath");
 
-        const macosText = readFileSync(join(repoRoot, "scripts", "real-tests", "macos-vm-e2e.mjs"), "utf-8");
+        const macosText = readFileSync(join(repoRoot, "scripts", "real-tests", "macos-vm-e2e.ts"), "utf-8");
         expect(macosText).toContain("upload.provider");
         expect(macosText).toContain("download.provider");
         expect(macosText).toContain("upload.uploaded.remotePath");
@@ -1707,7 +1716,7 @@ describe("test level runner", () => {
     });
 
     it("covers physical wireless status and safe action diagnostics in real MCP readiness", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-real-provider-readiness.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-real-provider-readiness.ts"), "utf-8");
         expect(text).toContain("device_wireless");
         expect(text).toContain("action: \"status\"");
         expect(text).toContain("\"usb-tcpip\", \"pair\", \"connect\"");
@@ -1722,9 +1731,9 @@ describe("test level runner", () => {
     });
 
     it("covers broker autolaunch and broker-backed provider discovery in the real MCP E2E", () => {
-        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-broker-e2e.mjs"), "utf-8");
-        const distText = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-dist-broker-e2e.mjs"), "utf-8");
-        const helperText = readFileSync(join(repoRoot, "scripts", "real-tests", "helpers.mjs"), "utf-8");
+        const text = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-broker-e2e.ts"), "utf-8");
+        const distText = readFileSync(join(repoRoot, "scripts", "real-tests", "level2-dist-broker-e2e.ts"), "utf-8");
+        const helperText = readFileSync(join(repoRoot, "scripts", "real-tests", "helpers.ts"), "utf-8");
         expect(text).toContain("device_broker_status");
         expect(text).toContain("device_broker_rpc");
         expect(text).toContain("broker.echo");
@@ -1787,28 +1796,28 @@ describe("test level runner", () => {
         expect(helperText).toContain("cleanup: () => rmSync");
         expect(text).not.toContain("CCC_DEVICE_LAB_OWNER_BASIS");
         expect(text).not.toContain("implicitBroker: false");
-        expect(text).toContain("export async function runBrokerE2E(options = {})");
+        expect(text).toContain("export async function runBrokerE2E(options: any = {})");
         expect(distText).toContain("runBrokerE2E");
         expect(distText).toContain("dist\", \"device-lab-mcp\", \"server.mjs");
     });
 
     it("runs available real-provider E2E scenarios through source and packaged MCP servers", () => {
-        const matrixText = readFileSync(join(repoRoot, "scripts", "real-tests", "provider-mcp-matrix.mjs"), "utf-8");
-        const readinessText = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-dist-real-provider-readiness.mjs"), "utf-8");
+        const matrixText = readFileSync(join(repoRoot, "scripts", "real-tests", "provider-mcp-matrix.ts"), "utf-8");
+        const readinessText = readFileSync(join(repoRoot, "scripts", "real-tests", "level1-dist-real-provider-readiness.ts"), "utf-8");
         const coreFiles = [
-            "android-emulator-e2e.mjs",
-            "android-device-e2e.mjs",
-            "ios-e2e.mjs",
-            "macos-vm-e2e.mjs",
-            "windows-sandbox-e2e.mjs",
+            "android-emulator-e2e.ts",
+            "android-device-e2e.ts",
+            "ios-e2e.ts",
+            "macos-vm-e2e.ts",
+            "windows-sandbox-e2e.ts",
         ];
         const levelFiles = [
-            "level2-android-emulator-e2e.mjs",
-            "level2-android-device-e2e.mjs",
-            "level2-ios-e2e.mjs",
-            "level2-macos-vm-e2e.mjs",
-            "level2-windows-sandbox.mjs",
-            "level3-real-destructive.mjs",
+            "level2-android-emulator-e2e.ts",
+            "level2-android-device-e2e.ts",
+            "level2-ios-e2e.ts",
+            "level2-macos-vm-e2e.ts",
+            "level2-windows-sandbox.ts",
+            "level3-real-destructive.ts",
         ];
 
         expect(matrixText).toContain("packagedDeviceLabMcpServer");
@@ -1825,7 +1834,7 @@ describe("test level runner", () => {
     });
 
     it("runs each expensive real provider exactly once through the packaged MCP", async () => {
-        const { runProviderMcpMatrix } = await import("../../scripts/real-tests/provider-mcp-matrix.mjs") as {
+        const { runProviderMcpMatrix } = await import("../../scripts/real-tests/provider-mcp-matrix.ts") as {
             runProviderMcpMatrix: (runner: (options: Record<string, unknown>) => Promise<Record<string, unknown>>) => Promise<Record<string, unknown>>;
         };
         const calls: Array<Record<string, unknown>> = [];
@@ -1839,7 +1848,7 @@ describe("test level runner", () => {
     });
 
     it("preserves all-skipped provider matrices instead of reporting a false pass", async () => {
-        const { runProviderMcpMatrix } = await import("../../scripts/real-tests/provider-mcp-matrix.mjs") as {
+        const { runProviderMcpMatrix } = await import("../../scripts/real-tests/provider-mcp-matrix.ts") as {
             runProviderMcpMatrix: (runner: (options: Record<string, unknown>) => Promise<Record<string, unknown>>) => Promise<Record<string, unknown>>;
         };
 
@@ -1860,7 +1869,7 @@ describe("test level runner", () => {
     });
 
     it("aggregates real-test steps without false passes", async () => {
-        const { aggregateStepResult } = await import("../../scripts/real-tests/result-status.mjs") as {
+        const { aggregateStepResult } = await import("../../scripts/real-tests/result-status.ts") as {
             aggregateStepResult: (steps: Array<Record<string, unknown>>) => Record<string, unknown>;
         };
 
@@ -1892,14 +1901,14 @@ describe("test level runner", () => {
 
     it("keeps provider real E2E scripts on public device-lab MCP tool names", () => {
         const hiddenProviderCalls = realTestCallToolArgumentKeys()
-            .filter((call) => call.file !== "level2-broker-e2e.mjs")
+            .filter((call) => call.file !== "level2-broker-e2e.ts")
             .filter((call) => HIDDEN_COMPATIBILITY_TOOLS.has(call.tool));
         expect(hiddenProviderCalls).toEqual([]);
     });
 
     it("keeps provider real E2E scripts free of hidden broker transport arguments", () => {
         const hiddenProviderArgs = realTestCallToolArgumentKeys()
-            .filter((call) => call.file !== "level2-broker-e2e.mjs")
+            .filter((call) => call.file !== "level2-broker-e2e.ts")
             .filter((call) => !OPT_IN_REAL_TEST_UTILITY_FILES.has(call.file))
             .flatMap((call) => call.keys
                 .filter((key) => HIDDEN_PROVIDER_REAL_E2E_TRANSPORT_KEYS.has(key))
@@ -1949,9 +1958,9 @@ describe("test level runner", () => {
     it("keeps every real E2E MCP call reachable from the level 3 node runner", () => {
         const plan = dryRunNode("3");
         const entryFiles = plan.args
-            .filter((arg) => arg.includes("/scripts/real-tests/") && arg.endsWith(".mjs"))
+            .filter((arg) => arg.includes("/scripts/real-tests/") && arg.endsWith(".ts"))
             .map((arg) => arg.split("/scripts/real-tests/")[1])
-            .filter((file) => file !== "run.mjs");
+            .filter((file) => file !== "run.ts");
         const reachable = reachableRealTestFilesFrom(entryFiles);
         const unreachableCallToolFiles = realTestFilesWithCallTool()
             .filter((file) => !OPT_IN_REAL_TEST_UTILITY_FILES.has(file))
@@ -1980,7 +1989,7 @@ describe("test level runner", () => {
             writeFileSync(stepFailFile, "export const name='step-fail'; export async function run(){ return { status: 'FAIL', steps: [{ name: 'inner', status: 'FAIL', reason: 'boom', detail: 'device=abc' }] }; }\n");
             writeFileSync(multilineFailFile, "export const name='multiline-fail'; export async function run(){ throw new Error('Expected values to be strictly equal:\\n+ actual\\n- expected'); }\n");
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), passFile, stepFailFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), passFile, stepFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -1991,7 +2000,7 @@ describe("test level runner", () => {
             expect(result.stdout).toContain("SUMMARY real-tests total=2 pass=1 skip=0 fail=1 failOnSkip=false");
             expect(result.stdout).not.toContain("strictSkipFailures");
 
-            const compactResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--compact", passFile, stepFailFile], {
+            const compactResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", passFile, stepFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2000,7 +2009,7 @@ describe("test level runner", () => {
             expect(compactResult.stdout).toContain("FAIL step-fail: inner - boom");
             expect(compactResult.stdout).toContain("SUMMARY real-tests total=2 pass=1 skip=0 fail=1 failOnSkip=false");
 
-            const multilineResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--compact", multilineFailFile], {
+            const multilineResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", multilineFailFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2014,7 +2023,7 @@ describe("test level runner", () => {
     it("fails closed when real-test results omit or invent statuses", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-real-test-runner-"));
         try {
-            const missingResultStatus = join(tempDir, "missing-result-status.mjs");
+            const missingResultStatus = join(tempDir, "missing-result-status.ts");
             const invalidStepStatus = join(tempDir, "invalid-step-status.mjs");
             const nullStep = join(tempDir, "null-step.mjs");
             const inconsistentParent = join(tempDir, "inconsistent-parent.mjs");
@@ -2026,7 +2035,7 @@ describe("test level runner", () => {
             writeFileSync(emptySteps, "export const name='empty-steps'; export async function run(){ return { status: 'PASS', steps: [] }; }\n");
 
             const result = spawnSync(process.execPath, [
-                join(repoRoot, "scripts", "real-tests", "run.mjs"),
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
                 "--compact",
                 missingResultStatus,
                 invalidStepStatus,
@@ -2055,7 +2064,7 @@ describe("test level runner", () => {
             writeFileSync(skipFile, "export const name='skip'; export async function run(){ return { status: 'SKIP', reason: 'missing provider' }; }\n");
             writeFileSync(stepSkipFile, "export const name='step-skip'; export async function run(){ return { status: 'SKIP', steps: [{ name: 'inner', status: 'SKIP', reason: 'missing device' }] }; }\n");
 
-            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), skipFile, stepSkipFile], {
+            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), skipFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2064,7 +2073,7 @@ describe("test level runner", () => {
             expect(defaultResult.stdout).not.toContain("strictSkipFailures");
             expect(defaultResult.stdout).not.toContain("strictCoverageFailures");
 
-            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--compact", "--fail-on-skip", skipFile, stepSkipFile], {
+            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--compact", "--fail-on-skip", skipFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2093,7 +2102,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--json-summary-file", summaryFile, skippedFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, skippedFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2131,7 +2140,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), scriptedButUncalledFile], {
+            const defaultResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), scriptedButUncalledFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2139,7 +2148,7 @@ describe("test level runner", () => {
             expect(defaultResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false");
             expect(defaultResult.stdout).not.toContain("strictCoverageFailures");
 
-            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-coverage-gap", scriptedButUncalledFile], {
+            const strictResult = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", scriptedButUncalledFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2167,7 +2176,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2211,7 +2220,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2259,7 +2268,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2302,7 +2311,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-coverage-gap", "--json-summary-file", summaryFile, facetFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", "--json-summary-file", summaryFile, facetFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2337,7 +2346,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2362,7 +2371,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2387,7 +2396,7 @@ describe("test level runner", () => {
                 "",
             ].join("\n"));
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-coverage-gap", outcomeFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-coverage-gap", outcomeFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2424,7 +2433,7 @@ describe("test level runner", () => {
             ].join("\n"));
             writeFileSync(stepSkipFile, "export const name='step-skip'; export async function run(){ return { status: 'SKIP', steps: [{ name: 'inner', status: 'SKIP', reason: 'missing adb', detail: 'backend=android-device' }] }; }\n");
 
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.mjs"), "--fail-on-skip", "--json-summary", "--json-summary-file", summaryFile, passFile, stepSkipFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "run.ts"), "--fail-on-skip", "--json-summary", "--json-summary-file", summaryFile, passFile, stepSkipFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
@@ -2669,7 +2678,7 @@ describe("test level runner", () => {
                     { test: "broker", step: "rpc", status: "FAIL", reason: "owner rejected" },
                 ],
             }));
-            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "summarize-json.mjs"), summaryFile], {
+            const result = spawnSync(process.execPath, [join(repoRoot, "scripts", "real-tests", "summarize-json.ts"), summaryFile], {
                 cwd: repoRoot,
                 encoding: "utf-8",
             });
