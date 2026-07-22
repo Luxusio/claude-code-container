@@ -570,6 +570,8 @@ describe("Hyper-V provider adapter", () => {
         expect(elevated).toContain("$ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks");
         expect(elevated).toContain("-not $OperationCompleted");
         expect(elevated).toContain("$ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks");
+        expect(elevated).toContain("$Child.WaitForExit(5000)");
+        expect(elevated).toContain("hyper-v-network-elevated-child-termination-unconfirmed");
         expect(elevated).toContain("S-1-5-32-544");
         expect(elevated).toContain("hyper-v-network-pipe-handshake-timeout");
         const elevatedInnerEncoded = elevated.match(/\$InnerEncodedTemplate = '([^']+)'/)?.[1];

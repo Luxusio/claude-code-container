@@ -5,6 +5,15 @@ import * as childProcess from 'child_process'
 import * as fs from 'fs'
 import * as utils from '../utils.js'
 
+const remoteSessionMocks = vi.hoisted(() => ({
+  createSessionLock: vi.fn(() => '/locks/remote.lock'),
+  hasOtherActiveSessions: vi.fn(() => false),
+  removeSessionLock: vi.fn(),
+  withContainerLifecycleLock: vi.fn((_prefix: string, operation: () => unknown) => operation()),
+}))
+
+vi.mock('../session.js', () => remoteSessionMocks)
+
 vi.mock('child_process', async () => {
   const actual = await vi.importActual<typeof childProcess>('child_process')
   return {
@@ -87,6 +96,9 @@ describe('checkTool helper (via checkTailscale/checkMutagen)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    remoteSessionMocks.createSessionLock.mockReturnValue('/locks/remote.lock')
+    remoteSessionMocks.hasOtherActiveSessions.mockReturnValue(false)
+    remoteSessionMocks.withContainerLifecycleLock.mockImplementation((_prefix: string, operation: () => unknown) => operation())
   })
 
   afterEach(() => {
@@ -1266,6 +1278,24 @@ describe('remoteExec', () => {
       (c) => c[0] === 'ssh' && Array.isArray(c[1]) && c[1].some((a: string) => a.includes('docker stop'))
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
+    expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(2)
+    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
+  })
+
+  it('keeps the remote container and sync running while another remote session is active', async () => {
+    setupSuccessfulSpawnSyncs()
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'myhost', user: 'myuser', remotePath: '' }) as any)
+    mockSpawn.mockReturnValue(makeSpawnMock(0) as any)
+    mockPrompt.mockResolvedValue('y')
+    remoteSessionMocks.hasOtherActiveSessions.mockReturnValue(true)
+    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+
+    await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
+
+    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'mutagen' && (call[1] as string[])[1] === 'pause')).toBe(false)
+    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker stop')))).toBe(false)
+    expect(console.log).toHaveBeenCalledWith('Remote container remains running: another CCC remote session is active.')
   })
 
   it('does not pause/stop when user says no on exit', async () => {

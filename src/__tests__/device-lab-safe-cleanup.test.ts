@@ -57,4 +57,31 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(readFileSync(join(external, "victim.txt"), "utf8")).toBe("preserved");
         expect(readFileSync(join(displaced, "artifact.txt"), "utf8")).toBe("artifact");
     });
+
+    it("refuses to delete a real directory substituted immediately before rename", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-real-race-"));
+        roots.push(root);
+        const target = join(root, "device");
+        const displaced = join(root, "displaced");
+        mkdirSync(target);
+        writeFileSync(join(target, "owned.txt"), "owned");
+        let caught: QuarantinedCleanupError | null = null;
+        try {
+            quarantineAndRemoveDirectory(target, () => {}, {
+                rename(source, destination) {
+                    renameSync(source, displaced);
+                    mkdirSync(source);
+                    writeFileSync(join(source, "foreign.txt"), "preserved");
+                    renameSync(source, destination);
+                },
+            });
+        } catch (error) {
+            caught = error as QuarantinedCleanupError;
+        }
+
+        expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
+        expect(caught?.quarantineRoot).toBeTruthy();
+        expect(readFileSync(join(caught!.quarantineRoot!, "foreign.txt"), "utf8")).toBe("preserved");
+        expect(readFileSync(join(displaced, "owned.txt"), "utf8")).toBe("owned");
+    });
 });

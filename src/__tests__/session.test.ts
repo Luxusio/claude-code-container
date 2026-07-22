@@ -398,6 +398,25 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
+        it.each([
+            JSON.stringify({ pid: 4242 }),
+            JSON.stringify({ version: 2, pid: "4242", startToken: "linux:start" }),
+            JSON.stringify({ version: 2, pid: 4242 }),
+            JSON.stringify({ version: 2, pid: 4242, startToken: "" }),
+        ])("preserves malformed JSON ownership records (%s)", (content) => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--corrupt.lock"]);
+            mockReadFileSync.mockReturnValue(content);
+            vi.spyOn(process, "kill").mockImplementation(() => {
+                const error = new Error("missing") as NodeJS.ErrnoException;
+                error.code = "ESRCH";
+                throw error;
+            });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--corrupt.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
         it("removes a Windows lock when EPERM liveness belongs to a reused PID", () => {
             vi.spyOn(process, "platform", "get").mockReturnValue("win32");
             mockExistsSync.mockReturnValue(true);

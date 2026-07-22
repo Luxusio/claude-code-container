@@ -1275,7 +1275,7 @@ export function startProjectContainer(
                     return containerName;
                 }
             } else {
-                recreateContainer(containerName, "missing tool credential / git mounts", onRecreate);
+                recreateContainerWithSessionGuard(containerName, "missing tool credential / git mounts", onRecreate, undefined);
             }
         } else if (debug) {
             console.error(`[ccc:debug] Container ${containerName} has all required mounts`);
@@ -1299,7 +1299,7 @@ export function startProjectContainer(
                         throw new Error("Device-lab mount source changed during validation; preserving the active session without joining it.");
                     }
                 } else {
-                    recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                    recreateContainerWithSessionGuard(containerName, "device-lab mount source identity changed", onRecreate, undefined);
                 }
             } else {
                 syncManagedMcpBundles(containerName);
@@ -1316,7 +1316,7 @@ export function startProjectContainer(
                         throw new Error("Device-lab mount source changed during synchronization; preserving the active session without joining it.");
                     }
                 } else {
-                    recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                    recreateContainerWithSessionGuard(containerName, "device-lab mount source identity changed", onRecreate, undefined);
                 }
             }
         } else {
@@ -1331,7 +1331,7 @@ export function startProjectContainer(
                     throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
                 }
             } else {
-                recreateContainer(containerName, "container exec failed", onRecreate);
+                recreateContainerWithSessionGuard(containerName, "container exec failed", onRecreate, undefined);
             }
         }
     }

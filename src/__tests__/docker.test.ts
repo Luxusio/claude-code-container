@@ -1023,6 +1023,23 @@ describe("docker.ts module exports", () => {
         const projectPath = "/home/user/my-project";
         const ensureDirs = vi.fn();
 
+        function startWithApprovedReplacement(
+            extraMounts?: Array<{ hostPath: string; containerPath: string }>,
+        ): string {
+            return startProjectContainer(
+                projectPath,
+                ensureDirs,
+                extraMounts,
+                undefined,
+                undefined,
+                undefined,
+                (replace: () => void) => {
+                    replace();
+                    return true;
+                },
+            );
+        }
+
         function expectNoContainerReplacement(): void {
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
@@ -1101,13 +1118,30 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))                // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                    // docker run
 
-            const name = startProjectContainer(projectPath, ensureDirs);
+            const name = startWithApprovedReplacement();
             expect(name).toMatch(/^ccc-/);
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
+        });
+
+        it("refuses contract-drift replacement when the caller omits the session guard", () => {
+            mockExistsSync.mockReturnValue(false);
+            const driftMountsJson = JSON.stringify([
+                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
+            ]);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, driftMountsJson));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                "Container replacement requires a lifecycle/session guard.",
+            );
+            expectNoContainerReplacement();
         });
 
         it("preserves a running container with contract drift while another CCC session is active", () => {
@@ -1502,7 +1536,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValue(makeResult(0));
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
@@ -1529,7 +1563,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValue(makeResult(0));
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
         });
@@ -1552,7 +1586,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValue(makeResult(0));
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
         });
@@ -1574,7 +1608,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValue(makeResult(0));
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
         });
@@ -1739,7 +1773,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValue(makeResult(0));
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
@@ -2061,7 +2095,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                  // docker run
 
-            const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
+            const name = startWithApprovedReplacement(extraMounts);
             expect(name).toMatch(/^ccc-/);
 
             const stopCall = spawnSyncMock.mock.calls.find(
@@ -2091,7 +2125,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2121,7 +2155,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2155,7 +2189,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2193,7 +2227,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2222,7 +2256,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2252,7 +2286,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2287,7 +2321,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2321,7 +2355,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2351,7 +2385,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                 // docker run
 
-            startProjectContainer(projectPath, ensureDirs);
+            startWithApprovedReplacement();
 
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
@@ -2439,7 +2473,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                  // docker run
 
-            const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
+            const name = startWithApprovedReplacement(extraMounts);
             expect(name).toMatch(/^ccc-/);
         });
 
@@ -2459,7 +2493,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0));                  // docker run
 
-            const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
+            const name = startWithApprovedReplacement(extraMounts);
             expect(name).toMatch(/^ccc-/);
         });
     });

@@ -130,10 +130,10 @@ function sessionLockRecord(content: string): { pid: number; startToken?: string 
     try {
         const parsed = JSON.parse(content) as unknown;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const record = parsed as { pid?: unknown; startToken?: unknown };
-            const pid = Number(record.pid);
-            if (!Number.isInteger(pid) || pid <= 0) return null;
-            return { pid, ...(typeof record.startToken === "string" ? { startToken: record.startToken } : {}) };
+            const record = parsed as { version?: unknown; pid?: unknown; startToken?: unknown };
+            if (record.version !== 2 || !Number.isSafeInteger(record.pid) || Number(record.pid) <= 0
+                || typeof record.startToken !== "string" || record.startToken.length === 0 || record.startToken.length > 256) return null;
+            return { pid: Number(record.pid), startToken: record.startToken };
         }
     } catch {
         // Legacy lock files contain only the decimal PID.

@@ -474,6 +474,7 @@ function elevatedNetworkCommand(executable: string, networkScript: string, deadl
         "  if ($Wait) { $Wait.AsyncWaitHandle.Dispose() }",
         "  if ($Pipe) { $Pipe.Dispose() }",
         "  if (-not $OperationCompleted -and $Child -and $ChildStartTicks) { $ObservedChild = Get-Process -Id $Child.Id -ErrorAction SilentlyContinue; if ($ObservedChild -and $ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks) { Stop-Process -Id $Child.Id -Force -ErrorAction SilentlyContinue } }",
+        "  if (-not $OperationCompleted -and $Child) { try { if (-not $Child.WaitForExit(5000)) { throw 'hyper-v-network-elevated-child-termination-unconfirmed' } } catch { if ([string]$_.Exception.Message -eq 'hyper-v-network-elevated-child-termination-unconfirmed') { throw } } }",
         "}",
     ].join("\n");
     return command(executable, outerScript);

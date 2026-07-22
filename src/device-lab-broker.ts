@@ -88,6 +88,7 @@ function assertHyperVOperationDeadline(deadlineAt: number): void {
     if (Number.isFinite(deadlineAt) && Date.now() >= deadlineAt) throw new HyperVOperationDeadlineError();
 }
 const DEVICE_BROKER_BOUNDED_WAIT_TOOLS = new Set(["mobile_wait_for_text", "mobile_wait_for_app"]);
+const HYPER_V_ELEVATED_TERMINATION_GRACE_MS = 10_000;
 const DEVICE_BROKER_APPIUM_READY_TIMEOUT_MS = 60000;
 const DEVICE_BROKER_APPIUM_SESSION_TIMEOUT_MS = 240000;
 const DEVICE_BROKER_APPIUM_FETCH_MAX_TIMEOUT_MS = 300000;
@@ -8323,7 +8324,7 @@ async function runHyperVNetworkCommandWithElevation(
     });
     if (!commandSucceeded(execution) && hyperVNetworkElevationRequired(execution)) {
         const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
-        const elevatedDeadlineUnixMs = Date.now() + timeoutMs;
+        const elevatedDeadlineUnixMs = Date.now() + Math.max(1, timeoutMs - HYPER_V_ELEVATED_TERMINATION_GRACE_MS);
         execution = await hyperVProviderCommandRunner(normalized, elevated(elevatedDeadlineUnixMs), {
             timeoutMs,
             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,

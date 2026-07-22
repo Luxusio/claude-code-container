@@ -5,6 +5,7 @@ import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
 import {hashPath, getProjectId, getClaudeDir, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME, collectForwardedEnv, isValidEnvKey} from "./utils.js";
 import {getContainerName} from "./docker.js";
+import {createSessionLock, hasOtherActiveSessions, removeSessionLock, withContainerLifecycleLock} from "./session.js";
 
 // === Types ===
 
@@ -328,25 +329,35 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         process.exit(1);
     }
 
+    if (!config) {
+        throw new Error("Remote configuration could not be resolved");
+    }
+    const resolvedConfig = config;
+    const remoteContainerPrefix = `remote--${hashPath(`${resolvedConfig.user}@${resolvedConfig.host}`)}--${projectId}`;
+    let remoteSessionLock = createSessionLock(remoteContainerPrefix);
+
     try {
         // 1. Ensure ccc image exists on remote
-        await ensureRemoteImage(config);
+        await ensureRemoteImage(resolvedConfig);
 
         // 2. Start container on remote (without project volume mount)
         console.log("Starting remote container...");
-        const containerName = await startRemoteContainer(config, fullPath);
+        const containerName = await withContainerLifecycleLock(
+            remoteContainerPrefix,
+            () => startRemoteContainer(resolvedConfig, fullPath),
+        );
 
         // 3. Create project directory in container
-        await createContainerProjectDir(config, containerName, projectId);
+        await createContainerProjectDir(resolvedConfig, containerName, projectId);
 
         // 4. Ensure mutagen sync to container is running
-        const sessionName = await ensureSync(fullPath, config, containerName);
+        const sessionName = await ensureSync(fullPath, resolvedConfig, containerName);
 
         // 5. Wait for initial sync
         await waitForSync(sessionName);
 
         // 6. Run claude via docker exec
-        console.log(`Connecting to ${config.host}...`);
+        console.log(`Connecting to ${resolvedConfig.host}...`);
 
         const claudeArgs = args.length > 0 ? args.map(shellEscapeArg).join(" ") : "--dangerously-skip-permissions";
 
@@ -368,7 +379,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
         const execCmd = `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y || true; claude ${claudeArgs}"`;
 
-        const sshProcess = spawn("ssh", ["-t", `${config.user}@${config.host}`, execCmd], {
+        const sshProcess = spawn("ssh", ["-t", `${resolvedConfig.user}@${resolvedConfig.host}`, execCmd], {
             stdio: "inherit"
         });
 
@@ -387,10 +398,18 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         if (exitCode === 0) {
             const answer = await prompt("\nStop container and pause sync? [y/N]: ", true);
             if (answer === "y" || answer === "yes") {
-                console.log("Pausing sync...");
-                spawnSync("mutagen", ["sync", "pause", sessionName], {stdio: "inherit"});
-                console.log("Stopping container...");
-                spawnSync("ssh", [`${config.user}@${config.host}`, `docker stop ${containerName}`], {stdio: "inherit"});
+                withContainerLifecycleLock(remoteContainerPrefix, () => {
+                    removeSessionLock(remoteSessionLock);
+                    if (hasOtherActiveSessions(remoteContainerPrefix, remoteSessionLock)) {
+                        console.log("Remote container remains running: another CCC remote session is active.");
+                        return;
+                    }
+                    console.log("Pausing sync...");
+                    spawnSync("mutagen", ["sync", "pause", sessionName], {stdio: "inherit"});
+                    console.log("Stopping container...");
+                    spawnSync("ssh", [`${resolvedConfig.user}@${resolvedConfig.host}`, `docker stop ${containerName}`], {stdio: "inherit"});
+                });
+                remoteSessionLock = "";
             }
         }
 
@@ -398,6 +417,8 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : err}`);
         process.exit(1);
+    } finally {
+        if (remoteSessionLock) removeSessionLock(remoteSessionLock);
     }
 }
 
