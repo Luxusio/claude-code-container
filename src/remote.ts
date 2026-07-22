@@ -79,27 +79,35 @@ export function getMutagenSessionName(projectPath: string): string {
 
 // === Remote Container Functions ===
 
-function remoteLifecycleShell(containerName: string, body: string): string {
+export function remoteLifecycleShell(containerName: string, body: string): string {
     const key = hashPath(containerName);
     const token = randomBytes(16).toString("hex");
     return [
         "set -eu",
-        `_ccc_lock=/tmp/ccc-remote-lifecycle-${key}.lock`,
+        "umask 077",
         `_ccc_token=${token}`,
+        "_ccc_base=$HOME/.ccc",
+        "if [ -e \"$_ccc_base\" ]; then [ -d \"$_ccc_base\" ] && [ ! -L \"$_ccc_base\" ] && [ -O \"$_ccc_base\" ] || exit 74; else mkdir \"$_ccc_base\"; fi",
+        "_ccc_runtime=$_ccc_base/remote-runtime",
+        "if [ -e \"$_ccc_runtime\" ]; then [ -d \"$_ccc_runtime\" ] && [ ! -L \"$_ccc_runtime\" ] && [ -O \"$_ccc_runtime\" ] || exit 74; else mkdir \"$_ccc_runtime\"; fi",
+        "chmod 700 \"$_ccc_runtime\"",
+        `_ccc_lock=$_ccc_runtime/lifecycle-${key}.lock`,
+        `_ccc_candidate=$_ccc_runtime/.lifecycle-${key}.$$.${token}`,
+        "printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_candidate\"",
         "_ccc_attempt=0",
-        "until mkdir \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || exit 73; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock/owner\" 2>/dev/null || true; rmdir \"$_ccc_lock\" 2>/dev/null || true ;; esac; else rmdir \"$_ccc_lock\" 2>/dev/null || true; fi; sleep 0.1; done",
-        "printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_lock/owner\"",
-        "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock/owner\"; rmdir \"$_ccc_lock\" 2>/dev/null || true; fi; }",
+        "until ln \"$_ccc_candidate\" \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || { rm -f \"$_ccc_candidate\"; exit 73; }; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock\" 2>/dev/null || true ;; esac; fi; sleep 0.1; done",
+        "rm -f \"$_ccc_candidate\"",
+        "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; rm -f \"$_ccc_candidate\" 2>/dev/null || true; }",
         "trap _ccc_unlock EXIT HUP INT TERM",
         body,
     ].join("; ");
 }
 
-function remoteSessionReservationShell(containerName: string, token: string, leaseSeconds: number, command: string): string {
+export function remoteSessionReservationShell(containerName: string, token: string, leaseSeconds: number, command: string): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
-        `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
-        "mkdir -p \"$_ccc_sessions\"",
+        `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
+        "if [ -e \"$_ccc_sessions\" ]; then [ -d \"$_ccc_sessions\" ] && [ ! -L \"$_ccc_sessions\" ] && [ -O \"$_ccc_sessions\" ] || exit 74; else mkdir \"$_ccc_sessions\"; fi",
         "chmod 700 \"$_ccc_sessions\"",
         `_ccc_marker=$_ccc_sessions/${token}`,
         "_ccc_now=$(date +%s)",
@@ -111,7 +119,7 @@ function remoteSessionReservationShell(containerName: string, token: string, lea
 function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
-        `_ccc_marker=/tmp/ccc-remote-sessions-${key}/${token}`,
+        `_ccc_marker=$_ccc_runtime/sessions-${key}/${token}`,
         `[ -f "$_ccc_marker" ] || exit 44`,
         "_ccc_now=$(date +%s)",
         `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
@@ -120,13 +128,13 @@ function remoteRefreshSessionShell(containerName: string, token: string, leaseSe
 
 function remoteReleaseSessionShell(containerName: string, token: string): string {
     const key = hashPath(containerName);
-    return remoteLifecycleShell(containerName, `rm -f /tmp/ccc-remote-sessions-${key}/${token}`);
+    return remoteLifecycleShell(containerName, `rm -f \"$_ccc_runtime/sessions-${key}/${token}\"`);
 }
 
 function remoteStopShell(containerName: string, ownToken: string): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
-        `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
+        `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
         `rm -f "$_ccc_sessions/${ownToken}"`,
         "_ccc_now=$(date +%s)",
         "_ccc_active=0",

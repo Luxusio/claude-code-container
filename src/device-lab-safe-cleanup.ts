@@ -7,6 +7,8 @@ type QuarantineCleanupOperations = {
     rename?: typeof renameSync;
     beforeRemove?: (quarantineRoot: string) => void;
     beforeRemoveEntry?: (entry: string) => void;
+    beforeDeleteEntry?: (entry: string) => void;
+    beforeDeleteRoot?: (root: string) => void;
 };
 
 function sameEntryIdentity(original: Stats, quarantined: Stats): boolean {
@@ -29,6 +31,8 @@ function removeBoundDirectory(
     expected: Stats,
     beforeRemove?: (path: string) => void,
     beforeRemoveEntry?: (entry: string) => void,
+    beforeDeleteEntry?: (entry: string) => void,
+    beforeDeleteRoot?: (root: string) => void,
 ): void {
     let descriptor: number | null = null;
     try {
@@ -61,8 +65,12 @@ function removeBoundDirectory(
             if (!sameEntryIdentity(childStats, stagedStats)) {
                 throw new Error("quarantined-cleanup-target-invalid");
             }
+            beforeDeleteEntry?.(stagedChild);
+            assertBound();
+            const deleteStats = lstatSync(stagedChild);
+            if (!sameEntryIdentity(stagedStats, deleteStats)) throw new Error("quarantined-cleanup-target-invalid");
             if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(stagedChild);
-            else removeBoundDirectory(stagedChild, stagedStats);
+            else removeBoundDirectory(stagedChild, deleteStats, undefined, undefined, beforeDeleteEntry, beforeDeleteRoot);
         }
         assertBound();
     } finally {
@@ -72,6 +80,9 @@ function removeBoundDirectory(
     renameSync(path, emptyPath);
     const emptyStats = lstatSync(emptyPath);
     if (!sameDirectoryIdentity(expected, emptyStats)) throw new Error("quarantined-cleanup-target-invalid");
+    beforeDeleteRoot?.(emptyPath);
+    const deleteStats = lstatSync(emptyPath);
+    if (!sameDirectoryIdentity(emptyStats, deleteStats)) throw new Error("quarantined-cleanup-target-invalid");
     rmdirSync(emptyPath);
 }
 
@@ -94,7 +105,14 @@ export function quarantineAndRemoveDirectory(
         if (!quarantined.isDirectory() || quarantined.isSymbolicLink() || !sameDirectoryIdentity(original, quarantined)) {
             throw new Error("quarantined-cleanup-target-invalid");
         }
-        removeBoundDirectory(quarantineRoot, quarantined, operations.beforeRemove, operations.beforeRemoveEntry);
+        removeBoundDirectory(
+            quarantineRoot,
+            quarantined,
+            operations.beforeRemove,
+            operations.beforeRemoveEntry,
+            operations.beforeDeleteEntry,
+            operations.beforeDeleteRoot,
+        );
         if (existsSync(quarantineRoot)) throw new Error("quarantined-cleanup-target-remains");
         rmdirSync(quarantineParent);
         return { quarantineRoot };

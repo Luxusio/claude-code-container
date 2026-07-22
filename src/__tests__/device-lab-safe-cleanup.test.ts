@@ -136,4 +136,55 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(staged).toBeTruthy();
         expect(readFileSync(join(caught!.quarantineRoot!, staged!), "utf8")).toBe("foreign");
     });
+
+    it("preserves a child substituted immediately before deletion", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-delete-race-"));
+        roots.push(root);
+        const target = join(root, "device");
+        const displaced = join(root, "owned.txt");
+        mkdirSync(target);
+        writeFileSync(join(target, "artifact.txt"), "owned");
+        let foreignName = "";
+        let caught: QuarantinedCleanupError | null = null;
+        try {
+            quarantineAndRemoveDirectory(target, () => {}, {
+                beforeDeleteEntry(entry) {
+                    foreignName = basename(entry);
+                    renameSync(entry, displaced);
+                    writeFileSync(entry, "foreign");
+                },
+            });
+        } catch (error) {
+            caught = error as QuarantinedCleanupError;
+        }
+
+        expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
+        expect(readFileSync(displaced, "utf8")).toBe("owned");
+        expect(readFileSync(join(caught!.quarantineRoot!, foreignName), "utf8")).toBe("foreign");
+    });
+
+    it("preserves an empty directory substituted immediately before deletion", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-root-delete-race-"));
+        roots.push(root);
+        const target = join(root, "device");
+        const displaced = join(root, "owned-empty");
+        mkdirSync(target);
+        let foreign = "";
+        let caught: QuarantinedCleanupError | null = null;
+        try {
+            quarantineAndRemoveDirectory(target, () => {}, {
+                beforeDeleteRoot(entry) {
+                    foreign = entry;
+                    renameSync(entry, displaced);
+                    mkdirSync(entry);
+                },
+            });
+        } catch (error) {
+            caught = error as QuarantinedCleanupError;
+        }
+
+        expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
+        expect(existsSync(displaced)).toBe(true);
+        expect(existsSync(foreign)).toBe(true);
+    });
 });

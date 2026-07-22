@@ -1171,7 +1171,7 @@ describe('remoteExec', () => {
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
     expect(exitMock).toHaveBeenCalledWith(1)
     expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh'
-      && (call[1] as string[]).some((arg) => arg.includes('rm -f /tmp/ccc-remote-sessions-')))).toBe(true)
+      && (call[1] as string[]).some((arg) => arg.includes('rm -f \"$_ccc_runtime/sessions-')))).toBe(true)
   })
 
   it('resumes paused sync session when it exists as paused', async () => {
@@ -1283,7 +1283,7 @@ describe('remoteExec', () => {
       (c) => c[0] === 'ssh' && Array.isArray(c[1]) && c[1].some((a: string) => a.includes('docker stop'))
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
-    expect(sshStopCalls[0][1][1]).toContain('/tmp/ccc-remote-lifecycle-')
+    expect(sshStopCalls[0][1][1]).toContain('$_ccc_runtime/lifecycle-')
     expect(sshStopCalls[0][1][1]).toContain('_ccc_expiry')
     expect(sshStopCalls[0][1][1]).toContain('date +%s')
     expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(1)
@@ -1493,11 +1493,13 @@ describe('remoteExec', () => {
     const startCall = mockSpawnSync.mock.calls.find((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker run -d')))
     expect(startCall).toBeTruthy()
     const startCommand = (startCall![1] as string[])[1]
-    expect(startCommand).toContain('/tmp/ccc-remote-lifecycle-')
-    expect(startCommand).toContain('/tmp/ccc-remote-sessions-')
+    expect(startCommand).toContain('$HOME/.ccc')
+    expect(startCommand).toContain('remote-runtime')
+    expect(startCommand).toContain('ln \"$_ccc_candidate\" \"$_ccc_lock\"')
+    expect(startCommand).not.toContain('/tmp/ccc-remote-')
     expect(startCommand).toContain('chmod 700')
     expect(startCommand).toContain('_ccc_owner_token')
     expect(startCommand).toContain('_ccc_now=$(date +%s)')
-    expect(startCommand.indexOf('/tmp/ccc-remote-sessions-')).toBeLessThan(startCommand.indexOf('docker run -d'))
+    expect(startCommand.indexOf('sessions-')).toBeLessThan(startCommand.indexOf('docker run -d'))
   })
 })
