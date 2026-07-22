@@ -15,6 +15,7 @@ import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from 
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
 import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
+import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "./device-lab-safe-cleanup.js";
 import { HYPER_V_IMAGE_CATALOG, readHyperVWindowsEvaluationReceipt } from "./device-lab/hyper-v-images.js";
 import { hyperVAcquireBaseImageCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVDeleteObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
@@ -918,32 +919,25 @@ function cleanupHyperVDeviceArtifacts(ownerId: string, backend: string, deviceId
     if (!isHyperVBackend(backend)) return { ok: false, removed: false, deviceRoot: "", error: "hyper-v-backend-invalid" };
     const backendRoot = join(brokerPrivateRoot(), "owners", ownerId, backend);
     const privateRoot = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
-    const quarantineRoot = join(backendRoot, `.${deviceId}.${randomBytes(16).toString("hex")}.cleanup`);
-    let quarantined = false;
     try {
         if (!existsSync(privateRoot)) return { ok: true, removed: false, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
         assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
         assertNoSymlinkPathComponents(privateRoot, "hyper-v-device-artifacts");
         assertDeviceLabPathWithinRoot(backendRoot, privateRoot, "hyper-v-device-artifacts");
-        assertDeviceLabPathWithinRoot(backendRoot, quarantineRoot, "hyper-v-device-artifacts");
-        const stat = lstatSync(privateRoot);
-        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hyper-v-device-artifacts-invalid");
-        renameSync(privateRoot, quarantineRoot);
-        quarantined = true;
-        assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
-        assertNoSymlinkPathComponents(quarantineRoot, "hyper-v-device-artifacts");
-        const quarantinedStat = lstatSync(quarantineRoot);
-        if (!quarantinedStat.isDirectory() || quarantinedStat.isSymbolicLink()) throw new Error("hyper-v-device-artifacts-invalid");
-        rmSync(quarantineRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-        if (existsSync(quarantineRoot)) throw new Error("hyper-v-device-artifacts-remain");
+        quarantineAndRemoveDirectory(privateRoot, (candidate) => {
+            assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
+            assertNoSymlinkPathComponents(candidate, "hyper-v-device-artifacts");
+            assertDeviceLabPathWithinRoot(backendRoot, candidate, "hyper-v-device-artifacts");
+        });
         return { ok: true, removed: true, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
     } catch (error) {
+        const quarantineRoot = (error as QuarantinedCleanupError).quarantineRoot;
         return {
             ok: false,
             removed: false,
             deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId),
             privateRoot,
-            ...(quarantined ? { quarantineRoot } : {}),
+            ...(quarantineRoot ? { quarantineRoot } : {}),
             error: error instanceof Error ? error.message : String(error),
         };
     }
@@ -8320,7 +8314,7 @@ function hyperVNetworkElevationRequired(result: ProviderCommandResult): boolean 
 async function runHyperVNetworkCommandWithElevation(
     normalized: NormalizedBrokerOptions,
     standard: ProviderCommand,
-    elevated: ProviderCommand,
+    elevated: (deadlineUnixMs: number) => ProviderCommand,
     deadlineAt: number,
 ): Promise<ProviderCommandResult> {
     let execution = await hyperVProviderCommandRunner(normalized, standard, {
@@ -8328,8 +8322,10 @@ async function runHyperVNetworkCommandWithElevation(
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
     });
     if (!commandSucceeded(execution) && hyperVNetworkElevationRequired(execution)) {
-        execution = await hyperVProviderCommandRunner(normalized, elevated, {
-            timeoutMs: hyperVRemainingTimeout(deadlineAt, 180000),
+        const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
+        const elevatedDeadlineUnixMs = Date.now() + timeoutMs;
+        execution = await hyperVProviderCommandRunner(normalized, elevated(elevatedDeadlineUnixMs), {
+            timeoutMs,
             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         });
     }
@@ -8377,7 +8373,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
     const execution = await runHyperVNetworkCommandWithElevation(
         normalized,
         hyperVEnsureNetworkCommand(networkOptions),
-        hyperVEnsureNetworkCommand({ ...networkOptions, elevated: true }),
+        (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({ ...networkOptions, elevated: true, elevatedDeadlineUnixMs }),
         deadlineAt,
     );
     assertHyperVOperationDeadline(deadlineAt);
@@ -8445,7 +8441,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
                 const cleanupExecution = await runHyperVNetworkCommandWithElevation(
                     normalized,
                     hyperVCleanupNetworkCommand(cleanupOptions),
-                    hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true }),
+                    (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true, elevatedDeadlineUnixMs }),
                     deadlineAt,
                 );
                 if (!commandSucceeded(cleanupExecution)) {
@@ -8510,7 +8506,7 @@ async function releaseHyperVNetworkAllocationAndCleanup(ownerId: string, deviceI
     const execution = await runHyperVNetworkCommandWithElevation(
         normalized,
         hyperVCleanupNetworkCommand(cleanupOptions),
-        hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true }),
+        (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true, elevatedDeadlineUnixMs }),
         deadlineAt,
     );
     if (!commandSucceeded(execution)) return { ...release, ok: false, error: execution.stderr || execution.error || "hyper-v-network-cleanup-failed", networkCleanup: execution };

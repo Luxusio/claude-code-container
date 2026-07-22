@@ -264,6 +264,7 @@ type HyperVNetworkOptions = {
     expectedSwitchId?: string;
     expectedNatInstanceId?: string;
     elevated?: boolean;
+    elevatedDeadlineUnixMs?: number;
 };
 
 type HyperVNetworkCleanupOptions = HyperVNetworkOptions & {
@@ -381,12 +382,14 @@ function command(executable: string, script: string, input?: string): HyperVProv
     };
 }
 
-function elevatedNetworkCommand(executable: string, networkScript: string): HyperVProviderCommand {
+function elevatedNetworkCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
+    if (!Number.isSafeInteger(deadlineUnixMs) || deadlineUnixMs <= 0) throw new Error("hyper-v-network-deadline-invalid");
     const programEncoded = Buffer.from(networkScript, "utf8").toString("base64");
     const innerScript = [
         "$ErrorActionPreference = 'Stop'",
         "$PipeName = '__CCC_HYPER_V_NETWORK_PIPE_NAME__'",
         `$ProgramEncoded = ${psQuote(programEncoded)}`,
+        `$DeadlineUnixMs = [long]${deadlineUnixMs}`,
         "$Envelope = $null",
         "$Watchdog = $null",
         "$WatchdogStartTicks = $null",
@@ -395,11 +398,15 @@ function elevatedNetworkCommand(executable: string, networkScript: string): Hype
         "$Pipe.Connect(5000)",
         "$Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false))",
         "try {",
+        "  $RemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
+        "  if ($RemainingMs -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }",
         "  $SelfStartTicks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().Ticks",
-        "  $WatchdogSource = \"Start-Sleep -Seconds 150; `$Target = Get-Process -Id $PID -ErrorAction SilentlyContinue; if (`$Target -and `$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks) { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }\"",
+        "  $WatchdogDelayMs = [int][Math]::Min([long][int]::MaxValue, [Math]::Max([long]1, $RemainingMs))",
+        "  $WatchdogSource = \"Start-Sleep -Milliseconds $WatchdogDelayMs; `$Target = Get-Process -Id $PID -ErrorAction SilentlyContinue; if (`$Target -and `$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks) { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }\"",
         "  $WatchdogEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($WatchdogSource))",
         "  $Watchdog = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-EncodedCommand',$WatchdogEncoded) -WindowStyle Hidden -PassThru -ErrorAction Stop",
         "  $WatchdogStartTicks = $Watchdog.StartTime.ToUniversalTime().Ticks",
+        "  if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge $DeadlineUnixMs) { throw 'hyper-v-network-operation-deadline-exceeded' }",
         "  $Program = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ProgramEncoded))",
         "  $Output = @(& ([ScriptBlock]::Create($Program)))",
         "  $OutputText = ($Output | Out-String -Width 4096).Trim()",
@@ -420,6 +427,7 @@ function elevatedNetworkCommand(executable: string, networkScript: string): Hype
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
         `$Executable = ${psQuote(executable)}`,
+        `$DeadlineUnixMs = [long]${deadlineUnixMs}`,
         `$InnerEncodedTemplate = ${psQuote(innerEncoded)}`,
         "$PipeName = 'ccc-hyper-v-network-' + [Guid]::NewGuid().ToString('N')",
         "Add-Type -TypeDefinition @'",
@@ -443,10 +451,13 @@ function elevatedNetworkCommand(executable: string, networkScript: string): Hype
         "$ChildStartTicks = $null",
         "$OperationCompleted = $false",
         "try {",
+        "  $HandshakeRemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
+        "  if ($HandshakeRemainingMs -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }",
         "  $Wait = $Pipe.BeginWaitForConnection($null, $null)",
         "  try { $Child = Start-Process -FilePath $Executable -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$InnerEncoded) -PassThru -ErrorAction Stop } catch { throw 'hyper-v-network-elevation-failed' }",
         "  $ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks",
-        "  if (-not $Wait.AsyncWaitHandle.WaitOne(120000)) { throw 'hyper-v-network-pipe-handshake-timeout' }",
+        "  $HandshakeWaitMs = [int][Math]::Min([long]120000, [Math]::Max([long]1, $HandshakeRemainingMs))",
+        "  if (-not $Wait.AsyncWaitHandle.WaitOne($HandshakeWaitMs)) { throw 'hyper-v-network-pipe-handshake-timeout' }",
         "  $Pipe.EndWaitForConnection($Wait)",
         "  [uint32]$ClientProcessId = 0",
         "  if (-not [CccHyperVNetworkPipeNative]::GetNamedPipeClientProcessId($Pipe.SafePipeHandle.DangerousGetHandle(), [ref]$ClientProcessId) -or $ClientProcessId -ne [uint32]$Child.Id) { throw 'hyper-v-network-pipe-client-mismatch' }",
@@ -821,7 +832,9 @@ export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): Hyper
         "  throw",
         "}",
     ]);
-    return options.elevated ? elevatedNetworkCommand(options.executable, script) : command(options.executable, script);
+    return options.elevated
+        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs))
+        : command(options.executable, script);
 }
 
 export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions): HyperVProviderCommand {
@@ -879,7 +892,9 @@ export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions
         "$Result = [ordered]@{ ok = $true; removedSwitch = $RemovedSwitch; removedNat = $RemovedNat; removedGateway = $RemovedGateway; alreadyMissing = (-not $RemovedSwitch -and -not $RemovedNat -and -not $RemovedGateway) }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ]);
-    return options.elevated ? elevatedNetworkCommand(options.executable, script) : command(options.executable, script);
+    return options.elevated
+        ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs))
+        : command(options.executable, script);
 }
 
 export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProviderCommand {

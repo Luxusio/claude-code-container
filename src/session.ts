@@ -138,8 +138,10 @@ function sessionLockRecord(content: string): { pid: number; startToken?: string 
     } catch {
         // Legacy lock files contain only the decimal PID.
     }
-    const pid = parseInt(content, 10);
-    return Number.isInteger(pid) && pid > 0 ? { pid } : null;
+    const legacy = content.trim();
+    if (!/^[1-9]\d*$/.test(legacy)) return null;
+    const pid = Number(legacy);
+    return Number.isSafeInteger(pid) ? { pid } : null;
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, withWorkspaceRemovalLifecycleLock } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -72,6 +72,39 @@ describe('getContainerName', () => {
     const n1 = getContainerName('/home/user/project')
     const n2 = getContainerName('/home/user/project')
     expect(n1).toBe(n2)
+  })
+})
+
+describe('workspace removal lifecycle lock', () => {
+  it('keeps the final session check and removal in one critical section', () => {
+    let insideLock = false
+    const lifecycleLock = vi.fn((_projectId: string, operation: () => string) => {
+      insideLock = true
+      try { return operation() } finally { insideLock = false }
+    })
+    const activeSessions = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      return []
+    })
+    const removal = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      return 'removed'
+    })
+
+    expect(withWorkspaceRemovalLifecycleLock('project-id', false, removal, lifecycleLock, activeSessions)).toBe('removed')
+    expect(lifecycleLock).toHaveBeenCalledWith('project-id', expect.any(Function))
+    expect(removal).toHaveBeenCalledOnce()
+    expect(insideLock).toBe(false)
+  })
+
+  it('blocks removal when a session appears at the final locked check', () => {
+    const removal = vi.fn()
+    const lifecycleLock = (_projectId: string, operation: () => unknown) => operation()
+    const activeSessions = () => ['new-session.lock']
+
+    expect(() => withWorkspaceRemovalLifecycleLock('project-id', false, removal, lifecycleLock, activeSessions))
+      .toThrow('Workspace has 1 active session(s)')
+    expect(removal).not.toHaveBeenCalled()
   })
 })
 

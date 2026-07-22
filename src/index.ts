@@ -934,6 +934,22 @@ async function prepareWorktree(
     return wsPath;
 }
 
+export function withWorkspaceRemovalLifecycleLock<T>(
+    projectId: string,
+    force: boolean,
+    operation: () => T,
+    lifecycleLock: typeof withContainerLifecycleLock = withContainerLifecycleLock,
+    activeSessions: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
+): T {
+    return lifecycleLock(projectId, () => {
+        const sessions = activeSessions(projectId);
+        if (sessions.length > 0 && !force) {
+            throw new Error(`Workspace has ${sessions.length} active session(s); stop sessions first or use -f to force removal.`);
+        }
+        return operation();
+    });
+}
+
 function handleWorktreeRemove(
     cwd: string,
     branch: string,
@@ -943,13 +959,7 @@ function handleWorktreeRemove(
 
     const wsProjectId = getProjectId(wsPath);
     let removalResult: ReturnType<typeof removeWorkspace> | null = null;
-    withContainerLifecycleLock(wsProjectId, () => {
-        const activeSessions = getActiveSessionsForContainer(wsProjectId);
-        if (activeSessions.length > 0 && !force) {
-            console.error(`Error: Workspace @${branch} has ${activeSessions.length} active session(s).`);
-            console.error("Stop sessions first or use -f to force removal.");
-            process.exit(1);
-        }
+    withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
         try {
             ensureDockerRunning();
             const containerName = getContainerName(wsPath);
@@ -1245,23 +1255,11 @@ async function main(): Promise<void> {
             break;
 
         case "stop":
-            withContainerLifecycleLock(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd), () => {
-                const sessions = getActiveSessionsForContainer(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd));
-                if (sessions.length > 0 && !cmdArgs.includes("--force") && !cmdArgs.includes("-f")) {
-                    throw new Error(`Container has ${sessions.length} active session(s); use --force to stop it.`);
-                }
-                stopProjectContainer(cwd, profile);
-            });
+            stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             break;
 
         case "rm":
-            withContainerLifecycleLock(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd), () => {
-                const sessions = getActiveSessionsForContainer(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd));
-                if (sessions.length > 0 && !cmdArgs.includes("--force") && !cmdArgs.includes("-f")) {
-                    throw new Error(`Container has ${sessions.length} active session(s); use --force to remove it.`);
-                }
-                removeProjectContainer(cwd, profile);
-            });
+            removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             break;
 
         case "status":

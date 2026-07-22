@@ -4,6 +4,7 @@ import { spawnSync } from "child_process";
 import { ensureDockerRunning } from "./docker.js";
 import { runtimeCli } from "./container-runtime.js";
 import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
+import { getActiveSessionsForContainer, withContainerLifecycleLock } from "./session.js";
 
 export interface CleanOptions {
     volumes?: boolean;   // also remove volumes
@@ -154,17 +155,24 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
 
     const cli = runtimeCli();
 
-    // Stop running containers first
-    for (const c of containersToStop) {
-        console.log(`Stopping ${c.name}...`);
-        spawnSync(cli, ["stop", c.name], { stdio: "inherit" });
-    }
-
-    // Remove containers
+    const stopNames = new Set(containersToStop.map((container) => container.name));
     for (const c of containersToRemove) {
-        console.log(`Removing container ${c.name}...`);
-        const r = spawnSync(cli, ["rm", c.name], { stdio: "inherit" });
-        if (r.status === 0) removed++;
+        const containerPrefix = c.name.startsWith("ccc-") ? c.name.slice("ccc-".length) : "";
+        if (!containerPrefix) throw new Error(`Refusing to clean unmanaged container name: ${c.name}`);
+        withContainerLifecycleLock(containerPrefix, () => {
+            const activeSessions = getActiveSessionsForContainer(containerPrefix);
+            if (activeSessions.length > 0) {
+                console.log(`Skipping ${c.name}: ${activeSessions.length} active CCC session(s).`);
+                return;
+            }
+            if (stopNames.has(c.name)) {
+                console.log(`Stopping ${c.name}...`);
+                spawnSync(cli, ["stop", c.name], { stdio: "inherit" });
+            }
+            console.log(`Removing container ${c.name}...`);
+            const r = spawnSync(cli, ["rm", c.name], { stdio: "inherit" });
+            if (r.status === 0) removed++;
+        });
     }
 
     // Remove images

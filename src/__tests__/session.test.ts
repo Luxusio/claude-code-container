@@ -384,6 +384,20 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
+        it("does not accept a numeric-prefix malformed legacy PID lock", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--corrupt.lock"]);
+            mockReadFileSync.mockReturnValue("4242-corrupt");
+            vi.spyOn(process, "kill").mockImplementation(() => {
+                const error = new Error("missing") as NodeJS.ErrnoException;
+                error.code = "ESRCH";
+                throw error;
+            });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--corrupt.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
         it("removes a Windows lock when EPERM liveness belongs to a reused PID", () => {
             vi.spyOn(process, "platform", "get").mockReturnValue("win32");
             mockExistsSync.mockReturnValue(true);

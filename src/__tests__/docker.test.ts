@@ -42,6 +42,13 @@ vi.mock("../device-lab-admin.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
 }));
 
+const mockGetActiveSessionsForContainer = vi.fn<(...args: unknown[]) => string[]>();
+const mockWithContainerLifecycleLock = vi.fn((_: string, operation: () => unknown) => operation());
+vi.mock("../session.js", () => ({
+    getActiveSessionsForContainer: (...args: unknown[]) => mockGetActiveSessionsForContainer(...args),
+    withContainerLifecycleLock: (...args: [string, () => unknown]) => mockWithContainerLifecycleLock(...args),
+}));
+
 // Import AFTER mocks
 const {
     buildDockerRunArgs,
@@ -171,6 +178,8 @@ describe("docker.ts module exports", () => {
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
         mockCleanupOwnerDevices.mockReset();
+        mockGetActiveSessionsForContainer.mockReset().mockReturnValue([]);
+        mockWithContainerLifecycleLock.mockClear();
         mockExistsSync.mockReset().mockReturnValue(true);
         mockCloseSync.mockReset();
         mockOpenSync.mockReset().mockReturnValue(17);
@@ -2484,6 +2493,21 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
+            expect(mockWithContainerLifecycleLock).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
+        });
+
+        it("refuses to stop a container with active sessions unless forced", () => {
+            mockGetActiveSessionsForContainer.mockReturnValue(["active.lock"]);
+
+            expect(() => stopProjectContainer(projectPath)).toThrow("Container has 1 active session(s)");
+            expect(spawnSyncMock).not.toHaveBeenCalled();
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0));
+            stopProjectContainer(projectPath, undefined, { force: true });
+            expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(true);
         });
 
         it("still stops container when device cleanup throws", () => {

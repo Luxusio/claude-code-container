@@ -22,6 +22,13 @@ vi.mock("../docker.js", async (importOriginal) => {
     return { ...actual, ensureDockerRunning: ensureDockerRunningMock };
 });
 
+const getActiveSessionsForContainerMock = vi.fn<(...args: unknown[]) => string[]>();
+const withContainerLifecycleLockMock = vi.fn((_: string, operation: () => unknown) => operation());
+vi.mock("../session.js", () => ({
+    getActiveSessionsForContainer: getActiveSessionsForContainerMock,
+    withContainerLifecycleLock: withContainerLifecycleLockMock,
+}));
+
 // Import AFTER mocks
 const { cleanContainers } = await import("../clean.js");
 
@@ -37,6 +44,9 @@ describe("cleanContainers", () => {
         spawnSyncMock.mockReset();
         promptMock.mockReset();
         ensureDockerRunningMock.mockReset();
+        getActiveSessionsForContainerMock.mockReset();
+        getActiveSessionsForContainerMock.mockReturnValue([]);
+        withContainerLifecycleLockMock.mockClear();
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
         vi.spyOn(process, "exit").mockImplementation((_code?: unknown) => {
@@ -132,6 +142,26 @@ describe("cleanContainers", () => {
         // Should remove both containers
         expect(calls.some((c) => c.startsWith("rm ccc-running"))).toBe(true);
         expect(calls.some((c) => c.startsWith("rm ccc-stopped"))).toBe(true);
+        expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("running-aabb1122ccdd", expect.any(Function));
+        expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("stopped-eeff33445566", expect.any(Function));
+    });
+
+    it("never stops or removes a container with an active CCC session", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") return makeResult(0, "ccc-live-aabbcc112233\tUp 10 minutes");
+            if (argsArr[0] === "images") return makeResult(0, "");
+            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
+            return makeResult(0, "");
+        });
+        getActiveSessionsForContainerMock.mockReturnValue(["live.lock"]);
+
+        await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("process.exit called");
+
+        const calls = spawnSyncMock.mock.calls.map((c) => (c[1] as string[]).join(" "));
+        expect(calls.some((c) => c.startsWith("stop ccc-live"))).toBe(false);
+        expect(calls.some((c) => c.startsWith("rm ccc-live"))).toBe(false);
+        expect(console.log).toHaveBeenCalledWith("Skipping ccc-live-aabbcc112233: 1 active CCC session(s).");
     });
 
     it("--dry-run: prints plan but does not execute docker rm/rmi/volume rm", async () => {

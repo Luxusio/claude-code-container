@@ -562,6 +562,7 @@ describe("Hyper-V provider adapter", () => {
             gateway: "172.29.0.1",
             prefixLength: 24,
             elevated: true,
+            elevatedDeadlineUnixMs: Date.now() + 180000,
         }));
         expect(elevated).toContain("Start-Process -FilePath $Executable -Verb RunAs");
         expect(elevated).toContain("GetNamedPipeClientProcessId");
@@ -574,7 +575,9 @@ describe("Hyper-V provider adapter", () => {
         const elevatedInnerEncoded = elevated.match(/\$InnerEncodedTemplate = '([^']+)'/)?.[1];
         expect(elevatedInnerEncoded).toBeTruthy();
         const elevatedInner = Buffer.from(elevatedInnerEncoded!, "base64").toString("utf16le");
-        expect(elevatedInner).toContain("Start-Sleep -Seconds 150");
+        expect(elevatedInner).toContain("$RemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()");
+        expect(elevatedInner).toContain("Start-Sleep -Milliseconds $WatchdogDelayMs");
+        expect(elevatedInner).toContain("hyper-v-network-operation-deadline-exceeded");
         expect(elevatedInner).toContain("StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks");
         expect(elevatedInner).toContain("$ObservedWatchdog.StartTime.ToUniversalTime().Ticks -eq $WatchdogStartTicks");
         expect(elevated).not.toContain("RedirectStandardOutput");

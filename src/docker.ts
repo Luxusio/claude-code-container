@@ -47,6 +47,7 @@ import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { deviceLabContainerName, deviceLabOwnerId } from "./device-lab-owner.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
+import { getActiveSessionsForContainer, withContainerLifecycleLock } from "./session.js";
 
 const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp"] as const;
 const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
@@ -1149,8 +1150,7 @@ function recreateContainerWithSessionGuard(
 ): boolean {
     const recreate = () => recreateContainer(containerName, reason, onRecreate);
     if (!guard) {
-        recreate();
-        return true;
+        throw new Error("Container replacement requires a lifecycle/session guard.");
     }
     return guard(recreate);
 }
@@ -1465,7 +1465,9 @@ export function startProjectContainer(
     return containerName;
 }
 
-export function stopProjectContainer(projectPath: string, profile?: string): void {
+type DestructiveContainerOptions = { force?: boolean };
+
+function stopProjectContainerUnlocked(projectPath: string, profile?: string): void {
     ensureDockerRunning();
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath, profile);
@@ -1481,17 +1483,40 @@ export function stopProjectContainer(projectPath: string, profile?: string): voi
     console.log("Container stopped");
 }
 
-export function removeProjectContainer(projectPath: string, profile?: string): void {
-    ensureDockerRunning();
-    const containerName = getContainerName(resolve(projectPath), profile);
+function withDestructiveContainerGuard<T>(
+    projectPath: string,
+    profile: string | undefined,
+    options: DestructiveContainerOptions,
+    operation: () => T,
+): T {
+    const projectId = getProjectId(resolve(projectPath));
+    const containerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
+    return withContainerLifecycleLock(containerPrefix, () => {
+        const sessions = getActiveSessionsForContainer(containerPrefix);
+        if (sessions.length > 0 && options.force !== true) {
+            throw new Error(`Container has ${sessions.length} active session(s); use --force to continue.`);
+        }
+        return operation();
+    });
+}
 
-    if (!isContainerExists(containerName)) {
-        console.log("Container not found");
-        return;
-    }
+export function stopProjectContainer(projectPath: string, profile?: string, options: DestructiveContainerOptions = {}): void {
+    withDestructiveContainerGuard(projectPath, profile, options, () => stopProjectContainerUnlocked(projectPath, profile));
+}
 
-    stopProjectContainer(projectPath, profile);
-    console.log("Removing container...");
-    spawnSync(runtimeCli(), ["rm", containerName], { stdio: "inherit" });
-    console.log("Container removed");
+export function removeProjectContainer(projectPath: string, profile?: string, options: DestructiveContainerOptions = {}): void {
+    withDestructiveContainerGuard(projectPath, profile, options, () => {
+        ensureDockerRunning();
+        const containerName = getContainerName(resolve(projectPath), profile);
+
+        if (!isContainerExists(containerName)) {
+            console.log("Container not found");
+            return;
+        }
+
+        stopProjectContainerUnlocked(projectPath, profile);
+        console.log("Removing container...");
+        spawnSync(runtimeCli(), ["rm", containerName], { stdio: "inherit" });
+        console.log("Container removed");
+    });
 }
