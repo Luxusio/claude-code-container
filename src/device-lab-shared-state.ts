@@ -3,6 +3,14 @@ import { chmodSync, closeSync, constants as fsConstants, copyFileSync, fchmodSyn
 import type { Stats } from "fs";
 import { hostname, uptime } from "os";
 import { basename, dirname, isAbsolute, parse, resolve, sep } from "path";
+import {
+    deviceRuntimeProcessIdentityMatches,
+    inspectDeviceRuntimeProcessIdentity,
+    readDeviceRuntimeProcessIdentity,
+    readDeviceRuntimeProcessIdentityAsync,
+    type DeviceRuntimeProcessIdentity,
+    type DeviceRuntimeProcessObservation,
+} from "./device-lab-process-identity.js";
 import { DeviceLabStateFileError, readDeviceLabStateFile, withDeviceLabReadableFile } from "./device-lab-state-file.js";
 
 const DEFAULT_WAIT_MS = 5000;
@@ -12,7 +20,25 @@ const POLL_MS = 10;
 const ATOMIC_RENAME_WAIT_MS = 2000;
 const ABANDONED_ATOMIC_TEMP_MIN_AGE_MS = 100;
 const SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES = 16 * 1024;
+const PROCESS_IDENTITY_OBSERVATION_CACHE_MS = 1000;
+const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
+const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
+const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
+const PROCESS_IDENTITY_UNAVAILABLE_STALE_MS = 8 * 60 * 60 * 1000;
+const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
+let ownLockProcessIdentity: DeviceRuntimeProcessIdentity | null | undefined;
+let ownLockProcessIdentityRetryAt = 0;
+let ownLockProcessIdentityPromise: Promise<DeviceRuntimeProcessIdentity | null> | null = null;
+type CachedLockProcessObservation = {
+    key: string;
+    checkedAt: number;
+    status: DeviceRuntimeProcessObservation["status"];
+};
+const cachedLockProcessObservations = new Map<string, CachedLockProcessObservation>();
+const pendingLockProcessObservations = new Map<string, Promise<DeviceRuntimeProcessObservation["status"]>>();
+const processIdentityObservationWaiters: Array<() => void> = [];
+let activeProcessIdentityObservations = 0;
 
 type DirectoryIdentity = { path: string; stats: Stats | null };
 
@@ -210,11 +236,35 @@ function readLock(file: string): Record<string, unknown> | null {
     try {
         return readDeviceLabStateFile(file, (value) => {
             if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid-shared-mutation-lock");
-            return value as Record<string, unknown>;
+            const lock = value as Record<string, unknown>;
+            if (!validLockToken(lock.token)
+                || !Number.isInteger(lock.pid) || (lock.pid as number) <= 0
+                || typeof lock.host !== "string" || lock.host.length < 1 || lock.host.length > 255
+                || (lock.bootId !== undefined && (typeof lock.bootId !== "string" || lock.bootId.length > 512))
+                || (lock.createdAt !== undefined && (typeof lock.createdAt !== "string" || lock.createdAt.length > 64))
+                || (lock.processIdentityStatus !== undefined && !["recorded", "unavailable"].includes(String(lock.processIdentityStatus)))
+                || (lock.processIdentity !== undefined && !validLockProcessIdentity(lock.processIdentity, lock.pid))
+                || (lock.processIdentityStatus === "recorded" && lock.processIdentity === undefined)
+                || (lock.processIdentity !== undefined && lock.processIdentityStatus === "unavailable")) {
+                throw new Error("invalid-shared-mutation-lock");
+            }
+            return lock;
         }, "shared-mutation-lock", SHARED_MUTATION_LOCK_FILE_LIMIT_BYTES);
     } catch {
         return null;
     }
+}
+
+function validLockToken(value: unknown): value is string {
+    return typeof value === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(value);
+}
+
+function validLockProcessIdentity(value: unknown, pid: unknown): value is DeviceRuntimeProcessIdentity {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const identity = value as Partial<DeviceRuntimeProcessIdentity>;
+    return identity.pid === pid
+        && typeof identity.startToken === "string" && identity.startToken.length >= 1 && identity.startToken.length <= 512
+        && typeof identity.commandHash === "string" && /^[a-f0-9]{64}$/i.test(identity.commandHash);
 }
 
 function fileAgeMs(file: string): number {
@@ -252,12 +302,168 @@ function sameBootIdentity(left: unknown, right: unknown): boolean {
         && Math.abs(Number(leftMatch[2]) - Number(rightMatch[2])) <= 5);
 }
 
+function currentLockProcessIdentity(): DeviceRuntimeProcessIdentity | null {
+    // Synchronous Windows CIM queries can stall the broker event loop. Async
+    // provider locks use currentLockProcessIdentityAsync instead.
+    if (process.platform === "win32") return null;
+    if (ownLockProcessIdentity === undefined
+        || (ownLockProcessIdentity === null && Date.now() >= ownLockProcessIdentityRetryAt)) {
+        ownLockProcessIdentity = readDeviceRuntimeProcessIdentity(process.pid);
+        ownLockProcessIdentityRetryAt = ownLockProcessIdentity ? 0 : Date.now() + PROCESS_IDENTITY_RETRY_MS;
+    }
+    return ownLockProcessIdentity;
+}
+
+async function currentLockProcessIdentityAsync(): Promise<DeviceRuntimeProcessIdentity | null> {
+    if (ownLockProcessIdentity) return ownLockProcessIdentity;
+    if (ownLockProcessIdentity === null && Date.now() < ownLockProcessIdentityRetryAt) return null;
+    if (!ownLockProcessIdentityPromise) {
+        ownLockProcessIdentityPromise = withProcessIdentityObservationSlot(
+            () => readDeviceRuntimeProcessIdentityAsync(process.pid),
+        ).then((identity) => {
+            ownLockProcessIdentity = identity;
+            ownLockProcessIdentityRetryAt = identity ? 0 : Date.now() + PROCESS_IDENTITY_RETRY_MS;
+            return identity;
+        }).finally(() => {
+            ownLockProcessIdentityPromise = null;
+        });
+    }
+    return ownLockProcessIdentityPromise;
+}
+
+function lockRecord(token: string): Record<string, unknown> {
+    const processIdentity = currentLockProcessIdentity();
+    return {
+        token,
+        pid: process.pid,
+        host: hostname(),
+        bootId: currentBootId(),
+        createdAt: new Date().toISOString(),
+        processIdentityStatus: processIdentity ? "recorded" : "unavailable",
+        ...(processIdentity ? { processIdentity } : {}),
+    };
+}
+
+async function lockRecordAsync(token: string): Promise<Record<string, unknown>> {
+    const processIdentity = await currentLockProcessIdentityAsync();
+    return {
+        token,
+        pid: process.pid,
+        host: hostname(),
+        bootId: currentBootId(),
+        createdAt: new Date().toISOString(),
+        processIdentityStatus: processIdentity ? "recorded" : "unavailable",
+        ...(processIdentity ? { processIdentity } : {}),
+    };
+}
+
+function lockProcessObservationStatus(lock: Record<string, unknown>): DeviceRuntimeProcessObservation["status"] {
+    const key = JSON.stringify([lock.pid, lock.processIdentity]);
+    const now = Date.now();
+    const cached = cachedLockProcessObservations.get(key);
+    if (cached && now - cached.checkedAt < PROCESS_IDENTITY_OBSERVATION_CACHE_MS) {
+        return cached.status;
+    }
+    const status = inspectDeviceRuntimeProcessIdentity(lock.processIdentity, lock.pid).status;
+    cacheLockProcessObservation(key, status);
+    return status;
+}
+
+function cacheLockProcessObservation(key: string, status: DeviceRuntimeProcessObservation["status"]): void {
+    cachedLockProcessObservations.delete(key);
+    cachedLockProcessObservations.set(key, { key, checkedAt: Date.now(), status });
+    while (cachedLockProcessObservations.size > PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT) {
+        const oldest = cachedLockProcessObservations.keys().next().value as string | undefined;
+        if (oldest === undefined) break;
+        cachedLockProcessObservations.delete(oldest);
+    }
+}
+
+async function withProcessIdentityObservationSlot<T>(operation: () => Promise<T>): Promise<T> {
+    if (activeProcessIdentityObservations < PROCESS_IDENTITY_OBSERVATION_CONCURRENCY) {
+        activeProcessIdentityObservations += 1;
+    } else {
+        await new Promise<void>((resolve) => processIdentityObservationWaiters.push(resolve));
+    }
+    try {
+        return await operation();
+    } finally {
+        const next = processIdentityObservationWaiters.shift();
+        if (next) next();
+        else activeProcessIdentityObservations -= 1;
+    }
+}
+
+async function lockProcessObservationStatusAsync(lock: Record<string, unknown>): Promise<DeviceRuntimeProcessObservation["status"]> {
+    const key = JSON.stringify([lock.pid, lock.processIdentity]);
+    const now = Date.now();
+    const cached = cachedLockProcessObservations.get(key);
+    const cacheMs = cached?.status === "unavailable"
+        ? PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS
+        : PROCESS_IDENTITY_OBSERVATION_CACHE_MS;
+    if (cached && now - cached.checkedAt < cacheMs) {
+        return cached.status;
+    }
+    const pending = pendingLockProcessObservations.get(key);
+    if (pending) return pending;
+    if (pendingLockProcessObservations.size >= PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT) {
+        cacheLockProcessObservation(key, "unavailable");
+        return "unavailable";
+    }
+    const promise = (async () => {
+        const current = await withProcessIdentityObservationSlot(() => readDeviceRuntimeProcessIdentityAsync(lock.pid));
+        const status: DeviceRuntimeProcessObservation["status"] = current
+            ? (deviceRuntimeProcessIdentityMatches(lock.processIdentity, current) ? "match" : "mismatch")
+            : (processIsAlive(lock.pid) ? "unavailable" : "exited");
+        cacheLockProcessObservation(key, status);
+        return status;
+    })().finally(() => {
+        if (pendingLockProcessObservations.get(key) === promise) pendingLockProcessObservations.delete(key);
+    });
+    pendingLockProcessObservations.set(key, promise);
+    return promise;
+}
+
+function identityUnavailableIsStale(ageMs: number, staleMs: number): boolean {
+    return ageMs >= Math.max(staleMs, PROCESS_IDENTITY_UNAVAILABLE_STALE_MS);
+}
+
 function lockIsStale(file: string, lock: Record<string, unknown> | null, staleMs: number): boolean {
     const ageMs = fileAgeMs(file);
     if (ageMs < 100) return false;
     if (!lock) return ageMs >= Math.min(staleMs, MALFORMED_STALE_MS);
     if (lock.bootId && !sameBootIdentity(lock.bootId, currentBootId())) return true;
-    if (lock.host === hostname() && Number.isInteger(lock.pid)) return !processIsAlive(lock.pid);
+    if (lock.host === hostname() && Number.isInteger(lock.pid)) {
+        if (!processIsAlive(lock.pid)) return true;
+        if (lock.processIdentity) {
+            if (process.platform === "win32") return identityUnavailableIsStale(ageMs, staleMs);
+            const status = lockProcessObservationStatus(lock);
+            return status === "mismatch" || status === "exited"
+                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+        }
+        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
+        // Older CCC versions recorded only a PID. Windows can reuse that PID,
+        // so an aged legacy lock must not remain live forever.
+        return ageMs >= staleMs;
+    }
+    return ageMs >= staleMs;
+}
+
+async function lockIsStaleAsync(file: string, lock: Record<string, unknown> | null, staleMs: number): Promise<boolean> {
+    const ageMs = fileAgeMs(file);
+    if (ageMs < 100) return false;
+    if (!lock) return ageMs >= Math.min(staleMs, MALFORMED_STALE_MS);
+    if (lock.bootId && !sameBootIdentity(lock.bootId, currentBootId())) return true;
+    if (lock.host === hostname() && Number.isInteger(lock.pid)) {
+        if (!processIsAlive(lock.pid)) return true;
+        if (lock.processIdentity) {
+            const status = await lockProcessObservationStatusAsync(lock);
+            return status === "mismatch" || status === "exited"
+                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+        }
+        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
+        return ageMs >= staleMs;
+    }
     return ageMs >= staleMs;
 }
 
@@ -278,7 +484,7 @@ function restoreMovedLockIfPathEmpty(moved: string, file: string): void {
 }
 
 function moveIfTokenMatches(file: string, expectedToken: string, suffix: string, validateDirectories: () => void = () => {}): boolean {
-    const moved = `${file}.${expectedToken}.${suffix}`;
+    const moved = `${file}.${randomBytes(8).toString("hex")}.${suffix}`;
     try {
         renameReplacingFileSync(file, moved, validateDirectories);
     } catch {
@@ -324,7 +530,7 @@ export function withSharedMutationLock<T>(
             validateDirectories();
             const fd = openSync(file, "wx", 0o600);
             try {
-                writeFileSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), bootId: currentBootId(), createdAt: new Date().toISOString() }));
+                writeFileSync(fd, JSON.stringify(lockRecord(token)));
             } finally {
                 closeSync(fd);
             }
@@ -370,13 +576,14 @@ export async function withSharedMutationLockAsync<T>(
     const token = randomBytes(16).toString("hex");
     const directories = secureStateParentDirectory(file);
     const validateDirectories = () => assertStateDirectoriesUnchanged(directories);
+    const record = await lockRecordAsync(token);
 
     while (true) {
         try {
             validateDirectories();
             const fd = openSync(file, "wx", 0o600);
             try {
-                writeFileSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), bootId: currentBootId(), createdAt: new Date().toISOString() }));
+                writeFileSync(fd, JSON.stringify(record));
             } finally {
                 closeSync(fd);
             }
@@ -386,10 +593,10 @@ export async function withSharedMutationLockAsync<T>(
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
             const existing = readLock(file);
             const existingToken = typeof existing?.token === "string" ? existing.token : null;
-            if (existingToken && lockIsStale(file, existing, staleMs)) {
+            if (existingToken && await lockIsStaleAsync(file, existing, staleMs)) {
                 if (moveIfTokenMatches(file, existingToken, "stale", validateDirectories)) continue;
             }
-            if (!existing && lockIsStale(file, existing, staleMs)) {
+            if (!existing && await lockIsStaleAsync(file, existing, staleMs)) {
                 if (moveMalformedLock(file, token, validateDirectories)) continue;
             }
             if (Date.now() >= deadline) {

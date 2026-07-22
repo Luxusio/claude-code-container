@@ -16,6 +16,7 @@ export const providerEnv = {
     CCC_LAB_RUNNER: "1",
     CCC_LAB_RUNNER_STATUS: "ready",
     CCC_LAB_STATE_DIR: stateRoot,
+    CCC_LAB_RUNNER_UNSUPPORTED_REASON: process.env.CCC_LAB_RUNNER_UNSUPPORTED_REASON,
 };
 
 export function realProviderTempRoot(_options?: unknown) {

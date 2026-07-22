@@ -446,8 +446,9 @@ describe("buildDockerRunArgs — volume mounts", () => {
         );
         expect(mounts).toContain("/home/user/.ccc/devices/owners/0123456789abcdef:/home/ccc/.ccc/devices/owners/0123456789abcdef");
         expect(mounts).toContain("/home/user/.ccc/devices/broker/auth/0123456789abcdef.json:/run/ccc-device-broker-auth/owner.json:ro");
-        expect(args).toContain("/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
-        expect(args).toContain("/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        expect(args).toContain("/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0711");
+        expect(args).toContain("/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0711");
+        expect(args.join(" ")).not.toMatch(/\/home\/ccc\/\.ccc\/devices\/(?:owners|broker\/auth):[^ ]*\b(?:uid|gid)=1000\b/);
         expect(extractEnvVars(args).CCC_DEVICE_BROKER_AUTH_FILE).toBe("/run/ccc-device-broker-auth/owner.json");
     });
 

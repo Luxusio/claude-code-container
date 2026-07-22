@@ -8,6 +8,7 @@ import { handleIosRealTool, iosRealBackend, listIosRealDevices } from "./backend
 import { handleMacosTool, listMacosDevices, macosBackend } from "./backends/macos-vm.mjs";
 import { handleLinuxVmManagementTool, handleLinuxVmTool, linuxVmBackend, listLinuxVmDevices } from "./backends/linux-vm.mjs";
 import { handleWindowsTool, listWindowsDevices, windowsBackend } from "./backends/windows-sandbox.mjs";
+import { listWindowsVmDevices, windowsVmBackend } from "./backends/windows-vm.mjs";
 import { brokerApple, brokerAppium, brokerCommand, brokerDeviceTool, brokerLease, brokerPhysical, brokerRpc, brokerShutdown, brokerStatus, implicitBrokerProbeOptions } from "./broker.mjs";
 import { ownerId } from "./context.mjs";
 import { currentDisplayTarget, handleDisplayTool, x11Available } from "./display/x11.mjs";
@@ -68,9 +69,10 @@ const DEVICE_FLOW_ALLOWED_MOBILE_TOOLS = new Set([
     "mobile_wait_for_app",
     "mobile_screenshot",
 ]);
-const BROKER_LIFECYCLE_COMMANDS = new Set(["device_create", "device_status", "device_start", "device_stop", "device_delete"]);
+const BROKER_LIFECYCLE_COMMANDS = new Set(["device_create", "device_status", "device_start", "device_stop", "device_reboot", "device_delete"]);
 const BROKER_READONLY_DEVICE_TOOLS = new Set([
     "device_inventory",
+    "device_snapshot_list",
     "device_record_video_status",
     "device_screenshot",
     "device_cursor_position",
@@ -92,6 +94,9 @@ const BROKER_MUTATING_DEVICE_TOOLS = new Set([
     "device_key",
     "device_type",
     "device_scroll",
+    "device_snapshot_create",
+    "device_snapshot_restore",
+    "device_snapshot_delete",
 ]);
 const BROKER_PHYSICAL_TOOLS = new Set(["device_attach", "device_detach"]);
 const BROKER_PHYSICAL_BACKENDS = new Set(["android-device", "ios-device"]);
@@ -99,6 +104,13 @@ const BROKER_FAST_DEVICE_TOOLS = new Set(["device_record_video_status"]);
 const BROKER_RECORDING_DEVICE_TOOLS = new Set(["device_record_video_start", "device_record_video_stop", "device_record_video_status"]);
 const DEFAULT_BROKER_DEVICE_TOOL_TIMEOUT_MS = 30000;
 const DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
+// Image acquisition may consume the full four-hour provider budget. Reserve
+// another 30 minutes for hashing, VM creation, and guest provisioning.
+export const HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS = 21600000;
+export const HYPER_V_LIFECYCLE_RPC_BUFFER_MS = 15000;
+export const HYPER_V_CREATE_RPC_TIMEOUT_MS = HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
+export const HYPER_V_HOST_LOCK_WAIT_MS = 10 * 60 * 1000;
+export const HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 120000;
 const DEFAULT_BROKER_PHYSICAL_RPC_TIMEOUT_MS = 30000;
 export const MAX_DEVICE_HELPER_TIMEOUT_MS = 300000;
 export const MAX_DEVICE_OPERATION_TIMEOUT_MS = 600000;
@@ -119,6 +131,7 @@ const DIRECT_DEVICE_BACKEND_HINT_TOOLS = new Set([
     "device_record_video_status",
     "device_record_video_start",
     "device_record_video_stop",
+    "device_snapshot_list",
     "device_snapshot_create",
     "device_snapshot_restore",
     "device_snapshot_delete",
@@ -139,6 +152,8 @@ const LIFECYCLE_STATE_BACKENDS = new Map([
     ["ios", "ios-simulator"],
     ["ios-device", "ios-device"],
     ["windows", "windows-sandbox"],
+    ["windows-vm", "windows-vm"],
+    ["linux-vm", "linux-vm"],
     ["macos", "macos-vm"],
 ]);
 
@@ -314,8 +329,27 @@ export function brokerDeviceToolExecutionTimeout(name, args) {
 }
 
 export function brokerLifecycleExecutionTimeout(args) {
+    if ((args?.backend === "windows-vm" || args?.backend === "linux-vm") && (args?.name || args?.sourceImage || args?.image)) {
+        return {
+            rpcTimeoutMs: Number.isFinite(args?.rpcTimeoutMs)
+                ? boundedTimeoutMs(args.rpcTimeoutMs, HYPER_V_CREATE_RPC_TIMEOUT_MS, HYPER_V_CREATE_RPC_TIMEOUT_MS)
+                : HYPER_V_CREATE_RPC_TIMEOUT_MS,
+        };
+    }
     if (Number.isFinite(args?.rpcTimeoutMs)) return { rpcTimeoutMs: boundedTimeoutMs(args.rpcTimeoutMs, MAX_DEVICE_TOOL_RPC_TIMEOUT_MS, DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS) };
     if (Number.isFinite(args?.timeoutMs)) return { rpcTimeoutMs: boundedTimeoutMs(args.timeoutMs, MAX_DEVICE_OPERATION_TIMEOUT_MS, DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS) };
+    if ((args?.backend === "windows-vm" || args?.backend === "linux-vm")
+        && (args?.command === "device_start" || args?.command === "device_reboot")) {
+        const bootTimeoutMs = args?.waitForBoot === false
+            ? 0
+            : Number.isFinite(args?.bootTimeoutMs)
+                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
+                : 5 * 60 * 1000;
+        return { rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + bootTimeoutMs + HYPER_V_LIFECYCLE_RPC_BUFFER_MS };
+    }
+    if (args?.backend === "windows-vm" || args?.backend === "linux-vm") {
+        return { rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS };
+    }
     if (args?.backend === "android-emulator" && args?.createAvd === true) {
         return { rpcTimeoutMs: 315000 };
     }
@@ -353,6 +387,7 @@ function lifecycleBackendDevices() {
         ["ios-simulator", listIosDevices()],
         ["ios-device", listIosRealDevices()],
         ["windows-sandbox", listWindowsDevices()],
+        ["windows-vm", listWindowsVmDevices()],
         ["macos-vm", listMacosDevices()],
         ["linux-vm", listLinuxVmDevices()],
     ];
@@ -373,6 +408,7 @@ function directBackendList() {
         iosBackend(),
         iosRealBackend(),
         windowsBackend(),
+        windowsVmBackend(),
         macosBackend(),
         linuxVmBackend(),
     ];
@@ -402,14 +438,15 @@ async function handleDeviceBackends(args = {}) {
     if (probe && broker.available) {
         const brokerBackends = await brokerRpc({ ...args, ...probe, method: "broker.backends" });
         if (brokerBackends.ok && Array.isArray(brokerBackends.result?.backends)) {
+            const brokerBackendNames = new Set(brokerBackends.result.backends.map((backend) => backend?.name).filter(Boolean));
             return jsonResult({
                 ownerId: ownerId(),
                 broker,
                 source: "host-broker-provider-discovery",
                 routedBy: "device-backends-broker",
                 backends: [
-                    ...containerBackends,
-                    ...brokerBackends.result.backends.filter((backend) => !containerBackends.some((local) => local.name === backend.name)),
+                    ...containerBackends.filter((backend) => !brokerBackendNames.has(backend.name)),
+                    ...brokerBackends.result.backends,
                 ],
                 hostBackends: brokerBackends.result,
                 localBackends: directBackends,
@@ -804,20 +841,31 @@ async function handleBrokerLifecycleTool(name, args) {
     const brokerArgs = name === "device_create" ? { ...routeArgs, devicePort: args?.port, port: args?.brokerPort } : routeArgs;
     const result = await brokerCommand({
         ...brokerArgs,
-        ...brokerLifecycleExecutionTimeout(args),
+        ...brokerLifecycleExecutionTimeout({ ...args, backend: typeof backend === "string" ? backend : backend.backend, command: name }),
         action: "invoke",
         backend: typeof backend === "string" ? backend : backend.backend,
         command: name,
         deviceId,
+        incarnationId: args?.incarnationId,
         dryRun: args?.dryRun === true,
     });
-    return jsonResult({ ...result, routedBy: "device-lifecycle-broker" });
+    return jsonResult(brokerLifecyclePublicResult(result, "device-lifecycle-broker"));
+}
+
+function brokerLifecyclePublicResult(result, routedBy) {
+    const body = result?.body && typeof result.body === "object" && !Array.isArray(result.body) ? result.body : null;
+    return {
+        ...result,
+        ...(typeof body?.detail === "string" && body.detail ? { detail: body.detail } : {}),
+        ...(typeof body?.remedy === "string" && body.remedy ? { remedy: body.remedy } : {}),
+        routedBy,
+    };
 }
 
 function implicitBrokerLifecycleResult(name, args, result) {
     const routedBy = "device-lifecycle-broker-implicit";
     if (!result?.ok || !result.result || typeof result.result !== "object" || Array.isArray(result.result)) {
-        return jsonResult({ ...result, routedBy });
+        return jsonResult(brokerLifecyclePublicResult(result, routedBy));
     }
     const payload = { ...result.result, routedBy };
     if (name === "device_delete") {
@@ -838,7 +886,7 @@ async function maybeHandleImplicitBrokerLifecycleTool(name, args) {
         const result = await brokerCommand({
             ...args,
             ...probe,
-            ...brokerLifecycleExecutionTimeout(args),
+            ...brokerLifecycleExecutionTimeout({ ...args, backend: requestedBackend, command: name }),
             devicePort: args?.port,
             action: "invoke",
             backend: requestedBackend,
@@ -880,7 +928,7 @@ async function maybeHandleImplicitBrokerLifecycleTool(name, args) {
     const result = await brokerCommand({
         ...args,
         ...selectedBrokerProbeOptions(probe, inventory),
-        ...brokerLifecycleExecutionTimeout(args),
+        ...brokerLifecycleExecutionTimeout({ ...args, backend: inventoryBackend.backend, command: name }),
         action: "invoke",
         backend: inventoryBackend.backend,
         command: name,
@@ -1259,6 +1307,76 @@ async function handleBrokerMobileTool(name, args) {
     }));
 }
 
+const HYPER_V_LINUX_TOOLS = new Set([
+    ...BROKER_LIFECYCLE_COMMANDS,
+    "device_inventory",
+    "device_exec",
+    "device_upload",
+    "device_download",
+    "device_snapshot_list",
+    "device_snapshot_create",
+    "device_snapshot_restore",
+    "device_snapshot_delete",
+]);
+
+async function maybeHandleHyperVLinuxVmTool(name, args = {}) {
+    if (args?.backend !== "linux-vm" || !HYPER_V_LINUX_TOOLS.has(name) || optsOutOfImplicitBroker(args)) return null;
+    const probe = implicitBrokerProbeOptions(name === "device_create" ? { ...(args || {}), port: undefined } : args || {});
+    if (!probe) return null;
+    const backends = await brokerRpc({ ...probe, method: "broker.backends" });
+    const advertised = backends.ok && Array.isArray(backends.result?.backends)
+        ? backends.result.backends.find((backend) => backend?.name === "linux-vm" && backend?.provider === "hyper-v")
+        : null;
+    if (!advertised) return null;
+    const route = { ...args, ...selectedBrokerProbeOptions(probe, backends), autolaunch: true };
+    if (BROKER_LIFECYCLE_COMMANDS.has(name)) return handleBrokerLifecycleTool(name, route);
+    return handleBrokerDeviceTool(name, route);
+}
+
+function directDeviceList() {
+    return [
+        currentDisplayTarget(),
+        ...listAndroidDevices(),
+        ...listAndroidRealDevices(),
+        ...listIosDevices(),
+        ...listIosRealDevices(),
+        ...listWindowsDevices(),
+        ...listWindowsVmDevices(),
+        ...listMacosDevices(),
+        ...listLinuxVmDevices(),
+    ];
+}
+
+async function handleDeviceList(args = {}) {
+    if (!optsOutOfImplicitBroker(args)) {
+        const probe = implicitBrokerProbeOptions(args);
+        if (probe) {
+            const inventory = await brokerRpc({ ...args, ...probe, method: "broker.inventory" });
+            if (!inventory.ok || !Array.isArray(inventory.result?.backends)) {
+                return jsonResult({ ...inventory, routedBy: "device-list-broker-implicit" });
+            }
+            const failedBackend = inventory.result.backends.find((entry) => entry?.error);
+            if (failedBackend) {
+                return jsonResult({
+                    ok: false,
+                    error: failedBackend.error,
+                    stateKey: failedBackend.stateKey,
+                    routedBy: "device-list-broker-implicit",
+                });
+            }
+            return jsonResult({
+                ownerId: ownerId(),
+                devices: [
+                    currentDisplayTarget(),
+                    ...inventory.result.backends.flatMap((entry) => Array.isArray(entry?.devices) ? entry.devices : []),
+                ],
+                routedBy: "device-list-broker-implicit",
+            });
+        }
+    }
+    return jsonResult({ ownerId: ownerId(), devices: directDeviceList(), routedBy: "device-list-direct" });
+}
+
 async function dispatchTool(name, rawArgs) {
     const args = normalizeToolArgs(rawArgs);
     if (args.deviceId !== undefined
@@ -1271,6 +1389,9 @@ async function dispatchTool(name, rawArgs) {
     }
     const policy = evaluateDestructivePolicy(name, args);
     if (!policy.ok) return policyDeniedResult(policy);
+
+    const hyperVLinuxResult = await maybeHandleHyperVLinuxVmTool(name, args);
+    if (hyperVLinuxResult) return hyperVLinuxResult;
 
     const linuxVmManagementResult = await handleLinuxVmManagementTool(name, args);
     if (linuxVmManagementResult) return linuxVmManagementResult;
@@ -1409,19 +1530,7 @@ export async function startServer() {
                     return jsonResult(await brokerAppium(args));
 
                 case "device_list":
-                    return jsonResult({
-                        ownerId: ownerId(),
-                        devices: [
-                            currentDisplayTarget(),
-                            ...listAndroidDevices(),
-                            ...listAndroidRealDevices(),
-                            ...listIosDevices(),
-                            ...listIosRealDevices(),
-                            ...listWindowsDevices(),
-                            ...listMacosDevices(),
-                            ...listLinuxVmDevices(),
-                        ],
-                    });
+                    return handleDeviceList(args);
 
                 case "mobile_run_flow":
                     return handleMobileRunFlow(args);

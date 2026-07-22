@@ -524,9 +524,10 @@ function deviceLabMcpBackendCapabilities() {
         "import { iosBackend } from './device-lab-mcp/src/backends/ios-simulator.mjs';",
         "import { iosRealBackend } from './device-lab-mcp/src/backends/ios-device.mjs';",
         "import { windowsBackend } from './device-lab-mcp/src/backends/windows-sandbox.mjs';",
+        "import { windowsVmBackend } from './device-lab-mcp/src/backends/windows-vm.mjs';",
         "import { macosBackend } from './device-lab-mcp/src/backends/macos-vm.mjs';",
         "import { linuxVmBackend } from './device-lab-mcp/src/backends/linux-vm.mjs';",
-        "const backends = [androidBackend(), androidRealBackend(), iosBackend(), iosRealBackend(), windowsBackend(), macosBackend(), linuxVmBackend()];",
+        "const backends = [androidBackend(), androidRealBackend(), iosBackend(), iosRealBackend(), windowsBackend(), windowsVmBackend(), macosBackend(), linuxVmBackend()];",
         "console.log(JSON.stringify(backends.map(({ name, capabilities }) => [name, [...capabilities].sort()])));",
     ].join("")], {
         cwd: repoRoot,
@@ -563,6 +564,7 @@ function deviceLabBackendHandlerCases() {
         ["ios-simulator", functionSwitchCaseLabels(join(backendRoot, "ios-simulator.mjs"), "handleIosToolUnlocked")],
         ["ios-device", functionSwitchCaseLabels(join(backendRoot, "ios-device.mjs"), "handleIosRealToolUnlocked")],
         ["windows-sandbox", functionSwitchCaseLabels(join(backendRoot, "windows-sandbox.mjs"), "handleWindowsToolUnlocked")],
+        ["windows-vm", [...quotedArrayConstant(readFileSync(join(repoRoot, "src", "device-lab-broker.ts"), "utf-8"), "HYPER_V_VM_CAPABILITIES")].sort()],
         ["macos-vm", functionSwitchCaseLabels(join(backendRoot, "macos-vm.mjs"), "handleMacosToolUnlocked")],
         ["linux-vm", [...LINUX_VM_CAPABILITIES].sort()],
     ]);
@@ -606,6 +608,7 @@ function backendAdvertisedSupportDrift() {
         ["ios-simulator", quotedArrayConstant(brokerText, "IOS_SIMULATOR_CAPABILITIES")],
         ["ios-device", quotedArrayConstant(brokerText, "IOS_REAL_CAPABILITIES")],
         ["windows-sandbox", desktopCapabilities],
+        ["windows-vm", quotedArrayConstant(brokerText, "HYPER_V_VM_CAPABILITIES")],
         ["macos-vm", new Set([...desktopCapabilities, ...quotedArrayConstant(brokerText, "MACOS_VM_CAPABILITIES")])],
         ["linux-vm", new Set(LINUX_VM_CAPABILITIES)],
     ]);
@@ -635,6 +638,7 @@ function hostBrokerBackendCapabilities() {
         ["ios-simulator", [...quotedArrayConstant(brokerText, "IOS_SIMULATOR_CAPABILITIES")].sort()],
         ["ios-device", [...quotedArrayConstant(brokerText, "IOS_REAL_CAPABILITIES")].sort()],
         ["windows-sandbox", [...desktopCapabilities].sort()],
+        ["windows-vm", [...quotedArrayConstant(brokerText, "HYPER_V_VM_CAPABILITIES")].sort()],
         ["macos-vm", [...new Set([...desktopCapabilities, ...quotedArrayConstant(brokerText, "MACOS_VM_CAPABILITIES")])].sort()],
     ]);
 }
@@ -868,7 +872,7 @@ describe("test level runner", () => {
         expect(vitestText).not.toContain('"--fail-on-coverage-gap"');
         expect(vitestText).toContain('key !== "VITEST" && !key.startsWith("VITEST_")');
         expect(configText).toContain('include: ["scripts/real-tests/level3-vitest.ts"]');
-        expect(configText).toContain("testTimeout: 30 * 60 * 1000");
+        expect(configText).toContain("testTimeout: 10 * 60 * 60 * 1000");
         expect(destructiveText).toContain("destructive: true");
         expect(destructiveText).toContain("snapshot: true");
     });
@@ -2156,7 +2160,7 @@ describe("test level runner", () => {
                 encoding: "utf-8",
             });
             expect(strictResult.status).toBe(1);
-            expect(strictResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false strictCoverageFailures=93");
+            expect(strictResult.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0 failOnSkip=false strictCoverageFailures=94");
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
@@ -2319,7 +2323,7 @@ describe("test level runner", () => {
                 encoding: "utf-8",
             });
             expect(result.status).toBe(1);
-            expect(result.stdout).toContain("strictCoverageFailures=100");
+            expect(result.stdout).toContain("strictCoverageFailures=101");
             const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
                 toolCoverage: {
                     invalidScriptedArgumentFacets: string[];
@@ -2584,6 +2588,59 @@ describe("test level runner", () => {
         }
     });
 
+    it("classifies Hyper-V management permission skips as an allowed host prerequisite", () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-real-test-hyper-v-permission-"));
+        try {
+            const skipFile = join(tempDir, "hyper-v-permission-skip.mjs");
+            const summaryFile = join(tempDir, "summary.json");
+            writeFileSync(skipFile, [
+                "export const name='level 2 Hyper-V VM E2E';",
+                "export async function run(){",
+                "  return { status: 'SKIP', steps: [",
+                "    { name: 'Hyper-V Windows VM packaged MCP', status: 'SKIP', reason: 'Hyper-V unavailable: hyper-v-management-permission' },",
+                "    { name: 'Hyper-V Linux VM packaged MCP', status: 'SKIP', reason: 'Hyper-V unavailable: hyper-v-management-permission' },",
+                "  ] };",
+                "}",
+                "",
+            ].join("\n"));
+
+            const collected = spawnSync(process.execPath, [
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
+                "--json-summary-file",
+                summaryFile,
+                skipFile,
+            ], {
+                cwd: repoRoot,
+                encoding: "utf-8",
+            });
+            expect(collected.status).toBe(0);
+            const summary = JSON.parse(readFileSync(summaryFile, "utf-8"));
+            expect(summary.skipCategories).toEqual([
+                {
+                    category: "host-permission",
+                    count: 2,
+                    records: [
+                        {
+                            test: "level 2 Hyper-V VM E2E",
+                            step: "Hyper-V Windows VM packaged MCP",
+                            reason: "Hyper-V unavailable: hyper-v-management-permission",
+                        },
+                        {
+                            test: "level 2 Hyper-V VM E2E",
+                            step: "Hyper-V Linux VM packaged MCP",
+                            reason: "Hyper-V unavailable: hyper-v-management-permission",
+                        },
+                    ],
+                },
+            ]);
+            expect(summary.toolCoverage.explainedProviderValues).toContain("backend=windows-vm");
+            expect(summary.toolCoverage.explainedProviderValues).toContain("backend=linux-vm");
+
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
     it("can summarize real-test JSON artifacts by skip and failure reason", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-real-test-summary-"));
         try {
@@ -2835,6 +2892,7 @@ describe("test level runner", () => {
             const unlinkedCallFile = join(tempDir, "unlinked-call.json");
             const staleSessionSurfaceFile = join(tempDir, "stale-session-surface.json");
             const forbiddenSessionEnvFile = join(tempDir, "forbidden-session-env.json");
+            const hyperVPermissionSkipFile = join(tempDir, "hyper-v-permission-skip.json");
             const sourceServerFile = { exists: true, size: 123, sha256: "a".repeat(64) };
             const distServerFile = { exists: true, size: 456, sha256: "b".repeat(64) };
             const advertisedToolSurface = canonicalDeviceLabToolSurface();
@@ -2891,6 +2949,28 @@ describe("test level runner", () => {
                 ],
             };
             writeFileSync(passingFile, JSON.stringify(baseSummary));
+            writeFileSync(hyperVPermissionSkipFile, JSON.stringify({
+                ...baseSummary,
+                total: 5,
+                skip: 3,
+                skipCategories: [
+                    ...baseSummary.skipCategories,
+                    {
+                        category: "host-permission",
+                        count: 2,
+                        records: [
+                            {
+                                test: "level 2 Hyper-V Windows VM E2E",
+                                reason: "Hyper-V unavailable: hyper-v-management-permission",
+                            },
+                            {
+                                test: "level 2 Hyper-V Linux VM E2E",
+                                reason: "Hyper-V unavailable: hyper-v-management-permission",
+                            },
+                        ],
+                    },
+                ],
+            }));
             writeFileSync(failingFile, JSON.stringify({
                 ...baseSummary,
                 fail: 1,
@@ -3089,6 +3169,14 @@ describe("test level runner", () => {
             expect(quietPassing.status).toBe(0);
             expect(quietPassing.stdout).toBe("");
             expect(quietPassing.stderr).toBe("");
+
+            const hyperVPermissionSkip = spawnSync(process.execPath, [runner, "--assert-json", hyperVPermissionSkipFile, "--quiet"], {
+                cwd: repoRoot,
+                encoding: "utf-8",
+            });
+            expect(hyperVPermissionSkip.status).toBe(0);
+            expect(hyperVPermissionSkip.stdout).toBe("");
+            expect(hyperVPermissionSkip.stderr).toBe("");
 
             const noSkipsAllowed = spawnSync(process.execPath, [runner, "--assert-json", passingFile], {
                 cwd: repoRoot,

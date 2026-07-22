@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
 
@@ -48,15 +48,23 @@ function linuxProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | null 
 }
 
 function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | null {
-    const script = `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    const script = windowsProcessIdentityScript(pid);
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
     });
     if (result.status !== 0 || !result.stdout?.trim()) return null;
+    return parseWindowsProcessIdentity(pid, result.stdout);
+}
+
+function windowsProcessIdentityScript(pid: number): string {
+    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+}
+
+function parseWindowsProcessIdentity(pid: number, output: string): DeviceRuntimeProcessIdentity | null {
     try {
-        const parsed = JSON.parse(result.stdout) as { startToken?: unknown; commandLine?: unknown };
+        const parsed = JSON.parse(output) as { startToken?: unknown; commandLine?: unknown };
         return identity(
             pid,
             typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : null,
@@ -65,6 +73,19 @@ function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | nul
     } catch {
         return null;
     }
+}
+
+function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessIdentity | null> {
+    return new Promise((resolve) => {
+        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+            encoding: "utf8",
+            timeout: 5000,
+            windowsHide: true,
+            maxBuffer: 64 * 1024,
+        }, (error, stdout) => {
+            resolve(error || !stdout?.trim() ? null : parseWindowsProcessIdentity(pid, stdout));
+        });
+    });
 }
 
 function psProcessIdentity(pid: number, platform: NodeJS.Platform): DeviceRuntimeProcessIdentity | null {
@@ -76,12 +97,39 @@ function psProcessIdentity(pid: number, platform: NodeJS.Platform): DeviceRuntim
     return identity(pid, startToken ? `ps:${startToken}` : null, commandLine || null);
 }
 
+function execFileText(executable: string, args: string[]): Promise<string> {
+    return new Promise((resolve) => {
+        execFile(executable, args, {
+            encoding: "utf8",
+            timeout: 5000,
+            windowsHide: true,
+            maxBuffer: 64 * 1024,
+        }, (error, stdout) => resolve(error ? "" : stdout?.trim() || ""));
+    });
+}
+
+async function psProcessIdentityAsync(pid: number, platform: NodeJS.Platform): Promise<DeviceRuntimeProcessIdentity | null> {
+    const executable = platform === "darwin" ? "/bin/ps" : "ps";
+    const [startToken, commandLine] = await Promise.all([
+        execFileText(executable, ["-p", String(pid), "-o", "lstart="]),
+        execFileText(executable, ["-p", String(pid), "-o", "command="]),
+    ]);
+    return identity(pid, startToken ? `ps:${startToken}` : null, commandLine || null);
+}
+
 export function readDeviceRuntimeProcessIdentity(pid: unknown, options: ProcessIdentityOptions = {}): DeviceRuntimeProcessIdentity | null {
     if (!validPid(pid)) return null;
     const platform = options.platform || process.platform;
     if (platform === "linux") return linuxProcessIdentity(pid);
     if (platform === "win32") return windowsProcessIdentity(pid);
     return psProcessIdentity(pid, platform);
+}
+
+export async function readDeviceRuntimeProcessIdentityAsync(pid: unknown): Promise<DeviceRuntimeProcessIdentity | null> {
+    if (!validPid(pid)) return null;
+    if (process.platform === "win32") return windowsProcessIdentityAsync(pid);
+    if (process.platform === "linux") return readDeviceRuntimeProcessIdentity(pid);
+    return psProcessIdentityAsync(pid, process.platform);
 }
 
 export function deviceRuntimeProcessIdentityMatches(expected: unknown, current: unknown): boolean {

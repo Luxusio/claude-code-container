@@ -1,9 +1,11 @@
+import { createHash } from "crypto";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
 import { homedir } from "os";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { REQUIRED_CCC_HOST_BROKER_CAPABILITIES } from "../../device-lab-mcp/src/broker.mjs";
 import { createDeviceBrokerServer } from "../device-lab-broker.js";
 import { deviceLabOwnerId } from "../device-lab-owner.js";
 import { cleanupOwner, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
@@ -65,6 +67,368 @@ describe("device-lab MCP broker routing", () => {
             expiresAt: new Date(Date.now() + 60_000).toISOString(),
         }));
     }
+
+    it("preserves public Hyper-V create options across broker routing", { timeout: TIMEOUT }, async () => {
+        let receivedParams: Record<string, unknown> = {};
+        const authRoot = join(homeDir, ".ccc", "devices", "broker", "auth");
+        const authFile = join(authRoot, `${brokerOwnerId()}.json`);
+        mkdirSync(authRoot, { recursive: true });
+        writeFileSync(authFile, JSON.stringify({ ownerId: brokerOwnerId(), secret: "b".repeat(64), version: 1 }), { mode: 0o600 });
+        const server = createServer((req, res) => {
+            if (req.url === "/health") {
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }));
+                return;
+            }
+            if (req.url === "/status") {
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({
+                    ok: true,
+                    name: "ccc-device-broker",
+                    mode: "host-broker-daemon",
+                    broker: { implemented: REQUIRED_CCC_HOST_BROKER_CAPABILITIES },
+                }));
+                return;
+            }
+            if (sendOwnerResolve(req, res)) return;
+            let body = "";
+            req.on("data", (chunk) => { body += chunk.toString(); });
+            req.on("end", () => {
+                const parsed = JSON.parse(body || "{}");
+                receivedParams = parsed.params || {};
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: true, result: { deviceId: parsed.params?.deviceId } }));
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "windows-vm",
+                    deviceId: "hyper-v-create-routing",
+                    name: "Hyper-V create routing",
+                    profile: "windows-11",
+                    sourceImage: "C:\\images\\windows-11.vhdx",
+                    switchName: "CCC Device Lab",
+                    secureBootTemplate: "MicrosoftWindows",
+                    baseImageId: "windows-base",
+                    guestSshHost: "guest.example.test",
+                    guestSshPort: 2222,
+                    guestSshUser: "ccc",
+                    guestSshKeyPath: "results/id_ed25519",
+                    guestReadinessCommand: "echo ready",
+                    guestAgentName: "ccc-agent",
+                    guestAgentHealthCommand: "echo healthy",
+                    guestAgentProvisionCommand: "echo provision",
+                    guestAgentAutoProvision: true,
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    brokerPort: address.port,
+                },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(receivedParams, JSON.stringify(payload)).toEqual(expect.objectContaining({
+                backend: "windows-vm",
+                command: "device_create",
+                deviceId: "hyper-v-create-routing",
+                profile: "windows-11",
+                sourceImage: "C:\\images\\windows-11.vhdx",
+                switchName: "CCC Device Lab",
+                secureBootTemplate: "MicrosoftWindows",
+                baseImageId: "windows-base",
+                guestSshHost: "guest.example.test",
+                guestSshPort: 2222,
+                guestSshUser: "ccc",
+                guestSshKeyPath: "results/id_ed25519",
+                guestReadinessCommand: "echo ready",
+                guestAgentName: "ccc-agent",
+                guestAgentHealthCommand: "echo healthy",
+                guestAgentProvisionCommand: "echo provision",
+                guestAgentAutoProvision: true,
+            }));
+
+            const reboot = await client.callTool({
+                name: "device_reboot",
+                arguments: {
+                    backend: "windows-vm",
+                    deviceId: "hyper-v-create-routing",
+                    incarnationId: "11111111111111111111111111111111",
+                    startIfStopped: true,
+                    waitForBoot: false,
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(reboot.isError).not.toBe(true);
+            expect(receivedParams).toEqual(expect.objectContaining({
+                backend: "windows-vm",
+                command: "device_reboot",
+                deviceId: "hyper-v-create-routing",
+                incarnationId: "11111111111111111111111111111111",
+                startIfStopped: true,
+                waitForBoot: false,
+            }));
+        } finally {
+            rmSync(authFile, { force: true });
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("rejects caller-selected broker hosts before owner tokens can be sent", { timeout: TIMEOUT }, async () => {
+        const result = await client.callTool({
+            name: "device_status",
+            arguments: {
+                backend: "windows-vm",
+                deviceId: "untrusted-broker-route",
+                viaBroker: true,
+                hostCandidates: ["attacker.example.test"],
+                brokerPort: 17373,
+            },
+        });
+        expect(result.isError).not.toBe(true);
+        expect(JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({
+            ok: false,
+            error: "invalid-broker-host-candidate",
+            host: "attacker.example.test",
+            attempts: [],
+        }));
+    });
+
+    it("ignores untrusted hosts persisted in broker runtime metadata", { timeout: TIMEOUT }, async () => {
+        let attackerRequests = 0;
+        const attacker = createServer((_req, res) => {
+            attackerRequests += 1;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ ok: true, result: { ownerId: brokerOwnerId() } }));
+        });
+        await new Promise<void>((resolve) => attacker.listen(0, "127.0.0.1", resolve));
+        const address = attacker.address() as AddressInfo;
+        const runtimeFile = join(homeDir, ".ccc/devices/broker/runtime.json");
+        mkdirSync(join(homeDir, ".ccc/devices/broker"), { recursive: true });
+        try {
+            for (const runtime of [
+                { host: "localhost", hostCandidates: ["localhost"] },
+                { host: "0.0.0.0", probeHost: "localhost", hostCandidates: ["127.0.0.1"] },
+            ]) {
+                writeFileSync(runtimeFile, JSON.stringify({
+                    ownerId: brokerOwnerId(),
+                    pid: process.pid,
+                    ...runtime,
+                    port: address.port,
+                    managedBy: "ccc-host",
+                }));
+                await client.callTool({
+                    name: "device_status",
+                    arguments: { backend: "windows-vm", deviceId: "forged-runtime-route" },
+                });
+            }
+            expect(attackerRequests).toBe(0);
+        } finally {
+            rmSync(runtimeFile, { force: true });
+            await new Promise<void>((resolve, reject) => attacker.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("promotes bounded broker lifecycle diagnostics to the public MCP error", { timeout: TIMEOUT }, async () => {
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { wsb: "C:\\Windows\\System32\\WindowsSandbox.exe" },
+            commandRunner: vi.fn((command) => ({
+                ...command,
+                status: 1,
+                stdout: "",
+                stderr: "hyper-v-base-image-download-host-rejected",
+            })),
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const created = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "windows-sandbox",
+                    deviceId: "hyper-v-diagnostic-routing",
+                    name: "Hyper-V diagnostic routing",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    brokerPort: address.port,
+                },
+            });
+            expect(JSON.parse(((created.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({ ok: true }));
+            const result = await client.callTool({
+                name: "device_start",
+                arguments: {
+                    backend: "windows-sandbox",
+                    deviceId: "hyper-v-diagnostic-routing",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(payload).toEqual(expect.objectContaining({
+                ok: false,
+                error: "windows-sandbox-runtime-snapshot-failed",
+                detail: "error: windows-sandbox-runtime-snapshot-failed\nstderr: hyper-v-base-image-download-host-rejected",
+                routedBy: "device-lifecycle-broker",
+            }));
+        } finally {
+            cleanupOwner(brokerOwnerId());
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("routes device_list through broker inventory while retaining the container display", { timeout: TIMEOUT }, async () => {
+        const owner = brokerOwnerId();
+        writeOwnerDevices(owner, "windows-vm", [{
+            id: "broker-listed-windows-vm",
+            backend: "windows-vm",
+            status: "stopped",
+        }]);
+        const server = createDeviceBrokerServer({ cwd: repoRoot, host: "127.0.0.1", port: 0 });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_list",
+                arguments: { hostCandidates: ["127.0.0.1"], port: address.port },
+            });
+            expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(payload.routedBy).toBe("device-list-broker-implicit");
+            expect(payload.devices).toEqual(expect.arrayContaining([
+                expect.objectContaining({ id: "x11-current-display" }),
+                expect.objectContaining({ id: "broker-listed-windows-vm", backend: "windows-vm" }),
+            ]));
+        } finally {
+            cleanupOwner(owner);
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("routes explicit Hyper-V Linux tools through the advertised host broker backend", { timeout: TIMEOUT }, async () => {
+        const owner = brokerOwnerId();
+        const privateRoot = join(homeDir, ".ccc/device-broker-private/owners", owner, "linux-vm", "hyper-v-linux-route");
+        const deviceRoot = join(privateRoot, "artifacts");
+        const sshPrivateKeyPath = join(privateRoot, "secrets", "id_ed25519");
+        const sshHostPublicKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key.pub");
+        const sshKnownHostsPath = join(privateRoot, "secrets", "known_hosts");
+        const hostKeyBytes = Buffer.from("ccc-routing-host-key");
+        const hostKeyBase64 = hostKeyBytes.toString("base64");
+        const hostKeyFingerprint = `SHA256:${createHash("sha256").update(hostKeyBytes).digest("base64").replace(/=+$/, "")}`;
+        const incarnationId = "1".repeat(32);
+        mkdirSync(deviceRoot, { recursive: true });
+        mkdirSync(join(privateRoot, "secrets"), { recursive: true });
+        writeFileSync(sshPrivateKeyPath, "test-private-key");
+        writeFileSync(sshHostPublicKeyPath, `ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
+        writeFileSync(sshKnownHostsPath, `172.29.0.10 ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
+        writeFileSync(join(privateRoot, "incarnation.json"), JSON.stringify({ version: 1, ownerId: owner, backend: "linux-vm", deviceId: "hyper-v-linux-route", incarnationId, createdAt: new Date().toISOString() }));
+        const networkStatePath = join(homeDir, ".ccc", "device-broker-private", "network", "hyper-v.json");
+        mkdirSync(join(homeDir, ".ccc", "device-broker-private", "network"), { recursive: true });
+        writeFileSync(networkStatePath, JSON.stringify({ version: 1, switchName: "CCC Device Lab", switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", natName: "CCCDeviceLab", prefix: "172.29.0.0/24", gateway: "172.29.0.1", allocations: [{ ownerId: owner, deviceId: "hyper-v-linux-route", address: "172.29.0.10", allocatedAt: new Date().toISOString() }] }));
+        const routeDevice = {
+            id: "hyper-v-linux-route",
+            backend: "linux-vm",
+            status: "running",
+            provider: "hyper-v",
+            incarnationId,
+            memoryMb: 2048,
+            cpus: 2,
+            diskMaxBytes: 32 * 1024 * 1024 * 1024,
+            vmId: "12345678-1234-1234-1234-123456789abc",
+            vmName: `ccc-${owner}-hyper-v-linux-route-${incarnationId}`,
+            diskPath: join(deviceRoot, "disks", "root.vhdx"),
+            deviceRoot,
+            privateRoot,
+            sshPrivateKeyPath,
+            sshHostPublicKeyPath,
+            sshHostKeyFingerprint: hostKeyFingerprint,
+            sshKnownHostsPath,
+            guestUsername: `ccc${owner.slice(0, 8)}`,
+            networkAddress: "172.29.0.10",
+        };
+        writeBrokerDevices(owner, "linux-vm", [routeDevice]);
+        const commandRunner = vi.fn((command) => {
+            const script = command.provider === "hyper-v"
+                ? Buffer.from(command.args?.at(-1) || "", "base64").toString("utf16le")
+                : "";
+            return {
+                ...command,
+                status: 0,
+                stdout: command.provider === "hyper-v-ssh"
+                    ? "Linux"
+                    : script.includes("Restart-VM")
+                        ? JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName: `ccc-${owner}-hyper-v-linux-route-${incarnationId}`, state: "Running", status: "Operating normally", diskPath: join(deviceRoot, "disks", "root.vhdx") })
+                        : JSON.stringify({ available: true, platform: "win32", powershell: true, hyperVModule: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 32768, freeMemoryMb: 16384, logicalProcessors: 16, missing: [] }),
+                stderr: "",
+            };
+        });
+        const server = createDeviceBrokerServer({
+            cwd: repoRoot,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "C:\\Windows\\powershell.exe", "ssh.exe": "C:\\Windows\\ssh.exe", ssh: "C:\\Windows\\ssh.exe", "scp.exe": "C:\\Windows\\scp.exe", scp: "C:\\Windows\\scp.exe" },
+            commandRunner,
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_exec",
+                arguments: {
+                    backend: "linux-vm",
+                    deviceId: "hyper-v-linux-route",
+                    incarnationId,
+                    command: "uname -s",
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
+            expect(JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({
+                ok: true,
+                result: expect.objectContaining({ provider: "hyper-v-ssh", stdout: "Linux", backend: "linux-vm" }),
+            }));
+            expect(commandRunner.mock.calls.some(([command]) => command.provider === "hyper-v-ssh")).toBe(true);
+
+            const reboot = await client.callTool({
+                name: "device_reboot",
+                arguments: {
+                    backend: "linux-vm",
+                    deviceId: "hyper-v-linux-route",
+                    incarnationId,
+                    waitForBoot: false,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(reboot.isError, JSON.stringify(reboot.content)).not.toBe(true);
+            const rebootPayload = JSON.parse(((reboot.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(rebootPayload, JSON.stringify(rebootPayload)).toEqual(expect.objectContaining({ ok: true }));
+            expect(commandRunner.mock.calls.some(([command]) => {
+                if (command.provider !== "hyper-v") return false;
+                return Buffer.from(command.args?.at(-1) || "", "base64").toString("utf16le").includes("Restart-VM");
+            })).toBe(true);
+
+            writeBrokerDevices(owner, "linux-vm", [{ ...routeDevice, sshHostKeyFingerprint: `SHA256:${"A".repeat(43)}` }]);
+            const rejected = await client.callTool({
+                name: "device_exec",
+                arguments: { backend: "linux-vm", deviceId: "hyper-v-linux-route", incarnationId, command: "uname -s", hostCandidates: ["127.0.0.1"], port: address.port },
+            });
+            expect(JSON.parse(((rejected.content as Array<{ text?: string }>)[0].text || "{}"))).toEqual(expect.objectContaining({ ok: false, error: "hyper-v-linux-ssh-host-identity-invalid" }));
+        } finally {
+            cleanupOwner(owner);
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
 
     it("calls an explicitly supplied host broker RPC endpoint with owner token guard", { timeout: TIMEOUT }, async () => {
         const server = createDeviceBrokerServer({
@@ -2058,7 +2422,7 @@ describe("device-lab MCP broker routing", () => {
                             "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1",
                             "runtime-cleanup-failure-preservation-v1",
                             "appium-runtime-generation-fencing-v1",
-                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
                         ],
                     },
                 }));

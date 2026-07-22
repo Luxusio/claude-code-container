@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn, spawnSync } from "child_process";
+import { createHash } from "crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join, resolve } from "path";
@@ -27,6 +28,14 @@ const realTestRunner = join(repoRoot, "scripts", "real-tests", "run.ts");
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const PROCESS_SAMPLE_INTERVAL_MS = 50;
 const RESIDUE_INLINE_LIMIT = 4;
+const HYPER_V_NETWORK = Object.freeze({
+    switchName: "CCC Device Lab",
+    switchMarker: "ccc-device-lab:hyper-v-network:v1",
+    natName: "CCCDeviceLab",
+    prefix: "172.29.0.0/24",
+    gateway: "172.29.0.1",
+    prefixLength: 24,
+});
 
 export const REAL_PROVIDER_TARGETS = Object.freeze({
     "android-emulator": {
@@ -51,9 +60,23 @@ export const REAL_PROVIDER_TARGETS = Object.freeze({
         destructive: "Creates, controls, stops, and deletes a disposable Windows Sandbox session.",
         requireNoExistingWindowsSandbox: true,
     },
+    "windows-vm": {
+        module: "scripts/real-tests/level2-hyper-v-windows-vm.ts",
+        backendState: "windows-vm",
+        devicePrefix: "windows-vm-real-e2e-",
+        tempPrefixes: ["ccc-hyper-v-windows-e2e-"],
+        destructive: "Creates, boots, controls, checkpoints, stops, and deletes a disposable Hyper-V Windows VM.",
+    },
+    "linux-vm": {
+        module: "scripts/real-tests/level2-hyper-v-linux-vm.ts",
+        backendState: "linux-vm",
+        devicePrefix: "linux-hyper-v-real-e2e-",
+        tempPrefixes: ["ccc-hyper-v-linux-e2e-"],
+        destructive: "Creates, boots, controls, checkpoints, stops, and deletes a disposable Hyper-V Linux VM.",
+    },
 });
 
-function usage() {
+export function usage() {
     return [
         "Usage: npm run test:durability:device-lab:real -- --target <target> [options]",
         "",
@@ -61,7 +84,7 @@ function usage() {
         "",
         "Options:",
         "  --cycles <n>    Number of complete real E2E cycles, 1-100 (default: 10)",
-        "  --timeout <t>   Per-cycle timeout, for example 10m or 30m (default: 20m)",
+        "  --timeout <t>   Per-cycle timeout (default: 20m; Hyper-V VM targets: 7h)",
         "  --dry-run       Validate and print the execution plan without creating devices",
         "  --help          Show this help",
         "",
@@ -91,6 +114,7 @@ function durationMs(value, name) {
 
 export function parseRealProviderCycleArgs(args) {
     const options = { target: "", cycles: 10, timeoutMs: 20 * 60_000, dryRun: false, help: false };
+    let timeoutExplicit = false;
     for (let index = 0; index < args.length; index += 1) {
         const argument = args[index];
         const next = () => {
@@ -101,13 +125,19 @@ export function parseRealProviderCycleArgs(args) {
         };
         if (argument === "--target") options.target = next();
         else if (argument === "--cycles") options.cycles = positiveInteger(next(), argument, 100);
-        else if (argument === "--timeout") options.timeoutMs = durationMs(next(), argument);
+        else if (argument === "--timeout") {
+            options.timeoutMs = durationMs(next(), argument);
+            timeoutExplicit = true;
+        }
         else if (argument === "--dry-run") options.dryRun = true;
         else if (argument === "--help" || argument === "-h") options.help = true;
         else throw new Error(`unknown option: ${argument}`);
     }
     if (!options.help && !REAL_PROVIDER_TARGETS[options.target]) {
         throw new Error(`--target must be one of: ${Object.keys(REAL_PROVIDER_TARGETS).join(", ")}`);
+    }
+    if (!timeoutExplicit && (options.target === "windows-vm" || options.target === "linux-vm")) {
+        options.timeoutMs = 7 * 60 * 60_000;
     }
     return options;
 }
@@ -140,6 +170,58 @@ function matchingEntries(path, prefix) {
     return listOptionalDirectory(path, "test artifact")
         .filter((entry) => entry.startsWith(prefix))
         .map((entry) => join(path, entry));
+}
+
+function hyperVArtifactVhdxPaths(path, limit = 512) {
+    let root;
+    try {
+        root = lstatSync(path);
+    } catch (error) {
+        if (error?.code === "ENOENT") return [];
+        throw error;
+    }
+    if (!root.isDirectory() || root.isSymbolicLink()) return [];
+    const pending = [path];
+    const matches = [];
+    let inspected = 0;
+    while (pending.length > 0) {
+        const directory = pending.pop();
+        for (const entry of listOptionalDirectory(directory, "Hyper-V artifact")) {
+            inspected += 1;
+            if (inspected > limit) throw new Error(`Hyper-V artifact inspection exceeded ${limit} entries at ${path}`);
+            const candidate = join(directory, entry);
+            const metadata = lstatSync(candidate);
+            if (metadata.isSymbolicLink()) continue;
+            if (metadata.isDirectory()) pending.push(candidate);
+            else if (metadata.isFile() && /\.(?:avhdx|vhdx)$/i.test(entry)) matches.push(candidate);
+        }
+    }
+    return matches;
+}
+
+function hyperVOperationLockKey(deviceId) {
+    return createHash("sha256").update(deviceId).digest("hex").slice(0, 32);
+}
+
+function classifyHyperVVm(vm, owner, definition) {
+    const namePrefix = `ccc-${owner}-`;
+    const markerPrefix = `ccc-device-lab:${owner}:`;
+    const nameBody = vm.name.startsWith(namePrefix) ? vm.name.slice(namePrefix.length) : "";
+    const nameMatch = nameBody.match(/^(.*)-([a-f0-9]{32})$/);
+    const nameDeviceId = nameMatch ? nameMatch[1] : "";
+    const nameIncarnationId = nameMatch ? nameMatch[2] : "";
+    const markerBody = vm.notes.startsWith(markerPrefix) ? vm.notes.slice(markerPrefix.length) : "";
+    const incarnationMarker = markerBody.match(/^(.*):([a-f0-9]{32})$/);
+    const markerDeviceId = incarnationMarker ? incarnationMarker[1] : markerBody;
+    const nameMatches = nameDeviceId.startsWith(definition.devicePrefix);
+    const markerMatches = markerDeviceId.startsWith(definition.devicePrefix);
+    const expectedNameDeviceId = markerDeviceId.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "vm";
+    if (nameMatches && markerMatches && nameDeviceId === expectedNameDeviceId && nameIncarnationId === incarnationMarker?.[2]) {
+        return { ownership: "owned", deviceId: markerDeviceId };
+    }
+    if (nameMatches && !vm.notes) return { ownership: "owned", deviceId: nameDeviceId };
+    if (nameMatches || markerMatches) return { ownership: "ambiguous", deviceId: nameDeviceId || markerDeviceId };
+    return { ownership: "foreign", deviceId: "" };
 }
 
 export function listAndroidAvdNames(options = {}) {
@@ -179,6 +261,195 @@ export function selectAndroidPhysicalDevice(devices, leases = [], owner = curren
     return candidates.find((device) => leaseFor(device.serial)?.ownerId === owner)
         || candidates.find((device) => !leaseFor(device.serial))
         || null;
+}
+
+export function parseHyperVVmInventory(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch (error) {
+        throw new Error(`Hyper-V VM inventory returned invalid JSON: ${error.message}`);
+    }
+    const values = Array.isArray(parsed) ? parsed : parsed && typeof parsed === "object" ? [parsed] : null;
+    if (!values) throw new Error("Hyper-V VM inventory must be an array");
+    return values.map((value) => {
+        if (!value || typeof value !== "object" || typeof value.name !== "string" || typeof value.notes !== "string") {
+            throw new Error("Hyper-V VM inventory entry must contain name and notes strings");
+        }
+        return {
+            name: value.name,
+            notes: value.notes,
+            vmId: typeof value.vmId === "string" ? value.vmId.toLowerCase() : "",
+            diskPaths: Array.isArray(value.diskPaths) ? value.diskPaths.filter((item) => typeof item === "string") : [],
+            checkpoints: Array.isArray(value.checkpoints) ? value.checkpoints.filter((item) => typeof item === "string") : [],
+        };
+    });
+}
+
+function parseOptionalInventoryArray(value, kind) {
+    if (value === null || value === undefined) return null;
+    if (!Array.isArray(value) || value.some((item) => !item || typeof item !== "object" || Array.isArray(item))) {
+        throw new Error(`Hyper-V network inventory ${kind} must be an array`);
+    }
+    return value;
+}
+
+export function parseHyperVNetworkInventory(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return { switches: null, nats: null, addresses: null };
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch (error) {
+        throw new Error(`Hyper-V network inventory returned invalid JSON: ${error.message}`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Hyper-V network inventory must be an object");
+    }
+    const switches = parseOptionalInventoryArray(parsed.switches, "switches");
+    const nats = parseOptionalInventoryArray(parsed.nats, "NATs");
+    const addresses = parseOptionalInventoryArray(parsed.addresses, "addresses");
+    return {
+        switches: switches?.map((item) => ({
+            name: typeof item.name === "string" ? item.name : "",
+            id: typeof item.id === "string" ? item.id.toLowerCase() : "",
+            type: typeof item.type === "string" ? item.type : "",
+            notes: typeof item.notes === "string" ? item.notes : "",
+        })) ?? null,
+        nats: nats?.map((item) => ({
+            name: typeof item.name === "string" ? item.name : "",
+            prefix: typeof item.prefix === "string" ? item.prefix : "",
+            instanceId: typeof item.instanceId === "string" ? item.instanceId : "",
+        })) ?? null,
+        addresses: addresses?.map((item) => ({
+            interfaceAlias: typeof item.interfaceAlias === "string" ? item.interfaceAlias : "",
+            address: typeof item.address === "string" ? item.address : "",
+            prefixLength: Number.isInteger(item.prefixLength) ? item.prefixLength : null,
+        })) ?? null,
+    };
+}
+
+export function listHyperVVmInventory(options = {}) {
+    if ((options.platform || process.platform) !== "win32") return [];
+    const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "try {",
+        "  $Rows = @(Get-VM -ErrorAction Stop | ForEach-Object {",
+        "    $Vm = $_",
+        "    [ordered]@{ name = [string]$Vm.Name; notes = [string]$Vm.Notes; vmId = [string]$Vm.Id; diskPaths = @((Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop | ForEach-Object { [string]$_.Path })); checkpoints = @((Get-VMSnapshot -VM $Vm -ErrorAction Stop | ForEach-Object { [string]$_.Name })) }",
+        "  })",
+        "} catch {",
+        "  $InventoryError = $_",
+        "  $CurrentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        "  $HyperVGroupSid = [Security.Principal.SecurityIdentifier]'S-1-5-32-578'",
+        "  $IsMember = $false",
+        "  try { $IsMember = [bool]@(Get-LocalGroupMember -SID $HyperVGroupSid -ErrorAction Stop | Where-Object { $_.SID.Value -eq $CurrentUserSid }).Count } catch { $IsMember = $false }",
+        "  $Principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()",
+        "  $TokenHasRole = $Principal.IsInRole($HyperVGroupSid) -or $Principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        "  if ($TokenHasRole) { throw $InventoryError }",
+        "  if ($IsMember) { throw 'hyper-v-management-permission-unavailable:sign out of Windows and sign in once, then rerun the durability test' }",
+        "  throw 'hyper-v-management-permission-unavailable:run ccc devices setup hyper-v --confirm, approve the one-time elevation, then sign out and sign in once'",
+        "}",
+        "ConvertTo-Json -InputObject $Rows -Compress -Depth 5",
+    ].join("; ");
+    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+    });
+    if (result.status !== 0) throw new Error(`Hyper-V VM inventory failed: ${cleanupCommandError(result)}`);
+    return parseHyperVVmInventory(result.stdout);
+}
+
+export function listHyperVNetworkInventory(options = {}) {
+    if ((options.platform || process.platform) !== "win32") return { switches: null, nats: null, addresses: null };
+    const script = [
+        "$ErrorActionPreference = 'Stop'",
+        "$Switches = @(Get-VMSwitch -ErrorAction Stop | ForEach-Object { [ordered]@{ name = [string]$_.Name; id = [string]$_.Id; type = [string]$_.SwitchType; notes = [string]$_.Notes } })",
+        "$Nats = @(Get-NetNat -ErrorAction Stop | ForEach-Object { [ordered]@{ name = [string]$_.Name; prefix = [string]$_.InternalIPInterfaceAddressPrefix; instanceId = [string]$_.InstanceID } })",
+        "$Addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [ordered]@{ interfaceAlias = [string]$_.InterfaceAlias; address = [string]$_.IPAddress; prefixLength = [int]$_.PrefixLength } })",
+        "[ordered]@{ switches = $Switches; nats = $Nats; addresses = $Addresses } | ConvertTo-Json -Compress -Depth 5",
+    ].join("; ");
+    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+    });
+    if (result.status !== 0) throw new Error(`Hyper-V network inventory failed: ${cleanupCommandError(result)}`);
+    return parseHyperVNetworkInventory(result.stdout);
+}
+
+function hyperVSnapshotNetworkIdentity(options = {}) {
+    if (options.networkIdentity !== undefined) return options.networkIdentity;
+    const home = options.home || homedir();
+    const path = join(home, ".ccc", "device-broker-private", "network", "hyper-v.json");
+    const metadata = readOptionalJson(path, "Hyper-V snapshot network state");
+    if (!metadata.exists) return null;
+    const state = metadata.value;
+    if (!state || typeof state !== "object" || Array.isArray(state)
+        || state.version !== 1
+        || state.switchName !== HYPER_V_NETWORK.switchName
+        || typeof state.switchId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(state.switchId)
+        || typeof state.marker !== "string" || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(state.marker)
+        || (state.natName !== HYPER_V_NETWORK.natName && !/^CCCDeviceLab-[a-f0-9]{24}$/.test(String(state.natName || "")))
+        || state.prefix !== HYPER_V_NETWORK.prefix
+        || state.gateway !== HYPER_V_NETWORK.gateway
+        || typeof state.managedNat !== "boolean"
+        || !Array.isArray(state.allocations)
+        || (state.managedNat === true && (typeof state.natInstanceId !== "string" || !state.natInstanceId))) {
+        throw new Error(`Hyper-V snapshot network state malformed at ${path}`);
+    }
+    return state;
+}
+
+export function snapshotHyperVHostIdentity(options = {}) {
+    const vms = (options.listHyperVVms || listHyperVVmInventory)(options.hyperVOptions || {})
+        .filter((vm) => !options.owner || !options.definition || classifyHyperVVm(vm, options.owner, options.definition).ownership !== "owned")
+        .map((vm) => ({
+            name: vm.name,
+            notes: vm.notes,
+            vmId: vm.vmId,
+            diskPaths: [...(vm.diskPaths || [])].sort(),
+            checkpoints: [...(vm.checkpoints || [])].sort(),
+        }))
+        .sort((left, right) => `${left.vmId}\0${left.name}`.localeCompare(`${right.vmId}\0${right.name}`));
+    const network = (options.listHyperVNetworks || listHyperVNetworkInventory)(options.hyperVNetworkOptions || options.hyperVOptions || {});
+    if (!Array.isArray(network.switches) || !Array.isArray(network.nats) || !Array.isArray(network.addresses)) {
+        throw new Error("Hyper-V network identity inventory incomplete");
+    }
+    const identity = hyperVSnapshotNetworkIdentity(options);
+    const sortBy = (values, key) => [...values].sort((left, right) => String(left[key] || "").localeCompare(String(right[key] || "")));
+    const switches = network.switches.filter((item) => !identity
+        || item.name !== identity.switchName
+        || item.id !== String(identity.switchId).toLowerCase()
+        || item.notes !== identity.marker);
+    const nats = network.nats.filter((item) => !identity
+        || identity.managedNat !== true
+        || item.name !== identity.natName
+        || item.prefix !== identity.prefix
+        || item.instanceId !== identity.natInstanceId);
+    const managedAlias = identity ? `vEthernet (${identity.switchName})` : null;
+    const addresses = network.addresses.filter((item) => item.interfaceAlias.startsWith("vEthernet (")
+        && (!identity || item.interfaceAlias !== managedAlias || item.address !== identity.gateway || item.prefixLength !== HYPER_V_NETWORK.prefixLength));
+    return {
+        vms,
+        switches: sortBy(switches, "id"),
+        nats: sortBy(nats, "instanceId"),
+        addresses: [...addresses].sort((left, right) =>
+            `${left.interfaceAlias}\0${left.address}\0${left.prefixLength}`.localeCompare(`${right.interfaceAlias}\0${right.address}\0${right.prefixLength}`)),
+    };
+}
+
+export function assertHyperVHostIdentityUnchanged(before, after) {
+    const beforeJson = JSON.stringify(before);
+    const afterJson = JSON.stringify(after);
+    if (beforeJson === afterJson) return;
+    const digest = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
+    throw new Error(`Hyper-V host identity changed during cycle (before=${digest(beforeJson)} after=${digest(afterJson)})`);
 }
 
 export function configureAndroidPhysicalDevice(env = process.env, options = {}) {
@@ -234,12 +505,80 @@ export function inspectTestOwnedResidue(target, options = {}) {
         throw new Error(`device state metadata malformed at ${statePath}: expected an object with devices[]`);
     }
     const residue = [];
+    const hyperVTarget = target === "windows-vm" || target === "linux-vm";
+    const testDeviceIds = new Set();
     for (const device of Array.isArray(state?.devices) ? state.devices : []) {
         if (String(device?.id || "").startsWith(definition.devicePrefix)) {
             residue.push(`device-state:${device.id}`);
+            testDeviceIds.add(device.id);
         }
     }
-    for (const path of matchingEntries(backendRoot, definition.devicePrefix)) residue.push(`owner-artifact:${path}`);
+    const ownerArtifacts = matchingEntries(backendRoot, definition.devicePrefix);
+    for (const path of ownerArtifacts) {
+        residue.push(`owner-artifact:${path}`);
+        testDeviceIds.add(path.replace(/\\/g, "/").split("/").at(-1));
+        if (hyperVTarget) for (const diskPath of hyperVArtifactVhdxPaths(path)) residue.push(`vhdx:${diskPath}`);
+    }
+    let hyperVNetworkState = null;
+    let hyperVNetworkIntent = null;
+    if (hyperVTarget) {
+        const privateBackendRoot = join(home, ".ccc", "device-broker-private", "owners", owner, definition.backendState);
+        for (const path of matchingEntries(privateBackendRoot, definition.devicePrefix)) {
+            residue.push(`private-artifact:${path}`);
+            testDeviceIds.add(path.replace(/\\/g, "/").split("/").at(-1));
+        }
+        const networkStatePath = join(home, ".ccc", "device-broker-private", "network", "hyper-v.json");
+        const networkMetadata = readOptionalJson(networkStatePath, "Hyper-V network state");
+        const networkState = networkMetadata.value;
+        if (networkMetadata.exists && (!networkState || typeof networkState !== "object" || Array.isArray(networkState)
+            || networkState.version !== 1 || networkState.switchName !== HYPER_V_NETWORK.switchName
+            || typeof networkState.switchId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(networkState.switchId)
+            || (networkState.natName !== HYPER_V_NETWORK.natName && !/^CCCDeviceLab-[a-f0-9]{24}$/.test(String(networkState.natName || "")))
+            || (networkState.marker !== undefined && !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(String(networkState.marker)))
+            || (networkState.managedNat === true && (typeof networkState.natInstanceId !== "string" || !networkState.natInstanceId))
+            || networkState.prefix !== HYPER_V_NETWORK.prefix
+            || networkState.gateway !== HYPER_V_NETWORK.gateway || !Array.isArray(networkState.allocations))) {
+            throw new Error(`Hyper-V network state metadata malformed at ${networkStatePath}: expected the CCC Hyper-V v1 network and allocations[]`);
+        }
+        hyperVNetworkState = networkState;
+        const networkIntentPath = join(home, ".ccc", "device-broker-private", "network", "hyper-v-intent.json");
+        const intentMetadata = readOptionalJson(networkIntentPath, "Hyper-V network intent");
+        const intent = intentMetadata.value;
+        if (intentMetadata.exists && (!intent || typeof intent !== "object" || Array.isArray(intent)
+            || intent.version !== 1 || typeof intent.token !== "string" || !/^[a-f0-9]{24}$/.test(intent.token)
+            || intent.switchName !== HYPER_V_NETWORK.switchName
+            || intent.natName !== `${HYPER_V_NETWORK.natName}-${intent.token}`
+            || intent.marker !== `ccc-device-lab:hyper-v-network:${intent.token}`
+            || intent.prefix !== HYPER_V_NETWORK.prefix || intent.gateway !== HYPER_V_NETWORK.gateway
+            || typeof intent.createdAt !== "string")) {
+            throw new Error(`Hyper-V network intent metadata malformed at ${networkIntentPath}`);
+        }
+        if (networkState && intent && (networkState.natName !== intent.natName
+            || (networkState.marker || HYPER_V_NETWORK.switchMarker) !== intent.marker)) {
+            throw new Error(`Hyper-V network intent conflicts with committed state at ${networkIntentPath}`);
+        }
+        hyperVNetworkIntent = intent;
+        const identities = new Set();
+        const addresses = new Set();
+        for (const allocation of Array.isArray(networkState?.allocations) ? networkState.allocations : []) {
+            if (!allocation || typeof allocation !== "object" || Array.isArray(allocation)
+                || typeof allocation.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(allocation.ownerId)
+                || typeof allocation.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(allocation.deviceId)
+                || typeof allocation.address !== "string" || !/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(allocation.address)
+                || typeof allocation.allocatedAt !== "string") {
+                throw new Error(`Hyper-V network allocation metadata malformed at ${networkStatePath}`);
+            }
+            const identity = `${allocation.ownerId}:${allocation.deviceId}`;
+            if (identities.has(identity) || addresses.has(allocation.address)) {
+                throw new Error(`Hyper-V network allocation metadata conflicted at ${networkStatePath}`);
+            }
+            identities.add(identity);
+            addresses.add(allocation.address);
+            if (allocation.ownerId === owner && allocation.deviceId.startsWith(definition.devicePrefix)) {
+                residue.push(`network-allocation:${networkStatePath}:${allocation.deviceId}`);
+            }
+        }
+    }
 
     const leaseRoot = join(root, "physical-leases", definition.backendState, "locks");
     {
@@ -285,7 +624,103 @@ export function inspectTestOwnedResidue(target, options = {}) {
             if (name.startsWith(testAvdPrefix)) residue.push(`sdk-avd:${name}`);
         }
     }
+    if (hyperVTarget) {
+        const inventory = (options.listHyperVVms || listHyperVVmInventory)(options.hyperVOptions || {});
+        for (const vm of inventory) {
+            const classification = classifyHyperVVm(vm, owner, definition);
+            if (classification.ownership === "ambiguous") {
+                residue.push(`ambiguous-host-vm:${vm.name || classification.deviceId}`);
+                continue;
+            }
+            if (classification.ownership === "owned") {
+                testDeviceIds.add(classification.deviceId);
+                residue.push(`host-vm:${vm.name}`);
+                for (const diskPath of vm.diskPaths || []) residue.push(`host-vm-disk:${vm.name}:${diskPath}`);
+                for (const checkpoint of vm.checkpoints || []) residue.push(`host-vm-checkpoint:${vm.name}:${checkpoint}`);
+            }
+        }
+        const operationRoot = join(backendRoot, "operations");
+        const operationEntries = listOptionalDirectory(operationRoot, "Hyper-V operation lock");
+        for (const deviceId of testDeviceIds) {
+            const prefix = `${hyperVOperationLockKey(deviceId)}.lock`;
+            for (const entry of operationEntries.filter((candidate) => candidate.startsWith(prefix))) {
+                residue.push(`operation-lock:${join(operationRoot, entry)}:${deviceId}`);
+            }
+        }
+        const mutationLocks = listOptionalDirectory(backendRoot, "Hyper-V mutation lock")
+            .filter((entry) => entry.startsWith("devices.mutation.lock"));
+        if (testDeviceIds.size > 0) {
+            const hasForeignState = (state?.devices || []).some((device) => !String(device?.id || "").startsWith(definition.devicePrefix));
+            for (const entry of mutationLocks) {
+                residue.push(`${hasForeignState ? "ambiguous-mutation-lock" : "mutation-lock"}:${join(backendRoot, entry)}`);
+            }
+        }
+
+        const networkInventory = (options.listHyperVNetworks || listHyperVNetworkInventory)(options.hyperVNetworkOptions || options.hyperVOptions || {});
+        const switches = networkInventory?.switches;
+        const namedSwitches = Array.isArray(switches) ? switches.filter((item) => item.name === HYPER_V_NETWORK.switchName) : [];
+        const networkIdentity = hyperVNetworkState || hyperVNetworkIntent;
+        const expectedMarker = networkIdentity?.marker || HYPER_V_NETWORK.switchMarker;
+        const expectedNatName = networkIdentity?.natName || HYPER_V_NETWORK.natName;
+        const ownedSwitches = namedSwitches.filter((item) => item.notes === expectedMarker
+            && item.type === "Internal"
+            && (!hyperVNetworkState || item.id === hyperVNetworkState.switchId.toLowerCase()));
+        if (namedSwitches.length > 0 && ownedSwitches.length !== 1) {
+            residue.push(`ambiguous-host-network-switch:${HYPER_V_NETWORK.switchName}`);
+        }
+        const hasNonTargetAllocation = (hyperVNetworkState?.allocations || []).some((allocation) =>
+            allocation.ownerId !== owner || !allocation.deviceId.startsWith(definition.devicePrefix));
+        if (ownedSwitches.length === 1 && !hasNonTargetAllocation && !hyperVNetworkIntent) {
+            residue.push(`host-network-switch:${ownedSwitches[0].name}`);
+            const matchingNats = Array.isArray(networkInventory?.nats)
+                ? networkInventory.nats.filter((item) => item.name === expectedNatName
+                    && item.prefix === HYPER_V_NETWORK.prefix
+                    && hyperVNetworkState?.managedNat === true
+                    && item.instanceId === hyperVNetworkState.natInstanceId)
+                : [];
+            if (matchingNats.length === 1) residue.push(`host-network-nat:${matchingNats[0].name}`);
+            else if (Array.isArray(networkInventory?.nats) && networkInventory.nats.some((item) => item.name === expectedNatName)) {
+                residue.push(`ambiguous-host-network-nat:${expectedNatName}`);
+            }
+            const alias = `vEthernet (${HYPER_V_NETWORK.switchName})`;
+            for (const address of Array.isArray(networkInventory?.addresses) ? networkInventory.addresses : []) {
+                if (address.interfaceAlias === alias && address.address === HYPER_V_NETWORK.gateway
+                    && address.prefixLength === HYPER_V_NETWORK.prefixLength) {
+                    residue.push(`host-network-address:${alias}:${address.address}/${address.prefixLength}`);
+                }
+            }
+        }
+    }
     return residue;
+}
+
+export function recoverHyperVPrivateResidue(target, options = {}) {
+    const definition = REAL_PROVIDER_TARGETS[target];
+    if (!definition || (target !== "windows-vm" && target !== "linux-vm")) {
+        throw new Error(`Hyper-V private residue recovery does not support target: ${target}`);
+    }
+    const home = options.home || homedir();
+    const owner = options.owner || currentOwnerId();
+    const backendRoot = resolve(home, ".ccc", "device-broker-private", "owners", owner, definition.backendState);
+    if (!existsSync(backendRoot)) return { privateArtifacts: 0 };
+    const rootMetadata = lstatSync(backendRoot);
+    if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+        throw new Error(`Hyper-V private residue root is not a stable directory: ${backendRoot}`);
+    }
+    let privateArtifacts = 0;
+    for (const entry of listOptionalDirectory(backendRoot, "Hyper-V private artifact")) {
+        if (!entry.startsWith(definition.devicePrefix)) continue;
+        const path = resolve(backendRoot, entry);
+        if (dirname(path) !== backendRoot) throw new Error(`refusing Hyper-V private residue path outside root: ${path}`);
+        const metadata = lstatSync(path);
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+            throw new Error(`refusing non-directory Hyper-V private residue: ${path}`);
+        }
+        rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (existsSync(path)) throw new Error(`Hyper-V private residue remained after cleanup: ${path}`);
+        privateArtifacts += 1;
+    }
+    return { privateArtifacts };
 }
 
 export function snapshotTestTempArtifacts(target, options = {}) {
@@ -579,20 +1014,49 @@ function residueKind(item) {
     return separator > 0 ? String(item).slice(0, separator) : "other";
 }
 
+const HYPER_V_PROVIDER_RECOVERABLE_RESIDUE = new Set([
+    "device-state",
+    "owner-artifact",
+    "private-artifact",
+    "vhdx",
+    "network-allocation",
+    "host-vm",
+    "host-vm-disk",
+    "host-vm-checkpoint",
+    "host-network-switch",
+    "host-network-nat",
+    "host-network-address",
+]);
+
+function hyperVProviderCanRecover(items) {
+    return items.some((item) => residueKind(item) === "device-state")
+        && items.every((item) => HYPER_V_PROVIDER_RECOVERABLE_RESIDUE.has(residueKind(item)));
+}
+
 function compactResidueItem(item) {
     const text = String(item);
     const separator = text.indexOf(":");
     if (separator < 0) return text;
     const kind = text.slice(0, separator);
     const value = text.slice(separator + 1);
-    if (!kind.endsWith("artifact") && !kind.includes("lease") && kind !== "host-lock") return text;
+    if (kind === "host-vm-disk") {
+        const pathSeparator = value.indexOf(":");
+        const vmName = pathSeparator >= 0 ? value.slice(0, pathSeparator) : value;
+        const path = pathSeparator >= 0 ? value.slice(pathSeparator + 1) : "";
+        const leaf = path.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || path;
+        return `${kind}:${vmName}:${leaf}`;
+    }
+    if (!kind.endsWith("artifact") && !kind.includes("lease") && !kind.includes("lock") && kind !== "vhdx") return text;
     const leaf = value.replace(/\\/g, "/").split("/").filter(Boolean).at(-1) || value;
     return `${kind}:${leaf}`;
 }
 
 export function formatResidueSummary(items, inlineLimit = RESIDUE_INLINE_LIMIT) {
     const entries = [...items].map(String);
-    if (entries.length <= inlineLimit) return entries.join(", ");
+    if (entries.length <= inlineLimit) return entries.map((entry) => {
+        const kind = residueKind(entry);
+        return kind === "host-vm-disk" || kind === "vhdx" || kind.includes("lock") ? compactResidueItem(entry) : entry;
+    }).join(", ");
     const counts = new Map();
     const examples = new Map();
     for (const entry of entries) {
@@ -706,11 +1170,17 @@ export async function terminateTimedOutProcessTree(child, rootIdentity, registry
             }
         }
     }
-    try {
-        survivors = liveOwnedProcessIdentities(registry, snapshot());
-    } catch (error) {
-        errors.push(`final survivor verification failed: ${error.message}`);
-    }
+    const finalDeadline = Date.now() + verificationTimeoutMs;
+    do {
+        try {
+            survivors = liveOwnedProcessIdentities(registry, snapshot());
+        } catch (error) {
+            errors.push(`final survivor verification failed: ${error.message}`);
+            break;
+        }
+        if (survivors.length === 0 || Date.now() >= finalDeadline) break;
+        await sleep(50);
+    } while (true);
     if (survivors.length > 0) errors.push(`survivors: ${describeProcessIdentities(survivors)}`);
     return { ok: errors.length === 0 && survivors.length === 0, errors, survivors };
 }
@@ -748,7 +1218,7 @@ export async function runCycle(target, timeout, spawnImpl = spawn, options = {})
     const spec = realProviderCycleCommand(target);
     const child = spawnImpl(spec.command, spec.args, {
         cwd: repoRoot,
-        env: { ...process.env, CCC_TEST_LEVEL: "2" },
+        env: { ...process.env, CCC_TEST_LEVEL: "2", CCC_DEVICE_LAB_DURABILITY: "1" },
         detached: process.platform !== "win32",
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
@@ -881,10 +1351,28 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
     const recordResidue = dependencies.writeResidueDiagnostic || writeResidueDiagnostic;
     const recoverAndroidResidue = dependencies.recoverAndroidEmulatorResidue || recoverAndroidEmulatorResidue;
     const recoverAndroidPhysicalResidue = dependencies.recoverAndroidPhysicalDeviceResidue || recoverAndroidPhysicalDeviceResidue;
+    const recoverHyperVPrivate = dependencies.recoverHyperVPrivateResidue || recoverHyperVPrivateResidue;
+    const snapshotHyperVIdentity = dependencies.snapshotHyperVHostIdentity || snapshotHyperVHostIdentity;
     let androidPhysicalSelected = false;
     for (let cycle = 1; cycle <= options.cycles; cycle += 1) {
         let beforeResidue = inspectResidue(options.target);
         let beforeArtifacts = [...inspectArtifacts(options.target)];
+        if ((options.target === "windows-vm" || options.target === "linux-vm")
+            && beforeResidue.length > 0
+            && beforeResidue.every((item) => item.startsWith("private-artifact:"))
+            && beforeArtifacts.length === 0) {
+            const recovered = await recoverHyperVPrivate(options.target);
+            beforeResidue = inspectResidue(options.target);
+            if (beforeResidue.length > 0) {
+                throw new Error(residueFailureDetail(
+                    `Hyper-V private recovery did not clear residue before cycle ${cycle}`,
+                    { target: options.target, cycle, phase: "recovery" },
+                    beforeResidue,
+                    recordResidue,
+                ));
+            }
+            console.log(`RECOVER cycle=${cycle}/${options.cycles} Hyper-V private E2E residue cleared (${Number(recovered?.privateArtifacts) || 0} items)`);
+        }
         if (options.target === "android-emulator" && (beforeResidue.length > 0 || beforeArtifacts.length > 0)) {
             const recovered = await recoverAndroidResidue();
             beforeResidue = inspectResidue(options.target);
@@ -929,13 +1417,16 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
         const recoverableWindowsResidue = options.target === "windows-sandbox"
             && beforeResidue.length > 0
             && beforeArtifacts.length === 0;
+        const recoverableHyperVResidue = (options.target === "windows-vm" || options.target === "linux-vm")
+            && hyperVProviderCanRecover(beforeResidue)
+            && beforeArtifacts.length === 0;
         if (definition.requireNoExistingWindowsSandbox) {
             const sessions = inspectWindowsSessions();
             if (sessions.length > 0 && !recoverableWindowsResidue) {
                 throw new Error(`refusing cycle ${cycle}/${options.cycles} while a Windows Sandbox session is active (IDs: ${sessions.join(", ")})`);
             }
         }
-        if ((beforeResidue.length > 0 && !recoverableWindowsResidue) || beforeArtifacts.length > 0) {
+        if ((beforeResidue.length > 0 && !recoverableWindowsResidue && !recoverableHyperVResidue) || beforeArtifacts.length > 0) {
             const items = [
                 ...beforeResidue,
                 ...beforeArtifacts.map((path) => `temp-artifact:${path}`),
@@ -950,6 +1441,13 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
         if (recoverableWindowsResidue) {
             console.log(`RECOVER cycle=${cycle}/${options.cycles} Windows Sandbox E2E residue will be verified and cleaned by the provider test`);
         }
+        if (recoverableHyperVResidue) {
+            console.log(`RECOVER cycle=${cycle}/${options.cycles} Hyper-V ${options.target === "linux-vm" ? "Linux" : "Windows"} VM E2E residue will be verified and cleaned by the provider test`);
+        }
+        const hyperVIdentityOptions = { owner: currentOwnerId(), definition, home: homedir() };
+        const hyperVIdentityBaseline = (options.target === "windows-vm" || options.target === "linux-vm")
+            ? snapshotHyperVIdentity(hyperVIdentityOptions)
+            : null;
         const started = Date.now();
         let result = null;
         const failures = [];
@@ -1009,6 +1507,13 @@ export async function main(args = process.argv.slice(2), dependencies = {}) {
             }
         } catch (error) {
             failures.push(`post-cycle residue inspection failed: ${error.message}`);
+        }
+        if (hyperVIdentityBaseline) {
+            try {
+                assertHyperVHostIdentityUnchanged(hyperVIdentityBaseline, snapshotHyperVIdentity(hyperVIdentityOptions));
+            } catch (error) {
+                failures.push(error.message);
+            }
         }
         if (failures.length > 0) {
             throw new Error(`cycle ${cycle}/${options.cycles} failed: ${failures.join("; ")}`);

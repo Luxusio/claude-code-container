@@ -17,7 +17,9 @@ const HOST_CANDIDATES = [
 ];
 const MAX_PROBE_CANDIDATES = 8;
 const MAX_PROBE_TIMEOUT_MS = 2000;
-const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
+const TRUSTED_BROKER_HOSTS = new Set(HOST_CANDIDATES);
+const BROKER_BIND_ANY_HOSTS = new Set(["0.0.0.0", "::"]);
+export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "windows-sandbox-window-minimize-v4",
     "constant-time-existing-owner-auth-v1",
     "atomic-owner-secret-provisioning-v1",
@@ -74,9 +76,10 @@ const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "guest-helper-recording-proxy-v1",
     "physical-unattached-wireless-routing-v1",
     "android-recording-signal-fallback-v1",
+    "hyper-v-vm-managed-auto-images-v7",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
-const MAX_RPC_TIMEOUT_MS = 615000;
+const MAX_RPC_TIMEOUT_MS = 21615000;
 const MAX_RPC_BODY_BYTES = 64 * 1024;
 export const BROKER_CONTROL_RESPONSE_LIMIT_BYTES = 1024 * 1024;
 export const BROKER_RPC_RESPONSE_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -195,7 +198,7 @@ function brokerContainerContract() {
 function brokerPersistence(owner = ownerId()) {
     const root = brokerStateRoot();
     const ownerRoot = join(root, "owners", owner);
-    const backendStateKeys = ["android", "android-device", "ios", "ios-device", "windows", "macos"];
+    const backendStateKeys = ["android", "android-device", "ios", "ios-device", "windows", "windows-vm", "macos", "linux-vm"];
     return {
         root,
         durableAcrossContainerRecreation: true,
@@ -266,6 +269,18 @@ function readBrokerRuntime() {
     try {
         return readDeviceLabStateFile(brokerRuntimeFile(), (parsed) => {
             if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("invalid-broker-runtime");
+            if (typeof parsed.host !== "string"
+                || (!TRUSTED_BROKER_HOSTS.has(parsed.host) && !BROKER_BIND_ANY_HOSTS.has(parsed.host))) {
+                throw new Error("invalid-broker-runtime-host");
+            }
+            if (parsed.probeHost !== undefined
+                && (typeof parsed.probeHost !== "string" || !TRUSTED_BROKER_HOSTS.has(parsed.probeHost))) {
+                throw new Error("invalid-broker-runtime-host");
+            }
+            if (Array.isArray(parsed.hostCandidates)
+                && parsed.hostCandidates.some((host) => typeof host !== "string" || !TRUSTED_BROKER_HOSTS.has(host))) {
+                throw new Error("invalid-broker-runtime-host");
+            }
             return parsed;
         }, "broker-runtime", BROKER_RUNTIME_FILE_LIMIT_BYTES);
     } catch {
@@ -694,11 +709,17 @@ async function terminateBrokerProcess(pid, timeoutMs = 3000) {
     return { ok: exited, pid, method: "signal" };
 }
 
-function isBrokerServeCommandLine(commandLine, port) {
+function isBrokerServeCommandLine(commandLine, port, expectedCliPath) {
     const normalized = String(commandLine || "").replace(/["']/g, " ").replace(/\s+/g, " ").trim();
+    const normalizedPath = (value) => String(value || "").replace(/["']/g, "").replace(/\\/g, "/").toLowerCase();
+    const commandTokens = Array.from(String(commandLine || "").matchAll(/"([^"]*)"|'([^']*)'|([^\s]+)/g), (match) => match[1] ?? match[2] ?? match[3]);
+    const expectedPathVerified = !expectedCliPath || (commandTokens.length > 1
+        && /(?:^|\/)node(?:\.exe)?$/i.test(normalizedPath(commandTokens[0]))
+        && normalizedPath(commandTokens[1]) === normalizedPath(expectedCliPath));
     return /\bdevices\s+broker\s+serve\b/i.test(normalized)
         && (/\bccc(?:\.cmd|\.exe)?\b/i.test(normalized) || /\bnode(?:\.exe)?\b.*\bindex\.js\b/i.test(normalized))
-        && new RegExp(`(?:^|\\s)--port(?:=|\\s+)${port}(?:\\s|$)`).test(normalized);
+        && new RegExp(`(?:^|\\s)--port(?:=|\\s+)${port}(?:\\s|$)`).test(normalized)
+        && expectedPathVerified;
 }
 
 function discoverLinuxBrokerPortProcess(port) {
@@ -776,7 +797,8 @@ function verifiedBrokerProcess(runtime, port = Number(runtime?.port)) {
         return { pid, source: "owned-child" };
     }
     const observed = discoverBrokerPortProcess(port);
-    if (!observed || observed.pid !== pid || !isBrokerServeCommandLine(observed.commandLine, port)) return null;
+    const expectedCliPath = Array.isArray(runtime?.args) && typeof runtime.args[0] === "string" ? runtime.args[0] : null;
+    if (!expectedCliPath || !observed || observed.pid !== pid || !isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) return null;
     return { ...observed, source: "port-process" };
 }
 
@@ -791,6 +813,7 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const attempts = [];
     let lastResult = null;
+    let lastHttpFailure = null;
     while (Date.now() <= deadline) {
         const remainingMs = Math.max(1, deadline - Date.now());
         const resolved = await resolveBrokerOwner({
@@ -802,14 +825,15 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
         for (const attempt of resolved.attempts || []) {
             attempts.push(attempt);
             if (attempts.length > MAX_PROBE_CANDIDATES) attempts.shift();
+            if (Number.isInteger(attempt?.status) && attempt.status >= 400) lastHttpFailure = attempt;
         }
         if (resolved.ok) return { ...resolved, attempts };
         if (Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, Math.min(100, remainingMs)));
     }
     return {
         ok: false,
-        error: lastResult?.error || "broker-owner-resolve-readiness-timeout",
-        selected: lastResult?.selected || null,
+        error: lastHttpFailure?.body?.error || lastResult?.error || "broker-owner-resolve-readiness-timeout",
+        selected: lastResult?.selected || lastHttpFailure || null,
         attempts,
     };
 }
@@ -820,22 +844,20 @@ async function ensureBroker(options = {}) {
     const before = await probeBrokerHealth(launch);
     if (before.available) {
         const existingRuntime = readBrokerRuntime();
-        if (existingRuntime?.managedBy === "ccc-host" && Number(existingRuntime.port) === Number(before.selected.port)) {
-            const compatibility = await probeCccHostBrokerCapabilities(before.selected.host, before.selected.port, launch.timeoutMs);
-            if (!compatibility.ok) {
-                return {
-                    ok: false,
-                    ownerId: owner,
-                    launched: false,
-                    reused: false,
-                    error: "host-broker-incompatible",
-                    runtime: existingRuntime,
-                    host: before.selected.host,
-                    port: before.selected.port,
-                    compatibility,
-                    attempts: [...before.attempts, { reason: "host-broker-missing-required-capabilities", compatibility }],
-                };
-            }
+        const compatibility = await probeCccHostBrokerCapabilities(before.selected.host, before.selected.port, launch.timeoutMs);
+        if (!compatibility.ok) {
+            return {
+                ok: false,
+                ownerId: owner,
+                launched: false,
+                reused: false,
+                error: "host-broker-incompatible",
+                runtime: existingRuntime,
+                host: before.selected.host,
+                port: before.selected.port,
+                compatibility,
+                attempts: [...before.attempts, { reason: "host-broker-missing-required-capabilities", compatibility }],
+            };
         }
         const ownerResolve = await resolveBrokerOwner({
             hostCandidates: [before.selected.host],
@@ -923,6 +945,21 @@ async function ensureBroker(options = {}) {
                 timeoutMs: launch.timeoutMs,
             });
             if (existingProbe.available) {
+                const compatibility = await probeCccHostBrokerCapabilities(existingProbe.selected.host, existingProbe.selected.port, launch.timeoutMs);
+                if (!compatibility.ok) {
+                    return {
+                        ok: false,
+                        ownerId: owner,
+                        launched: false,
+                        reused: false,
+                        error: "host-broker-incompatible",
+                        runtime: existing,
+                        host: existingProbe.selected.host,
+                        port: existingProbe.selected.port,
+                        compatibility,
+                        attempts: [...before.attempts, ...existingProbe.attempts, { reason: "host-broker-missing-required-capabilities", compatibility }],
+                    };
+                }
                 const ownerResolve = await resolveBrokerOwner({
                     hostCandidates: [existingProbe.selected.host],
                     port: existingProbe.selected.port,
@@ -961,6 +998,21 @@ async function ensureBroker(options = {}) {
                     timeoutMs: launch.launchTimeoutMs,
                 });
                 if (recoveryProbe.available) {
+                    const compatibility = await probeCccHostBrokerCapabilities(recoveryProbe.selected.host, recoveryProbe.selected.port, launch.timeoutMs);
+                    if (!compatibility.ok) {
+                        return {
+                            ok: false,
+                            ownerId: owner,
+                            launched: false,
+                            reused: false,
+                            error: "host-broker-incompatible",
+                            runtime: existing,
+                            host: recoveryProbe.selected.host,
+                            port: recoveryProbe.selected.port,
+                            compatibility,
+                            attempts: [...before.attempts, ...existingProbe.attempts, ...recoveryProbe.attempts, { reason: "host-broker-missing-required-capabilities", compatibility }],
+                        };
+                    }
                     const ownerResolve = await resolveBrokerOwner({
                         hostCandidates: [recoveryProbe.selected.host],
                         port: recoveryProbe.selected.port,
@@ -1312,6 +1364,22 @@ export async function brokerRpc(options = {}) {
 
 async function brokerRpcRequest(options = {}) {
     let owner = ownerId();
+    const requestedHosts = Array.isArray(options.hostCandidates) ? options.hostCandidates.map(String) : [];
+    const untrustedHost = requestedHosts.find((host) => !TRUSTED_BROKER_HOSTS.has(host));
+    const untrustedLaunchHost = typeof options.launchHost === "string" && options.launchHost
+        && !TRUSTED_BROKER_HOSTS.has(options.launchHost)
+        ? options.launchHost
+        : null;
+    if (untrustedHost || untrustedLaunchHost) {
+        return {
+            ok: false,
+            ownerId: owner,
+            error: "invalid-broker-host-candidate",
+            host: untrustedHost || untrustedLaunchHost,
+            allowed: [...TRUSTED_BROKER_HOSTS],
+            attempts: [],
+        };
+    }
     let probeOptions = normalizeProbeOptions({ ...options, probe: true });
     const rpcTimeoutMs = normalizeRpcTimeoutMs(options, probeOptions.timeoutMs);
     const method = typeof options.method === "string" ? options.method : "";
@@ -1343,6 +1411,19 @@ async function brokerRpcRequest(options = {}) {
                 method,
                 selected: null,
                 error: launch.error,
+                launch,
+                attempts: launch.attempts || [],
+            };
+        }
+        if (typeof launch.host !== "string" || !TRUSTED_BROKER_HOSTS.has(launch.host)) {
+            return {
+                ok: false,
+                ownerId: owner,
+                method,
+                selected: null,
+                error: "invalid-broker-host-candidate",
+                host: launch.host ?? null,
+                allowed: [...TRUSTED_BROKER_HOSTS],
                 launch,
                 attempts: launch.attempts || [],
             };
@@ -1609,6 +1690,7 @@ export async function brokerCommand(options = {}) {
             backend: options.backend,
             command: options.command,
             deviceId: options.deviceId,
+            incarnationId: options.incarnationId,
             name: options.name,
             avdName: options.avdName,
             port: options.devicePort,
@@ -1628,12 +1710,27 @@ export async function brokerCommand(options = {}) {
             memoryMb: options.memoryMb,
             provider: options.provider,
             image: options.image,
+            sourceImage: options.sourceImage,
+            profile: options.profile,
+            switchName: options.switchName,
+            secureBootTemplate: options.secureBootTemplate,
+            baseImageId: options.baseImageId,
             cpus: options.cpus,
             sshHost: options.sshHost,
             sshPort: options.sshPort,
             sshUser: options.sshUser,
             sshKeyPath: options.sshKeyPath,
             sshPassword: options.sshPassword,
+            guestSshHost: options.guestSshHost,
+            guestSshPort: options.guestSshPort,
+            guestSshUser: options.guestSshUser,
+            guestSshKeyPath: options.guestSshKeyPath,
+            guestReadinessCommand: options.guestReadinessCommand,
+            guestAgentName: options.guestAgentName,
+            guestAgentHealthCommand: options.guestAgentHealthCommand,
+            guestAgentProvisionCommand: options.guestAgentProvisionCommand,
+            guestAgentAutoProvision: options.guestAgentAutoProvision,
+            startIfStopped: options.startIfStopped,
             waitForBoot: options.waitForBoot,
             bootTimeoutMs: options.bootTimeoutMs,
             force: options.force,
@@ -1655,6 +1752,7 @@ export const BROKER_DEVICE_TOOL_PARAM_KEYS = [
     "pairingCode",
     "connect",
     "deviceId",
+    "incarnationId",
     "command",
     "localPath",
     "remotePath",
@@ -1668,6 +1766,9 @@ export const BROKER_DEVICE_TOOL_PARAM_KEYS = [
     "component",
     "bundleId",
     "containerType",
+    "snapshotName",
+    "snapshotId",
+    "force",
     "eraseSimulator",
     "confirmDestructive",
     "x",

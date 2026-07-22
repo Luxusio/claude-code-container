@@ -94,7 +94,7 @@ describe("device-lab admin delete, prune, and CLI commands", () => {
         expect(devicesCli(["list", "--all"], cwd)).toBe(1);
         expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc devices list [--all-projects]");
         expect(devicesCli(["admin", "list"], cwd)).toBe(1);
-        expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc devices <status|list|create|start|stop|delete|prune|backends|doctor|smoke|broker>");
+        expect(errorSpy).toHaveBeenLastCalledWith("Usage: ccc devices <status|list|create|start|stop|reboot|delete|snapshot|prune|backends|doctor|smoke|setup|broker>");
     });
 
     it("fails closed when the project namespace root is not a directory", async () => {

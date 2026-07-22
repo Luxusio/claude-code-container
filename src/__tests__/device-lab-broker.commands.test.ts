@@ -10,7 +10,34 @@ import { createDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderComm
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "../device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "../device-lab-shared-state.js";
+import { hyperVVmName } from "../device-lab/providers/hyper-v.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
+
+function providerScript(command: { args: string[]; input?: string }): string {
+    if (command.args.at(-1) === "-" && typeof command.input === "string") return command.input;
+    return Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
+}
+
+function hyperVNetworkObservation(command: { args: string[]; input?: string }) {
+    const script = providerScript(command);
+    const value = (name: string) => script.match(new RegExp(`\\$${name} = '((?:''|[^'])*)'`))?.[1]?.replaceAll("''", "'") || "";
+    return {
+        ok: true,
+        switchName: value("SwitchName"),
+        switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        natName: value("NatName"),
+        natInstanceId: "ccc-nat-instance-1",
+        prefix: value("Prefix"),
+        gateway: value("Gateway"),
+        interfaceIndex: 42,
+        createdSwitch: true,
+        createdNat: true,
+    };
+}
+
+function isHyperVNetworkCleanupScript(script: string): boolean {
+    return script.includes("$RemoveNat =") && script.includes("Remove-NetNat -InputObject");
+}
 
 describe("device-lab host broker lifecycle commands", () => {
     let originalHome: string | undefined;
@@ -62,6 +89,125 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(response.status).toBe(409);
             expect(await response.json()).toEqual(expect.objectContaining({ ok: false, error: "owner-devices-state-invalid" }));
             expect(readFileSync(stateFile, "utf8")).toBe(malformed);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("keeps uncached automatic Hyper-V dry-runs free of host mutations", async () => {
+        const cwd = join(process.env.HOME!, "broker-hyper-v-dry-run-test");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const commandRunner = vi.fn();
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
+        try {
+            for (const [backend, profile] of [["windows-vm", "windows-server"], ["linux-vm", "ubuntu-lts"]] as const) {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({
+                        method: "broker.command.invoke",
+                        params: { backend, command: "device_create", deviceId: `dry-${backend}`, name: `Dry ${backend}`, profile, dryRun: true },
+                    }),
+                });
+                expect(response.status).toBe(409);
+                expect(await response.json()).toEqual(expect.objectContaining({ ok: false, error: "hyper-v-base-image-not-prepared" }));
+            }
+            expect(commandRunner).not.toHaveBeenCalled();
+            expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v"))).toBe(false);
+            expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v"))).toBe(false);
+            expect(existsSync(join(process.env.HOME!, ".ccc", "devices", "host-locks", "hyper-v.mutation.lock"))).toBe(false);
+            expect(existsSync(join(process.env.HOME!, ".ccc", "devices", "owners", ownerId, "windows-vm", "operations"))).toBe(false);
+            expect(existsSync(join(process.env.HOME!, ".ccc", "devices", "owners", ownerId, "linux-vm", "operations"))).toBe(false);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("enforces owner-scoped Hyper-V definition and running quotas before provider execution", async () => {
+        const cwd = "/project/broker-hyper-v-quota-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const defined = Array.from({ length: 16 }, (_, index) => ({
+            id: `defined-${index}`,
+            backend: "windows-vm",
+            memoryMb: 4096,
+            cpus: 2,
+            diskMaxBytes: 64 * 1024 * 1024 * 1024,
+            status: "stopped",
+            runtimeState: "Off",
+        }));
+        writeBrokerDevices(ownerId, "windows-vm", defined);
+        const commandRunner = vi.fn(() => ({ mode: "exec", provider: "hyper-v", status: 0, stdout: "{}", stderr: "" }));
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
+        try {
+            const create = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: { backend: "windows-vm", command: "device_create", name: "Over quota", profile: "windows-11" },
+                }),
+            });
+            expect(create.status).toBe(409);
+            expect(await create.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "hyper-v-owner-quota-exceeded",
+                violations: expect.arrayContaining(["defined-vms"]),
+            }));
+            expect(commandRunner).not.toHaveBeenCalled();
+
+            const running = Array.from({ length: 4 }, (_, index) => ({
+                id: `running-${index}`,
+                backend: "windows-vm",
+                memoryMb: 4096,
+                cpus: 2,
+                diskMaxBytes: 64 * 1024 * 1024 * 1024,
+                status: "running",
+                runtimeState: "Running",
+            }));
+            const targetId = "stopped-target";
+            writeBrokerDevices(ownerId, "windows-vm", [...running, {
+                id: targetId,
+                backend: "windows-vm",
+                memoryMb: 4096,
+                cpus: 2,
+                diskMaxBytes: 64 * 1024 * 1024 * 1024,
+                status: "stopped",
+                runtimeState: "Off",
+            }]);
+            const start = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_start", deviceId: targetId } }),
+            });
+            expect(start.status).toBe(409);
+            expect(await start.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "hyper-v-owner-quota-exceeded",
+                violations: expect.arrayContaining(["running-vms"]),
+            }));
+            expect(commandRunner).not.toHaveBeenCalled();
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -180,6 +326,573 @@ describe("device-lab host broker lifecycle commands", () => {
                 windowStyle: "minimized",
             }));
             expect(planBody.result.providerCommand.args.join(" ")).toContain("<Networking>Enable</Networking>");
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it.each([
+        ["missing deleted", JSON.stringify({ ok: true, snapshotId: "87654321-4321-4321-4321-cba987654321", snapshotName: "placeholder" })],
+        ["false deleted", JSON.stringify({ ok: true, snapshotId: "87654321-4321-4321-4321-cba987654321", snapshotName: "placeholder", deleted: false })],
+        ["malformed output", "not-json"],
+    ])("preserves snapshot journal evidence when create rollback returns %s", async (_name, rollbackOutput) => {
+        const cwd = join(process.env.HOME!, `broker-hyper-v-snapshot-rollback-${_name.replaceAll(" ", "-")}`);
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "snapshot-rollback";
+        const incarnationId = "1".repeat(32);
+        const vmId = "12345678-1234-1234-1234-123456789abc";
+        const snapshotId = "87654321-4321-4321-4321-cba987654321";
+        const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
+        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+        const deviceRoot = join(privateRoot, "artifacts");
+        const diskPath = join(deviceRoot, "disks", "root.vhdx");
+        const stateRoot = writeBrokerDevices(ownerId, "windows-vm", [{
+            id: deviceId,
+            name: "Snapshot rollback",
+            ownerId,
+            backend: "windows-vm",
+            provider: "hyper-v",
+            incarnationId,
+            vmId,
+            vmName,
+            diskPath,
+            privateRoot,
+            deviceRoot,
+            status: "stopped",
+            runtimeState: "Off",
+            snapshots: [],
+        }]);
+        mkdirSync(dirname(diskPath), { recursive: true });
+        writeFileSync(diskPath, "root-vhdx");
+        const stateFile = join(stateRoot, "devices.json");
+        const providerName = `ccc-${ownerId}-rollback`;
+        const commandRunner = vi.fn((command) => {
+            const script = providerScript(command);
+            if (script.includes("Checkpoint-VM")) {
+                const state = JSON.parse(readFileSync(stateFile, "utf8"));
+                writeFileSync(stateFile, JSON.stringify({ devices: state.devices.map((device: Record<string, unknown>) => ({ ...device, concurrentMutation: true })) }));
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, snapshotId, snapshotName: providerName, snapshotType: "Recovery" }), stderr: "" };
+            }
+            if (script.includes("Remove-VMSnapshot")) {
+                return { ...command, status: 0, stdout: rollbackOutput.replace("placeholder", providerName), stderr: "" };
+            }
+            return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
+        });
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.device.tool.invoke",
+                    params: { tool: "device_snapshot_create", backend: "windows-vm", deviceId, incarnationId, snapshotName: "rollback" },
+                }),
+            });
+            expect(response.status).toBe(409);
+            expect(await response.json()).toEqual(expect.objectContaining({
+                error: "hyper-v-snapshot-state-conflict",
+                rollback: expect.objectContaining({ confirmed: false, error: "hyper-v-snapshot-rollback-unconfirmed" }),
+            }));
+            expect(existsSync(join(deviceRoot, "snapshot-operation.json"))).toBe(true);
+            expect(JSON.parse(readFileSync(stateFile, "utf8")).devices[0]).toEqual(expect.objectContaining({ concurrentMutation: true, snapshots: [] }));
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("runs an owner-fenced Hyper-V Windows VM lifecycle through the host broker", async () => {
+        const cwd = join(process.env.HOME!, "broker-hyper-v-lifecycle-test");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const deviceId = "windows-vm-e2e";
+        const vmId = "12345678-1234-1234-1234-123456789abc";
+        const snapshotId = "87654321-4321-4321-4321-cba987654321";
+        let vmName = "";
+        const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+        const deviceRoot = join(privateRoot, "artifacts");
+        const diskPath = join(deviceRoot, "disks", "root.vhdx");
+        const imageRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v");
+        const imageProfileRoot = join(imageRoot, "windows-11");
+        const imagePath = join(imageProfileRoot, "base.vhdx");
+        const sourceImagePath = join(cwd, "windows-11-generalized.vhdx");
+        const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+        const uploadPath = join(cwd, "upload.txt");
+        const downloadPath = join(cwd, "download.txt");
+        const staleMarkerPath = join(dirname(diskPath), "stale-operation.txt");
+        const staleIncarnationId = "0".repeat(32);
+        writeFileSync(sourceImagePath, "fake-vhdx");
+        const imageSha256 = createHash("sha256").update("fake-vhdx").digest("hex");
+        const expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
+        writeFileSync(uploadPath, "upload");
+        mkdirSync(dirname(staleMarkerPath), { recursive: true });
+        writeFileSync(staleMarkerPath, "interrupted-create");
+        writeFileSync(join(privateRoot, "incarnation.json"), JSON.stringify({
+            version: 1,
+            ownerId,
+            backend: "windows-vm",
+            deviceId,
+            incarnationId: staleIncarnationId,
+            createdAt: new Date().toISOString(),
+        }));
+        let vmState = "Off";
+        let snapshotExists = false;
+        let orphanRecoveryCalls = 0;
+        let preparedSourcePath = "";
+        let networkCleanupFailure = false;
+        let deleteConfirmationFailure = false;
+        let snapshotDeleteConfirmationFailure = false;
+        const commandRunner = vi.fn((command) => {
+            const script = providerScript(command);
+            if (script.includes("Start-VM")) vmState = "Running";
+            if (script.includes("Stop-VM")) vmState = "Off";
+            const deleting = script.includes("Remove-VM -VM $Vm");
+            const snapshotOperation = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
+            if (script.includes("Checkpoint-VM")) snapshotExists = true;
+            if (script.includes("Remove-VMSnapshot") && !snapshotDeleteConfirmationFailure) snapshotExists = false;
+            const imagePrepare = script.includes("hyper-v-base-image-profile-conflict");
+            if (imagePrepare) preparedSourcePath = script.match(/\$SourceImage = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+            const networkSetup = script.includes("New-NetNat -Name $NatName");
+            const networkCleanup = isHyperVNetworkCleanupScript(script);
+            if (networkCleanup && networkCleanupFailure) {
+                return { ...command, status: 1, stdout: "", stderr: "simulated network cleanup failure" };
+            }
+            const orphanRecovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
+            const vmCreate = script.includes("New-VM");
+            if (vmCreate) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+            if (orphanRecovery) orphanRecoveryCalls += 1;
+            const guestProvision = script.includes("Mount-VHD -Path $DiskPath");
+            const guestReady = script.includes("hyper-v-guest-ready-timeout");
+            const guestExec = script.includes("Start-Process -FilePath 'powershell.exe'");
+            const guestUpload = script.includes("-ToSession $Session");
+            const guestDownload = script.includes("hyper-v-guest-download-source-missing")
+                && script.includes("[Convert]::FromBase64String");
+            const transferLocalPath = script.match(/\$LocalPath = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || null;
+            if (guestDownload && transferLocalPath) {
+                mkdirSync(dirname(transferLocalPath), { recursive: true });
+                writeFileSync(transferLocalPath, "output");
+            }
+            if (imagePrepare) {
+                mkdirSync(imageProfileRoot, { recursive: true });
+                writeFileSync(imagePath, "fake-vhdx");
+            }
+            if (vmCreate) {
+                mkdirSync(dirname(diskPath), { recursive: true });
+                writeFileSync(diskPath, "fake-root-vhdx");
+            }
+            if (guestProvision) {
+                mkdirSync(dirname(credentialPath), { recursive: true });
+                writeFileSync(credentialPath, "fake-dpapi-credential");
+            }
+            return {
+                mode: command.mode,
+                provider: command.provider,
+                executable: command.executable,
+                args: command.args || [],
+                status: 0,
+                stdout: JSON.stringify(imagePrepare
+                    ? { ok: true, profile: "windows-11", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 64 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
+                    : networkCleanup
+                    ? { ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }
+                    : orphanRecovery
+                    ? { ok: true, recoveredVm: orphanRecoveryCalls === 1, removedDisk: orphanRecoveryCalls === 1 }
+                    : networkSetup
+                    ? hyperVNetworkObservation(command)
+                    : guestReady
+                    ? { ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 2, networkAddress: expectedNetworkAddress }
+                    : guestProvision
+                    ? { ok: true, vmId, vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" }
+                    : guestExec
+                    ? { ok: true, status: 0, stdout: "guest-ok\r\n", stderr: "" }
+                    : guestUpload || guestDownload
+                        ? { ok: true, localPath: transferLocalPath, remotePath: guestUpload ? "C:\\ccc\\upload.txt" : "C:\\ccc\\download.txt", bytes: 6 }
+                    : snapshotOperation
+                    ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(script.includes("Remove-VMSnapshot") ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
+                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
+                stderr: "",
+            };
+        });
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
+        const invoke = (params: Record<string, unknown>) => fetch(endpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ method: "broker.command.invoke", params }),
+        });
+        let activeIncarnationId: string | undefined;
+        const invokeTool = (tool: string, params: Record<string, unknown>) => fetch(endpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool, backend: "windows-vm", deviceId, ...(activeIncarnationId ? { incarnationId: activeIncarnationId } : {}), ...params } }),
+        });
+        try {
+            const created = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 });
+            expect(created.status).toBe(200);
+            expect(existsSync(staleMarkerPath)).toBe(false);
+            const createdBody = await created.json();
+            expect(createdBody).toEqual(expect.objectContaining({
+                result: expect.objectContaining({
+                    device: expect.objectContaining({ id: deviceId, backend: "windows-vm", provider: "hyper-v", vmId, vmName, diskPath, status: "stopped", guestProvisioned: true, guestUsername: `ccc${ownerId.slice(0, 8)}`, switchName: "CCC Device Lab", networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/), macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/), outboundPolicy: "nat" }),
+                }),
+            }));
+            expect(JSON.stringify(createdBody)).not.toContain("Ccc!7");
+            const incarnationId = createdBody.result.device.incarnationId as string;
+            activeIncarnationId = incarnationId;
+            expect(incarnationId).toMatch(/^[a-f0-9]{32}$/);
+            expect(JSON.parse(readFileSync(join(imageProfileRoot, "manifest.json"), "utf8"))).toEqual(expect.objectContaining({
+                version: 3,
+                profile: "windows-11",
+                catalogId: "user-provided-vhdx",
+                imagePath,
+                sha256: imageSha256,
+                sizeBytes: 9,
+                virtualSizeBytes: 64 * 1024 * 1024 * 1024,
+            }));
+            expect(preparedSourcePath).toMatch(new RegExp(`^${imageProfileRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[/\\\\]\\.source-[a-f0-9]{24}\\.vhdx$`));
+            expect(preparedSourcePath).not.toBe(sourceImagePath);
+            expect(existsSync(preparedSourcePath)).toBe(false);
+            expect(commandRunner.mock.calls.some(([command]) => {
+                const script = providerScript(command);
+                return script.includes(`$ExpectedBaseImageHash = '${imageSha256}'`)
+                    && script.includes(`$BaseImage = '${imagePath.replaceAll("'", "''")}'`)
+                    && script.includes("[IO.FileShare]::Read")
+                    && script.includes("hyper-v-created-disk-parent-mismatch");
+            })).toBe(true);
+            const callsAfterCreate = commandRunner.mock.calls.length;
+            const duplicateCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            expect(duplicateCreate.status, JSON.stringify(await duplicateCreate.clone().json())).toBe(200);
+            expect(await duplicateCreate.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true, invoked: false, device: expect.objectContaining({ id: deviceId, incarnationId }) }) }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
+            const conflictingCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 8192, cpus: 2 });
+            expect(conflictingCreate.status).toBe(409);
+            expect(await conflictingCreate.json()).toEqual(expect.objectContaining({ error: "hyper-v-create-configuration-conflict", conflicts: ["memoryMb"] }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
+
+            const missingIncarnation = await invoke({ backend: "windows-vm", command: "device_start", deviceId });
+            expect(missingIncarnation.status).toBe(409);
+            expect(await missingIncarnation.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-required" }));
+            const staleIncarnation = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId: "f".repeat(32) });
+            expect(staleIncarnation.status).toBe(409);
+            expect(await staleIncarnation.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
+
+            const started = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+            expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
+            expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", runtimeState: "Running", bootReady: true }), boot: expect.objectContaining({ ready: true, provider: "hyper-v-powershell-direct" }) }) }));
+
+            const operationPath = join(deviceRoot, "operation.json");
+            mkdirSync(dirname(diskPath), { recursive: true });
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const callsBeforeStaleLifecycle = commandRunner.mock.calls.length;
+            const staleLifecycleWithJournal = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId: "f".repeat(32) });
+            expect(staleLifecycleWithJournal.status).toBe(409);
+            expect(await staleLifecycleWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            expect(existsSync(operationPath)).toBe(true);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleLifecycle);
+            const status = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
+            expect(status.status, JSON.stringify(await status.clone().json())).toBe(200);
+            expect(await status.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ vmId, runtimeState: "Running" }) }) }));
+            expect(existsSync(operationPath)).toBe(false);
+
+            const guestExec = await invokeTool("device_exec", { command: "Write-Output guest-ok" });
+            expect(guestExec.status).toBe(200);
+            expect(await guestExec.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ provider: "hyper-v-powershell-direct", stdout: "guest-ok\r\n", status: 0 }) }));
+
+            const uploaded = await invokeTool("device_upload", { localPath: uploadPath, remotePath: "C:\\ccc\\upload.txt" });
+            expect(uploaded.status).toBe(200);
+            expect(await uploaded.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ provider: "hyper-v-powershell-direct", bytes: 6 }) }));
+
+            const largeUploadPath = join(cwd, "packaged-node.exe");
+            writeFileSync(largeUploadPath, Buffer.alloc(16 * 1024 * 1024 + 1));
+            const largeUpload = await invokeTool("device_upload", { localPath: largeUploadPath, remotePath: "C:\\ccc\\node.exe", maxFileBytes: 128 * 1024 * 1024 });
+            expect(largeUpload.status, JSON.stringify(await largeUpload.clone().json())).toBe(200);
+
+            const downloaded = await invokeTool("device_download", { remotePath: "C:\\ccc\\download.txt", localPath: downloadPath });
+            expect(downloaded.status).toBe(200);
+            expect(await downloaded.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ provider: "hyper-v-powershell-direct", remotePath: "C:\\ccc\\download.txt" }) }));
+
+            const stopped = await invoke({ backend: "windows-vm", command: "device_stop", deviceId, incarnationId });
+            expect(stopped.status).toBe(200);
+            expect(await stopped.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "stopped", runtimeState: "Off" }) }) }));
+
+            const snapshotCreated = await invokeTool("device_snapshot_create", { snapshotName: "before-install" });
+            expect(snapshotCreated.status).toBe(200);
+            expect(await snapshotCreated.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ snapshot: expect.objectContaining({ id: snapshotId, name: "before-install", providerName: `ccc-${ownerId}-before-install` }) }) }));
+
+            const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
+            writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
+            const callsBeforeStaleSnapshot = commandRunner.mock.calls.length;
+            const staleSnapshotWithJournal = await fetch(endpoint, {
+                method: "POST",
+                headers,
+                body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: "device_snapshot_restore", backend: "windows-vm", deviceId, incarnationId: "f".repeat(32), snapshotId, confirmDestructive: true } }),
+            });
+            expect(staleSnapshotWithJournal.status).toBe(409);
+            expect(await staleSnapshotWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
+            expect(existsSync(snapshotOperationPath)).toBe(true);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleSnapshot);
+            const unconfirmedRestore = await invokeTool("device_snapshot_restore", { snapshotId });
+            expect(unconfirmedRestore.status).toBe(400);
+            expect(await unconfirmedRestore.json()).toEqual(expect.objectContaining({ error: "destructive-confirmation-required", confirmationField: "confirmDestructive" }));
+            const snapshotRestored = await invokeTool("device_snapshot_restore", { snapshotId, confirmDestructive: true });
+            expect(snapshotRestored.status).toBe(200);
+            expect(await snapshotRestored.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ activeSnapshotId: snapshotId, status: "stopped" }) }) }));
+            expect(existsSync(snapshotOperationPath)).toBe(false);
+
+            const unconfirmedDelete = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: false });
+            expect(unconfirmedDelete.status).toBe(400);
+            expect(await unconfirmedDelete.json()).toEqual(expect.objectContaining({ error: "destructive-confirmation-required", confirmationField: "confirmDestructive" }));
+            snapshotDeleteConfirmationFailure = true;
+            const providerUnconfirmedSnapshotDelete = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
+            expect(providerUnconfirmedSnapshotDelete.status).toBe(502);
+            expect(await providerUnconfirmedSnapshotDelete.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-invalid-result" }));
+            expect(existsSync(snapshotOperationPath)).toBe(true);
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ snapshots: unknown[] }> }).devices[0].snapshots).toHaveLength(1);
+            snapshotDeleteConfirmationFailure = false;
+            const snapshotDeleted = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
+            expect(snapshotDeleted.status).toBe(200);
+            expect(await snapshotDeleted.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ snapshots: [], activeSnapshotId: null }) }) }));
+
+            const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+            const validNetworkState = readFileSync(networkStatePath);
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_delete", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            deleteConfirmationFailure = true;
+            const unconfirmedReconciliation = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            expect(unconfirmedReconciliation.status).toBe(502);
+            expect(await unconfirmedReconciliation.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-invalid-result" }));
+            expect(existsSync(operationPath)).toBe(true);
+            expect(existsSync(privateRoot)).toBe(true);
+            deleteConfirmationFailure = false;
+            writeFileSync(networkStatePath, "{malformed");
+            const cleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            expect(cleanupFailed.status).toBe(502);
+            expect(await cleanupFailed.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-cleanup-failed" }));
+            expect(existsSync(privateRoot)).toBe(true);
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ id: string }> }).devices).toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
+
+            writeFileSync(networkStatePath, validNetworkState);
+            networkCleanupFailure = true;
+            const providerCleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            expect(providerCleanupFailed.status).toBe(502);
+            expect(await providerCleanupFailed.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-cleanup-failed" }));
+            expect(existsSync(networkStatePath)).toBe(true);
+            expect(JSON.parse(readFileSync(networkStatePath, "utf8")).allocations).toEqual(expect.arrayContaining([
+                expect.objectContaining({ ownerId, deviceId, incarnationId }),
+            ]));
+            networkCleanupFailure = false;
+            const deleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            expect(deleted.status).toBe(200);
+            expect(existsSync(privateRoot)).toBe(false);
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
+
+            const recreated = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E cached", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            expect(recreated.status).toBe(200);
+            const recreatedIncarnationId = (await recreated.clone().json()).result.device.incarnationId as string;
+            const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const canonicalState = JSON.parse(readFileSync(stateFile, "utf8"));
+            writeFileSync(stateFile, JSON.stringify({ devices: canonicalState.devices.map((device) => ({ ...device, diskPath: join(cwd, "foreign.vhdx") })) }));
+            const refusedTamperedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            expect(refusedTamperedDelete.status).toBe(400);
+            expect(await refusedTamperedDelete.json()).toEqual(expect.objectContaining({ error: "invalid-provider-metadata" }));
+            writeFileSync(stateFile, JSON.stringify(canonicalState));
+            deleteConfirmationFailure = true;
+            const providerUnconfirmedDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            expect(providerUnconfirmedDelete.status).toBe(502);
+            expect(existsSync(privateRoot)).toBe(true);
+            expect((JSON.parse(readFileSync(stateFile, "utf8")) as { devices: Array<{ id: string }> }).devices).toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
+            deleteConfirmationFailure = false;
+            const redeleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId: recreatedIncarnationId });
+            expect(redeleted.status).toBe(200);
+            expect(existsSync(deviceRoot)).toBe(false);
+            expect(existsSync(privateRoot)).toBe(false);
+            const callsAfterDelete = commandRunner.mock.calls.length;
+            const duplicateDelete = await invoke({ backend: "windows-vm", command: "device_delete", deviceId });
+            expect(duplicateDelete.status).toBe(200);
+            expect(await duplicateDelete.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true, alreadyMissing: true, invoked: false, device: null }) }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsAfterDelete);
+            expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-base-image-profile-conflict"))).toHaveLength(1);
+            expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-orphan-vm-ownership-mismatch"))).toHaveLength(1);
+            expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
+            expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(3);
+            expect(commandRunner).toHaveBeenCalledTimes(32);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+            rmSync(imageProfileRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("rolls back Hyper-V resources when create output cannot be trusted", async () => {
+        const cwd = join(process.env.HOME!, "broker-hyper-v-invalid-create-test");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const profileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v", "windows-11");
+        const imagePath = join(profileRoot, "base.vhdx");
+        mkdirSync(profileRoot, { recursive: true });
+        writeFileSync(imagePath, "owner-scoped-vhdx");
+        const sha256 = createHash("sha256").update("owner-scoped-vhdx").digest("hex");
+        writeFileSync(join(profileRoot, "manifest.json"), JSON.stringify({
+            version: 3,
+            profile: "windows-11",
+            catalogId: "user-provided-vhdx",
+            sourceUrl: null,
+            sourceFormat: "vhdx",
+            licenseId: null,
+            generation: 2,
+            secureBootTemplate: "MicrosoftWindows",
+            preparationVersion: 1,
+            imagePath,
+            sha256,
+            sizeBytes: 17,
+            virtualSizeBytes: 64 * 1024 * 1024 * 1024,
+            vhdType: "Dynamic",
+            preparedAt: new Date().toISOString(),
+        }));
+        const variants = ["nonzero", "timeout", "overflow", "malformed", "wrong-name", "wrong-disk", "artifact-cleanup-failure", "allocation-cleanup-failure", "provision-failure", "state-claim-conflict"] as const;
+        const cleanupOutside = join(cwd, "cleanup-outside");
+        mkdirSync(cleanupOutside, { recursive: true });
+        let createIndex = 0;
+        let recoveryCalls = 0;
+        let activeVariant: typeof variants[number] | null = null;
+        const provisioningSecretEcho = "Ccc!provider-echoed-secret-payload";
+        const createdVmNames = new Map<string, string>();
+        const commandRunner = vi.fn((command) => {
+            const script = providerScript(command);
+            if (isHyperVNetworkCleanupScript(script)) {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }), stderr: "" };
+            }
+            if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) {
+                recoveryCalls += 1;
+                const recoveryVmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+                expect(script).toContain("if ([string]$Vm.Notes -and [string]$Vm.Notes -cne $ExpectedMarker)");
+                expect(recoveryVmName).toBe(createdVmNames.get(`invalid-create-${activeVariant}`));
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, recoveredVm: true, removedDisk: true }), stderr: "" };
+            }
+            if (script.includes("New-NetNat -Name $NatName")) {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
+            }
+            if (script.includes("Mount-VHD -Path $DiskPath") && (activeVariant === "provision-failure" || activeVariant === "state-claim-conflict")) {
+                const deviceId = `invalid-create-${activeVariant}`;
+                const vmName = script.match(/\$ExpectedName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+                const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+                const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+                mkdirSync(dirname(credentialPath), { recursive: true });
+                writeFileSync(credentialPath, "fake-dpapi-credential");
+                if (activeVariant === "provision-failure") {
+                    return { mode: command.mode, provider: command.provider, status: 1, stdout: provisioningSecretEcho, stderr: `offline provisioning failed: ${provisioningSecretEcho}` };
+                }
+                const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+                mkdirSync(dirname(stateFile), { recursive: true });
+                writeFileSync(stateFile, JSON.stringify({ devices: [{ id: deviceId, backend: "windows-vm", ownerId, vmId: "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb", vmName: "foreign-vm", diskPath: join(cwd, "foreign.vhdx"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] }));
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" }), stderr: "" };
+            }
+            if (script.includes("New-VM @VmArgs")) {
+                const variant = variants[createIndex++];
+                activeVariant = variant;
+                const deviceId = `invalid-create-${variant}`;
+                const vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+                createdVmNames.set(deviceId, vmName);
+                const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+                const diskPath = join(privateRoot, "artifacts", "disks", "root.vhdx");
+                if (variant === "nonzero") {
+                    return { mode: command.mode, provider: command.provider, status: 1, stdout: "", stderr: "New-VM failed" };
+                }
+                if (variant === "timeout") {
+                    return { mode: command.mode, provider: command.provider, status: null, stdout: "", stderr: "", error: "device-lab backend tool timed out", timedOut: true };
+                }
+                if (variant === "overflow") {
+                    return { mode: command.mode, provider: command.provider, status: null, stdout: "partial output", stderr: "", error: "device-lab provider output exceeded limit" };
+                }
+                if (variant === "artifact-cleanup-failure") {
+                    rmSync(privateRoot, { recursive: true, force: true });
+                    symlinkSync(cleanupOutside, privateRoot, "dir");
+                }
+                if (variant === "allocation-cleanup-failure") {
+                    const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+                    writeFileSync(networkStatePath, "{malformed");
+                }
+                const stdout = variant === "malformed" || variant === "artifact-cleanup-failure" || variant === "allocation-cleanup-failure"
+                    ? "not-json"
+                    : JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName: variant === "wrong-name" ? "foreign-vm" : vmName, diskPath: variant === "wrong-disk" ? join(cwd, "foreign.vhdx") : diskPath });
+                return { mode: command.mode, provider: command.provider, status: 0, stdout, stderr: "" };
+            }
+            throw new Error("unexpected Hyper-V command");
+        });
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const headers = ownerRpcHeaders(ownerId);
+        try {
+            for (const variant of variants) {
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers,
+                    body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId: `invalid-create-${variant}`, name: "Invalid VM", profile: "windows-11" } }),
+                });
+                const body = await response.json();
+                expect(response.status, JSON.stringify(body)).toBe(variant === "state-claim-conflict" ? 409 : 502);
+                const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", `invalid-create-${variant}`);
+                const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
+                if (variant === "artifact-cleanup-failure") {
+                    expect(body).toEqual(expect.objectContaining({ error: "hyper-v-create-invalid-result", rollback: expect.objectContaining({ ok: false, error: "hyper-v-recovery-cleanup-failed" }) }));
+                    expect(lstatSync(privateRoot).isSymbolicLink()).toBe(true);
+                    const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                    rmSync(privateRoot, { force: true });
+                } else if (variant === "allocation-cleanup-failure") {
+                    expect(body).toEqual(expect.objectContaining({ error: "hyper-v-create-invalid-result", rollback: expect.objectContaining({ ok: false, error: "hyper-v-recovery-cleanup-failed" }) }));
+                    expect(existsSync(privateRoot)).toBe(true);
+                    rmSync(networkStatePath, { force: true });
+                } else if (variant === "provision-failure" || variant === "state-claim-conflict") {
+                    expect(body).toEqual(expect.objectContaining({
+                        error: variant === "provision-failure" ? "hyper-v-guest-provision-failed" : "owner-device-id-conflict",
+                        rollback: expect.objectContaining({ ok: true }),
+                    }));
+                    if (variant === "provision-failure") {
+                        expect(JSON.stringify(body)).not.toContain(provisioningSecretEcho);
+                        expect(body.provisioning).toEqual(expect.objectContaining({ stdout: "[redacted]", stderr: "[redacted]", outputRedacted: true }));
+                    }
+                    expect(existsSync(privateRoot)).toBe(false);
+                    const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                } else {
+                    expect(body).toEqual(expect.objectContaining({
+                        error: ["nonzero", "timeout", "overflow"].includes(variant) ? "provider-command-failed" : "hyper-v-create-invalid-result",
+                        rollback: expect.objectContaining({ ok: true, recoveredVm: true, removedDisk: true }),
+                    }));
+                    expect(existsSync(privateRoot)).toBe(false);
+                    const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
+                    expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
+                }
+            }
+            expect(createIndex).toBe(10);
+            expect(recoveryCalls).toBe(10);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -1184,8 +1897,9 @@ describe("device-lab host broker lifecycle commands", () => {
                 args: command.args,
                 input: command.input,
                 status: 1,
-                stdout: "",
+                stdout: "avdmanager progress",
                 stderr: "bad system image",
+                error: "provider timed out during cleanup",
             }));
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-android-create-test",
@@ -1272,10 +1986,11 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await failed.json()).toEqual(expect.objectContaining({
                 ok: false,
                 error: "provider-command-failed",
+                detail: "error: provider timed out during cleanup\nstderr: bad system image\nstdout: avdmanager progress",
                 result: expect.objectContaining({
                     execution: expect.objectContaining({
                         mutatesHost: false,
-                        command: expect.objectContaining({ provider: "avdmanager", status: 1, stderr: "bad system image" }),
+                        command: expect.objectContaining({ provider: "avdmanager", status: 1, stderr: "bad system image", error: "provider timed out during cleanup" }),
                     }),
                 }),
             }));

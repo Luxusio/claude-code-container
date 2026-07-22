@@ -1,5 +1,6 @@
 import assert from "assert/strict";
 import { spawn } from "child_process";
+import { createHash } from "crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -11,7 +12,13 @@ import {
     deleteAndroidAvdName,
     formatResidueSummary,
     inspectTestOwnedResidue,
+    recoverHyperVPrivateResidue,
+    assertHyperVHostIdentityUnchanged,
     listAndroidAvdNames,
+    listHyperVNetworkInventory,
+    listHyperVVmInventory,
+    parseHyperVNetworkInventory,
+    parseHyperVVmInventory,
     listRunningAndroidAvdNames,
     main,
     parseRealProviderCycleArgs,
@@ -20,8 +27,10 @@ import {
     recoverAndroidEmulatorResidue,
     recoverAndroidPhysicalDeviceResidue,
     selectAndroidPhysicalDevice,
+    snapshotHyperVHostIdentity,
     runCycle,
     terminateTimedOutProcessTree,
+    usage,
     verifySuccessfulProcessTree,
     writeResidueDiagnostic,
 } from "./real-provider-cycles.mjs";
@@ -49,18 +58,136 @@ test("parses a bounded real-provider cycle plan", () => {
     });
     assert.throws(() => parseRealProviderCycleArgs(["--target", "unknown"]), /must be one of/);
     assert.throws(() => parseRealProviderCycleArgs(["--target", "android-device", "--cycles", "0"]), /1 to 100/);
+    assert.equal(parseRealProviderCycleArgs(["--target", "windows-vm"]).timeoutMs, 7 * 60 * 60_000);
+    assert.equal(parseRealProviderCycleArgs(["--target", "linux-vm"]).timeoutMs, 7 * 60 * 60_000);
+    assert.equal(parseRealProviderCycleArgs(["--target", "windows-vm", "--timeout", "30m"]).timeoutMs, 30 * 60_000);
+    assert.match(usage(), /Hyper-V VM targets: 7h/);
+    assert.doesNotMatch(usage(), /Hyper-V VM targets: 4h/);
 });
 
 test("maps targets to the exact existing real-test modules", () => {
-    assert.match(realProviderCycleCommand("android-emulator").args.at(-1), /level2-android-emulator-e2e\.mjs$/);
-    assert.match(realProviderCycleCommand("android-device").args.at(-1), /level2-android-device-e2e\.mjs$/);
-    assert.match(realProviderCycleCommand("windows-sandbox").args.at(-1), /level2-windows-sandbox\.mjs$/);
-    for (const target of ["android-emulator", "android-device", "windows-sandbox"]) {
+    assert.match(realProviderCycleCommand("android-emulator").args.at(-1), /level2-android-emulator-e2e\.ts$/);
+    assert.match(realProviderCycleCommand("android-device").args.at(-1), /level2-android-device-e2e\.ts$/);
+    assert.match(realProviderCycleCommand("windows-sandbox").args.at(-1), /level2-windows-sandbox\.ts$/);
+    assert.match(realProviderCycleCommand("windows-vm").args.at(-1), /level2-hyper-v-windows-vm\.ts$/);
+    assert.match(realProviderCycleCommand("linux-vm").args.at(-1), /level2-hyper-v-linux-vm\.ts$/);
+    for (const target of ["android-emulator", "android-device", "windows-sandbox", "windows-vm", "linux-vm"]) {
         assert.equal(existsSync(realProviderCycleCommand(target).args.at(-1)), true, `${target} module must exist`);
     }
     for (const unsafeTarget of ["ios-simulator", "ios-device", "macos-vm"]) {
         assert.throws(() => realProviderCycleCommand(unsafeTarget), /unknown target/);
     }
+});
+
+test("Hyper-V Linux target lets the provider test recover prior owner-scoped residue", async () => {
+    let cycleRuns = 0;
+    let residueInspections = 0;
+    const code = await main(["--target", "linux-vm", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => (++residueInspections === 1 ? ["device-state:linux-hyper-v-real-e2e-stale"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        snapshotHyperVHostIdentity: () => ({ vms: [], switches: [], nats: [], addresses: [] }),
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(cycleRuns, 1);
+    assert.equal(residueInspections, 2);
+});
+
+test("Hyper-V Windows target lets the provider test recover prior owner-scoped residue", async () => {
+    let cycleRuns = 0;
+    let residueInspections = 0;
+    const code = await main(["--target", "windows-vm", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => (++residueInspections === 1 ? ["device-state:windows-vm-real-e2e-stale"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        snapshotHyperVHostIdentity: () => ({ vms: [], switches: [], nats: [], addresses: [] }),
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(cycleRuns, 1);
+    assert.equal(residueInspections, 2);
+});
+
+test("Hyper-V durability fails when non-test host identities change during a clean cycle", async () => {
+    let snapshots = 0;
+    await assert.rejects(main(["--target", "windows-vm", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => [],
+        snapshotTestTempArtifacts: () => new Set(),
+        snapshotHyperVHostIdentity: () => ({
+            vms: [{ vmId: snapshots++ === 0 ? "foreign-before" : "foreign-after" }],
+            switches: [],
+            nats: [],
+            addresses: [],
+        }),
+        runCycle: async () => successfulCycle(),
+    }), /Hyper-V host identity changed during cycle/);
+    assert.equal(snapshots, 2);
+});
+
+test("Hyper-V durability refuses state-less host VM residue", async () => {
+    let cycleRuns = 0;
+    await assert.rejects(
+        main(["--target", "windows-vm", "--cycles", "1"], {
+            inspectTestOwnedResidue: () => ["host-vm:ccc-owner-windows-vm-real-e2e-stale"],
+            snapshotTestTempArtifacts: () => new Set(),
+            writeResidueDiagnostic: () => "residue.json",
+            runCycle: async () => {
+                cycleRuns += 1;
+                return successfulCycle();
+            },
+        }),
+        /test-owned residue before cycle 1: host-vm:/,
+    );
+    assert.equal(cycleRuns, 0);
+});
+
+test("Hyper-V durability refuses recovery while a mutation or operation lock is present", async () => {
+    let cycleRuns = 0;
+    await assert.rejects(
+        main(["--target", "windows-vm", "--cycles", "1"], {
+            inspectTestOwnedResidue: () => [
+                "device-state:windows-vm-real-e2e-stale",
+                "operation-lock:C:\\state\\operations\\test.lock:windows-vm-real-e2e-stale",
+            ],
+            snapshotTestTempArtifacts: () => new Set(),
+            writeResidueDiagnostic: () => "residue.json",
+            runCycle: async () => {
+                cycleRuns += 1;
+                return successfulCycle();
+            },
+        }),
+        /test-owned residue before cycle 1: device-state:windows-vm-real-e2e-stale, operation-lock:test\.lock:windows-vm-real-e2e-stale/,
+    );
+    assert.equal(cycleRuns, 0);
+});
+
+test("Hyper-V target clears private-only residue before running a cycle", async () => {
+    let cycleRuns = 0;
+    let residueInspections = 0;
+    let recoveryRuns = 0;
+    const code = await main(["--target", "linux-vm", "--cycles", "1"], {
+        inspectTestOwnedResidue: () => (++residueInspections === 1 ? ["private-artifact:/private/linux-hyper-v-real-e2e-stale"] : []),
+        snapshotTestTempArtifacts: () => new Set(),
+        snapshotHyperVHostIdentity: () => ({ vms: [], switches: [], nats: [], addresses: [] }),
+        recoverHyperVPrivateResidue: async (target) => {
+            recoveryRuns += 1;
+            assert.equal(target, "linux-vm");
+            return { privateArtifacts: 1 };
+        },
+        runCycle: async () => {
+            cycleRuns += 1;
+            return successfulCycle();
+        },
+    });
+    assert.equal(code, 0);
+    assert.equal(recoveryRuns, 1);
+    assert.equal(cycleRuns, 1);
+    assert.equal(residueInspections, 3);
 });
 
 test("auto-selects a deterministic authorized physical Android device", () => {
@@ -379,6 +506,475 @@ test("detects a test-created AVD that is absent from CCC state", () => {
             ],
         });
         assert.deepEqual(residue, ["sdk-avd:ccc-0123456789abcdef-real-android-e2e-123"]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects test-owned Hyper-V VMs even when CCC owner state is absent", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-"));
+    const owner = "0123456789abcdef";
+    const incarnationId = "a".repeat(32);
+    const vmName = `ccc-${owner}-windows-vm-real-e2e-123-${incarnationId}`;
+    try {
+        assert.deepEqual(parseHyperVVmInventory(JSON.stringify({
+            name: vmName,
+            notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123`,
+            vmId: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+            diskPaths: ["C:\\ccc\\root.vhdx"],
+            checkpoints: ["durability-checkpoint"],
+        })), [{
+            name: vmName,
+            notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123`,
+            vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            diskPaths: ["C:\\ccc\\root.vhdx"],
+            checkpoints: ["durability-checkpoint"],
+        }]);
+        const residue = inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [
+                { name: vmName, notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-123:${incarnationId}`, vmId: "id", diskPaths: ["C:\\ccc\\root.vhdx"], checkpoints: ["before-upgrade"] },
+                { name: "foreign-vm", notes: "", vmId: "foreign", diskPaths: [] },
+            ],
+        });
+        assert.deepEqual(residue, [
+            `host-vm:${vmName}`,
+            `host-vm-disk:${vmName}:C:\\ccc\\root.vhdx`,
+            `host-vm-checkpoint:${vmName}:before-upgrade`,
+        ]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("Windows Hyper-V inventory commands request disks, checkpoints, switches, NATs, and addresses", () => {
+    const commands = [];
+    const spawnSyncImpl = (_executable, args) => {
+        commands.push(args.at(-1));
+        return commands.length === 1
+            ? { status: 0, stdout: "[]", stderr: "" }
+            : { status: 0, stdout: JSON.stringify({ switches: [], nats: [], addresses: [] }), stderr: "" };
+    };
+    assert.deepEqual(listHyperVVmInventory({ platform: "win32", spawnSyncImpl }), []);
+    assert.deepEqual(listHyperVNetworkInventory({ platform: "win32", spawnSyncImpl }), { switches: [], nats: [], addresses: [] });
+    assert.match(commands[0], /Get-VMHardDiskDrive/);
+    assert.match(commands[0], /Get-VMSnapshot/);
+    assert.match(commands[1], /Get-VMSwitch/);
+    assert.match(commands[1], /Get-NetNat/);
+    assert.match(commands[1], /Get-NetIPAddress/);
+});
+
+test("Windows Hyper-V inventory reports the one-time management permission remedy", () => {
+    assert.throws(() => listHyperVVmInventory({
+        platform: "win32",
+        spawnSyncImpl: () => ({
+            status: 1,
+            stdout: "",
+            stderr: "hyper-v-management-permission-unavailable:run ccc devices setup hyper-v --confirm, approve the one-time elevation, then sign out and sign in once",
+        }),
+    }), /ccc devices setup hyper-v --confirm/);
+});
+
+test("Windows Hyper-V inventory preserves non-permission provider failures", () => {
+    const stderr = "Get-VM: the virtualization provider is unavailable";
+    assert.throws(() => listHyperVVmInventory({
+        platform: "win32",
+        spawnSyncImpl: (_executable, args) => {
+            assert.match(args.at(-1), /if \(\$TokenHasRole\) \{ throw \$InventoryError \}/);
+            assert.match(args.at(-1), /WindowsBuiltInRole\]::Administrator/);
+            assert.match(args.at(-1), /throw \$InventoryError/);
+            return { status: 1, stdout: "", stderr };
+        },
+    }), /virtualization provider is unavailable/);
+});
+
+test("snapshots and compares complete Hyper-V host identities", () => {
+    const before = snapshotHyperVHostIdentity({
+        listHyperVVms: () => [{ name: "foreign", notes: "foreign", vmId: "b", diskPaths: ["z", "a"], checkpoints: ["two", "one"] }],
+        listHyperVNetworks: () => ({
+            switches: [{ name: "switch", id: "switch-id", type: "External", notes: "foreign" }],
+            nats: [{ name: "nat", prefix: "10.0.0.0/24", instanceId: "nat-id" }],
+            addresses: [{ interfaceAlias: "vEthernet (switch)", address: "10.0.0.1", prefixLength: 24 }],
+        }),
+    });
+    const same = snapshotHyperVHostIdentity({
+        listHyperVVms: () => [{ name: "foreign", notes: "foreign", vmId: "b", diskPaths: ["a", "z"], checkpoints: ["one", "two"] }],
+        listHyperVNetworks: () => ({
+            switches: [{ name: "switch", id: "switch-id", type: "External", notes: "foreign" }],
+            nats: [{ name: "nat", prefix: "10.0.0.0/24", instanceId: "nat-id" }],
+            addresses: [{ interfaceAlias: "vEthernet (switch)", address: "10.0.0.1", prefixLength: 24 }],
+        }),
+    });
+    assert.doesNotThrow(() => assertHyperVHostIdentityUnchanged(before, same));
+    const replaced = structuredClone(same);
+    replaced.nats[0].instanceId = "replacement-id";
+    assert.throws(() => assertHyperVHostIdentityUnchanged(before, replaced), /Hyper-V host identity changed during cycle/);
+});
+
+test("Hyper-V host identity snapshot fails closed on incomplete network inventory", () => {
+    assert.throws(() => snapshotHyperVHostIdentity({
+        listHyperVVms: () => [],
+        listHyperVNetworks: () => ({ switches: [], nats: null, addresses: [] }),
+    }), /network identity inventory incomplete/);
+});
+
+test("Hyper-V host identity excludes only exact persisted managed network identities", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-identity-"));
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    mkdirSync(networkRoot, { recursive: true });
+    writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+        version: 1,
+        switchName: "CCC Device Lab",
+        switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        marker: "ccc-device-lab:hyper-v-network:0123456789abcdef01234567",
+        natName: "CCCDeviceLab-0123456789abcdef01234567",
+        natInstanceId: "managed-nat-id",
+        prefix: "172.29.0.0/24",
+        gateway: "172.29.0.1",
+        managedNat: true,
+        allocations: [],
+    }));
+    try {
+        const snapshot = snapshotHyperVHostIdentity({
+            home,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [
+                    { name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:0123456789abcdef01234567" },
+                    { name: "CCC Device Lab", id: "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:0123456789abcdef01234567" },
+                ],
+                nats: [
+                    { name: "CCCDeviceLab-0123456789abcdef01234567", prefix: "172.29.0.0/24", instanceId: "managed-nat-id" },
+                    { name: "CCCDeviceLab-0123456789abcdef01234567", prefix: "172.29.0.0/24", instanceId: "replacement-nat-id" },
+                ],
+                addresses: [
+                    { interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 },
+                    { interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.2", prefixLength: 24 },
+                ],
+            }),
+        });
+        assert.deepEqual(snapshot.switches.map((item) => item.id), ["ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"]);
+        assert.deepEqual(snapshot.nats.map((item) => item.instanceId), ["replacement-nat-id"]);
+        assert.deepEqual(snapshot.addresses.map((item) => item.address), ["172.29.0.2"]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("preserves ambiguously identified Hyper-V VMs and does not attribute their disks or checkpoints", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-ambiguous-"));
+    const owner = "0123456789abcdef";
+    try {
+        const residue = inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [
+                { name: `ccc-${owner}-windows-vm-real-e2e-name-only-${"a".repeat(32)}`, notes: "foreign", diskPaths: ["C:\\foreign.vhdx"], checkpoints: ["foreign-checkpoint"] },
+                { name: "foreign-name", notes: `ccc-device-lab:${owner}:windows-vm-real-e2e-marker-only`, diskPaths: ["C:\\foreign-2.vhdx"], checkpoints: ["foreign-checkpoint-2"] },
+            ],
+        });
+        assert.deepEqual(residue, [
+            `ambiguous-host-vm:ccc-${owner}-windows-vm-real-e2e-name-only-${"a".repeat(32)}`,
+            "ambiguous-host-vm:foreign-name",
+        ]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects test-owned Hyper-V VHDX and exact mutation and operation locks", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-locks-"));
+    const owner = "0123456789abcdef";
+    const deviceId = "windows-vm-real-e2e-locked";
+    const backendRoot = join(home, ".ccc", "devices", "owners", owner, "windows-vm");
+    const deviceRoot = join(backendRoot, deviceId);
+    const diskPath = join(deviceRoot, "disks", "root.vhdx");
+    const mutationLock = join(backendRoot, "devices.mutation.lock");
+    const operationKey = createHash("sha256").update(deviceId).digest("hex").slice(0, 32);
+    const operationLock = join(backendRoot, "operations", `${operationKey}.lock`);
+    try {
+        mkdirSync(join(deviceRoot, "disks"), { recursive: true });
+        mkdirSync(join(backendRoot, "operations"), { recursive: true });
+        writeFileSync(join(backendRoot, "devices.json"), JSON.stringify({ devices: [{ id: deviceId }] }));
+        writeFileSync(diskPath, "vhdx");
+        writeFileSync(mutationLock, "lock");
+        writeFileSync(operationLock, "lock");
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+        }), [
+            `device-state:${deviceId}`,
+            `owner-artifact:${deviceRoot}`,
+            `vhdx:${diskPath}`,
+            `operation-lock:${operationLock}:${deviceId}`,
+            `mutation-lock:${mutationLock}`,
+        ]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects and removes only current-owner test-prefixed Hyper-V private artifacts", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-private-"));
+    const owner = "0123456789abcdef";
+    const backendRoot = join(home, ".ccc", "device-broker-private", "owners", owner, "linux-vm");
+    const testArtifact = join(backendRoot, "linux-hyper-v-real-e2e-123");
+    const userArtifact = join(backendRoot, "user-linux-vm");
+    try {
+        mkdirSync(testArtifact, { recursive: true });
+        mkdirSync(userArtifact, { recursive: true });
+        assert.deepEqual(inspectTestOwnedResidue("linux-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+        }), [`private-artifact:${testArtifact}`]);
+        assert.deepEqual(recoverHyperVPrivateResidue("linux-vm", { home, owner }), { privateArtifacts: 1 });
+        assert.equal(existsSync(testArtifact), false);
+        assert.equal(existsSync(userArtifact), true);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects current-owner test-prefixed Hyper-V network allocations", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-network-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    const networkPath = join(networkRoot, "hyper-v.json");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(networkPath, JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            natName: "CCCDeviceLab",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [
+                { ownerId: owner, deviceId: "windows-vm-real-e2e-123", address: "172.29.0.10", allocatedAt: new Date().toISOString() },
+                { ownerId: owner, deviceId: "user-windows-vm", address: "172.29.0.11", allocatedAt: new Date().toISOString() },
+                { ownerId: "fedcba9876543210", deviceId: "windows-vm-real-e2e-456", address: "172.29.0.12", allocatedAt: new Date().toISOString() },
+            ],
+        }));
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+        }), [`network-allocation:${networkPath}:windows-vm-real-e2e-123`]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("parses independently observable Hyper-V network inventory sections", () => {
+    assert.deepEqual(parseHyperVNetworkInventory(JSON.stringify({
+        switches: [{ name: "CCC Device Lab", id: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }],
+        nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24", instanceId: "ccc-nat-instance-1" }],
+        addresses: [{ interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 }],
+    })), {
+        switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }],
+        nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24", instanceId: "ccc-nat-instance-1" }],
+        addresses: [{ interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 }],
+    });
+    assert.deepEqual(parseHyperVNetworkInventory(JSON.stringify({ switches: null, nats: null, addresses: null })), {
+        switches: null,
+        nats: null,
+        addresses: null,
+    });
+});
+
+test("allows a valid Hyper-V bootstrap intent to be adopted by the next provider cycle", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-network-intent-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    const token = "a".repeat(24);
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v-intent.json"), JSON.stringify({
+            version: 1,
+            token,
+            switchName: "CCC Device Lab",
+            natName: `CCCDeviceLab-${token}`,
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            createdAt: new Date().toISOString(),
+        }));
+        assert.deepEqual(inspectTestOwnedResidue("linux-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: `ccc-device-lab:hyper-v-network:${token}` }],
+                nats: [{ name: `CCCDeviceLab-${token}`, prefix: "172.29.0.0/24" }],
+                addresses: [{ interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 }],
+            }),
+        }), []);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects live CCC-owned Hyper-V switch, NAT, and gateway after the last allocation", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-live-network-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            natName: "CCCDeviceLab",
+            natInstanceId: "ccc-nat-instance-1",
+            managedNat: true,
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [],
+        }));
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }],
+                nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24", instanceId: "ccc-nat-instance-1" }],
+                addresses: [{ interfaceAlias: "vEthernet (CCC Device Lab)", address: "172.29.0.1", prefixLength: 24 }],
+            }),
+        }), [
+            "host-network-switch:CCC Device Lab",
+            "host-network-nat:CCCDeviceLab",
+            "host-network-address:vEthernet (CCC Device Lab):172.29.0.1/24",
+        ]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("treats a replacement Hyper-V NAT instance as ambiguous", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-replaced-nat-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: "CCCDeviceLab",
+            natInstanceId: "ccc-nat-instance-expected",
+            managedNat: true,
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [],
+        }));
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }],
+                nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24", instanceId: "ccc-nat-instance-replacement" }],
+                addresses: [],
+            }),
+        }), [
+            "host-network-switch:CCC Device Lab",
+            "ambiguous-host-network-nat:CCCDeviceLab",
+        ]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("preserves shared or ambiguous Hyper-V network resources", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-shared-network-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            natName: "CCCDeviceLab",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [{ ownerId: owner, deviceId: "user-windows-vm", address: "172.29.0.10", allocatedAt: new Date().toISOString() }],
+        }));
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "ccc-device-lab:hyper-v-network:v1" }],
+                nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24" }],
+                addresses: [],
+            }),
+        }), []);
+        assert.deepEqual(inspectTestOwnedResidue("windows-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+            listHyperVNetworks: () => ({
+                switches: [{ name: "CCC Device Lab", id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", type: "Internal", notes: "foreign" }],
+                nats: [{ name: "CCCDeviceLab", prefix: "172.29.0.0/24" }],
+                addresses: [],
+            }),
+        }), ["ambiguous-host-network-switch:CCC Device Lab"]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("fails closed on malformed Hyper-V network allocation state", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-network-invalid-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            natName: "CCCDeviceLab",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [{ ownerId: owner }],
+        }));
+        assert.throws(() => inspectTestOwnedResidue("linux-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+        }), /Hyper-V network allocation metadata malformed/);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("fails closed when managed Hyper-V NAT state lacks its instance identity", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-hyper-v-network-unfenced-nat-"));
+    const owner = "0123456789abcdef";
+    const networkRoot = join(home, ".ccc", "device-broker-private", "network");
+    try {
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+            version: 1,
+            switchName: "CCC Device Lab",
+            switchId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            natName: "CCCDeviceLab",
+            managedNat: true,
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            allocations: [],
+        }));
+        assert.throws(() => inspectTestOwnedResidue("linux-vm", {
+            home,
+            owner,
+            listHyperVVms: () => [],
+        }), /Hyper-V network state metadata malformed/);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }

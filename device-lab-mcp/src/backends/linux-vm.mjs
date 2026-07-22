@@ -1726,6 +1726,10 @@ export function snapshotLab(action, args = {}, options = {}) {
     const ctx = context(options);
     const loaded = readLab(ctx, String(args.labId || ""));
     if (!loaded.ok) return loaded;
+    if (action === "list") {
+        const snapshots = Array.isArray(loaded.lab.snapshots) ? loaded.lab.snapshots : [];
+        return { ok: true, ownerId: ctx.owner, labId: loaded.lab.id, snapshots, activeSnapshot: loaded.lab.activeSnapshot || null };
+    }
     if (loaded.lab.runtimeState === "running") return { ok: false, error: "lab-running", labId: loaded.lab.id };
     const snapshotName = slug(args.snapshotName);
     if (!validId(snapshotName)) return { ok: false, error: "invalid-snapshot-name" };
@@ -2157,6 +2161,7 @@ export const LINUX_VM_CAPABILITIES = [
     "device_exec",
     "device_upload",
     "device_download",
+    "device_snapshot_list",
     "device_snapshot_create",
     "device_snapshot_restore",
     "device_snapshot_delete",
@@ -2253,6 +2258,7 @@ function handleLinuxVmToolUnlocked(name, args = {}, options = {}) {
     else if (name === "device_delete") result = deleteLab(linuxArgs, options);
     else if (name === "device_reboot") result = rebootLab(linuxArgs, options);
     else if (name === "device_disk_materialize") result = materializeDisk(linuxArgs, options);
+    else if (name === "device_snapshot_list") result = snapshotLab("list", linuxArgs, options);
     else if (name === "device_snapshot_create") result = snapshotLab("create", linuxArgs, options);
     else if (name === "device_snapshot_restore") result = snapshotLab("restore", linuxArgs, options);
     else if (name === "device_snapshot_delete") result = snapshotLab("delete", linuxArgs, options);

@@ -5,6 +5,8 @@ const slots = [
     { backend: "android-emulator", label: "Android emulator real integration slot" },
     { backend: "ios-simulator", label: "iOS Simulator real integration slot" },
     { backend: "windows-sandbox", label: "Windows Sandbox real integration slot" },
+    { backend: "windows-vm", label: "Hyper-V Windows VM real integration slot" },
+    { backend: "linux-vm", label: "Hyper-V Linux VM real integration slot" },
     { backend: "macos-vm", label: "macOS VM real integration slot" },
 ];
 

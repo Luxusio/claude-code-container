@@ -29,6 +29,8 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(smoke).toContain("ios-simulator: SKIP - missing xcrun");
         expect(smoke).toContain("ios-device: SKIP - missing xcrun");
         expect(smoke).toContain("windows-sandbox: SKIP - missing wsb");
+        expect(smoke).toContain("windows-vm: SKIP - not a Windows host");
+        expect(smoke).toContain("linux-vm: SKIP - not a Windows host");
         expect(smoke).toContain("macos-vm: SKIP - missing tart, vz, utmctl");
     });
 
@@ -114,6 +116,8 @@ describe("device-lab admin smoke diagnostics", () => {
         expect(smoke).toContain("ios-simulator: PASS - real provider simctl inventory responded; no simulator booted");
         expect(smoke).toContain("ios-device: PASS - real provider xctrace physical-device inventory responded; no device claimed");
         expect(smoke).toContain("windows-sandbox: PASS - real provider Windows Sandbox CLI responded; no sandbox started");
+        expect(smoke).toContain("windows-vm: SKIP - not a Windows host");
+        expect(smoke).toContain("linux-vm: SKIP - not a Windows host");
         expect(smoke).toContain("macos-vm: PASS - real provider macOS VM CLI and SSH bridge responded; SCP bridge tool found; no VM started");
         expect(smoke).toContain(`${join(binDir, "scp")} path-check -> 0`);
         const commandLog = readFileSync(logPath, "utf-8");

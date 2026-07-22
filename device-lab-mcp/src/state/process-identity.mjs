@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
 
@@ -30,19 +30,40 @@ function linuxProcessIdentity(pid) {
 }
 
 function windowsProcessIdentity(pid) {
-    const script = `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    const script = windowsProcessIdentityScript(pid);
     const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf-8",
         timeout: 5000,
         windowsHide: true,
     });
     if (result.status !== 0 || !result.stdout?.trim()) return null;
+    return parseWindowsProcessIdentity(pid, result.stdout);
+}
+
+function windowsProcessIdentityScript(pid) {
+    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+}
+
+function parseWindowsProcessIdentity(pid, output) {
     try {
-        const parsed = JSON.parse(result.stdout);
+        const parsed = JSON.parse(output);
         return processIdentity(pid, parsed.startToken ? `windows:${parsed.startToken}` : null, parsed.commandLine);
     } catch {
         return null;
     }
+}
+
+function windowsProcessIdentityAsync(pid) {
+    return new Promise((resolve) => {
+        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+            encoding: "utf-8",
+            timeout: 5000,
+            windowsHide: true,
+            maxBuffer: 64 * 1024,
+        }, (error, stdout) => {
+            resolve(error || !stdout?.trim() ? null : parseWindowsProcessIdentity(pid, stdout));
+        });
+    });
 }
 
 function psProcessIdentity(pid) {
@@ -54,11 +75,38 @@ function psProcessIdentity(pid) {
     return processIdentity(pid, startToken ? `ps:${startToken}` : null, commandLine);
 }
 
+function execFileText(executable, args) {
+    return new Promise((resolve) => {
+        execFile(executable, args, {
+            encoding: "utf-8",
+            timeout: 5000,
+            windowsHide: true,
+            maxBuffer: 64 * 1024,
+        }, (error, stdout) => resolve(error ? "" : stdout?.trim() || ""));
+    });
+}
+
+async function psProcessIdentityAsync(pid) {
+    const executable = process.platform === "darwin" ? "/bin/ps" : "ps";
+    const [startToken, commandLine] = await Promise.all([
+        execFileText(executable, ["-p", String(pid), "-o", "lstart="]),
+        execFileText(executable, ["-p", String(pid), "-o", "command="]),
+    ]);
+    return processIdentity(pid, startToken ? `ps:${startToken}` : null, commandLine || null);
+}
+
 export function readProcessIdentity(pid) {
     if (!validPid(pid)) return null;
     if (process.platform === "linux") return linuxProcessIdentity(pid);
     if (process.platform === "win32") return windowsProcessIdentity(pid);
     return psProcessIdentity(pid);
+}
+
+export async function readProcessIdentityAsync(pid) {
+    if (!validPid(pid)) return null;
+    if (process.platform === "win32") return windowsProcessIdentityAsync(pid);
+    if (process.platform === "linux") return readProcessIdentity(pid);
+    return psProcessIdentityAsync(pid);
 }
 
 export async function waitForProcessIdentity(pid, timeoutMs = 1000, options = {}) {

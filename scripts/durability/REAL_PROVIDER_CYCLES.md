@@ -1,7 +1,7 @@
 # Real provider durability cycles
 
 > **Warning:** This runner executes destructive or physical-provider E2E tests.
-> It creates and deletes disposable emulators or sandboxes. The physical Android
+> It creates and deletes disposable emulators, sandboxes, or Hyper-V VMs. The physical Android
 > target changes device state and may install, launch, reset, and uninstall the
 > APK configured through the existing `CCC_REAL_*` variables.
 
@@ -24,6 +24,8 @@ Run one target repeatedly with:
 npm run test:durability:device-lab:real -- --target android-emulator --cycles 10
 npm run test:durability:device-lab:real -- --target android-device --cycles 10
 npm run test:durability:device-lab:real -- --target windows-sandbox --cycles 10
+npm run test:durability:device-lab:real -- --target windows-vm --cycles 2
+npm run test:durability:device-lab:real -- --target linux-vm --cycles 2
 ```
 
 Use `--timeout 30m` to change the per-cycle deadline. Each cycle launches the
@@ -126,6 +128,40 @@ Artifact cleanup failure preserves the state record and fails the operation so
 the next verified recovery can retry. Do not launch another Sandbox
 concurrently with this test.
 
+The `windows-vm` target requires Hyper-V readiness and one-time Windows Server
+evaluation license acceptance through `ccc devices setup hyper-v --confirm
+--accept-windows-evaluation-license`. A cache miss downloads and verifies the
+official Windows Server 2025 evaluation VHDX automatically. Each durability cycle then
+creates an owner-scoped differencing disk, waits for PowerShell Direct, covers
+guest command and transfer operations, creates/restores/deletes a production
+checkpoint, and deletes the VM. Interrupted records using the fixed
+`windows-vm-real-e2e-*` prefix are offered to the provider scenario for exact
+owner/VM-identity cleanup; unrelated Hyper-V VMs are never adopted. Base
+images, writable VM disks, provisioning media, credentials, operation journals,
+network allocations, and transfer staging live under the broker-only
+`~/.ccc/device-broker-private` tree, which is not mounted into project
+containers. Network allocation cleanup is VM-incarnation fenced and existing
+NAT resources are touched only with broker-private CCC ownership evidence.
+Owned state is removed with the VM's owner-scoped artifacts. Durability
+cycles intentionally omit the Level 3 packaged-CCC guest probe so repeated
+cycles measure provider lifecycle and residue cleanup rather than repeatedly
+transferring the host Node executable.
+
+The `linux-vm` target requires Hyper-V and OpenSSH client tools. A cache miss
+downloads the official Ubuntu 24.04 LTS Azure VHD archive, verifies Canonical's
+published checksum, and converts it to VHDX automatically. Each cycle
+creates an owner-scoped cloud-init seed and SSH key, verifies the static CCC
+NAT address and outbound connectivity, exercises SSH/SCP and checkpoints, and
+then deletes the VM and owner artifacts. Recovery is limited to the
+`linux-hyper-v-real-e2e-*` prefix and exact owner/VM identity. Base images,
+writable disks, CIDATA, SSH client and host keys, strict `known_hosts`, network
+allocations, and transfer staging use the same broker-only
+private tree and are included in residue detection and verified cleanup.
+The default per-cycle timeout for both Hyper-V VM targets is seven hours. This
+outlives the bounded six-hour create RPC, including image and host lock waits,
+while leaving time for validation and verified cleanup. The create RPC itself
+reserves its final five minutes for identity-fenced rollback.
+
 Validate command selection without creating or touching a provider:
 
 ```sh
@@ -133,7 +169,7 @@ npm run test:durability:device-lab:real -- --target android-emulator --cycles 2 
 npm run test:durability:device-lab:real:self
 ```
 
-The npm scripts should invoke `scripts/durability/run.ts` as documented in
+The npm scripts should invoke `scripts/durability/run.mjs` as documented in
 [README.md](./README.md), so source checkouts build first while installed npm
 packages validate and reuse their shipped `dist/index.js`.
 

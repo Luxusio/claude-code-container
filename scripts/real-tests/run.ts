@@ -298,6 +298,7 @@ function skipCategory(record) {
     const reason = String(record?.reason || "");
     if (/missing (?:adb|emulator|xcrun|wsb|tart|vz|utmctl|xdotool|scrot)|no installed Android SDK system image|no physical (?:iOS|Android) device visible|missing CCC_REAL_|current display prerequisites/.test(reason)) return "provider-prerequisite";
     if (/not a (?:macOS|Windows|Linux) host/.test(reason)) return "host-platform";
+    if (/hyper-v-management-permission/.test(reason)) return "host-permission";
     if (/\/dev\/kvm is not available/.test(reason)) return "host-virtualization";
     return "other";
 }
@@ -318,7 +319,7 @@ function groupSkipsByCategory(items) {
     return [...grouped.values()].sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
 }
 
-const providerGapSkipCategories = new Set(["provider-prerequisite", "host-platform", "host-virtualization"]);
+const providerGapSkipCategories = new Set(["provider-prerequisite", "host-platform", "host-permission", "host-virtualization"]);
 const macosProviderValues = new Set(["auto", "tart", "vz", "utmctl"]);
 const directOkExemptDiagnosticTools = new Set([
     "device_base_image_clone",
@@ -338,7 +339,9 @@ function explainedProviderValuesFromSkips(skipCategories) {
         if (/android/.test(text) && /(?:physical|device|adb)/.test(text)) explained.add("backend=android-device");
         if (/ios/.test(text) && /simulator/.test(text)) explained.add("backend=ios-simulator");
         if (/ios/.test(text) && /(?:physical|device|xcrun|macos host)/.test(text)) explained.add("backend=ios-device");
-        if (/windows|wsb/.test(text)) explained.add("backend=windows-sandbox");
+        if (/windows sandbox|wsb/.test(text)) explained.add("backend=windows-sandbox");
+        if (/hyper-v/.test(text) && /windows vm/.test(text)) explained.add("backend=windows-vm");
+        if (/hyper-v/.test(text) && /linux vm/.test(text)) explained.add("backend=linux-vm");
         if (/macos|tart|vz|utmctl/.test(text)) explained.add("backend=macos-vm");
     }
     return explained;

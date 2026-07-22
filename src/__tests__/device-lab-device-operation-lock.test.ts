@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
-import { rmdirSync, rmSync } from "fs";
-import { dirname } from "path";
-import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmdirSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join } from "path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
     ownerStateDir,
     withOwnerDeviceOperation,
@@ -10,6 +11,14 @@ import {
 
 describe("owner device operation lock", () => {
     const backends: string[] = [];
+    let originalHome: string | undefined;
+    let testHome: string;
+
+    beforeEach(() => {
+        originalHome = process.env.HOME;
+        testHome = mkdtempSync(join(tmpdir(), "ccc-operation-lock-home-"));
+        process.env.HOME = testHome;
+    });
 
     afterEach(() => {
         for (const backend of backends.splice(0)) {
@@ -21,6 +30,9 @@ describe("owner device operation lock", () => {
                 current = dirname(current);
             }
         }
+        rmSync(testHome, { recursive: true, force: true });
+        if (originalHome === undefined) delete process.env.HOME;
+        else process.env.HOME = originalHome;
     });
 
     function target() {

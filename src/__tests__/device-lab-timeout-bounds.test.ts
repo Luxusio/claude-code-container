@@ -7,6 +7,10 @@ import {
 import {
     MAX_DEVICE_HELPER_TIMEOUT_MS,
     MAX_DEVICE_OPERATION_TIMEOUT_MS,
+    HYPER_V_CREATE_RPC_TIMEOUT_MS,
+    HYPER_V_HOST_LOCK_WAIT_MS,
+    HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+    HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS,
     brokerDeviceToolExecutionTimeout,
     brokerLifecycleExecutionTimeout,
 } from "../../device-lab-mcp/src/server.mjs";
@@ -14,6 +18,12 @@ import { TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import {
     DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS,
     DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_CREATE_POST_ACQUIRE_BUDGET_MS,
+    DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
+    DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS,
+    DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS,
     deviceBrokerBackendToolTimeoutMs,
 } from "../device-lab-broker.js";
 
@@ -93,6 +103,21 @@ describe("device-lab public timeout bounds", () => {
         })).toEqual({
             rpcTimeoutMs: 195000,
         });
+        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", name: "automatic-image" })).toEqual({
+            rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", name: "automatic-image", rpcTimeoutMs: Number.MAX_SAFE_INTEGER })).toEqual({
+            rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_start" })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_reboot", bootTimeoutMs: 600000 })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + 600000 + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_stop" })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
     });
 
     it("caps host broker child deadlines independently of the MCP server", () => {
@@ -102,6 +127,17 @@ describe("device-lab public timeout bounds", () => {
         expect(deviceBrokerBackendToolTimeoutMs("mobile_wait_for_app", { timeoutMs: Number.MAX_SAFE_INTEGER })).toBe(DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS + 15000);
         expect(deviceBrokerBackendToolTimeoutMs("device_exec", { timeoutMs: Number.MAX_SAFE_INTEGER })).toBe(30000);
         expect(deviceBrokerBackendToolTimeoutMs("device_exec", { helperTimeoutMs: -1 })).toBe(30000);
+    });
+
+    it("composes the Hyper-V create deadline from every bounded phase", () => {
+        expect(DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS).toBe(
+            DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS
+            + DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS
+            + DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS
+            + DEVICE_BROKER_HYPER_V_CREATE_POST_ACQUIRE_BUDGET_MS,
+        );
+        expect(DEVICE_BROKER_HYPER_V_CREATE_POST_ACQUIRE_BUDGET_MS).toBeGreaterThan(60 * 60 * 1000);
+        expect(DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS).toBeGreaterThanOrEqual(5 * 60 * 1000);
     });
 
     it("caps direct Windows helper polling independently of routing", () => {

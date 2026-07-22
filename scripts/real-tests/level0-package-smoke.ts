@@ -36,6 +36,8 @@ export async function run() {
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-android-emulator-e2e.ts")), true);
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-macos-vm-e2e.ts")), true);
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-windows-sandbox.ts")), true);
+    assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-hyper-v-windows-vm.ts")), true);
+    assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-hyper-v-linux-vm.ts")), true);
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level2-real-linux-vm.ts")), true);
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level3-real-destructive.ts")), true);
     assert.strictEqual(existsSync(join(repoRoot, "scripts", "real-tests", "level3.ts")), true);

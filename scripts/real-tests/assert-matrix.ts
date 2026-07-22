@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import { androidBackend } from "../../device-lab-mcp/src/backends/android.mjs";
 import { windowsBackend } from "../../device-lab-mcp/src/backends/windows-sandbox.mjs";
+import { windowsVmBackend } from "../../device-lab-mcp/src/backends/windows-vm.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const assertJsonPath = resolve(scriptPath, "../assert-json.ts");
@@ -17,6 +18,8 @@ export const PROVIDER_RESULT_SPECS = [
     { id: "ios-simulator", files: ["level2-ios-e2e.ts"], tools: ["device_create", "device_start", "mobile_tap", "mobile_screenshot", "device_delete"] },
     { id: "ios-device", files: ["level2-ios-e2e.ts"], tools: ["device_attach", "device_status", "mobile_tap", "mobile_screenshot", "device_detach"] },
     { id: "windows-sandbox", files: ["level2-windows-sandbox.ts"], tools: windowsBackend().capabilities },
+    { id: "windows-vm", files: ["hyper-v-windows-vm-e2e.ts"], tools: windowsVmBackend().capabilities },
+    { id: "linux-vm-hyper-v", backend: "linux-vm", files: ["hyper-v-linux-vm-e2e.ts"], tools: windowsVmBackend().capabilities },
     { id: "macos-vm", files: ["level3-real-destructive.ts"], tools: ["device_base_image_create", "device_base_image_clone", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete"] },
     { id: "android-wireless", backend: "android-device", filesBySource: { source: ["level1-real-provider-readiness.ts"], dist: ["level1-dist-real-provider-readiness.ts"] }, tools: ["device_wireless"] },
     { id: "ios-wireless", backend: "ios-device", filesBySource: { source: ["level1-real-provider-readiness.ts"], dist: ["level1-dist-real-provider-readiness.ts"] }, tools: ["device_wireless"] },

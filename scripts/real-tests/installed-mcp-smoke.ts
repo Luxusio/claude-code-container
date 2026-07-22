@@ -33,11 +33,14 @@ export function installedMcpSmokeSample(toolName) {
     const iosId = "dist-ios-smoke";
     const windowsId = "dist-windows-smoke";
     const macosId = "dist-macos-smoke";
+    const linuxId = "dist-linux-smoke";
     const byName = {
         device_backends: { ...direct },
         device_broker_status: { ...brokerProbe },
         device_list: {},
         device_inventory: { ...direct, backend: "android-emulator" },
+        device_image_list: { backend: "linux-vm" },
+        device_image_import: { backend: "linux-vm", name: "Missing image smoke", sourcePath: "missing-smoke.qcow2" },
         device_wireless: { backend: "android-device", action: "status", timeoutMs: 1 },
         display_current: {},
         display_screenshot: {},
@@ -53,7 +56,16 @@ export function installedMcpSmokeSample(toolName) {
         device_delete: { ...brokerProbe, broker: true, backend: "android-emulator", deviceId: "missing-delete-smoke", confirmDestructive: true },
         device_start: { ...direct, backend: "android-emulator", deviceId: androidId, waitForBoot: false, bootTimeoutMs: 1 },
         device_stop: { ...direct, backend: "android-emulator", deviceId: androidId },
+        device_reboot: { backend: "linux-vm", deviceId: linuxId },
         device_status: { ...direct, backend: "android-emulator", deviceId: androidId },
+        device_disk_materialize: { backend: "linux-vm", deviceId: linuxId },
+        device_target_list: { backend: "linux-vm" },
+        device_readiness_probe: { backend: "linux-vm", deviceId: linuxId },
+        device_session_open: { backend: "linux-vm", deviceId: linuxId },
+        device_workspace_sync: { backend: "linux-vm", deviceId: linuxId },
+        device_artifacts_export: { backend: "linux-vm", deviceId: linuxId },
+        device_guest_agent_status: { backend: "linux-vm", deviceId: linuxId, timeoutMs: 1 },
+        device_guest_agent_provision: { backend: "linux-vm", deviceId: linuxId, timeoutMs: 1 },
         device_exec: { ...direct, backend: "android-emulator", deviceId: androidId, command: "true", helperTimeoutMs: 1 },
         device_screenshot: { ...direct, backend: "android-emulator", deviceId: androidId, helperTimeoutMs: 1 },
         device_click: { ...direct, backend: "windows-sandbox", deviceId: windowsId, x: 1, y: 1, helperTimeoutMs: 1 },
@@ -66,6 +78,7 @@ export function installedMcpSmokeSample(toolName) {
         device_accessibility_snapshot: { ...direct, backend: "windows-sandbox", deviceId: windowsId, maxDepth: 1, maxNodes: 1, helperTimeoutMs: 1 },
         device_base_image_create: { backend: "macos-vm", name: "Base image smoke", sourceImage: "missing-source" },
         device_base_image_clone: { backend: "macos-vm", name: "Base clone smoke", sourceDeviceId: macosId },
+        device_snapshot_list: { ...direct, backend: "linux-vm", deviceId: linuxId },
         device_snapshot_create: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke" },
         device_snapshot_restore: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke", force: true, confirmDestructive: true },
         device_snapshot_delete: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke", confirmDestructive: true },

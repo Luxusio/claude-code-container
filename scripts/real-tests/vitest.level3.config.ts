@@ -5,7 +5,7 @@ export default defineConfig({
         include: ["scripts/real-tests/level3-vitest.ts"],
         setupFiles: ["./scripts/real-tests/hidden-child-processes.cjs"],
         fileParallelism: false,
-        testTimeout: 30 * 60 * 1000,
+        testTimeout: 10 * 60 * 60 * 1000,
         hookTimeout: 60 * 1000,
     },
 });

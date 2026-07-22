@@ -4,7 +4,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+    boundedProviderCommandRunnerScript,
     defaultProviderCommandRunner,
+    defaultProviderCommandRunnerAsync,
     providerCommandSpawn,
     runBrokerBackendChild,
     terminateBrokerSpawnedProcessTree,
@@ -107,6 +109,13 @@ afterEach(() => {
 });
 
 describe("device broker timed-out process tree cleanup", () => {
+    it("never bypasses worker process identity fencing with a direct child kill", () => {
+        const script = boundedProviderCommandRunnerScript();
+        expect(script).toContain("terminateTree(child.pid, spawnedIdentity)");
+        expect(script).not.toContain("child.kill(");
+        expect(runBrokerBackendChild.toString()).not.toContain("child.kill(");
+    });
+
     it("rejects percent expansion and line breaks in Windows command-shell arguments", () => {
         for (const unsafe of ["%PATH%", "safe\r\nwhoami", "safe\nwhoami"]) {
             expect(() => providerCommandSpawn({
@@ -143,6 +152,36 @@ describe("device broker timed-out process tree cleanup", () => {
 
         expect(cleanup).toMatchObject({ attempted: true, ok: true, pid: 654, platform: "win32" });
         expect(pids).toEqual([654]);
+    });
+
+    it("refuses process-tree termination when the spawned process identity changed", () => {
+        const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+        const expectedIdentity = { pid: 777, startToken: "linux:100", commandHash: "a".repeat(64) };
+        const cleanup = terminateBrokerSpawnedProcessTree(777, {
+            platform: "linux",
+            expectedIdentity,
+            requireIdentity: true,
+            readIdentity: () => ({ ...expectedIdentity, startToken: "linux:200" }),
+            kill: (pid, signal) => signals.push({ pid, signal }),
+        });
+
+        expect(cleanup).toMatchObject({ attempted: false, ok: false, pid: 777, error: "spawned-process-identity-mismatch" });
+        expect(signals).toEqual([]);
+    });
+
+    it("terminates a process tree only after matching the spawned process identity", () => {
+        const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+        const expectedIdentity = { pid: 778, startToken: "linux:100", commandHash: "b".repeat(64) };
+        const cleanup = terminateBrokerSpawnedProcessTree(778, {
+            platform: "linux",
+            expectedIdentity,
+            requireIdentity: true,
+            readIdentity: () => expectedIdentity,
+            kill: (pid, signal) => signals.push({ pid, signal }),
+        });
+
+        expect(cleanup).toMatchObject({ attempted: true, ok: true, pid: 778 });
+        expect(signals).toEqual([{ pid: -778, signal: "SIGKILL" }]);
     });
 
     it("prevents a backend descendant from performing late work after timeout", async () => {
@@ -208,6 +247,29 @@ describe("device broker timed-out process tree cleanup", () => {
         const root = temporaryRoot();
         const readyFile = join(root, "provider-wrapper-timeout.ready");
         const result = defaultProviderCommandRunner({
+            mode: "exec",
+            provider: "test-provider",
+            executable: process.execPath,
+            args: ["-e", descendantProbeScript(readyFile)],
+            cwd: root,
+        }, {
+            timeoutMs: 30000,
+            wrapperTimeoutMs: 3000,
+            outputLimit: 1024,
+        });
+
+        expect(result).toMatchObject({
+            timedOut: true,
+            error: "device-lab provider wrapper timed out after 3000ms",
+            cleanup: { attempted: true, ok: true },
+        });
+        await expectProcessTreeExit(readyFile);
+    });
+
+    it("identity-fences asynchronous provider cleanup when the Worker wrapper times out", async () => {
+        const root = temporaryRoot();
+        const readyFile = join(root, "async-provider-wrapper-timeout.ready");
+        const result = await defaultProviderCommandRunnerAsync({
             mode: "exec",
             provider: "test-provider",
             executable: process.execPath,

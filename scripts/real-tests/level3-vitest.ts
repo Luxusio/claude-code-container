@@ -6,6 +6,7 @@ import { repoRoot } from "./helpers.ts";
 
 const outputFile = resolve(join(repoRoot, "results", `device-lab-level3-${process.platform}.json`));
 const runner = join(repoRoot, "scripts", "test-level.js");
+const LEVEL3_REAL_PROVIDER_TIMEOUT_MS = 10 * 60 * 60 * 1000;
 
 function realTestEnv() {
     return Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "VITEST" && !key.startsWith("VITEST_")));
@@ -17,7 +18,7 @@ function run(args) {
         env: realTestEnv(),
         encoding: "utf-8",
         windowsHide: true,
-        timeout: 30 * 60 * 1000,
+        timeout: LEVEL3_REAL_PROVIDER_TIMEOUT_MS,
     });
 }
 

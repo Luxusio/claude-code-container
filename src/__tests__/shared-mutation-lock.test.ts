@@ -13,8 +13,16 @@ import {
     withSharedMutationLock as withHostSharedMutationLock,
     withSharedMutationLockAsync as withHostSharedMutationLockAsync,
 } from "../device-lab-shared-state.js";
+import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
+import { readProcessIdentity } from "../../device-lab-mcp/src/state/process-identity.mjs";
 
 const withSharedMutationLock = withNestedSharedMutationLock;
+let tokenCounter = 0;
+
+function testToken(): string {
+    tokenCounter += 1;
+    return tokenCounter.toString(16).padStart(32, "0");
+}
 
 describe("device-lab shared mutation lock", () => {
     const roots: string[] = [];
@@ -46,6 +54,9 @@ describe("device-lab shared mutation lock", () => {
         const result = withSharedMutationLock(file, () => {
             const lock = JSON.parse(readFileSync(file, "utf8"));
             expect(lock).toEqual(expect.objectContaining({ token: expect.any(String), pid: process.pid, host: hostname(), bootId: expect.any(String) }));
+            if (readProcessIdentity(process.pid)) {
+                expect(lock.processIdentity).toEqual(readProcessIdentity(process.pid));
+            }
             return "done";
         });
         expect(result).toBe("done");
@@ -61,17 +72,267 @@ describe("device-lab shared mutation lock", () => {
         expect(existsSync(malformed)).toBe(false);
 
         const live = lockPath();
-        const record = { token: "live-token", pid: process.pid, host: hostname(), createdAt: new Date().toISOString() };
+        const record = {
+            token: testToken(),
+            pid: process.pid,
+            host: hostname(),
+            createdAt: new Date().toISOString(),
+            processIdentity: readProcessIdentity(process.pid),
+        };
         writeFileSync(live, JSON.stringify(record));
         expect(() => withSharedMutationLock(live, () => "unexpected", { waitMs: 30, staleMs: 1 })).toThrow(/Timed out acquiring shared mutation lock/);
         expect(JSON.parse(readFileSync(live, "utf8"))).toEqual(record);
     });
 
+    it("reclaims aged legacy locks whose PID has been reused", () => {
+        for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
+            const file = lockPath();
+            writeFileSync(file, JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() }));
+            const old = new Date(Date.now() - 5000);
+            utimesSync(file, old, old);
+            expect(acquire(file, () => "recovered", { waitMs: 1000, staleMs: 1000 })).toBe("recovered");
+            expect(existsSync(file)).toBe(false);
+        }
+    });
+
+    it("keeps identity-matched locks live and reclaims reused-PID identities", () => {
+        const variants = [
+            { acquire: withHostSharedMutationLock, readIdentity: readDeviceRuntimeProcessIdentity },
+            { acquire: withNestedSharedMutationLock, readIdentity: readProcessIdentity },
+        ];
+        for (const { acquire, readIdentity } of variants) {
+            const processIdentity = readIdentity(process.pid);
+            if (!processIdentity) continue;
+
+            const live = lockPath();
+            const liveRecord = { token: testToken(), pid: process.pid, host: hostname(), processIdentity };
+            writeFileSync(live, JSON.stringify(liveRecord));
+            const old = new Date(Date.now() - 5000);
+            utimesSync(live, old, old);
+            expect(() => acquire(live, () => "unexpected", { waitMs: 30, staleMs: 1 }))
+                .toThrow(/Timed out acquiring shared mutation lock/);
+            expect(JSON.parse(readFileSync(live, "utf8"))).toEqual(liveRecord);
+
+            const reused = lockPath();
+            const reusedRecord = {
+                token: testToken(),
+                pid: process.pid,
+                host: hostname(),
+                processIdentity: { ...processIdentity, startToken: `${processIdentity.startToken}-previous` },
+            };
+            writeFileSync(reused, JSON.stringify(reusedRecord));
+            utimesSync(reused, old, old);
+            expect(acquire(reused, () => "recovered", { waitMs: 1000, staleMs: 60_000 })).toBe("recovered");
+            expect(existsSync(reused)).toBe(false);
+        }
+    });
+
+    it("bounds identity-unavailable locks without stealing long live operations", () => {
+        for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
+            const live = lockPath();
+            const record = {
+                token: testToken(),
+                pid: process.pid,
+                host: hostname(),
+                processIdentityStatus: "unavailable",
+            };
+            writeFileSync(live, JSON.stringify(record));
+            const fiveHoursOld = new Date(Date.now() - 5 * 60 * 60 * 1000);
+            utimesSync(live, fiveHoursOld, fiveHoursOld);
+            expect(() => acquire(live, () => "unexpected", { waitMs: 30, staleMs: 1 }))
+                .toThrow(/Timed out acquiring shared mutation lock/);
+
+            const abandoned = lockPath();
+            writeFileSync(abandoned, JSON.stringify({ ...record, token: testToken() }));
+            const nineHoursOld = new Date(Date.now() - 9 * 60 * 60 * 1000);
+            utimesSync(abandoned, nineHoursOld, nineHoursOld);
+            expect(acquire(abandoned, () => "recovered", { waitMs: 1000, staleMs: 1 })).toBe("recovered");
+        }
+    });
+
+    it("treats malformed identity as malformed data instead of a PID mismatch", () => {
+        const file = lockPath();
+        writeFileSync(file, JSON.stringify({
+            token: testToken(),
+            pid: process.pid,
+            host: hostname(),
+            processIdentity: {},
+        }));
+        expect(() => withSharedMutationLock(file, () => "unexpected", { waitMs: 30, staleMs: 60_000 }))
+            .toThrow(/Timed out acquiring shared mutation lock/);
+        expect(existsSync(file)).toBe(true);
+
+        const old = new Date(Date.now() - 2000);
+        utimesSync(file, old, old);
+        expect(withSharedMutationLock(file, () => "recovered", { waitMs: 1000, staleMs: 60_000 })).toBe("recovered");
+    });
+
+    it("does not derive recovery paths from an untrusted lock token", () => {
+        const file = lockPath();
+        const victim = join(dirname(file), "victim.txt");
+        writeFileSync(victim, "preserved");
+        writeFileSync(file, JSON.stringify({ token: "../../victim.txt", pid: 2147483647, host: hostname() }));
+        const old = new Date(Date.now() - 2000);
+        utimesSync(file, old, old);
+
+        expect(withSharedMutationLock(file, () => "recovered", { waitMs: 1000, staleMs: 1 })).toBe("recovered");
+        expect(readFileSync(victim, "utf8")).toBe("preserved");
+    });
+
+    it("keeps async lock identity lookup off the event loop", async () => {
+        vi.resetModules();
+        vi.doMock("../../device-lab-mcp/src/state/process-identity.mjs", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("../../device-lab-mcp/src/state/process-identity.mjs")>();
+            return {
+                ...actual,
+                readProcessIdentity() {
+                    throw new Error("synchronous identity lookup must not run");
+                },
+                async readProcessIdentityAsync(pid: number) {
+                    await new Promise((resolve) => setTimeout(resolve, 30));
+                    return actual.readProcessIdentity(pid);
+                },
+            };
+        });
+        try {
+            const asyncModule = await import("../../device-lab-mcp/src/state/shared-mutation-lock.mjs?async-process-identity");
+            const file = lockPath();
+            let timerFired = false;
+            const timer = new Promise<void>((resolve) => setTimeout(() => {
+                timerFired = true;
+                resolve();
+            }, 5));
+            await Promise.all([asyncModule.withSharedMutationLockAsync(file, () => undefined), timer]);
+            expect(timerFired).toBe(true);
+        } finally {
+            vi.doUnmock("../../device-lab-mcp/src/state/process-identity.mjs");
+            vi.resetModules();
+        }
+    });
+
+    it("deduplicates concurrent async observations and backs off unavailable identity", async () => {
+        const processIdentity = readProcessIdentity(process.pid);
+        if (!processIdentity) return;
+        let asyncReadCount = 0;
+        let activeReads = 0;
+        let maxActiveReads = 0;
+        vi.resetModules();
+        vi.doMock("../../device-lab-mcp/src/state/process-identity.mjs", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("../../device-lab-mcp/src/state/process-identity.mjs")>();
+            return {
+                ...actual,
+                readProcessIdentity() {
+                    throw new Error("synchronous identity lookup must not run");
+                },
+                async readProcessIdentityAsync() {
+                    asyncReadCount += 1;
+                    activeReads += 1;
+                    maxActiveReads = Math.max(maxActiveReads, activeReads);
+                    try {
+                        await new Promise((resolve) => setTimeout(resolve, 20));
+                        return null;
+                    } finally {
+                        activeReads -= 1;
+                    }
+                },
+            };
+        });
+        try {
+            const asyncModule = await import("../../device-lab-mcp/src/state/shared-mutation-lock.mjs?async-process-identity-dedup");
+            const files = Array.from({ length: 10 }, (_, index) => {
+                const file = lockPath();
+                writeFileSync(file, JSON.stringify({
+                    token: testToken(),
+                    pid: process.pid,
+                    host: hostname(),
+                    processIdentity: index === 0
+                        ? processIdentity
+                        : { ...processIdentity, startToken: `${processIdentity.startToken}-alternate-${index}` },
+                }));
+                return file;
+            });
+            const old = new Date(Date.now() - 5000);
+            for (const file of files) utimesSync(file, old, old);
+
+            const waiter = (file: string) => asyncModule.withSharedMutationLockAsync(
+                file,
+                () => "unexpected",
+                { waitMs: 160, staleMs: 60_000 },
+            );
+            const waiters = [waiter(files[0]), waiter(files[1]), waiter(files[0]), ...files.slice(2).map(waiter)];
+            await Promise.all(waiters.map((waiter) => expect(waiter).rejects.toMatchObject({
+                code: "shared-mutation-lock-timeout",
+            })));
+            // One shared candidate-record lookup plus one observation per
+            // owner key. A/B/A must not start a second A probe, and ten unique
+            // owners must never exceed the four-probe global ceiling.
+            expect(asyncReadCount).toBe(11);
+            expect(maxActiveReads).toBe(4);
+        } finally {
+            vi.doUnmock("../../device-lab-mcp/src/state/process-identity.mjs");
+            vi.resetModules();
+        }
+    });
+
+    it("deduplicates interleaved host-source async observations", async () => {
+        const processIdentity = readDeviceRuntimeProcessIdentity(process.pid);
+        if (!processIdentity) return;
+        let asyncReadCount = 0;
+        vi.resetModules();
+        vi.doMock("../device-lab-process-identity.js", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("../device-lab-process-identity.js")>();
+            return {
+                ...actual,
+                readDeviceRuntimeProcessIdentity() {
+                    throw new Error("synchronous identity lookup must not run");
+                },
+                async readDeviceRuntimeProcessIdentityAsync() {
+                    asyncReadCount += 1;
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                    return null;
+                },
+            };
+        });
+        try {
+            const asyncModule = await import("../device-lab-shared-state.js?async-process-identity-dedup");
+            const fileA = lockPath();
+            const fileB = lockPath();
+            const records = [
+                { token: testToken(), pid: process.pid, host: hostname(), processIdentity },
+                {
+                    token: testToken(),
+                    pid: process.pid,
+                    host: hostname(),
+                    processIdentity: { ...processIdentity, startToken: `${processIdentity.startToken}-alternate` },
+                },
+            ];
+            writeFileSync(fileA, JSON.stringify(records[0]));
+            writeFileSync(fileB, JSON.stringify(records[1]));
+            const old = new Date(Date.now() - 5000);
+            utimesSync(fileA, old, old);
+            utimesSync(fileB, old, old);
+
+            const waiter = (file: string) => asyncModule.withSharedMutationLockAsync(
+                file,
+                () => "unexpected",
+                { waitMs: 80, staleMs: 60_000 },
+            );
+            const waiters = [waiter(fileA), waiter(fileB), waiter(fileA), waiter(fileB), waiter(fileA)];
+            await Promise.all(waiters.map((pending) => expect(pending).rejects.toMatchObject({
+                code: "shared-mutation-lock-timeout",
+            })));
+            expect(asyncReadCount).toBe(3);
+        } finally {
+            vi.doUnmock("../device-lab-process-identity.js");
+            vi.resetModules();
+        }
+    });
+
     it("never restores a mismatched moved lock over a live successor", async () => {
         const file = lockPath();
-        const stale = { token: "observed-stale-token", pid: 2147483647, host: hostname() };
-        const movedMismatch = { token: "moved-racing-token", pid: process.pid, host: hostname() };
-        const successor = { token: "live-successor-token", pid: process.pid, host: hostname() };
+        const stale = { token: testToken(), pid: 2147483647, host: hostname() };
+        const movedMismatch = { token: testToken(), pid: process.pid, host: hostname() };
+        const successor = { token: testToken(), pid: process.pid, host: hostname() };
         writeFileSync(file, JSON.stringify(stale));
         const old = new Date(Date.now() - 5000);
         utimesSync(file, old, old);
@@ -82,7 +343,7 @@ describe("device-lab shared mutation lock", () => {
             return {
                 ...actual,
                 renameSync(source: string, destination: string) {
-                    if (source === file && destination === `${file}.${stale.token}.stale`) {
+                    if (source === file && destination.startsWith(`${file}.`) && destination.endsWith(".stale")) {
                         writeFileSync(file, JSON.stringify(movedMismatch));
                         actual.renameSync(source, destination);
                         writeFileSync(file, JSON.stringify(successor));
@@ -111,7 +372,7 @@ describe("device-lab shared mutation lock", () => {
         for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
             const file = lockPath();
             const target = `${file}.external`;
-            const targetContents = JSON.stringify({ token: "external-token", pid: process.pid, host: hostname() });
+            const targetContents = JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() });
             writeFileSync(target, targetContents);
             symlinkSync(target, file);
             const old = new Date(Date.now() - 5000);
@@ -277,7 +538,7 @@ describe("device-lab shared mutation lock", () => {
         const displaced = `${backend}.displaced`;
         const file = join(backend, "devices.mutation.lock");
         mkdirSync(backend, { recursive: true });
-        const successor = { token: "successor-token", pid: process.pid, host: hostname() };
+        const successor = { token: testToken(), pid: process.pid, host: hostname() };
 
         await expect(withHostSharedMutationLockAsync(file, async () => {
             renameSync(backend, displaced);

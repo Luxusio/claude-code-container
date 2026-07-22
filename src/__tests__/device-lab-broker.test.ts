@@ -9,6 +9,7 @@ import { pathToFileURL } from "url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     boundedBrokerErrorPayload,
+    compareBrokerVersionsForTest,
     createDeviceBrokerServer,
     DEVICE_BROKER_CONTROL_RESPONSE_LIMIT_BYTES,
     DEVICE_BROKER_ERROR_RESPONSE_LIMIT,
@@ -21,6 +22,7 @@ import {
     registerDeviceBrokerOwner,
     deviceBrokerStatus,
     deviceBrokerToolContractForTest,
+    defaultProviderCommandRunnerAsync,
     ensureHostDeviceBroker,
     readHostBrokerHttpJson,
 } from "../device-lab-broker.js";
@@ -28,6 +30,18 @@ import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId, deviceLabProjectM
 import { CLI_VERSION } from "../utils.js";
 import { cleanupOwner, close, listen, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/tools.mjs";
+
+function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
+    return {
+        pid,
+        commandLine,
+        processIdentity: {
+            pid,
+            startToken: `test:${pid}`,
+            commandHash: createHash("sha256").update(commandLine || `pid:${pid}`).digest("hex"),
+        },
+    };
+}
 
 describe("device-lab host broker daemon", () => {
     let originalHome: string | undefined;
@@ -54,6 +68,18 @@ describe("device-lab host broker daemon", () => {
         const posixHash = createHash("sha256").update(posixPath).digest("hex").slice(0, 12);
         expect(deviceBrokerHostProjectMountPath(posixPath)).toBe(`/project/ccc-${posixHash}`);
         expect(deviceBrokerHostProjectMountPath("relative/project")).toBeNull();
+    });
+
+    it("never treats a newer broker version as replaceable by an older CLI", () => {
+        expect(compareBrokerVersionsForTest("1.2.0", "1.1.75")).toBe(1);
+        expect(compareBrokerVersionsForTest("2.0.0-beta.1", "1.99.99")).toBe(1);
+        expect(compareBrokerVersionsForTest("1.1.74", "1.1.75")).toBe(-1);
+        expect(compareBrokerVersionsForTest("1.1.75", "1.1.75")).toBe(0);
+        expect(compareBrokerVersionsForTest("1.1.75-beta.1", "1.1.75")).toBe(-1);
+        expect(compareBrokerVersionsForTest("1.1.75", "1.1.75-beta.1")).toBe(1);
+        expect(compareBrokerVersionsForTest("1.1.75-beta.2", "1.1.75-beta.10")).toBe(-1);
+        expect(compareBrokerVersionsForTest("1.1.75-beta.9007199254740993", "1.1.75-beta.9007199254740992")).toBe(1);
+        expect(compareBrokerVersionsForTest("1.1.75+host.2", "1.1.75+cli.1")).toBe(0);
     });
 
     it("preserves a registered host path when the same owner registers from its container mount", () => {
@@ -142,8 +168,9 @@ describe("device-lab host broker daemon", () => {
                 cliPath: "/opt/ccc/dist/index.js",
                 spawnImpl: vi.fn(() => child) as any,
             });
-            expect(result).toEqual(expect.objectContaining({ ok: false, error: "host-broker-health-timeout" }));
+            expect(result).toEqual(expect.objectContaining({ ok: false, error: "host-broker-incompatible" }));
             expect(JSON.stringify(result.attempts)).toContain("broker-redirect-disallowed");
+            expect(JSON.stringify(result.attempts)).toContain("unverified-broker-port-process");
             expect(redirectTargetRequests).toBe(0);
         } finally {
             await close(redirectSource);
@@ -230,7 +257,7 @@ describe("device-lab host broker daemon", () => {
                 "physical-lease-state-write-rollback-v1",
                 "runtime-cleanup-failure-preservation-v1",
                 "appium-runtime-generation-fencing-v1",
-                "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "windows-sandbox-best-effort-minimize-v1",
+                "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7", "windows-sandbox-best-effort-minimize-v1",
                 "host-service-manager-diagnostics",
                 "host-ccc-auto-start-compatible",
             ]),
@@ -633,6 +660,33 @@ describe("device-lab host broker daemon", () => {
         }
     });
 
+    it.runIf(process.platform !== "win32")("keeps health responsive while Hyper-V backend readiness is pending", async () => {
+        const cwd = mkdtempSync(join(tmpdir(), "ccc-broker-async-backends-"));
+        const ownerId = deviceLabOwnerId(cwd);
+        const powershell = join(cwd, "powershell.exe");
+        writeFileSync(powershell, `#!/bin/sh\nsleep 0.6\nprintf '%s\\n' '{"available":true,"moduleAvailable":true,"hypervisorPresent":true,"vmmsRunning":true,"rebootPending":false,"missing":[]}'\n`);
+        chmodSync(powershell, 0o755);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": powershell } });
+        try {
+            const baseUrl = await listen(server);
+            const backends = fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({ ownerId, method: "broker.backends", params: {} }),
+            });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const startedAt = Date.now();
+            const health = await fetch(`${baseUrl}/health`);
+            const healthDurationMs = Date.now() - startedAt;
+            expect(health.status).toBe(200);
+            expect(healthDurationMs).toBeLessThan(300);
+            expect((await backends).status).toBe(200);
+        } finally {
+            await close(server);
+            rmSync(cwd, { recursive: true, force: true });
+        }
+    });
+
     it("keeps advertised broker backend capabilities aligned with device tool proxy support", () => {
         const contract = deviceBrokerToolContractForTest();
         for (const backend of contract.backends) {
@@ -741,6 +795,8 @@ describe("device-lab host broker daemon", () => {
                 bindHost: "127.0.0.1",
                 probeHost: "127.0.0.1",
                 port,
+                cliPath: "/opt/ccc/dist/index.js",
+                portProcessResolver: () => fakeBrokerPortProcess(process.pid, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
                 spawnImpl: spawnImpl as any,
             });
 
@@ -753,6 +809,33 @@ describe("device-lab host broker daemon", () => {
             }));
             expect(spawnImpl).not.toHaveBeenCalled();
         } finally {
+            await close(server);
+        }
+    });
+
+    it("refuses a compatible HTTP lookalike whose listener is not the expected Node CLI", async () => {
+        const cwd = "/project/broker-compatible-lookalike-test";
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const port = Number(new URL(baseUrl).port);
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+        try {
+            const result = await ensureHostDeviceBroker({
+                cwd,
+                bindHost: "127.0.0.1",
+                probeHost: "127.0.0.1",
+                port,
+                cliPath: "/opt/ccc/dist/index.js",
+                startupTimeoutMs: 1,
+                spawnImpl: vi.fn() as any,
+                portProcessResolver: () => fakeBrokerPortProcess(process.pid, `evil.exe node /opt/ccc/dist/index.js devices broker serve --port ${port}`),
+            });
+
+            expect(result).toEqual(expect.objectContaining({ ok: false, error: "host-broker-incompatible", reused: false }));
+            expect(JSON.stringify(result)).toContain("compatible-broker-process-unverified");
+            expect(killSpy).not.toHaveBeenCalledWith(process.pid, "SIGTERM");
+        } finally {
+            killSpy.mockRestore();
             await close(server);
         }
     });
@@ -779,6 +862,8 @@ describe("device-lab host broker daemon", () => {
                 cwd,
                 bindHost: "127.0.0.1",
                 probeHost: "127.0.0.1",
+                cliPath: "/opt/ccc/dist/index.js",
+                portProcessResolver: () => fakeBrokerPortProcess(process.pid, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
                 spawnImpl: spawnImpl as any,
             });
 
@@ -846,10 +931,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 1,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: 34567,
-                    commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(34567, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -872,7 +954,7 @@ describe("device-lab host broker daemon", () => {
         }
     });
 
-    it("replaces a same-version broker that lacks current Appium launch contracts", async () => {
+    it("replaces a same-version broker that lacks current Appium and Hyper-V image contracts", async () => {
         const ownerId = "2222222222222222";
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -895,6 +977,7 @@ describe("device-lab host broker daemon", () => {
                             "http-windows-sandbox-helper-config",
                             "http-android-device-tool-proxy",
                             "http-broker-version-reporting",
+                            "hyper-v-windows-vm-managed-v2",
                         ],
                     },
                 }));
@@ -913,7 +996,7 @@ describe("device-lab host broker daemon", () => {
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented: ["http-host-backend-readiness-api", "http-lifecycle-device-create-command", "http-desktop-device-tool-proxy", "http-desktop-device-tool-timeouts", "http-windows-sandbox-helper-config", "http-android-device-tool-proxy", "http-broker-version-reporting", "windows-hidden-provider-children-v5", "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1", "appium3-scoped-security-npm-cwd-v1", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented: ["http-host-backend-readiness-api", "http-lifecycle-device-create-command", "http-desktop-device-tool-proxy", "http-desktop-device-tool-timeouts", "http-windows-sandbox-helper-config", "http-android-device-tool-proxy", "http-broker-version-reporting", "windows-hidden-provider-children-v5", "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1", "appium3-scoped-security-npm-cwd-v1", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7"] } }));
                 return;
             }
             if (req.url === "/v1/owner/resolve" && req.method === "POST") {
@@ -966,10 +1049,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: 43210,
-                    commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(43210, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -986,6 +1066,7 @@ describe("device-lab host broker daemon", () => {
             expect(attempts).toContain('"versionCompatible":true');
             expect(attempts).toContain('"missingCapabilities"');
             expect(attempts).toContain('"appium3-scoped-security-npm-cwd-v1"');
+            expect(attempts).toContain('"hyper-v-vm-managed-auto-images-v7"');
             expect(attempts).toContain('"stopped-android-status-observation-v1"');
             expect(attempts).toContain('"stopped-android-boot-metadata-v1"');
         } finally {
@@ -1021,7 +1102,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1105,10 +1186,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: 24680,
-                    commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(24680, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1156,7 +1234,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1240,10 +1318,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: 97531,
-                    commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(97531, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1289,7 +1364,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1370,7 +1445,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1453,10 +1528,10 @@ describe("device-lab host broker daemon", () => {
         child.pid = 44556;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
-        const portProcessResolver = vi.fn(() => ({
-            pid: stalePid,
-            commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-        }));
+        const portProcessResolver = vi.fn(() => fakeBrokerPortProcess(
+            stalePid,
+            `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
+        ));
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1576,7 +1651,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({ pid: stalePid, commandLine: null }),
+                portProcessResolver: () => fakeBrokerPortProcess(stalePid, null),
             });
 
             expect(result).toEqual(expect.objectContaining({ ok: true, launched: true, reused: false, port }));
@@ -1616,7 +1691,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1657,10 +1732,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 1,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: 77889,
-                    commandLine: `node /tmp/unrelated-server.js devices broker serve --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(77889, `evil.exe node /opt/ccc/dist/index.js devices broker serve --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1706,7 +1778,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v7",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1805,10 +1877,7 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: stalePid,
-                    commandLine: `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(stalePid, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1891,10 +1960,7 @@ describe("device-lab host broker daemon", () => {
                 platform: "linux",
                 timeoutMs: 500,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => ({
-                    pid: hostPid,
-                    commandLine: `node C:\\repo\\dist\\index.js devices broker serve --host 127.0.0.1 --port ${port}`,
-                }),
+                portProcessResolver: () => fakeBrokerPortProcess(hostPid, `node C:\\repo\\dist\\index.js devices broker serve --host 127.0.0.1 --port ${port}`),
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1924,6 +1990,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 12345;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const killSpy = vi.spyOn(process, "kill");
         const result = await ensureHostDeviceBroker({
             cwd: "/project/broker-auto-spawn-test",
             bindHost: "0.0.0.0",
@@ -1952,10 +2019,101 @@ describe("device-lab host broker daemon", () => {
             }),
         );
         expect(child.unref).toHaveBeenCalled();
+        expect(result).toEqual(expect.objectContaining({
+            startupCleanup: expect.objectContaining({ attempted: false }),
+        }));
+        expect(killSpy.mock.calls.some(([pid, signal]) => pid === child.pid && signal === "SIGTERM")).toBe(false);
         const logPath = (result as { logPath?: string; runtime?: { logPath?: string } }).runtime?.logPath
             || (result as { logPath?: string }).logPath;
         expect(logPath).toMatch(/host-broker-\d+-[a-f0-9]{16}\.log$/);
         expect(lstatSync(logPath as string)).toEqual(expect.objectContaining({ nlink: 1 }));
+    });
+
+    it("keeps the event loop responsive while an asynchronous provider command runs", async () => {
+        let timerObserved = false;
+        const command = defaultProviderCommandRunnerAsync({
+            mode: "exec",
+            provider: "test-async-provider",
+            executable: process.execPath,
+            args: ["-e", "setTimeout(() => process.stdout.write('done'), 100)"],
+        }, { timeoutMs: 1000, outputLimit: 1024 });
+        await new Promise<void>((resolve) => setTimeout(() => {
+            timerObserved = true;
+            resolve();
+        }, 10));
+        expect(timerObserved).toBe(true);
+        await expect(command).resolves.toEqual(expect.objectContaining({ status: 0, stdout: "done" }));
+    });
+
+    it("terminates a verified unresponsive broker port owner before relaunching", async () => {
+        const stalePid = 654321;
+        let staleAlive = true;
+        const child = new EventEmitter() as EventEmitter & { pid: number; unref: () => void };
+        child.pid = 12345;
+        child.unref = vi.fn();
+        const spawnImpl = vi.fn(() => child);
+        const originalKill = process.kill.bind(process);
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (pid !== stalePid) return originalKill(pid, signal as NodeJS.Signals | number);
+            if (signal === 0) {
+                if (staleAlive) return true;
+                const error = new Error("missing") as NodeJS.ErrnoException;
+                error.code = "ESRCH";
+                throw error;
+            }
+            if (signal === "SIGTERM" || signal === "SIGKILL") {
+                staleAlive = false;
+                return true;
+            }
+            return true;
+        }) as typeof process.kill);
+
+        const result = await ensureHostDeviceBroker({
+            cwd: "/project/broker-unresponsive-port-test",
+            platform: "linux",
+            port: 65531,
+            cliPath: "/opt/ccc/dist/index.js",
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            portProcessResolver: () => fakeBrokerPortProcess(stalePid, "node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port 65531"),
+            spawnImpl: spawnImpl as any,
+        });
+
+        expect(result).toEqual(expect.objectContaining({ ok: false, launched: true, error: "host-broker-health-timeout" }));
+        expect(killSpy).toHaveBeenCalledWith(stalePid, "SIGTERM");
+        expect(spawnImpl).toHaveBeenCalledOnce();
+        expect(JSON.stringify(result.attempts)).toContain("unhealthy-broker-port-owner");
+    });
+
+    it("refuses to terminate an unresponsive broker after its process identity changes", async () => {
+        const stalePid = 654322;
+        let resolutions = 0;
+        const killSpy = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: NodeJS.Signals | number) => {
+            if (pid === stalePid && signal === 0) return true;
+            throw new Error(`unexpected signal ${String(signal)}`);
+        }) as typeof process.kill);
+        const commandLine = "node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port 65530";
+        const portProcessResolver = () => {
+            resolutions += 1;
+            const process = fakeBrokerPortProcess(stalePid, commandLine);
+            if (resolutions >= 3) process.processIdentity.startToken = `reused:${stalePid}`;
+            return process;
+        };
+
+        const result = await ensureHostDeviceBroker({
+            cwd: "/project/broker-reused-pid-test",
+            platform: "linux",
+            port: 65530,
+            cliPath: "/opt/ccc/dist/index.js",
+            timeoutMs: 1,
+            startupTimeoutMs: 1,
+            portProcessResolver,
+            spawnImpl: vi.fn() as any,
+        });
+
+        expect(result).toEqual(expect.objectContaining({ ok: false, launched: false, error: "host-broker-incompatible" }));
+        expect(JSON.stringify(result.attempts)).toContain("runtime-process-identity-mismatch");
+        expect(killSpy.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
     });
 
     it.runIf(process.platform !== "win32")("refuses host broker autostart through a linked log directory", async () => {
@@ -2357,7 +2515,10 @@ describe("device-lab host broker daemon", () => {
             `process.stdout.write(result.ownerId);`,
         ].join("\n");
         const env = Object.fromEntries(
-            Object.entries(process.env).filter(([key, value]) => value !== undefined && key !== "VITEST" && !key.startsWith("VITEST_")),
+            Object.entries(process.env).filter(([key, value]) => value !== undefined
+                && key !== "VITEST"
+                && !key.startsWith("VITEST_")
+                && key !== "CCC_DEVICE_BROKER_AUTH_FILE"),
         ) as NodeJS.ProcessEnv;
 
         expect(existsSync(secretFile)).toBe(false);
@@ -2481,7 +2642,12 @@ describe("device-lab host broker daemon", () => {
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
         const baseUrl = await listen(server);
         try {
-            writeBrokerDevices(ownerId, "android", Array.from({ length: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5 }, (_, index) => ({ id: `android-${index}` })));
+            writeBrokerDevices(ownerId, "android", Array.from({ length: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5 }, (_, index) => index === 0 ? {
+                id: `android-${index}`,
+                privateRoot: "/private/owner/device",
+                sshPrivateKeyPath: "/private/owner/device/id_ed25519",
+                guestCredentialPath: "/private/owner/device/guest.credential.xml",
+            } : { id: `android-${index}` }));
             writeBrokerDevices(ownerId, "ios", [{ id: "ios-large", payload: "x".repeat(DEVICE_BROKER_INVENTORY_FILE_LIMIT + 1) }]);
 
             const response = await fetch(`${baseUrl}/v1/owners/${ownerId}/rpc`, {
@@ -2502,6 +2668,9 @@ describe("device-lab host broker daemon", () => {
                 totalDevices: DEVICE_BROKER_INVENTORY_DEVICE_LIMIT + 5,
             }));
             expect(android?.devices).toHaveLength(DEVICE_BROKER_INVENTORY_DEVICE_LIMIT);
+            expect(android?.devices[0]).not.toHaveProperty("privateRoot");
+            expect(android?.devices[0]).not.toHaveProperty("sshPrivateKeyPath");
+            expect(android?.devices[0]).not.toHaveProperty("guestCredentialPath");
 
             const ios = body.result.backends.find((backend) => backend.stateKey === "ios");
             expect(ios).toEqual(expect.objectContaining({

@@ -29,6 +29,7 @@ function skipCategory(record) {
     const reason = String(record?.reason || "");
     if (/missing (?:adb|emulator|xcrun|wsb|tart|vz|utmctl|xdotool|scrot)|no installed Android SDK system image|no physical (?:iOS|Android) device visible|missing CCC_REAL_|current display prerequisites/.test(reason)) return "provider-prerequisite";
     if (/not a (?:macOS|Windows|Linux) host/.test(reason)) return "host-platform";
+    if (/hyper-v-management-permission/.test(reason)) return "host-permission";
     if (/\/dev\/kvm is not available/.test(reason)) return "host-virtualization";
     return "other";
 }

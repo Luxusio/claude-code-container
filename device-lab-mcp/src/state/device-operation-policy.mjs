@@ -66,6 +66,16 @@ const OPERATION_TOOLS = new Map([
         "device_window_list", "device_accessibility_snapshot",
         "device_record_video_start", "device_record_video_stop", "device_upload", "device_download",
     ])],
+    ["windows-vm", new Set([
+        "device_create", "device_delete", "device_start", "device_stop", "device_reboot",
+        "device_exec", "device_upload", "device_download",
+        "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete",
+    ])],
+    ["linux-vm", new Set([
+        "device_create", "device_delete", "device_start", "device_stop", "device_reboot",
+        "device_exec", "device_upload", "device_download",
+        "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete",
+    ])],
     ["macos", new Set([
         "device_base_image_create", "device_base_image_clone",
         "device_create", "device_delete", "device_start", "device_stop",

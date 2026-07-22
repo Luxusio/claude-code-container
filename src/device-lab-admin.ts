@@ -1,7 +1,7 @@
-import { existsSync, readdirSync, unlinkSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync } from "fs";
 import { createHash } from "crypto";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 import { isDeepStrictEqual } from "util";
@@ -18,6 +18,17 @@ import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePh
 import { DeviceLabProjectEnumerationError, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
 import { withSharedMutationLock, writeJsonFileAtomically } from "./device-lab-shared-state.js";
 import { readDeviceLabStateFile } from "./device-lab-state-file.js";
+import {
+    acceptHyperVWindowsEvaluationLicense,
+    HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
+    readHyperVWindowsEvaluationReceipt,
+} from "./device-lab/hyper-v-images.js";
+import {
+    hyperVReadinessCommand,
+    hyperVSetupCommand,
+    parseHyperVReadiness,
+    parseHyperVSetupObservation,
+} from "./device-lab/providers/hyper-v.js";
 
 export const DEVICE_BACKENDS = [
     { stateKey: "android", name: "android-emulator", tools: ["adb", "emulator", "avdmanager"] },
@@ -25,7 +36,9 @@ export const DEVICE_BACKENDS = [
     { stateKey: "ios", name: "ios-simulator", tools: ["xcrun"] },
     { stateKey: "ios-device", name: "ios-device", tools: ["xcrun"] },
     { stateKey: "windows", name: "windows-sandbox", tools: ["wsb"] },
+    { stateKey: "windows-vm", name: "windows-vm", tools: ["powershell.exe"] },
     { stateKey: "macos", name: "macos-vm", tools: ["tart", "vz", "utmctl"] },
+    { stateKey: "linux-vm", name: "linux-vm", tools: ["powershell.exe", "ssh", "scp"] },
 ] as const;
 
 type Backend = typeof DEVICE_BACKENDS[number];
@@ -37,7 +50,8 @@ type SmokeMode = "prerequisite" | "real-provider";
 type SmokeOptions = { mode?: SmokeMode };
 type SmokeFormatOptions = SmokeOptions & { mcpSurface?: boolean; mcpServerPath?: string; mcpSmokeScriptPath?: string };
 type ParsedSmokeArgs = { ok: true; mode: SmokeMode; timeoutMs: number } | { ok: false; message: string };
-type DeviceLifecycleAction = "create" | "start" | "stop" | "delete" | "status";
+type DeviceLifecycleAction = "create" | "start" | "stop" | "reboot" | "delete" | "status";
+type DeviceSnapshotAction = "list" | "create" | "restore" | "delete";
 type ParsedLifecycleArgs = {
     ok: true;
     action: DeviceLifecycleAction;
@@ -45,9 +59,69 @@ type ParsedLifecycleArgs = {
     deviceId: string;
     params: Record<string, unknown>;
 } | { ok: false; message: string };
+type ParsedSnapshotArgs = {
+    ok: true;
+    action: DeviceSnapshotAction;
+    backend: "windows-vm" | "linux-vm";
+    deviceId: string;
+    params: Record<string, unknown>;
+} | { ok: false; message: string };
 type DevicesCliAsyncHooks = Parameters<typeof deviceBrokerCliAsync>[3] & {
     invokeOwnerRpc?: typeof invokeHostDeviceBrokerOwnerRpc;
+    setupHyperV?: typeof setupHyperVHost;
 };
+type HyperVSetupHostOptions = {
+    platform?: NodeJS.Platform;
+    powershell?: string | null;
+    systemRoot?: string;
+    stateRoot?: string;
+    commandRunner?: (command: string, args: string[], timeoutMs: number, input?: string) => CommandResult | null;
+    acceptWindowsEvaluationLicense?: boolean;
+};
+export type HyperVSetupHostResult = { ok: boolean; text: string };
+
+const WINDOWS_SYSTEM_POWERSHELL_PATH = "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+export function spawnableWindowsExecutablePath(path: string): string | null {
+    if (/^\\\\\?\\[A-Za-z]:\\/.test(path)) return path.slice(4);
+    if (/^[A-Za-z]:\\/.test(path)) return path;
+    return null;
+}
+
+function canonicalWindowsPowerShellPath(testSystemRoot?: string): string | null {
+    const candidate = testSystemRoot
+        ? join(resolve(testSystemRoot), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        : WINDOWS_SYSTEM_POWERSHELL_PATH;
+    try {
+        assertPlainDirectoryPath(dirname(candidate), "hyper-v-system-powershell");
+        const metadata = lstatSync(candidate);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) return null;
+        const resolved = realpathSync.native(candidate);
+        const executable = testSystemRoot ? resolved : spawnableWindowsExecutablePath(resolved);
+        if (!executable) return null;
+        assertPlainDirectoryPath(dirname(executable), "hyper-v-system-powershell");
+        const resolvedMetadata = lstatSync(executable);
+        return resolvedMetadata.isFile() && !resolvedMetadata.isSymbolicLink() ? executable : null;
+    } catch {
+        return null;
+    }
+}
+
+function assertPlainDirectoryPath(path: string, label: string): void {
+    const chain: string[] = [];
+    let current = resolve(path);
+    while (true) {
+        chain.push(current);
+        const parent = dirname(current);
+        if (parent === current) break;
+        current = parent;
+    }
+    for (const candidate of chain.reverse()) {
+        if (!existsSync(candidate)) continue;
+        const metadata = lstatSync(candidate);
+        if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`${label}-path-invalid`);
+    }
+}
 type CleanupDeviceResult = { id: string; backend: string; previousStatus: string; status: "stopped" | "skipped" | "failed"; commands: CommandResult[]; reason?: string };
 type AdminBackendSnapshot = { stateKey: string; name: string; devices: DeviceRecord[] };
 type AdminOwnerSnapshot = { ownerId: string; backends: AdminBackendSnapshot[] };
@@ -320,15 +394,38 @@ function isGuid(value: unknown): value is string {
     return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
-function runCommand(command: string | null, args: string[], timeoutMs?: number): CommandResult | null {
+function runCommand(command: string | null, args: string[], timeoutMs?: number, input?: string): CommandResult | null {
     if (!command) return null;
-    const result = spawnSync(command, args, { encoding: "utf-8", env: process.env, timeout: timeoutMs, windowsHide: true });
+    const result = spawnSync(command, args, { encoding: "utf-8", env: process.env, timeout: timeoutMs, windowsHide: true, input });
     return {
         command: [command, ...args].join(" "),
         status: result.status,
         stdout: result.stdout || "",
         stderr: result.stderr || result.error?.message || "",
     };
+}
+
+function hyperVSetupFailureDetail(execution: CommandResult | null | undefined): string {
+    const output = `${execution?.stderr || ""}\n${execution?.stdout || ""}`;
+    const compact = output.replace(/_x[0-9a-f]{4}_/gi, "").replace(/\s+/g, "");
+    const allowedCodes = [
+        "hyper-v-setup-elevation-failed",
+        "hyper-v-setup-pipe-handshake-timeout",
+        "hyper-v-setup-pipe-client-mismatch",
+        "hyper-v-setup-child-timeout",
+        "hyper-v-setup-result-invalid",
+        "hyper-v-setup-enable-failed",
+        "hyper-v-setup-elevated-operation-failed",
+        "hyper-v-setup-command-timeout",
+        "hyper-v-setup-user-sid-invalid",
+        "hyper-v-setup-pipe-name-invalid",
+    ];
+    for (const code of allowedCodes) {
+        const pattern = new RegExp(`(^|[^a-z0-9-])${code}(?=$|[^a-z0-9-])`);
+        if (pattern.test(output) || pattern.test(compact)) return code;
+    }
+    if (execution?.status === null && /ETIMEDOUT|timed out|timeout/i.test(output)) return "hyper-v-setup-command-timeout";
+    return execution?.status === 0 ? "hyper-v-setup-result-invalid" : "hyper-v-setup-host-operation-failed";
 }
 
 function smokeCommand(command: string, args: string[], timeoutMs: number): CommandResult {
@@ -526,6 +623,144 @@ function macosSmokeResult(tools: Record<string, string | null>, mode: SmokeMode,
     };
 }
 
+export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOptions = {}): HyperVSetupHostResult {
+    const platform = options.platform || process.platform;
+    if (platform !== "win32") {
+        return { ok: false, text: "CCC Hyper-V setup is only available on a Windows host." };
+    }
+    const injectedPowerShell = options.commandRunner && options.powershell !== undefined ? options.powershell : undefined;
+    const powershell = confirm
+        ? injectedPowerShell ?? canonicalWindowsPowerShellPath(options.commandRunner ? options.systemRoot : undefined)
+        : options.powershell === undefined
+            ? commandPath("powershell.exe") || commandPath("pwsh") || commandPath("powershell")
+            : options.powershell;
+    if (!powershell) return { ok: false, text: "CCC Hyper-V setup failed: PowerShell was not found." };
+    const runner = options.commandRunner || ((command, args, timeoutMs, input) => runCommand(command, args, timeoutMs, input));
+    const setupRoot = resolve(options.stateRoot || join(homedir(), ".ccc/device-broker-private/setup"));
+    try {
+        assertPlainDirectoryPath(setupRoot, "hyper-v-setup-root");
+    } catch (error) {
+        return { ok: false, text: `CCC Hyper-V setup failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const licenseAccepted = Boolean(readHyperVWindowsEvaluationReceipt(setupRoot));
+    if (!confirm) {
+        const readinessCommand = hyperVReadinessCommand(powershell);
+        const execution = runner(readinessCommand.executable, readinessCommand.args, 30_000);
+        const readiness = execution?.status === 0 ? parseHyperVReadiness(execution.stdout || "") : null;
+        if (!readiness) {
+            const detail = hyperVSetupFailureDetail(execution);
+            return { ok: false, text: `CCC Hyper-V setup diagnostic failed: ${detail}` };
+        }
+        const actions: string[] = [];
+        if (!readiness.moduleAvailable || !readiness.hypervisorPresent) {
+            actions.push("action: verify that the Windows edition supports Hyper-V and firmware virtualization is enabled, then run 'ccc devices setup hyper-v --confirm'");
+        }
+        if (!readiness.vmmsRunning) {
+            actions.push("action: start the Hyper-V Virtual Machine Management (vmms) service, then rerun this diagnostic");
+        }
+        if (readiness.rebootPending) {
+            actions.push("action: reboot Windows manually, then rerun this diagnostic");
+        }
+        if (readiness.managementAccess === false) {
+            actions.push(readiness.sessionRefreshRequired
+                ? "action: sign out of Windows and sign in once to activate Hyper-V Administrators membership, then rerun this diagnostic"
+                : "action: grant the current user Hyper-V management access with 'ccc devices setup hyper-v --confirm', then rerun this diagnostic");
+        }
+        return {
+            ok: true,
+            text: [
+                "=== CCC Hyper-V Setup ===",
+                "",
+                "mode: diagnostic",
+                `available: ${readiness.available}`,
+                `moduleAvailable: ${readiness.moduleAvailable}`,
+                `hypervisorPresent: ${readiness.hypervisorPresent}`,
+                `vmmsRunning: ${readiness.vmmsRunning}`,
+                `hyperVAdministratorsMember: ${readiness.hyperVAdministratorsMember ?? "unknown"}`,
+                `managementAccess: ${readiness.managementAccess ?? "unknown"}`,
+                `sessionRefreshRequired: ${readiness.sessionRefreshRequired ?? false}`,
+                `rebootPending: ${readiness.rebootPending}`,
+                `missing: ${readiness.missing.join(", ")}`,
+                `windowsEvaluationLicenseAccepted: ${licenseAccepted}`,
+                ...(!licenseAccepted ? ["action: accept the Windows Server evaluation terms once with 'ccc devices setup hyper-v --confirm --accept-windows-evaluation-license'"] : []),
+                ...actions,
+            ].join("\n"),
+        };
+    }
+    mkdirSync(setupRoot, { recursive: true });
+    try {
+        assertPlainDirectoryPath(setupRoot, "hyper-v-setup-root");
+    } catch (error) {
+        return { ok: false, text: `CCC Hyper-V setup failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const setupCommand = hyperVSetupCommand(powershell);
+    const execution = runner(setupCommand.executable, setupCommand.args, 15 * 60_000, setupCommand.input);
+    const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
+    if (!observation?.ok) {
+        const detail = hyperVSetupFailureDetail(execution);
+        return { ok: false, text: `CCC Hyper-V setup failed: ${detail}` };
+    }
+    const receipt = options.acceptWindowsEvaluationLicense
+        ? acceptHyperVWindowsEvaluationLicense(setupRoot)
+        : readHyperVWindowsEvaluationReceipt(setupRoot);
+    return {
+        ok: true,
+        text: [
+            "=== CCC Hyper-V Setup ===",
+            "",
+            "mode: confirmed",
+            `feature: ${observation.featureName}`,
+            `beforeState: ${observation.beforeState}`,
+            `afterState: ${observation.afterState}`,
+            `changed: ${observation.changed}`,
+            `hyperVAdministratorsMember: ${observation.hyperVAdministratorsMember ?? "unknown"}`,
+            `membershipChanged: ${observation.membershipChanged ?? false}`,
+            `managementAccess: ${observation.managementAccess ?? "unknown"}`,
+            `sessionRefreshRequired: ${observation.sessionRefreshRequired ?? false}`,
+            `rebootRequired: ${observation.rebootRequired}`,
+                `windowsEvaluationLicenseAccepted: ${Boolean(receipt)}`,
+                ...(receipt ? [`windowsEvaluationLicense: ${HYPER_V_WINDOWS_EVALUATION_LICENSE_URL}`] : []),
+                ...(receipt ? [`windowsEvaluationImageSourceTrust: ${receipt.sourceTrustId}`] : []),
+            ...(observation.rebootRequired
+                ? ["action: reboot Windows manually, then run 'ccc devices smoke --real-provider'"]
+                : observation.sessionRefreshRequired
+                    ? ["action: sign out of Windows and sign in once to activate Hyper-V Administrators membership, then run 'ccc devices smoke --real-provider'"]
+                    : ["action: run 'ccc devices smoke --real-provider'"]),
+            "hostRebooted: false",
+        ].join("\n"),
+    };
+}
+
+function hyperVSmokeResult(tools: Record<string, string | null>, timeoutMs: number): SmokeResult {
+    if (process.platform !== "win32") return { backend: "windows-vm", status: "SKIP", detail: "not a Windows host" };
+    const powershell = tools["powershell.exe"];
+    if (!powershell) return { backend: "windows-vm", status: "SKIP", detail: "missing powershell" };
+    const plan = hyperVReadinessCommand(powershell);
+    const result = smokeCommand(plan.executable, plan.args, timeoutMs);
+    const commands = [result];
+    if (result.status !== 0) {
+        return { backend: "windows-vm", status: "FAIL", detail: compactSmokeOutput(String(result.stderr || result.stdout || "")) || `command exited ${result.status}`, commands };
+    }
+    const readiness = parseHyperVReadiness(result.stdout || "");
+    if (!readiness) return { backend: "windows-vm", status: "FAIL", detail: "invalid Hyper-V readiness response", commands };
+    if (!readiness.available) return { backend: "windows-vm", status: "SKIP", detail: `missing ${readiness.missing.join(", ") || "Hyper-V prerequisites"}`, commands };
+    return { backend: "windows-vm", status: "PASS", detail: "Hyper-V module, hypervisor, and VMMS service are ready; no VM started", commands };
+}
+
+function hyperVLinuxSmokeResult(tools: Record<string, string | null>, timeoutMs: number): SmokeResult {
+    if (process.platform !== "win32") return { backend: "linux-vm", status: "SKIP", detail: "not a Windows host" };
+    const missing = ["powershell.exe", "ssh", "scp"].filter((tool) => !tools[tool]);
+    if (missing.length > 0) return { backend: "linux-vm", status: "SKIP", detail: `missing ${missing.join(", ")}` };
+    const plan = hyperVReadinessCommand(tools["powershell.exe"] as string);
+    const result = smokeCommand(plan.executable, plan.args, timeoutMs);
+    const commands = [result];
+    if (result.status !== 0) return { backend: "linux-vm", status: "FAIL", detail: compactSmokeOutput(String(result.stderr || result.stdout || "")) || `command exited ${result.status}`, commands };
+    const readiness = parseHyperVReadiness(result.stdout || "");
+    if (!readiness) return { backend: "linux-vm", status: "FAIL", detail: "invalid Hyper-V readiness response", commands };
+    if (!readiness.available) return { backend: "linux-vm", status: "SKIP", detail: `missing ${readiness.missing.join(", ") || "Hyper-V prerequisites"}`, commands };
+    return { backend: "linux-vm", status: "PASS", detail: "Hyper-V, SSH, and SCP are ready; no VM started", commands };
+}
+
 export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000, profile?: string, options: SmokeOptions = {}): { ownerId: string; mode: SmokeMode; results: SmokeResult[] } {
     const ownerId = deviceLabOwnerId(cwd, profile);
     const mode = options.mode || "prerequisite";
@@ -561,6 +796,9 @@ export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000, profile?: 
     } else {
         results.push(smokeFromCommands("windows-sandbox", [[tools.wsb, ["--help"]]], smokeDetail(mode, "wsb CLI responded", "real provider Windows Sandbox CLI responded; no sandbox started"), timeoutMs));
     }
+
+    results.push(hyperVSmokeResult(tools, timeoutMs));
+    results.push(hyperVLinuxSmokeResult(tools, timeoutMs));
 
     results.push(macosSmokeResult(tools, mode, timeoutMs));
 
@@ -674,7 +912,7 @@ function findOwnerDevices(ownerId: string, deviceId: string): OwnerDeviceMatch[]
     return matches;
 }
 
-const CREATABLE_DEVICE_BACKENDS = new Set(["android-emulator", "ios-simulator", "windows-sandbox", "macos-vm"]);
+const CREATABLE_DEVICE_BACKENDS = new Set(["android-emulator", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"]);
 const LIFECYCLE_STRING_OPTIONS = new Map([
     ["--name", "name"],
     ["--avd-name", "avdName"],
@@ -686,6 +924,10 @@ const LIFECYCLE_STRING_OPTIONS = new Map([
     ["--udid", "udid"],
     ["--provider", "provider"],
     ["--image", "image"],
+    ["--source-image", "sourceImage"],
+    ["--vm-profile", "profile"],
+    ["--switch-name", "switchName"],
+    ["--secure-boot-template", "secureBootTemplate"],
     ["--ssh-host", "sshHost"],
     ["--ssh-user", "sshUser"],
     ["--ssh-key-path", "sshKeyPath"],
@@ -706,27 +948,35 @@ const LIFECYCLE_BOOLEAN_OPTIONS = new Map([
     ["clipboard", "clipboard"],
     ["vgpu", "vgpu"],
     ["wait-for-boot", "waitForBoot"],
+    ["force", "force"],
+    ["start-if-stopped", "startIfStopped"],
 ]);
 const CREATE_OPTIONS_BY_BACKEND = new Map<string, ReadonlySet<string>>([
     ["android-emulator", new Set(["name", "avdName", "port", "systemImage", "deviceProfile", "createAvd", "headless"])],
     ["ios-simulator", new Set(["name", "simulatorName", "deviceType", "runtime", "udid", "createSimulator"])],
     ["windows-sandbox", new Set(["name", "networking", "clipboard", "vgpu", "memoryMb", "minimized"])],
+    ["windows-vm", new Set(["name", "provider", "image", "sourceImage", "profile", "memoryMb", "cpus", "switchName", "secureBootTemplate"])],
+    ["linux-vm", new Set(["name", "provider", "image", "sourceImage", "profile", "memoryMb", "cpus", "switchName", "secureBootTemplate", "networking"])],
     ["macos-vm", new Set(["name", "provider", "image", "cpus", "sshHost", "sshPort", "sshUser", "sshKeyPath"])],
 ]);
 const START_OPTIONS_BY_BACKEND = new Map<string, ReadonlySet<string>>([
     ["android-emulator", new Set(["headless", "waitForBoot", "bootTimeoutMs"])],
     ["ios-simulator", new Set()],
     ["windows-sandbox", new Set(["minimized"])],
+    ["windows-vm", new Set(["waitForBoot", "bootTimeoutMs"])],
+    ["linux-vm", new Set(["waitForBoot", "bootTimeoutMs"])],
     ["macos-vm", new Set(["waitForBoot", "bootTimeoutMs"])],
 ]);
+const REBOOT_OPTIONS = new Set(["force", "startIfStopped", "waitForBoot", "bootTimeoutMs"]);
 
 function lifecycleUsage(action?: DeviceLifecycleAction): string {
     if (action === "create") return "Usage: ccc devices create <backend> <device-id> [--name <name>] [provider options]";
     if (action === "start") return "Usage: ccc devices start <device-id> [--minimized|--no-minimized] [provider options]";
     if (action === "stop") return "Usage: ccc devices stop <device-id>";
+    if (action === "reboot") return "Usage: ccc devices reboot <device-id> [--force] [--start-if-stopped] [--wait-for-boot|--no-wait-for-boot] [--boot-timeout-ms <ms>]";
     if (action === "delete") return "Usage: ccc devices delete <device-id>";
     if (action === "status") return "Usage: ccc devices status <device-id>";
-    return "Usage: ccc devices <create|start|stop|delete|status> ...";
+    return "Usage: ccc devices <create|start|stop|reboot|delete|status> ...";
 }
 
 function parseLifecycleOptions(args: string[]): { ok: true; params: Record<string, unknown> } | { ok: false; message: string } {
@@ -775,13 +1025,14 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
         const deviceId = args[2] || "";
         if (!CREATABLE_DEVICE_BACKENDS.has(backend) || !deviceId) return { ok: false, message: lifecycleUsage(action) };
         if (deviceId.length > 128 || /[^a-zA-Z0-9._:-]/.test(deviceId)) return { ok: false, message: `Invalid device id: ${deviceId}` };
-        if (findOwnerDevices(deviceLabOwnerId(cwd, profile), deviceId).length > 0) {
-            return { ok: false, message: `Device id already exists for current owner: ${deviceId}` };
-        }
         const options = parseLifecycleOptions(args.slice(3));
         if (!options.ok) return options;
         const validated = validateLifecycleOptions(action, backend, options.params);
         if (!validated.ok) return validated;
+        const existing = findOwnerDevices(deviceLabOwnerId(cwd, profile), deviceId);
+        if (existing.length > 1 || existing.some((match) => match.backend.name !== backend)) {
+            return { ok: false, message: `Device id already exists for current owner: ${deviceId}` };
+        }
         return {
             ok: true,
             action,
@@ -794,7 +1045,7 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
             },
         };
     }
-    if (action === "start" || action === "stop" || action === "delete" || action === "status") {
+    if (action === "start" || action === "stop" || action === "reboot" || action === "delete" || action === "status") {
         const deviceId = args[1] || "";
         if (!deviceId) return { ok: false, message: lifecycleUsage(action) };
         const ownerId = deviceLabOwnerId(cwd, profile);
@@ -808,13 +1059,20 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
         if (action === "delete" && match.device.status !== "stopped" && match.device.status !== "detached") {
             return { ok: false, message: `Refusing to delete ${deviceId} while status is ${match.device.status || "unknown"}; run 'ccc devices stop ${deviceId}' first.` };
         }
-        const options: { ok: true; params: Record<string, unknown> } | { ok: false; message: string } = action !== "start"
+        const options: { ok: true; params: Record<string, unknown> } | { ok: false; message: string } = action !== "start" && action !== "reboot"
             ? { ok: true, params: {} }
             : parseLifecycleOptions(args.slice(2));
         if (!options.ok) return options;
         if (action === "start") {
             const validated = validateLifecycleOptions(action, match.backend.name, options.params);
             if (!validated.ok) return validated;
+        }
+        if (action === "reboot") {
+            if (match.backend.name !== "windows-vm" && match.backend.name !== "linux-vm") {
+                return { ok: false, message: `Device reboot is supported only for windows-vm and linux-vm: ${deviceId}` };
+            }
+            const unsupported = Object.keys(options.params).filter((key) => !REBOOT_OPTIONS.has(key));
+            if (unsupported.length > 0) return { ok: false, message: `Unsupported ${match.backend.name} reboot option: ${unsupported[0]}` };
         }
         return {
             ok: true,
@@ -823,6 +1081,11 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
             deviceId,
             params: {
                 ...options.params,
+                ...((match.backend.name === "windows-vm" || match.backend.name === "linux-vm")
+                    && action !== "status"
+                    && typeof match.device.incarnationId === "string"
+                    ? { incarnationId: match.device.incarnationId }
+                    : {}),
                 ...(action === "start" && match.backend.name === "windows-sandbox" && typeof options.params.minimized !== "boolean"
                     ? { minimized: true }
                     : {}),
@@ -830,6 +1093,78 @@ function parseDeviceLifecycleArgs(args: string[], cwd: string, profile?: string)
         };
     }
     return { ok: false, message: lifecycleUsage() };
+}
+
+function snapshotUsage(action?: DeviceSnapshotAction): string {
+    if (action === "list") return "Usage: ccc devices snapshot list <device-id>";
+    if (action === "create") return "Usage: ccc devices snapshot create <device-id> <snapshot-name>";
+    if (action === "restore") return "Usage: ccc devices snapshot restore <device-id> <snapshot-name-or-id> --confirm-destructive [--force]";
+    if (action === "delete") return "Usage: ccc devices snapshot delete <device-id> <snapshot-name-or-id> --confirm-destructive";
+    return "Usage: ccc devices snapshot <list|create|restore|delete> ...";
+}
+
+function parseDeviceSnapshotArgs(args: string[], cwd: string, profile?: string): ParsedSnapshotArgs {
+    const action = args[1] as DeviceSnapshotAction;
+    if (action !== "list" && action !== "create" && action !== "restore" && action !== "delete") {
+        return { ok: false, message: snapshotUsage() };
+    }
+    const deviceId = args[2] || "";
+    const target = args[3] || "";
+    if (!deviceId || (action !== "list" && !target) || (action === "list" && args.length !== 3)) {
+        return { ok: false, message: snapshotUsage(action) };
+    }
+
+    const flags = new Set(action === "list" ? [] : args.slice(4));
+    const allowedFlags = action === "restore"
+        ? new Set(["--confirm-destructive", "--force"])
+        : action === "delete"
+            ? new Set(["--confirm-destructive"])
+            : new Set<string>();
+    const unknownFlag = [...flags].find((flag) => !allowedFlags.has(flag));
+    if (unknownFlag || (action !== "list" && flags.size !== args.length - 4)) {
+        return { ok: false, message: unknownFlag ? `Unknown snapshot option: ${unknownFlag}` : snapshotUsage(action) };
+    }
+    if ((action === "restore" || action === "delete") && !flags.has("--confirm-destructive")) {
+        return { ok: false, message: `Refusing to ${action} snapshot without --confirm-destructive` };
+    }
+
+    const matches = findOwnerDevices(deviceLabOwnerId(cwd, profile), deviceId);
+    if (matches.length > 1) return { ok: false, message: `Device id is ambiguous across backends: ${deviceId}` };
+    const match = matches[0];
+    if (!match) return { ok: false, message: `Device not found for current owner: ${deviceId}` };
+    if (match.backend.name !== "windows-vm" && match.backend.name !== "linux-vm") {
+        return { ok: false, message: `Device snapshots are not supported by backend: ${match.backend.name}` };
+    }
+
+    if (action === "list") {
+        return {
+            ok: true,
+            action,
+            backend: match.backend.name,
+            deviceId,
+            params: {},
+        };
+    }
+
+    const snapshotId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(target);
+    if (!snapshotId && !/^(?!\.\.?$)[A-Za-z0-9._-]{1,64}$/.test(target)) {
+        return { ok: false, message: `Invalid snapshot name or id: ${target}` };
+    }
+    if (action === "create" && snapshotId) {
+        return { ok: false, message: `Snapshot create requires a name, not an id: ${target}` };
+    }
+    return {
+        ok: true,
+        action,
+        backend: match.backend.name,
+        deviceId,
+        params: {
+            ...(snapshotId ? { snapshotId: target.toLowerCase() } : { snapshotName: target }),
+            ...(typeof match.device.incarnationId === "string" ? { incarnationId: match.device.incarnationId } : {}),
+            ...(flags.has("--force") ? { force: true } : {}),
+            ...(flags.has("--confirm-destructive") ? { confirmDestructive: true } : {}),
+        },
+    };
 }
 
 function brokerRpcDevice(result: HostDeviceBrokerOwnerRpcResult): Record<string, unknown> | null {
@@ -861,6 +1196,49 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     const detail = typeof body?.detail === "string" ? body.detail : result.detail;
     const missing = Array.isArray(body?.missing) && body.missing.length > 0 ? ` (missing: ${body.missing.join(", ")})` : "";
     return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}`;
+}
+
+function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm" | "linux-vm", deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {
+    const payload = result.body?.result;
+    if (action === "list") {
+        const resultRecord = payload && typeof payload === "object" && !Array.isArray(payload)
+            ? payload as Record<string, unknown>
+            : {};
+        const snapshots = Array.isArray(resultRecord.snapshots)
+            ? resultRecord.snapshots.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+            : [];
+        const activeSnapshotId = typeof resultRecord.activeSnapshotId === "string" ? resultRecord.activeSnapshotId : null;
+        return `${[
+            "=== CCC Device Snapshots ===",
+            "",
+            `device: ${deviceId}`,
+            `backend: ${backend}`,
+            `count: ${snapshots.length}`,
+            ...snapshots.map((snapshot) => `${snapshot.id === activeSnapshotId ? "*" : "-"} ${String(snapshot.name || "unknown")} (${String(snapshot.id || "unknown")})`),
+        ].join("\n")}\n`;
+    }
+    const snapshot = payload && typeof payload === "object" && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>).snapshot
+        : null;
+    const record = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot)
+        ? snapshot as Record<string, unknown>
+        : {};
+    return `${[
+        "=== CCC Device Snapshot ===",
+        "",
+        `action: ${action}`,
+        `device: ${deviceId}`,
+        `backend: ${backend}`,
+        `name: ${String(record.name || "unknown")}`,
+        `id: ${String(record.id || "unknown")}`,
+        "provider: hyper-v",
+    ].join("\n")}\n`;
+}
+
+function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBrokerOwnerRpcResult): string {
+    const error = typeof result.body?.error === "string" ? result.body.error : result.error || "broker-operation-failed";
+    const detail = typeof result.body?.detail === "string" ? result.body.detail : result.detail;
+    return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}`;
 }
 
 function now(): string {
@@ -1800,7 +2178,7 @@ export function devicesCli(args: string[], cwd = process.cwd(), profile?: string
         case "broker":
             return deviceBrokerCli(args.slice(1), cwd, profile);
         default:
-            console.error("Usage: ccc devices <status|list|create|start|stop|delete|prune|backends|doctor|smoke|broker>");
+            console.error("Usage: ccc devices <status|list|create|start|stop|reboot|delete|snapshot|prune|backends|doctor|smoke|setup|broker>");
             return 1;
         }
     } catch (error) {
@@ -1822,21 +2200,76 @@ export async function devicesCliAsync(
     if (subcommand === "broker") {
         return deviceBrokerCliAsync(args.slice(1), cwd, profile, hooks);
     }
+    if (subcommand === "setup") {
+        const setupArgs = args.slice(2);
+        const allowed = new Set(["--confirm", "--accept-windows-evaluation-license"]);
+        const malformed = args[1] !== "hyper-v"
+            || setupArgs.some((arg) => !allowed.has(arg))
+            || new Set(setupArgs).size !== setupArgs.length
+            || (setupArgs.includes("--accept-windows-evaluation-license") && !setupArgs.includes("--confirm"));
+        if (malformed) {
+            console.error("Usage: ccc devices setup hyper-v [--confirm [--accept-windows-evaluation-license]]");
+            return 1;
+        }
+        const setup = hooks.setupHyperV || setupHyperVHost;
+        const result = setup(setupArgs.includes("--confirm"), {
+            acceptWindowsEvaluationLicense: setupArgs.includes("--accept-windows-evaluation-license"),
+        });
+        (result.ok ? console.log : console.error)(result.text);
+        return result.ok ? 0 : 1;
+    }
+    if (subcommand === "snapshot") {
+        const parsed = parseDeviceSnapshotArgs(args, cwd, profile);
+        if (!parsed.ok) {
+            console.error(parsed.message);
+            return 1;
+        }
+        const invoke = hooks.invokeOwnerRpc || invokeHostDeviceBrokerOwnerRpc;
+        const result = await invoke("broker.device.tool.invoke", {
+            tool: `device_snapshot_${parsed.action}`,
+            backend: parsed.backend,
+            deviceId: parsed.deviceId,
+            ...parsed.params,
+        }, { cwd, profile, rpcTimeoutMs: 150000 });
+        if (!result.ok) {
+            console.error(formatSnapshotError(parsed.action, result));
+            return 1;
+        }
+        console.log(formatSnapshotResult(parsed.action, parsed.backend, parsed.deviceId, result));
+        return 0;
+    }
     const crossProjectStop = subcommand === "stop" && args.length === 2 && args[1] === "--all-projects";
-    if (!crossProjectStop && (subcommand === "create" || subcommand === "start" || subcommand === "stop" || subcommand === "delete" || subcommand === "device-status" || (subcommand === "status" && args.length > 1))) {
+    if (!crossProjectStop && (subcommand === "create" || subcommand === "start" || subcommand === "stop" || subcommand === "reboot" || subcommand === "delete" || subcommand === "device-status" || (subcommand === "status" && args.length > 1))) {
         const parsed = parseDeviceLifecycleArgs(args, cwd, profile);
         if (!parsed.ok) {
             console.error(parsed.message);
             return 1;
         }
         const invoke = hooks.invokeOwnerRpc || invokeHostDeviceBrokerOwnerRpc;
+        const hyperVBootTimeoutMs = (parsed.backend === "windows-vm" || parsed.backend === "linux-vm")
+            && (parsed.action === "start" || parsed.action === "reboot")
+            && parsed.params.waitForBoot !== false
+            ? Number.isFinite(parsed.params.bootTimeoutMs)
+                ? Math.min(600000, Math.max(1000, Number(parsed.params.bootTimeoutMs)))
+                : 5 * 60 * 1000
+            : 0;
         const result = await invoke("broker.command.invoke", {
             backend: parsed.backend,
             command: parsed.action === "status" ? "device_status" : `device_${parsed.action}`,
             deviceId: parsed.deviceId,
             dryRun: false,
             ...parsed.params,
-        }, { cwd, profile, rpcTimeoutMs: parsed.action === "status" ? 15000 : 300000 });
+        }, {
+            cwd,
+            profile,
+            rpcTimeoutMs: parsed.action === "status"
+                ? 15000
+                : parsed.action === "create" && (parsed.backend === "windows-vm" || parsed.backend === "linux-vm")
+                    ? 21615000
+                    : (parsed.backend === "windows-vm" || parsed.backend === "linux-vm")
+                        ? (10 * 60 * 1000) + 120000 + hyperVBootTimeoutMs + 15000
+                    : 300000,
+        });
         if (!result.ok) {
             console.error(formatLifecycleError(parsed.action, result));
             return 1;

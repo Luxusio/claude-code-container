@@ -308,75 +308,38 @@ hide its desktop surface.
 
 The host boundary is a security boundary, not just an implementation detail.
 CCC must not give an AI agent a general-purpose host command channel merely so
-it can run provider E2E tests. Host-provider verification should run through a
-separate lab MCP whose authority is limited to isolated lab lifecycle,
-console/session connection, bounded file/artifact transfer, and lab teardown.
-The public concept is a `lab`, not a raw VM controller: VM, cloud worker,
-physical bench host, and privileged KVM container are provider implementations
-hidden behind the same contract. Installing CCC, syncing the candidate build,
-starting CCC inside the lab, and calling device-lab tools are test steps
-performed inside that isolated lab, not privileged host operations exposed to
-the agent.
+it can run provider E2E tests. The single public `device-lab` MCP routes typed,
+allowlisted operations through the authenticated host broker. VM technology is
+an internal provider choice rather than a second public MCP surface.
 
-Lab terminology should remain small and stable:
-- `lab`: isolated execution environment rented by the agent.
-- `target`: OS, device, screen, simulator, sandbox, or app surface inside a lab.
-- `session`: current observable/control connection to a target.
-- `provider`: backend that creates labs; hidden from normal agent workflows.
-- `lease`: scoped permission to use a physical device.
+The public VM backends are guest-oriented:
 
-Host VM automation contract:
+- `windows-vm` represents a persistent, checkpoint-capable Windows guest.
+- `linux-vm` represents a persistent Linux guest.
+- `windows-sandbox` remains separate because its lifecycle and persistence
+  contract differs from a full VM.
+- `hyper-v`, `container-qemu`, and future host technologies are providers hidden
+  behind those backends.
 
-- `lab_create` accepts an OS family such as `windows` or `linux`; users and
-  agents do not manually create VMs in Hyper-V Manager or preconfigure guest
-  SSH sessions.
-- On Windows hosts, a host-broker Hyper-V provider owns both disposable Windows
-  and Linux guests. On native Linux hosts, the existing container-QEMU/KVM
-  provider owns Linux guests. Provider selection remains internal.
-- CCC performs image discovery/download/cache validation, owner-scoped base
-  image preparation, differencing disk creation, VM definition, unattended
-  guest provisioning, readiness checks, checkpoints, start/stop/reboot,
-  artifact transfer, and deletion. Deleting a lab removes its VM, differencing
-  disks, checkpoints, transient credentials, and owner-scoped metadata while
-  preserving only explicitly shared base-image caches.
-- Windows images use an official user-approved source and unattended setup;
-  Linux images use verified cloud images plus cloud-init or the equivalent
-  provider initialization path. CCC generates ephemeral SSH keys and installs
-  only the public key through that initialization channel.
-- User interaction is limited to explicit host trust boundaries: enabling the
-  Hyper-V feature and rebooting when Windows requires it, accepting applicable
-  Windows image/license terms, and approving elevation. Normal create/start/
-  test/stop/delete operations require no VM-console interaction or manual
-  environment variables.
-- The public CLI remains provider-neutral, for example `ccc labs create
-  --os windows <name>` and `ccc labs create --os linux <name>`. Level 2 proves
-  lifecycle and guest command/file transport; Level 3 restores a clean
-  checkpoint, installs the candidate package inside the guest, runs the native
-  Windows or Linux E2E suite, collects artifacts, and deletes the disposable
-  lab.
+On Windows, the Hyper-V provider owns disposable Windows and Linux guests. On
+native Linux, the existing container-QEMU/KVM provider owns Linux guests. CCC
+automates verified image preparation, owner-scoped disks, unattended guest
+provisioning, readiness, bounded guest command/file transport, checkpoints,
+lifecycle, and deletion. Users do not manually create VMs in Hyper-V Manager.
 
-The primary debugging UX is an interactive lab session, not an opaque job
-queue. The agent starts or resumes a lab, syncs the candidate workspace, opens
-a session to a target, calls allowlisted device-lab tools step by step,
-inspects screenshots/logs/artifacts, edits code in its normal workspace, syncs
-again, and repeats. Batch smoke jobs are still useful for CI and nightly runs,
-but they should be a shortcut over the same lab/session model rather than a
-separate product path. The lab MCP must not expose arbitrary host shell,
-service-manager, filesystem, Hyper-V, or device-control authority. If a fully
-isolated Windows validation environment is needed, use a disposable Windows VM
-as the lab host and run Windows Sandbox, Android Emulator, and CCC inside that
-lab; do not treat Windows Sandbox itself as the privileged orchestration host
-for nested providers.
+User interaction is limited to explicit trust boundaries: enabling Hyper-V and
+rebooting when Windows requires it, approving elevation, and accepting applicable
+Windows image/license terms. Normal create/start/test/stop/delete operations do
+not require a VM console or user-provided environment variables. The detailed
+Hyper-V architecture, delivery phases, and acceptance tests are defined in
+`doc/common/PLAN__hyper-v-vm-provider.md`.
 
-Running the lab MCP inside a Linux container is allowed when CCC has configured
-the container with the bounded VM contract. The ordinary project container and
-the built-in `lab-runner` profile can both receive the per-container lab-state
-volume, `CCC_LAB_*` diagnostics, and `/dev/kvm` only when the host/runtime passes
-the native non-rootless KVM gates. They still must not receive broad host mounts,
-`--privileged`, host TUN/TAP exposure, or host shell access. If KVM/nested
-virtualization is unavailable, the same lab MCP should degrade to an
-unsupported/remote/disposable lab provider instead of falling back to slow or
-privileged host control.
+Container-QEMU may run inside a Linux container only when CCC configured the
+bounded VM contract. The ordinary project container and built-in `lab-runner`
+profile can receive per-container state, internal `CCC_LAB_*` diagnostics, and
+`/dev/kvm` only after the native non-rootless KVM gates pass. They must not
+receive broad host mounts, `--privileged`, host TUN/TAP exposure, or host shell
+access. Unsupported environments report an explicit unsupported/SKIP result.
 
 Lab-runner container profile status:
 - `lab-runner` is a built-in CCC profile, so it can be selected without creating

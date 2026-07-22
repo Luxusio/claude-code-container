@@ -12,6 +12,8 @@ const expectedBackends = [
     { backend: "ios-simulator", label: "iOS Simulator readiness" },
     { backend: "ios-device", label: "iOS physical device readiness" },
     { backend: "windows-sandbox", label: "Windows Sandbox readiness" },
+    { backend: "windows-vm", label: "Hyper-V Windows VM readiness" },
+    { backend: "linux-vm", label: "Hyper-V Linux VM readiness" },
     { backend: "macos-vm", label: "macOS VM readiness" },
 ];
 

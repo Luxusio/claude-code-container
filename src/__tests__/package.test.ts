@@ -442,7 +442,8 @@ describe("npm package contents", () => {
         expect(realMcpToolRequestTimeoutMs("device_start", { waitForBoot: true, bootTimeoutMs: 180000 })).toBe(210000);
         expect(realMcpToolRequestTimeoutMs("mobile_get_clipboard", { backend: "android-emulator" })).toBe(360000);
         expect(realMcpToolRequestTimeoutMs("device_exec", { helperTimeoutMs: 180000 })).toBe(210000);
-        expect(realMcpToolRequestTimeoutMs("device_create", { rpcTimeoutMs: 615000 })).toBe(615000);
+        expect(realMcpToolRequestTimeoutMs("device_create", { rpcTimeoutMs: 615000 })).toBe(630000);
+        expect(realMcpToolRequestTimeoutMs("device_create", { backend: "windows-vm" })).toBe(21615000);
     });
 
     it("keeps real-provider transfer fixtures inside the broker-visible project root", async () => {

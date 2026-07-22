@@ -17,6 +17,8 @@ const expectedBackends = [
     "ios-simulator",
     "ios-device",
     "windows-sandbox",
+    "windows-vm",
+    ...(process.platform === "win32" ? ["linux-vm"] : []),
     "macos-vm",
 ];
 const scriptedArgumentFacets = [
@@ -246,6 +248,10 @@ export async function runBrokerE2E(options: any = {}) {
         ...process.env,
         HOME: testHome,
         USERPROFILE: testHome,
+        // StdioClientTransport overlays this object on process.env. An empty
+        // value is required to suppress a host/container auth-file override;
+        // deleting the key here would allow the parent value back in.
+        CCC_DEVICE_BROKER_AUTH_FILE: "",
     });
     if (!ccc.ok) {
         rmSync(testHome, { recursive: true, force: true });
@@ -856,6 +862,7 @@ export async function runBrokerE2E(options: any = {}) {
 
             try {
             const wirelessStatus = markExpectedToolError(await callTool("device_wireless", {
+                ...publicRoute,
                 backend: "android-device",
                 action: "status",
                 timeoutMs: 1,
@@ -868,20 +875,26 @@ export async function runBrokerE2E(options: any = {}) {
 
             try {
             const publicMacosDiagnostics = scriptedToolCases([
-                ["device_base_image_create", { backend: "macos-vm", name: "Level 2 public missing base image", sourceImage: "missing-source" }],
-                ["device_base_image_clone", { backend: "macos-vm", name: "Level 2 public missing clone", sourceDeviceId: "level2-public-missing-source" }],
-                ["device_snapshot_create", { backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing" }],
-                ["device_snapshot_restore", { backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing", confirmDestructive: true }],
-                ["device_snapshot_restore", { backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotId: "missing-snapshot-id", confirmDestructive: true }],
-                ["device_snapshot_delete", { backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing", confirmDestructive: true }],
-                ["device_snapshot_delete", { backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotId: "missing-snapshot-id", confirmDestructive: true }],
+                ["device_snapshot_create", { ...publicRoute, backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing" }],
+                ["device_snapshot_restore", { ...publicRoute, backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing", confirmDestructive: true }],
+                ["device_snapshot_restore", { ...publicRoute, backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotId: "missing-snapshot-id", confirmDestructive: true }],
+                ["device_snapshot_delete", { ...publicRoute, backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotName: "missing", confirmDestructive: true }],
+                ["device_snapshot_delete", { ...publicRoute, backend: "macos-vm", deviceId: "level2-public-missing-macos", snapshotId: "missing-snapshot-id", confirmDestructive: true }],
             ]);
             for (const [tool, args] of publicMacosDiagnostics) {
+                const diagnostic = parseToolPayload(await callTool(tool, args));
+                assertFailureDiagnostic(tool, diagnostic, expectedPublicDeviceRoutedBy(tool));
+            }
+            const directMacosImageDiagnostics = scriptedToolCases([
+                ["device_base_image_create", { backend: "macos-vm", name: "Level 2 public missing base image", sourceImage: "missing-source" }],
+                ["device_base_image_clone", { backend: "macos-vm", name: "Level 2 public missing clone", sourceDeviceId: "level2-public-missing-source" }],
+            ]);
+            for (const [tool, args] of directMacosImageDiagnostics) {
                 const diagnostic = markExpectedToolError(await callTool(tool, args));
                 assert.strictEqual(diagnostic?.isError, true, `${tool} unexpectedly succeeded: ${diagnostic?.content?.[0]?.text || ""}`);
                 assert.ok(String(diagnostic.content?.[0]?.text || "").length > 0, `${tool}: missing diagnostic text`);
             }
-            steps.push({ name: "public macOS image and snapshot diagnostics", status: "PASS", detail: `tools=${publicMacosDiagnostics.length}` });
+            steps.push({ name: "public macOS image and snapshot diagnostics", status: "PASS", detail: `tools=${publicMacosDiagnostics.length + directMacosImageDiagnostics.length}` });
         } catch (error) {
             steps.push(failStep("public macOS image and snapshot diagnostics", error));
         }

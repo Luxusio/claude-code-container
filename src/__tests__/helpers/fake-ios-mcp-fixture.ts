@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { installDefaultImplicitBroker, repoRoot, TIMEOUT } from "./device-lab-mcp-fixture.js";
@@ -157,6 +157,7 @@ const fs = require('fs');
 const port = Number(process.argv[2]);
 const log = process.argv[3];
 const stalePath = process.argv[4];
+fs.writeFileSync(process.env.HOME + '/fake-ios-appium-' + process.pid + '.pid', String(process.pid));
 let sessionCounter = 0;
 let sessionId = null;
 function send(res, status, payload) {
@@ -260,6 +261,7 @@ exit 0
                 HOME: homeDir,
                 PATH: binDir,
                 NODE_ENV: "test",
+                CCC_PROFILE: `test-${homeDir.split(/[\\/]/).pop()}`,
                 FAKE_IOS_LOG: logPath,
                 FAKE_IOS_CONTAINER_ROOT: containerRoot,
             },
@@ -279,6 +281,12 @@ exit 0
 export async function cleanupFakeIosMcpContext(context: FakeIosMcpContext | undefined) {
     if (!context) return;
     await context.client.close();
+    for (const entry of readdirSync(context.homeDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !/^fake-ios-appium-\d+\.pid$/.test(entry.name)) continue;
+        const pid = Number(readFileSync(join(context.homeDir, entry.name), "utf-8").trim());
+        if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+        try { process.kill(pid, "SIGKILL"); } catch { /* fake Appium already exited */ }
+    }
     rmSync(context.homeDir, { recursive: true, force: true });
     rmSync(context.binDir, { recursive: true, force: true });
 }

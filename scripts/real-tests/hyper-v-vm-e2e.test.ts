@@ -1,0 +1,173 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
+import { join } from "path";
+import { hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
+import { createPackagedCccCandidate, hyperVWindowsVmE2ECapability, selectHyperVWindowsProfile } from "./hyper-v-windows-vm-e2e.ts";
+import {
+    HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
+    HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
+    HYPER_V_WINDOWS_SOURCE_TRUST_ID,
+    HYPER_V_WINDOWS_SOURCE_URL,
+} from "../../src/device-lab/hyper-v-image-contracts.ts";
+
+const readiness = JSON.stringify({
+    available: true,
+    moduleAvailable: true,
+    hypervisorPresent: true,
+    vmmsRunning: true,
+    rebootPending: false,
+    totalMemoryMb: 32768,
+    freeMemoryMb: 16384,
+    logicalProcessors: 8,
+    missing: [],
+});
+
+function spawnReady(_command: string, args: string[]) {
+    if (args[0] === "ssh.exe" || args[0] === "scp.exe") return { status: 0, stdout: `${args[0]}\n` };
+    return { status: 0, stdout: readiness };
+}
+
+afterEach(() => {
+    delete process.env.CCC_REAL_HYPER_V_WINDOWS_SOURCE_IMAGE;
+    delete process.env.CCC_REAL_HYPER_V_LINUX_SOURCE_IMAGE;
+});
+
+describe("Hyper-V E2E zero-config image selection", () => {
+    it("builds the guest probe from an npm package artifact without invoking package scripts", () => {
+        const outputDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-test-"));
+        const npmExecPath = join(outputDir, "npm-cli.js");
+        writeFileSync(npmExecPath, "// test npm cli");
+        try {
+            const candidate = createPackagedCccCandidate(outputDir, {
+                npmExecPath,
+                nodePath: "node.exe",
+                spawnSyncImpl: (command: string, args: string[]) => {
+                    expect(command).toBe("node.exe");
+                    expect(args).toEqual(expect.arrayContaining([npmExecPath, "pack", "--json", "--ignore-scripts", "--pack-destination", outputDir]));
+                    writeFileSync(join(outputDir, "claude-code-container-test.tgz"), "package");
+                    return { status: 0, stdout: JSON.stringify([{ filename: "claude-code-container-test.tgz" }]), stderr: "" };
+                },
+            });
+            expect(candidate.packagePath).toBe(join(outputDir, "claude-code-container-test.tgz"));
+            expect(candidate.version).toMatch(/^\d+\.\d+\.\d+$/);
+        } finally {
+            rmSync(outputDir, { recursive: true, force: true });
+        }
+    });
+
+    it("selects the official Windows Server profile when no override or Windows 11 cache exists", () => {
+        expect(selectHyperVWindowsProfile({ existsSyncImpl: () => false })).toBe("windows-server");
+        expect(hyperVWindowsVmE2ECapability({
+            platform: "win32",
+            powershell: "powershell.exe",
+            spawnSyncImpl: spawnReady,
+            existsSyncImpl: () => false,
+            readEvaluationReceiptImpl: () => ({ acceptedAt: "2026-01-01T00:00:00.000Z" }),
+        })).toMatchObject({ available: true, sourceImage: "", profile: "windows-server" });
+    });
+
+    it("reports the one-time Windows evaluation acceptance as a prerequisite", () => {
+        expect(hyperVWindowsVmE2ECapability({
+            platform: "win32",
+            powershell: "powershell.exe",
+            spawnSyncImpl: spawnReady,
+            existsSyncImpl: () => false,
+            readEvaluationReceiptImpl: () => null,
+        })).toEqual({
+            available: false,
+            reason: "Windows evaluation license acceptance not recorded; run ccc devices setup hyper-v --confirm --accept-windows-evaluation-license",
+        });
+    });
+
+    it("accepts the version 2 receipt written by Hyper-V setup", () => {
+        const setupRoot = mkdtempSync(join(tmpdir(), "ccc-hyper-v-setup-test-"));
+        try {
+            writeFileSync(join(setupRoot, "hyper-v-windows-evaluation-license.json"), JSON.stringify({
+                version: 2,
+                licenseId: HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
+                licenseUrl: HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
+                sourceTrustId: HYPER_V_WINDOWS_SOURCE_TRUST_ID,
+                sourceUrl: HYPER_V_WINDOWS_SOURCE_URL,
+                acceptedAt: "2026-01-01T00:00:00.000Z",
+            }));
+            expect(hyperVWindowsVmE2ECapability({
+                platform: "win32",
+                powershell: "powershell.exe",
+                spawnSyncImpl: spawnReady,
+                existsSyncImpl: () => false,
+                setupRoot,
+            })).toMatchObject({ available: true, profile: "windows-server" });
+        } finally {
+            rmSync(setupRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("selects Windows 11 for an explicit source override", () => {
+        process.env.CCC_REAL_HYPER_V_WINDOWS_SOURCE_IMAGE = "C:\\images\\windows-11.vhdx";
+        expect(selectHyperVWindowsProfile({ existsSyncImpl: () => false })).toBe("windows-11");
+    });
+
+    it("selects Windows 11 when its cached manifest exists", () => {
+        expect(selectHyperVWindowsProfile({
+            existsSyncImpl: () => true,
+            readFileSyncImpl: () => JSON.stringify({ version: 3, profile: "windows-11", imagePath: "C:\\cache\\base.vhdx" }),
+        })).toBe("windows-11");
+        expect(selectHyperVWindowsProfile({
+            existsSyncImpl: () => true,
+            readFileSyncImpl: () => JSON.stringify({ version: 2, profile: "windows-11", imagePath: "C:\\cache\\base.vhdx" }),
+        })).toBe("windows-server");
+    });
+
+    it("checks the owner-scoped Windows 11 cache before the shared catalog cache", () => {
+        const checked: string[] = [];
+        const ownerId = "0123456789abcdef";
+        expect(selectHyperVWindowsProfile({
+            ownerId,
+            existsSyncImpl: (path: string) => { checked.push(path); return true; },
+            readFileSyncImpl: () => JSON.stringify({ version: 3, profile: "windows-11", imagePath: "C:\\cache\\base.vhdx" }),
+        })).toBe("windows-11");
+        expect(checked[0]).toBe(join(homedir(), ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v", "windows-11", "manifest.json"));
+        expect(checked).not.toContain(join(homedir(), ".ccc", "devices", "owners", ownerId, "images", "hyper-v", "windows-11", "manifest.json"));
+    });
+
+    it("falls back to the private shared Windows 11 catalog cache", () => {
+        const ownerId = "0123456789abcdef";
+        const ownerManifest = join(homedir(), ".ccc", "device-broker-private", "owners", ownerId, "images", "hyper-v", "windows-11", "manifest.json");
+        const sharedManifest = join(homedir(), ".ccc", "device-broker-private", "images", "hyper-v", "windows-11", "manifest.json");
+        const imagePath = "C:\\cache\\base.vhdx";
+        const checked: string[] = [];
+        expect(selectHyperVWindowsProfile({
+            ownerId,
+            existsSyncImpl: (path: string) => {
+                checked.push(path);
+                return path === sharedManifest || path === imagePath;
+            },
+            readFileSyncImpl: () => JSON.stringify({ version: 3, profile: "windows-11", imagePath }),
+        })).toBe("windows-11");
+        expect(checked.slice(0, 2)).toEqual([ownerManifest, sharedManifest]);
+    });
+
+    it("keeps Linux E2E available without a source override so the broker can auto-acquire Ubuntu", () => {
+        expect(hyperVLinuxVmE2ECapability({
+            platform: "win32",
+            powershell: "powershell.exe",
+            ssh: "ssh.exe",
+            scp: "scp.exe",
+            spawnSyncImpl: spawnReady,
+        })).toMatchObject({ available: true, sourceImage: "" });
+    });
+
+    it("keeps broker transport timeout fields out of public device_create calls", () => {
+        for (const file of ["hyper-v-windows-vm-e2e.ts", "hyper-v-linux-vm-e2e.ts"]) {
+            const source = readFileSync(new URL(file, import.meta.url), "utf8");
+            expect(source).not.toContain("rpcTimeoutMs:");
+        }
+    });
+
+    it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {
+        const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
+        expect(source).toContain("hyper-v-image-contracts.ts");
+        expect(source).not.toContain("hyper-v-images.ts");
+    });
+});

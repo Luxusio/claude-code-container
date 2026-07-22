@@ -1144,6 +1144,54 @@ describe("device-lab host broker physical attach and CLI", () => {
         }
     });
 
+    it("forwards typed Hyper-V Windows VM create options through the public CLI", async () => {
+        const cwd = "/project/devices-hyper-v-create-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ devices: [{ id: "win11-dev", backend: "windows-vm", status: "stopped" }] }));
+        const invokeOwnerRpc = vi.fn(async (_method, params) => ({
+            ok: true,
+            status: 200,
+            ownerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: true,
+                result: {
+                    device: { id: params.deviceId, backend: params.backend, provider: "hyper-v", status: "stopped" },
+                },
+            },
+        }));
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+        const exitCode = await devicesCliAsync([
+            "create", "windows-vm", "win11-dev",
+            "--provider", "hyper-v",
+            "--image", "/images/windows-11.vhdx",
+            "--vm-profile", "windows-11",
+            "--memory-mb", "4096",
+            "--cpus", "4",
+            "--switch-name", "Default Switch",
+            "--secure-boot-template", "MicrosoftWindows",
+        ], cwd, undefined, { invokeOwnerRpc });
+
+        expect(exitCode).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenCalledWith("broker.command.invoke", expect.objectContaining({
+            backend: "windows-vm",
+            command: "device_create",
+            deviceId: "win11-dev",
+            name: "win11-dev",
+            provider: "hyper-v",
+            image: "/images/windows-11.vhdx",
+            profile: "windows-11",
+            memoryMb: 4096,
+            cpus: 4,
+            switchName: "Default Switch",
+            secureBootTemplate: "MicrosoftWindows",
+        }), expect.objectContaining({ cwd, rpcTimeoutMs: 21615000 }));
+    });
+
     it("does not follow redirects from authenticated owner RPC", async () => {
         const cwd = "/project/devices-owner-rpc-redirect-test";
         const ownerId = deviceLabOwnerId(cwd);
@@ -1277,6 +1325,160 @@ describe("device-lab host broker physical attach and CLI", () => {
             deviceId: "win-dev",
         }), expect.any(Object));
         expect(log).toHaveBeenCalledWith(expect.stringContaining("status: deleted"));
+    });
+
+    it("lists, creates, restores, and deletes owner Hyper-V snapshots through public CLI commands", async () => {
+        const cwd = "/project/devices-snapshot-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
+        const snapshotId = "87654321-4321-4321-8321-cba987654321";
+        mkdirSync(stateDir, { recursive: true });
+        const incarnationId = "1".repeat(32);
+        writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ devices: [{ id: "hyperv-dev", backend: "windows-vm", status: "stopped", incarnationId }] }));
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn(async (_method, params) => ({
+            ok: true,
+            status: 200,
+            ownerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: true,
+                result: {
+                    ...(params.tool === "device_snapshot_list" ? {
+                        snapshots: [{ id: snapshotId, name: "before-install", providerName: `ccc-${ownerId}-before-install` }],
+                        activeSnapshotId: snapshotId,
+                    } : {}),
+                    snapshot: { id: snapshotId, name: params.snapshotName || "before-install", providerName: `ccc-${ownerId}-before-install` },
+                },
+            },
+        }));
+
+        expect(await devicesCliAsync(["snapshot", "list", "hyperv-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
+            tool: "device_snapshot_list",
+            backend: "windows-vm",
+            deviceId: "hyperv-dev",
+        }), expect.objectContaining({ rpcTimeoutMs: 150000 }));
+        expect(log).toHaveBeenLastCalledWith(expect.stringContaining(`* before-install (${snapshotId})`));
+
+        expect(await devicesCliAsync(["snapshot", "create", "hyperv-dev", "before-install"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
+            tool: "device_snapshot_create",
+            backend: "windows-vm",
+            deviceId: "hyperv-dev",
+            snapshotName: "before-install",
+            incarnationId,
+        }), expect.objectContaining({ rpcTimeoutMs: 150000 }));
+        expect(log).toHaveBeenLastCalledWith(expect.stringContaining(`id: ${snapshotId}`));
+
+        expect(await devicesCliAsync(["snapshot", "restore", "hyperv-dev", snapshotId.toUpperCase(), "--confirm-destructive", "--force"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
+            tool: "device_snapshot_restore",
+            snapshotId,
+            incarnationId,
+            confirmDestructive: true,
+            force: true,
+        }), expect.any(Object));
+
+        expect(await devicesCliAsync(["snapshot", "delete", "hyperv-dev", "before-install", "--confirm-destructive"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.device.tool.invoke", expect.objectContaining({
+            tool: "device_snapshot_delete",
+            snapshotName: "before-install",
+            incarnationId,
+            confirmDestructive: true,
+        }), expect.any(Object));
+    });
+
+    it("rejects malformed Hyper-V snapshot list arguments", async () => {
+        const cwd = "/project/devices-snapshot-list-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
+        mkdirSync(stateDir, { recursive: true });
+        writeFileSync(join(stateDir, "devices.json"), JSON.stringify({ devices: [{ id: "hyperv-dev", backend: "windows-vm", status: "stopped" }] }));
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn();
+
+        expect(await devicesCliAsync(["snapshot", "list", "hyperv-dev", "unexpected"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        expect(error).toHaveBeenLastCalledWith("Usage: ccc devices snapshot list <device-id>");
+        expect(invokeOwnerRpc).not.toHaveBeenCalled();
+    });
+
+    it("reboots an owner Hyper-V VM through the public CLI", async () => {
+        const cwd = "/project/devices-reboot-cli-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const stateDir = join(homedir(), ".ccc/devices/owners", ownerId, "linux-vm");
+        mkdirSync(stateDir, { recursive: true });
+        const statePath = join(stateDir, "devices.json");
+        const incarnationId = "2".repeat(32);
+        writeFileSync(statePath, JSON.stringify({ devices: [{ id: "linux-dev", backend: "linux-vm", status: "running", incarnationId }] }));
+        vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn(async (_method, params) => ({
+            ok: true,
+            status: 200,
+            ownerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: { ok: true, result: { device: { id: params.deviceId, backend: params.backend, status: "running", bootReady: true } } },
+        }));
+
+        expect(await devicesCliAsync([
+            "reboot", "linux-dev", "--force", "--start-if-stopped", "--wait-for-boot", "--boot-timeout-ms", "120000",
+        ], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenCalledWith("broker.command.invoke", expect.objectContaining({
+            backend: "linux-vm",
+            command: "device_reboot",
+            deviceId: "linux-dev",
+            force: true,
+            startIfStopped: true,
+            waitForBoot: true,
+            bootTimeoutMs: 120000,
+            incarnationId,
+        }), expect.any(Object));
+
+        expect(await devicesCliAsync(["stop", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.command.invoke", expect.objectContaining({
+            backend: "linux-vm",
+            command: "device_stop",
+            deviceId: "linux-dev",
+            incarnationId,
+        }), expect.any(Object));
+
+        writeFileSync(statePath, JSON.stringify({ devices: [{ id: "linux-dev", backend: "linux-vm", status: "stopped", incarnationId }] }));
+        expect(await devicesCliAsync(["start", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.command.invoke", expect.objectContaining({
+            backend: "linux-vm",
+            command: "device_start",
+            deviceId: "linux-dev",
+            incarnationId,
+        }), expect.any(Object));
+
+        expect(await devicesCliAsync(["delete", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
+        expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.command.invoke", expect.objectContaining({
+            backend: "linux-vm",
+            command: "device_delete",
+            deviceId: "linux-dev",
+            incarnationId,
+        }), expect.any(Object));
+    });
+
+    it("rejects unsafe or unsupported public snapshot commands before broker invocation", async () => {
+        const cwd = "/project/devices-snapshot-cli-invalid-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const windowsVmDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows-vm");
+        const windowsDir = join(homedir(), ".ccc/devices/owners", ownerId, "windows");
+        mkdirSync(windowsVmDir, { recursive: true });
+        mkdirSync(windowsDir, { recursive: true });
+        writeFileSync(join(windowsVmDir, "devices.json"), JSON.stringify({ devices: [{ id: "hyperv-dev", backend: "windows-vm", status: "stopped" }] }));
+        writeFileSync(join(windowsDir, "devices.json"), JSON.stringify({ devices: [{ id: "sandbox-dev", backend: "windows-sandbox", status: "stopped" }] }));
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const invokeOwnerRpc = vi.fn();
+
+        expect(await devicesCliAsync(["snapshot", "restore", "hyperv-dev", "before-install"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        expect(error).toHaveBeenLastCalledWith("Refusing to restore snapshot without --confirm-destructive");
+        expect(await devicesCliAsync(["snapshot", "create", "sandbox-dev", "before-install"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        expect(error).toHaveBeenLastCalledWith("Device snapshots are not supported by backend: windows-sandbox");
+        expect(invokeOwnerRpc).not.toHaveBeenCalled();
     });
 
     it("rejects invalid public lifecycle options without invoking the broker", async () => {

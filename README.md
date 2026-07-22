@@ -177,6 +177,96 @@ last successful minimize confirmation; it does not claim to be a continuous
 desktop-window monitor. These commands automatically start or reuse the host
 broker and do not require direct execution of files under `dist/`.
 
+Hyper-V Windows VMs use the same lifecycle surface. CCC automatically downloads,
+validates, and caches the official Windows Server 2025 evaluation VHDX on the
+first `windows-vm` create, then creates owner-scoped differencing disks:
+
+```text
+ccc devices setup hyper-v
+ccc devices setup hyper-v --confirm --accept-windows-evaluation-license
+ccc devices backends
+ccc devices create windows-vm dev-windows --memory-mb 4096 --cpus 2
+# Later VMs reuse the verified windows-server cache.
+ccc devices create windows-vm dev-windows-2 --memory-mb 4096 --cpus 2
+ccc devices start dev-windows
+ccc devices status dev-windows
+ccc devices reboot dev-windows --wait-for-boot --boot-timeout-ms 600000
+ccc devices stop dev-windows
+ccc devices snapshot create dev-windows before-install
+ccc devices snapshot restore dev-windows before-install --confirm-destructive
+ccc devices snapshot delete dev-windows before-install --confirm-destructive
+ccc devices delete dev-windows
+```
+
+The first setup command is diagnostic only. `--confirm` explicitly permits CCC
+to request UAC elevation, enable `Microsoft-Hyper-V-All` with `-NoRestart`, and
+add the invoking identity to the built-in `Hyper-V Administrators` group.
+`--accept-windows-evaluation-license` records the required one-time acceptance
+of the linked Microsoft evaluation terms and the explicit HTTPS/TOFU trust
+decision for the allowlisted Microsoft download chain. Microsoft does not
+publish a stable digest for that mutable evaluation redirect, so CCC reports
+the mode as TOFU, records the first acquired SHA-256, and rejects later cache
+changes; it records neither acceptance nor trust silently.
+CCC reports whether a reboot or one-time sign-out and sign-in is required to
+activate the new group membership; it never reboots or signs out the host itself.
+
+`ccc devices backends` reports whether the required host executables are
+discoverable. Use `ccc devices setup hyper-v` for the non-mutating Hyper-V
+feature/module/hypervisor/VMMS diagnostic, then use
+`ccc devices smoke --real-provider --timeout-ms 30000` for provider readiness;
+neither command starts a VM. VM lifecycle commands
+verify the owner marker, VM ID, VM name, and disk path before mutation. Image
+source paths are restricted to regular VHDX files directly under the project root. Imported
+images are hashed, validated with `Get-VHD`, and stored with a versioned
+manifest below the host-only `~/.ccc/device-broker-private/images/hyper-v/<profile>`;
+links, differencing
+parents, profile hash conflicts, cache hash mismatches, and paths outside the allowed roots are refused.
+Production checkpoint create/restore/delete uses the same owner-fenced broker
+path. Guest command execution and file transfer use an owner-fenced PowerShell
+Direct session and a broker-owned DPAPI credential file. CCC injects the
+per-device account into the offline child disk, removes bootstrap secrets after
+first logon, and waits for PowerShell Direct before reporting a ready start;
+credentials are never accepted as MCP arguments. A project-local generalized
+Windows 11 VHDX remains available as an explicit `--source-image` override.
+Writable VM disks, Linux seed disks, credentials, transfer staging, operation
+journals, and CCC-owned NAT allocations also stay in the host-only broker tree,
+which is not mounted into project containers. CCC-owned NAT networking is
+shared with Hyper-V Linux guests. MAC and IPv4 assignments are deterministic
+per owner/device and allocation cleanup is fenced by the VM incarnation.
+Overlapping host subnets are rejected; an existing NAT is reused or removed
+only when broker-private state proves CCC created it. The CCC switch, NAT, and
+gateway are removed after the last allocation. Repeating create with
+the same immutable VM configuration returns the existing owner-fenced VM;
+conflicting create requests remain errors. Start, stop, and delete are safe to
+repeat, and none of these retries adopts an unmarked Hyper-V resource.
+
+Hyper-V Linux VMs automatically download a dated official Ubuntu 24.04 LTS Azure
+VHD archive, verify it against CCC's pinned release SHA-256, convert it to VHDX,
+and cache it on first create. Later creates reuse it. CCC
+creates an owner-scoped SSH key and CIDATA cloud-init disk, assigns a static
+address on the CCC NAT, and uses SSH for execution and bounded downloads plus
+SCP for bounded uploads:
+
+```text
+ccc devices create linux-vm dev-ubuntu --memory-mb 2048 --cpus 2
+ccc devices start dev-ubuntu --wait-for-boot --boot-timeout-ms 600000
+ccc devices reboot dev-ubuntu --wait-for-boot --boot-timeout-ms 600000
+ccc devices snapshot create dev-ubuntu baseline
+```
+
+Run destructive Hyper-V durability directly; a first-run cache miss is acquired automatically:
+
+```text
+npm run test:durability:device-lab:real -- --target windows-vm --cycles 2
+npm run test:durability:device-lab:real -- --target linux-vm --cycles 2
+```
+
+The regular Level 3 Windows VM scenario also packs the current CCC candidate,
+uploads it with the current Windows `node.exe`, runs `ccc --version` inside the
+disposable guest, and downloads the result to
+`results/device-lab-real/hyper-v-windows-packaged-ccc-latest.json`. Durability
+cycles omit that large package transfer and focus on repeated provider cleanup.
+
 To verify the actual installed MCP server used by a running container image,
 run the installed-server smoke directly:
 

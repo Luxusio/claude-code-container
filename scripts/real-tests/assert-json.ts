@@ -7,7 +7,7 @@ const quiet = process.argv.includes("--quiet");
 const platformResult = process.argv.includes("--platform-result");
 const allowedSkipCategoryText = Object.prototype.hasOwnProperty.call(process.env, "CCC_REAL_DEVICE_LAB_ALLOWED_SKIP_CATEGORIES")
     ? process.env.CCC_REAL_DEVICE_LAB_ALLOWED_SKIP_CATEGORIES
-    : "provider-prerequisite,host-platform,host-virtualization";
+    : "provider-prerequisite,host-platform,host-permission,host-virtualization";
 const allowedSkipCategories = new Set(
     String(allowedSkipCategoryText || "")
         .split(",")
@@ -35,7 +35,7 @@ const toolCalls = Array.isArray(toolCoverage.calls) ? toolCoverage.calls : [];
 const skipCategories = Array.isArray(summary.skipCategories) ? summary.skipCategories : [];
 const categorizedSkipCount = skipCategories.reduce((total, item) => total + Number(item?.count || 0), 0);
 const unexpectedSkipCategories = skipCategories.filter((item) => !allowedSkipCategories.has(item?.category));
-const providerGapSkipCategories = new Set(["provider-prerequisite", "host-platform", "host-virtualization"]);
+const providerGapSkipCategories = new Set(["provider-prerequisite", "host-platform", "host-permission", "host-virtualization"]);
 const providerValues = new Set(["auto", "tart", "vz", "utmctl"]);
 const directOkExemptDiagnosticTools = new Set([
     "device_base_image_clone",
@@ -69,7 +69,9 @@ for (const item of skipCategories.filter((record) => providerGapSkipCategories.h
     if (/android/.test(text) && /(?:physical|device|adb)/.test(text)) explainedProviderValues.add("backend=android-device");
     if (/ios/.test(text) && /simulator/.test(text)) explainedProviderValues.add("backend=ios-simulator");
     if (/ios/.test(text) && /(?:physical|device|xcrun|macos host)/.test(text)) explainedProviderValues.add("backend=ios-device");
-    if (/windows|wsb/.test(text)) explainedProviderValues.add("backend=windows-sandbox");
+    if (/windows sandbox|wsb/.test(text)) explainedProviderValues.add("backend=windows-sandbox");
+    if (/hyper-v/.test(text) && /windows vm/.test(text)) explainedProviderValues.add("backend=windows-vm");
+    if (/hyper-v/.test(text) && /linux vm/.test(text)) explainedProviderValues.add("backend=linux-vm");
     if (/macos|tart|vz|utmctl/.test(text)) explainedProviderValues.add("backend=macos-vm");
 }
 const unexplainedProviderArgumentEnumFacets = uncalledProviderArgumentEnumFacets.filter((facet) => {

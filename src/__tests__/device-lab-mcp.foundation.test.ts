@@ -50,25 +50,28 @@ const BROKER_CAPABLE_DEVICE_TOOLS = [
     "device_key",
     "device_type",
     "device_scroll",
+    "device_snapshot_create",
+    "device_snapshot_restore",
+    "device_snapshot_delete",
     "device_attach",
     "device_detach",
 ] as const;
 
 const DEVICE_ROUTE_PORT_COLLISION_TOOLS = new Set(["device_create", "device_attach"]);
-const DEVICE_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm", "linux-vm"] as const;
+const DEVICE_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] as const;
 const DEVICE_WITH_DISPLAY_BACKEND_ENUM = ["x11-current-display", "android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm"] as const;
-const DEVICE_STATUS_BACKEND_ENUM = [...DEVICE_WITH_DISPLAY_BACKEND_ENUM, "linux-vm"] as const;
-const DEVICE_CREATE_BACKEND_ENUM = ["android-emulator", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] as const;
-const DEVICE_EXEC_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] as const;
+const DEVICE_STATUS_BACKEND_ENUM = ["x11-current-display", "android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] as const;
+const DEVICE_CREATE_BACKEND_ENUM = ["android-emulator", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] as const;
+const DEVICE_EXEC_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] as const;
 const MOBILE_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "ios-device"] as const;
 const ANDROID_BACKEND_ENUM = ["android-emulator", "android-device"] as const;
 const ANDROID_EMULATOR_BACKEND_ENUM = ["android-emulator"] as const;
 const PHYSICAL_BACKEND_ENUM = ["android-device", "ios-device"] as const;
 const DESKTOP_BACKEND_ENUM = ["windows-sandbox", "macos-vm"] as const;
 const DISPLAY_DESKTOP_BACKEND_ENUM = ["x11-current-display", "windows-sandbox", "macos-vm"] as const;
-const SNAPSHOT_BACKEND_ENUM = ["macos-vm", "linux-vm"] as const;
+const SNAPSHOT_BACKEND_ENUM = ["windows-vm", "macos-vm", "linux-vm"] as const;
 const RECORDING_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "macos-vm"] as const;
-const FILE_TRANSFER_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] as const;
+const FILE_TRANSFER_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] as const;
 const RESET_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator"] as const;
 const EMULATOR_SIMULATOR_BACKEND_ENUM = ["android-emulator", "ios-simulator"] as const;
 const MOBILE_WITHOUT_IOS_DEVICE_BACKEND_ENUM = ["android-emulator", "android-device", "ios-simulator"] as const;
@@ -444,7 +447,7 @@ describe("device-lab MCP foundation and definitions", () => {
         expect(createTool?.inputSchema).toEqual(expect.objectContaining({ required: ["backend", "name"] }));
         expect(createProperties).toEqual(expect.objectContaining({
             name: expect.objectContaining({ type: "string" }),
-            provider: expect.objectContaining({ enum: ["auto", "tart", "vz", "utmctl", "container-qemu"] }),
+            provider: expect.objectContaining({ enum: ["auto", "hyper-v", "tart", "vz", "utmctl", "container-qemu"] }),
             image: expect.objectContaining({ type: "string" }),
             sshHost: expect.objectContaining({ type: "string" }),
             sshUser: expect.objectContaining({ type: "string" }),
@@ -779,6 +782,7 @@ describe("device-lab MCP foundation and definitions", () => {
             "ios-simulator",
             "ios-device",
             "windows-sandbox",
+            "windows-vm",
             "macos-vm",
             "linux-vm",
         ]);
@@ -1110,6 +1114,7 @@ describe("device-lab MCP foundation and definitions", () => {
             device_base_image_create: { backend: "macos-vm", name: "Base image smoke", sourceImage: "missing-source" },
             device_base_image_clone: { backend: "macos-vm", name: "Base clone smoke", sourceDeviceId: macosId },
             device_snapshot_create: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke" },
+            device_snapshot_list: { ...brokerProbe, broker: true, backend: "windows-vm", deviceId: "missing-windows-vm-snapshot-list-smoke" },
             device_snapshot_restore: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke", confirmDestructive: true },
             device_snapshot_delete: { ...direct, backend: "macos-vm", deviceId: macosId, snapshotName: "smoke", confirmDestructive: true },
             device_record_video_start: { ...direct, backend: "android-emulator", deviceId: androidId, remotePath: "/sdcard/smoke.mp4", timeLimitSec: 1 },

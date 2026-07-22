@@ -8,7 +8,7 @@ const EXPLICIT_BROKER_ROUTE_PROPERTIES = {
     port: { type: "number", minimum: 1, maximum: 65535 },
     brokerPort: { type: "number", minimum: 1, maximum: 65535 },
     timeoutMs: { type: "number", minimum: 1 },
-    rpcTimeoutMs: { type: "number", minimum: 1, maximum: 120000 },
+    rpcTimeoutMs: { type: "number", minimum: 1, maximum: 21615000 },
     launchTimeoutMs: { type: "number", minimum: 1 },
 };
 
@@ -22,11 +22,17 @@ const DEVICE_ID_PROPERTY = {
     pattern: "^(?!\\.\\.?$)[A-Za-z0-9._-]+$",
 };
 const DEVICE_PATH_PROPERTY = { type: "string", maxLength: 4096 };
+const INCARNATION_ID_PROPERTY = { type: "string", pattern: "^[a-f0-9]{32}$" };
 const LINUX_VM_BACKEND_PROPERTY = { backend: { type: "string", enum: ["linux-vm"] } };
+const REBOOT_VM_BACKEND_PROPERTY = { backend: { type: "string", enum: ["windows-vm", "linux-vm"] } };
 const BOUNDED_FILE_POLICY_PROPERTIES = {
     maxFiles: { type: "number", minimum: 1, maximum: 5000 },
     maxFileBytes: { type: "number", minimum: 1, maximum: 16777216 },
     maxTotalBytes: { type: "number", minimum: 1, maximum: 268435456 },
+};
+const DEVICE_UPLOAD_FILE_POLICY_PROPERTIES = {
+    ...BOUNDED_FILE_POLICY_PROPERTIES,
+    maxFileBytes: { type: "number", minimum: 1, maximum: 134217728 },
 };
 
 const EXPLICIT_BROKER_ROUTE_PROPERTIES_WITHOUT_PORT = {
@@ -38,12 +44,12 @@ const EXPLICIT_BROKER_ROUTE_PROPERTIES_WITHOUT_PORT = {
     launchHost: { type: "string" },
     brokerPort: { type: "number", minimum: 1, maximum: 65535 },
     timeoutMs: { type: "number", minimum: 1 },
-    rpcTimeoutMs: { type: "number", minimum: 1, maximum: 120000 },
+    rpcTimeoutMs: { type: "number", minimum: 1, maximum: 21615000 },
     launchTimeoutMs: { type: "number", minimum: 1 },
 };
 
 const DEVICE_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
 };
 
 const DEVICE_WITH_DISPLAY_BACKEND_PROPERTY = {
@@ -51,15 +57,15 @@ const DEVICE_WITH_DISPLAY_BACKEND_PROPERTY = {
 };
 
 const DEVICE_STATUS_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["x11-current-display", "android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["x11-current-display", "android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
 };
 
 const DEVICE_DELETE_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["android-emulator", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["android-emulator", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
 };
 
 const DEVICE_EXEC_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
 };
 
 const MOBILE_BACKEND_PROPERTY = {
@@ -87,7 +93,10 @@ const DISPLAY_DESKTOP_BACKEND_PROPERTY = {
 };
 
 const SNAPSHOT_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["windows-vm", "macos-vm", "linux-vm"] },
+};
+const SNAPSHOT_LIST_BACKEND_PROPERTY = {
+    backend: { type: "string", enum: ["windows-vm", "linux-vm"] },
 };
 
 const RECORDING_BACKEND_PROPERTY = {
@@ -95,7 +104,7 @@ const RECORDING_BACKEND_PROPERTY = {
 };
 
 const FILE_TRANSFER_BACKEND_PROPERTY = {
-    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] },
+    backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
 };
 
 const RESET_BACKEND_PROPERTY = {
@@ -231,17 +240,20 @@ const DEVICE_BASE_IMAGE_CLONE_INPUT_SCHEMA = {
 const DEVICE_CREATE_INPUT_SCHEMA = {
     type: "object",
     properties: {
-        backend: { type: "string", enum: ["android-emulator", "ios-simulator", "windows-sandbox", "macos-vm", "linux-vm"] },
+        backend: { type: "string", enum: ["android-emulator", "ios-simulator", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] },
         name: { type: "string" },
         deviceId: DEVICE_ID_PROPERTY,
         headless: { type: "boolean" },
         minimized: { type: "boolean" },
-        provider: { type: "string", enum: ["auto", "tart", "vz", "utmctl", "container-qemu"] },
+        provider: { type: "string", enum: ["auto", "hyper-v", "tart", "vz", "utmctl", "container-qemu"] },
         image: { type: "string" },
         sourceImage: { type: "string" },
+        profile: { type: "string", enum: ["windows-11", "windows-server", "ubuntu-lts", "linux"] },
+        switchName: { type: "string", maxLength: 128 },
+        secureBootTemplate: { type: "string", enum: ["MicrosoftWindows", "MicrosoftUEFICertificateAuthority"] },
         baseImageId: DEVICE_ID_PROPERTY,
-        memoryMb: { type: "number" },
-        cpus: { type: "number" },
+        memoryMb: { type: "number", minimum: 1024, maximum: 131072 },
+        cpus: { type: "number", minimum: 1, maximum: 64 },
         sshHost: { type: "string" },
         sshPort: { type: "number" },
         sshUser: { type: "string" },
@@ -280,7 +292,7 @@ export const TOOLS = [
     { name: "device_backends", description: "List device-lab backends, availability, and capabilities without starting devices", inputSchema: { type: "object", properties: brokerManagementProperties({}), required: [] } },
     { name: "device_broker_status", description: "Inspect the zero-configuration host broker contract without starting devices", inputSchema: { type: "object", properties: brokerManagementProperties({ probe: { type: "boolean" } }), required: [] } },
     { name: "device_list", description: "List devices and current display targets owned by this CCC container", inputSchema: { type: "object", properties: {}, required: [] } },
-    { name: "device_inventory", description: "List owner-scoped device definitions and backend host inventory without starting devices", inputSchema: { type: "object", properties: deviceBrokerProperties({ backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "macos-vm", "linux-vm"] } }), required: [] } },
+    { name: "device_inventory", description: "List owner-scoped device definitions and backend host inventory without starting devices", inputSchema: { type: "object", properties: deviceBrokerProperties({ backend: { type: "string", enum: ["android-emulator", "android-device", "ios-simulator", "ios-device", "windows-sandbox", "windows-vm", "macos-vm", "linux-vm"] } }), required: [] } },
     { name: "device_image_list", description: "List owner-scoped VM base images where supported", inputSchema: { type: "object", properties: LINUX_VM_BACKEND_PROPERTY, required: ["backend"] } },
     { name: "device_image_import", description: "Import or register an owner-scoped VM base image where supported", inputSchema: { type: "object", properties: { ...LINUX_VM_BACKEND_PROPERTY, name: { type: "string", maxLength: 128 }, imageId: DEVICE_ID_PROPERTY, sourcePath: DEVICE_PATH_PROPERTY, format: { type: "string", enum: ["qcow2", "raw"] }, copy: { type: "boolean" }, force: { type: "boolean" } }, required: ["backend", "name", "sourcePath"] } },
     { name: "device_wireless", description: "Prepare or inspect native real-device wireless debugging without creating an owner attachment", inputSchema: { type: "object", properties: { backend: { type: "string", enum: ["android-device", "ios-device"] }, action: { type: "string", enum: ["status", "usb-tcpip", "pair", "connect"] }, serial: { type: "string" }, host: { type: "string" }, port: { type: "number" }, pairHost: { type: "string" }, pairPort: { type: "number" }, pairingCode: { type: "string" }, connect: { type: "boolean" }, timeoutMs: { type: "number", minimum: 1, maximum: 30000 } }, required: ["backend"] } },
@@ -295,10 +307,10 @@ export const TOOLS = [
     { name: "device_create", description: "Create an owner-scoped device definition", inputSchema: DEVICE_CREATE_INPUT_SCHEMA },
     { name: "device_attach", description: "Attach a host-connected physical device to this CCC owner scope", inputSchema: { type: "object", properties: { backend: { type: "string", enum: ["android-device", "ios-device"] }, name: { type: "string" }, deviceId: DEVICE_ID_PROPERTY, serial: { type: "string" }, udid: { type: "string" }, connection: { type: "string", enum: ["usb", "wifi"] }, host: { type: "string" }, port: { type: "number" } }, required: ["backend"] } },
     { name: "device_detach", description: "Detach an owner-scoped physical device without powering it off", inputSchema: { type: "object", properties: { ...PHYSICAL_BACKEND_PROPERTY, deviceId: DEVICE_ID_PROPERTY }, required: ["deviceId"] } },
-    { name: "device_delete", description: "Delete an owner-scoped stopped device definition", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_DELETE_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, force: { type: "boolean" }, deleteAvd: { type: "boolean" }, deleteSimulator: { type: "boolean" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"] } },
-    { name: "device_start", description: "Start an owner-scoped device instance lazily", inputSchema: { type: "object", properties: deviceBrokerProperties({ deviceId: DEVICE_ID_PROPERTY, waitForBoot: { type: "boolean" }, bootTimeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY, headless: { type: "boolean" }, minimized: { type: "boolean" } }), required: ["deviceId"] } },
-    { name: "device_stop", description: "Stop an owner-scoped device instance", inputSchema: { type: "object", properties: deviceBrokerProperties({ deviceId: DEVICE_ID_PROPERTY, force: { type: "boolean" } }), required: ["deviceId"] } },
-    { name: "device_reboot", description: "Reboot an owner-scoped VM through its bounded stop/start lifecycle", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, force: { type: "boolean" }, startIfStopped: { type: "boolean" } }), required: ["deviceId"] } },
+    { name: "device_delete", description: "Delete an owner-scoped stopped device definition", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_DELETE_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, force: { type: "boolean" }, deleteAvd: { type: "boolean" }, deleteSimulator: { type: "boolean" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"] } },
+    { name: "device_start", description: "Start an owner-scoped device instance lazily", inputSchema: { type: "object", properties: deviceBrokerProperties({ deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, waitForBoot: { type: "boolean" }, bootTimeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY, headless: { type: "boolean" }, minimized: { type: "boolean" } }), required: ["deviceId"] } },
+    { name: "device_stop", description: "Stop an owner-scoped device instance", inputSchema: { type: "object", properties: deviceBrokerProperties({ deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, force: { type: "boolean" } }), required: ["deviceId"] } },
+    { name: "device_reboot", description: "Reboot an owner-scoped VM and wait for its guest transport to become ready", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(REBOOT_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, force: { type: "boolean" }, startIfStopped: { type: "boolean" }, waitForBoot: { type: "boolean" }, bootTimeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
     { name: "device_status", description: "Inspect an owner-scoped device definition or instance", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_STATUS_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY }), required: ["deviceId"] } },
     { name: "device_disk_materialize", description: "Create or plan an owner-scoped writable VM overlay disk", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, dryRun: { type: "boolean" }, force: { type: "boolean" } }), required: ["deviceId"] } },
     { name: "device_target_list", description: "List owner-scoped VM targets and readiness metadata", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY }), required: ["backend"] } },
@@ -308,7 +320,7 @@ export const TOOLS = [
     { name: "device_artifacts_export", description: "Export bounded VM artifacts to an owner-scoped local directory", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, sourcePath: DEVICE_PATH_PROPERTY, destinationPath: DEVICE_PATH_PROPERTY, replace: { type: "boolean" }, ...BOUNDED_FILE_POLICY_PROPERTIES }), required: ["backend", "deviceId"] } },
     { name: "device_guest_agent_status", description: "Probe bounded persistent guest-agent health metadata", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, timeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY }), required: ["backend", "deviceId"] } },
     { name: "device_guest_agent_provision", description: "Run configured bounded guest-agent provisioning and persist sanitized status", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(LINUX_VM_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, timeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY }), required: ["backend", "deviceId"] } },
-    { name: "device_exec", description: "Run a command on an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_EXEC_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, command: { type: "string", maxLength: 4096 }, timeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId", "command"] } },
+    { name: "device_exec", description: "Run a command on an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_EXEC_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, command: { type: "string", maxLength: 4096 }, timeoutMs: BOUNDED_WAIT_TIMEOUT_PROPERTY, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId", "command"] } },
     { name: "device_screenshot", description: "Capture a screenshot from an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DEVICE_WITH_DISPLAY_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
     { name: "device_click", description: "Click desktop device screen coordinates where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DISPLAY_DESKTOP_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, x: { type: "number" }, y: { type: "number" }, button: { type: "string", enum: ["left", "right"] }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId", "x", "y"] } },
     { name: "device_double_click", description: "Double-click desktop device screen coordinates where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DISPLAY_DESKTOP_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, x: { type: "number" }, y: { type: "number" }, button: { type: "string", enum: ["left", "right"] }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId", "x", "y"] } },
@@ -320,14 +332,15 @@ export const TOOLS = [
     { name: "device_accessibility_snapshot", description: "Return a bounded desktop accessibility tree snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(DESKTOP_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, maxDepth: { type: "number", minimum: 0, maximum: 8 }, maxNodes: { type: "number", minimum: 1, maximum: 1000 }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
     { name: "device_base_image_create", description: "Create an owner-scoped macOS VM base-image clone from a provider image source", inputSchema: DEVICE_BASE_IMAGE_CREATE_INPUT_SCHEMA },
     { name: "device_base_image_clone", description: "Clone an owner-scoped macOS VM base-image/device definition from a provider source or owned device", inputSchema: DEVICE_BASE_IMAGE_CLONE_INPUT_SCHEMA },
-    { name: "device_snapshot_create", description: "Create an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, snapshotName: { type: "string" }, force: { type: "boolean" } }), required: ["deviceId", "snapshotName"] } },
-    { name: "device_snapshot_restore", description: "Restore an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, snapshotName: { type: "string" }, snapshotId: { type: "string" }, force: { type: "boolean" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"], anyOf: SNAPSHOT_ID_ANY_OF } },
-    { name: "device_snapshot_delete", description: "Delete an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, snapshotName: { type: "string" }, snapshotId: { type: "string" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"], anyOf: SNAPSHOT_ID_ANY_OF } },
+    { name: "device_snapshot_list", description: "List owner-scoped Hyper-V VM snapshots", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_LIST_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY }), required: ["deviceId"] } },
+    { name: "device_snapshot_create", description: "Create an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, snapshotName: { type: "string" }, force: { type: "boolean" } }), required: ["deviceId", "snapshotName"] } },
+    { name: "device_snapshot_restore", description: "Restore an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, snapshotName: { type: "string" }, snapshotId: { type: "string" }, force: { type: "boolean" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"], anyOf: SNAPSHOT_ID_ANY_OF } },
+    { name: "device_snapshot_delete", description: "Delete an owner-scoped VM snapshot where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(SNAPSHOT_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, snapshotName: { type: "string" }, snapshotId: { type: "string" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"], anyOf: SNAPSHOT_ID_ANY_OF } },
     { name: "device_record_video_start", description: "Start owner-scoped device video recording where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(RECORDING_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, remotePath: { type: "string" }, localPath: { type: "string" }, timeLimitSec: { type: "number" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
     { name: "device_record_video_stop", description: "Stop owner-scoped device video recording where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(RECORDING_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, localPath: { type: "string" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
     { name: "device_record_video_status", description: "Inspect owner-scoped device video recording state", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(RECORDING_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId"] } },
-    { name: "device_upload", description: "Upload a file to an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(FILE_TRANSFER_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, localPath: { type: "string" }, remotePath: { type: "string" }, bundleId: { type: "string" }, containerType: { type: "string" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY, dryRun: { type: "boolean" }, replace: { type: "boolean" }, ...BOUNDED_FILE_POLICY_PROPERTIES }), required: ["deviceId", "localPath", "remotePath"] } },
-    { name: "device_download", description: "Download a file from an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(FILE_TRANSFER_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, remotePath: { type: "string" }, localPath: { type: "string" }, bundleId: { type: "string" }, containerType: { type: "string" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY, dryRun: { type: "boolean" }, replace: { type: "boolean" }, ...BOUNDED_FILE_POLICY_PROPERTIES }), required: ["deviceId", "remotePath", "localPath"] } },
+    { name: "device_upload", description: "Upload a file to an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(FILE_TRANSFER_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, localPath: { type: "string" }, remotePath: { type: "string" }, bundleId: { type: "string" }, containerType: { type: "string" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY, dryRun: { type: "boolean" }, replace: { type: "boolean" }, ...DEVICE_UPLOAD_FILE_POLICY_PROPERTIES }), required: ["deviceId", "localPath", "remotePath"] } },
+    { name: "device_download", description: "Download a file from an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(FILE_TRANSFER_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, incarnationId: INCARNATION_ID_PROPERTY, remotePath: { type: "string" }, localPath: { type: "string" }, bundleId: { type: "string" }, containerType: { type: "string" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY, dryRun: { type: "boolean" }, replace: { type: "boolean" }, ...BOUNDED_FILE_POLICY_PROPERTIES }), required: ["deviceId", "remotePath", "localPath"] } },
     { name: "device_reset", description: "Reset app or device state where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(RESET_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, packageName: { type: "string" }, bundleId: { type: "string" }, containerType: { type: "string" }, eraseSimulator: { type: "boolean" }, ...CONFIRM_DESTRUCTIVE_PROPERTY }), required: ["deviceId"], anyOf: RESET_TARGET_ANY_OF } },
     { name: "device_install_app", description: "Install an app package on an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(APP_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, path: { type: "string" }, replace: { type: "boolean" }, helperTimeoutMs: HELPER_TIMEOUT_PROPERTY }), required: ["deviceId", "path"] } },
     { name: "device_launch_app", description: "Launch an app on an owner-scoped device where supported", inputSchema: { type: "object", properties: typedDeviceBrokerProperties(APP_BACKEND_PROPERTY, { deviceId: DEVICE_ID_PROPERTY, bundleId: { type: "string" }, packageName: { type: "string" }, component: { type: "string" } }), required: ["deviceId"], anyOf: APP_LAUNCH_ANY_OF } },

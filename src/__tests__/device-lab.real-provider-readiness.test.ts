@@ -10,6 +10,8 @@ const expectedBackends = [
     { backend: "ios-simulator", label: "iOS Simulator" },
     { backend: "ios-device", label: "iOS physical device" },
     { backend: "windows-sandbox", label: "Windows Sandbox" },
+    { backend: "windows-vm", label: "Hyper-V Windows VM" },
+    { backend: "linux-vm", label: "Hyper-V Linux VM" },
     { backend: "macos-vm", label: "macOS VM" },
 ] as const;
 const smoke = enabled ? deviceLabSmoke(process.cwd(), 5000, undefined, { mode: "real-provider" }) : null;

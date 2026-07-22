@@ -12,13 +12,14 @@ const TOOL_SESSIONS_KEY = Symbol.for("ccc.deviceLabRealTests.toolSessions");
 let nextSessionId = 0;
 const DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS = 120000;
 const LONG_REAL_MCP_TOOL_TIMEOUT_MS = 360000;
-const MAX_REAL_MCP_TOOL_TIMEOUT_MS = 615000;
+const MAX_REAL_MCP_TOOL_TIMEOUT_MS = 21615000;
 
 export function realMcpToolRequestTimeoutMs(name: string, args: Record<string, any> = {}) {
     const explicitRpcTimeoutMs = Number(args?.rpcTimeoutMs);
     if (Number.isFinite(explicitRpcTimeoutMs)) {
         return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS, explicitRpcTimeoutMs + 15000));
     }
+    if (name === "device_create" && (args?.backend === "windows-vm" || args?.backend === "linux-vm")) return 21615000;
     const helperTimeoutMs = Number(args?.helperTimeoutMs);
     if (Number.isFinite(helperTimeoutMs)) {
         return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS, helperTimeoutMs + 30000));

@@ -2,9 +2,11 @@ import {
     closeSync,
     constants as fsConstants,
     fstatSync,
+    ftruncateSync,
     lstatSync,
     openSync,
     readSync,
+    writeSync,
 } from "fs";
 import type { Stats } from "fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "path";
@@ -46,6 +48,26 @@ export function readDeviceLabBinaryFile(
     limitBytes = DEVICE_LAB_STATE_FILE_LIMIT_BYTES,
 ): Buffer | null {
     return withDeviceLabReadableFile(file, prefix, limitBytes, (descriptor) => readBounded(descriptor, limitBytes, prefix));
+}
+
+export function readDeviceLabBinaryFileWithinRoot(
+    root: string,
+    file: string,
+    prefix: string,
+    limitBytes = DEVICE_LAB_STATE_FILE_LIMIT_BYTES,
+): Buffer | null {
+    assertDeviceLabPathWithinRoot(root, file, prefix);
+    return withDeviceLabReadableFile(file, prefix, limitBytes, (descriptor, opened) => {
+        const validateOpenedPath = () => {
+            assertDeviceLabPathWithinRoot(root, file, prefix);
+            const path = lstatSync(file);
+            if (!sameOpenedFile(opened, path)) throw new DeviceLabStateFileError(`${prefix}-state-invalid`);
+        };
+        validateOpenedPath();
+        const bytes = readBounded(descriptor, limitBytes, prefix);
+        validateOpenedPath();
+        return bytes;
+    });
 }
 
 export function withDeviceLabReadableFile<T>(
@@ -108,6 +130,54 @@ export function assertDeviceLabPathWithinRoot(root: string, file: string, prefix
     } catch (error) {
         if (error instanceof DeviceLabStateFileError) throw error;
         throw new DeviceLabStateFileError(`${prefix}-path-invalid`, { cause: error });
+    }
+}
+
+export function writeDeviceLabBinaryFile(
+    root: string,
+    file: string,
+    bytes: Buffer,
+    prefix: string,
+    options: { allowNestedCreate?: boolean } = {},
+): void {
+    let descriptor: number | null = null;
+    try {
+        assertDeviceLabPathWithinRoot(root, file, prefix);
+        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
+        try {
+            descriptor = openSync(file, fsConstants.O_WRONLY | noFollow);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+            if (!options.allowNestedCreate && resolve(dirname(file)) !== resolve(root)) {
+                throw new DeviceLabStateFileError(`${prefix}-unsafe-create-parent`);
+            }
+            descriptor = openSync(file, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
+        }
+        const opened = fstatSync(descriptor);
+        const path = lstatSync(file);
+        assertDeviceLabPathWithinRoot(root, file, prefix);
+        if (!sameOpenedFile(opened, path)) throw new DeviceLabStateFileError(`${prefix}-state-invalid`);
+        ftruncateSync(descriptor, 0);
+        let offset = 0;
+        while (offset < bytes.length) {
+            const count = writeSync(descriptor, bytes, offset, bytes.length - offset);
+            if (count <= 0) throw new DeviceLabStateFileError(`${prefix}-state-write-failed`);
+            offset += count;
+        }
+        const finalStat = fstatSync(descriptor);
+        const finalPath = lstatSync(file);
+        assertDeviceLabPathWithinRoot(root, file, prefix);
+        if (!sameOpenedFile(finalStat, finalPath) || finalStat.size !== bytes.length) {
+            throw new DeviceLabStateFileError(`${prefix}-state-invalid`);
+        }
+    } catch (error) {
+        if (error instanceof DeviceLabStateFileError) throw error;
+        if ((error as NodeJS.ErrnoException)?.code === "ELOOP") {
+            throw new DeviceLabStateFileError(`${prefix}-state-invalid`, { cause: error });
+        }
+        throw new DeviceLabStateFileError(`${prefix}-state-write-failed`, { cause: error });
+    } finally {
+        if (descriptor !== null) closeSync(descriptor);
     }
 }
 

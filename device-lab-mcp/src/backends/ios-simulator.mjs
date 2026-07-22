@@ -521,7 +521,7 @@ async function ensureIosAppiumSession(deviceId) {
         env: process.env,
         windowsHide: true,
     });
-    const processIdentity = child?.pid ? await waitForProcessIdentity(child.pid) : null;
+    const processIdentity = child?.pid ? await waitForProcessIdentity(child.pid, 1000) : null;
     if (child?.pid && !processIdentity) {
         try { child.kill("SIGTERM"); } catch { /* startup child already exited */ }
         return { error: `iOS Simulator Appium process identity could not be established on ${serverUrl}` };
