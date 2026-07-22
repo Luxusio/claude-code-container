@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -84,7 +84,7 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(readFileSync(join(displaced, "owned.txt"), "utf8")).toBe("owned");
     });
 
-    it.runIf(process.platform === "linux")("anchors recursive removal to the opened directory after a final-path substitution", () => {
+    it("anchors recursive removal to the opened directory after a final-path substitution", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-fd-race-"));
         roots.push(root);
         const target = join(root, "device");
@@ -109,5 +109,31 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
         expect(readFileSync(join(foreignRoot, "foreign.txt"), "utf8")).toBe("preserved");
         expect(readFileSync(join(displaced, "owned.txt"), "utf8")).toBe("owned");
+    });
+
+    it("preserves a substituted child detected after enumeration", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-entry-race-"));
+        roots.push(root);
+        const target = join(root, "device");
+        const displaced = join(root, "owned.txt");
+        mkdirSync(target);
+        writeFileSync(join(target, "artifact.txt"), "owned");
+        let caught: QuarantinedCleanupError | null = null;
+        try {
+            quarantineAndRemoveDirectory(target, () => {}, {
+                beforeRemoveEntry(entry) {
+                    renameSync(entry, displaced);
+                    writeFileSync(entry, "foreign");
+                },
+            });
+        } catch (error) {
+            caught = error as QuarantinedCleanupError;
+        }
+
+        expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
+        expect(readFileSync(displaced, "utf8")).toBe("owned");
+        const staged = readdirSync(caught!.quarantineRoot!).find((entry) => entry.startsWith(".ccc-entry-"));
+        expect(staged).toBeTruthy();
+        expect(readFileSync(join(caught!.quarantineRoot!, staged!), "utf8")).toBe("foreign");
     });
 });

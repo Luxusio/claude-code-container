@@ -1365,6 +1365,7 @@ describe('remoteExec', () => {
     mockPrompt.mockResolvedValue('n')
     let closeCallback: ((code: number) => void) | undefined
     const emitter: any = {
+      kill: vi.fn(() => true),
       on: vi.fn((event: string, callback: (code: number) => void) => {
         if (event === 'close') closeCallback = callback
         return emitter
@@ -1379,14 +1380,16 @@ describe('remoteExec', () => {
     expect(closeCallback).toBeTypeOf('function')
     process.emit('SIGTERM')
 
-    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
-    expect(killMock).toHaveBeenCalledWith(process.pid, 'SIGTERM')
-    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(killMock.mock.invocationCallOrder[0])
+    expect(emitter.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(remoteSessionMocks.removeSessionLock).not.toHaveBeenCalled()
+    expect(killMock).not.toHaveBeenCalled()
 
     closeCallback!(0)
-    await expect(execution).rejects.toThrow('exit:0')
-    expect(exitMock).toHaveBeenCalledWith(0)
+    await execution
+    expect(exitMock).not.toHaveBeenCalled()
     expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledTimes(1)
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(killMock.mock.invocationCallOrder[0])
+    expect(killMock).toHaveBeenCalledWith(process.pid, 'SIGTERM')
   })
 
   it('throws error in waitForSync when sync status is null', async () => {
@@ -1494,6 +1497,7 @@ describe('remoteExec', () => {
     expect(startCommand).toContain('/tmp/ccc-remote-sessions-')
     expect(startCommand).toContain('chmod 700')
     expect(startCommand).toContain('_ccc_owner_token')
+    expect(startCommand).toContain('_ccc_now=$(date +%s)')
     expect(startCommand.indexOf('/tmp/ccc-remote-sessions-')).toBeLessThan(startCommand.indexOf('docker run -d'))
   })
 })

@@ -3,15 +3,33 @@ import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, 
 import { basename, dirname, join } from "path";
 
 export type QuarantinedCleanupError = Error & { quarantineRoot?: string };
-type QuarantineCleanupOperations = { rename?: typeof renameSync; beforeRemove?: (quarantineRoot: string) => void };
+type QuarantineCleanupOperations = {
+    rename?: typeof renameSync;
+    beforeRemove?: (quarantineRoot: string) => void;
+    beforeRemoveEntry?: (entry: string) => void;
+};
 
-function sameDirectoryIdentity(original: Stats, quarantined: Stats): boolean {
+function sameEntryIdentity(original: Stats, quarantined: Stats): boolean {
     if (original.dev !== quarantined.dev || original.ino !== quarantined.ino) return false;
-    if (original.ino !== 0 || quarantined.ino !== 0) return true;
-    return original.birthtimeMs === quarantined.birthtimeMs && original.ctimeMs === quarantined.ctimeMs;
+    if (original.ino !== 0 || quarantined.ino !== 0) return original.isDirectory() === quarantined.isDirectory()
+        && original.isSymbolicLink() === quarantined.isSymbolicLink();
+    return original.birthtimeMs === quarantined.birthtimeMs && original.ctimeMs === quarantined.ctimeMs
+        && original.isDirectory() === quarantined.isDirectory()
+        && original.isSymbolicLink() === quarantined.isSymbolicLink();
 }
 
-function removeBoundDirectory(path: string, expected: Stats, beforeRemove?: (path: string) => void): void {
+function sameDirectoryIdentity(original: Stats, quarantined: Stats): boolean {
+    return original.isDirectory() && quarantined.isDirectory()
+        && !original.isSymbolicLink() && !quarantined.isSymbolicLink()
+        && sameEntryIdentity(original, quarantined);
+}
+
+function removeBoundDirectory(
+    path: string,
+    expected: Stats,
+    beforeRemove?: (path: string) => void,
+    beforeRemoveEntry?: (entry: string) => void,
+): void {
     let descriptor: number | null = null;
     try {
         descriptor = openSync(path, fsConstants.O_RDONLY);
@@ -34,14 +52,27 @@ function removeBoundDirectory(path: string, expected: Stats, beforeRemove?: (pat
             assertBound();
             const child = join(anchored, entry);
             const childStats = lstatSync(child);
-            if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(child);
-            else removeBoundDirectory(child, childStats);
+            beforeRemoveEntry?.(child);
+            assertBound();
+            const stagedChild = join(anchored, `.ccc-entry-${randomBytes(16).toString("hex")}`);
+            renameSync(child, stagedChild);
+            assertBound();
+            const stagedStats = lstatSync(stagedChild);
+            if (!sameEntryIdentity(childStats, stagedStats)) {
+                throw new Error("quarantined-cleanup-target-invalid");
+            }
+            if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(stagedChild);
+            else removeBoundDirectory(stagedChild, stagedStats);
         }
         assertBound();
     } finally {
         if (descriptor !== null) closeSync(descriptor);
     }
-    rmdirSync(path);
+    const emptyPath = join(dirname(path), `.ccc-empty-${randomBytes(16).toString("hex")}`);
+    renameSync(path, emptyPath);
+    const emptyStats = lstatSync(emptyPath);
+    if (!sameDirectoryIdentity(expected, emptyStats)) throw new Error("quarantined-cleanup-target-invalid");
+    rmdirSync(emptyPath);
 }
 
 export function quarantineAndRemoveDirectory(
@@ -63,7 +94,7 @@ export function quarantineAndRemoveDirectory(
         if (!quarantined.isDirectory() || quarantined.isSymbolicLink() || !sameDirectoryIdentity(original, quarantined)) {
             throw new Error("quarantined-cleanup-target-invalid");
         }
-        removeBoundDirectory(quarantineRoot, quarantined, operations.beforeRemove);
+        removeBoundDirectory(quarantineRoot, quarantined, operations.beforeRemove, operations.beforeRemoveEntry);
         if (existsSync(quarantineRoot)) throw new Error("quarantined-cleanup-target-remains");
         rmdirSync(quarantineParent);
         return { quarantineRoot };

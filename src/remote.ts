@@ -95,24 +95,26 @@ function remoteLifecycleShell(containerName: string, body: string): string {
     ].join("; ");
 }
 
-function remoteSessionReservationShell(containerName: string, token: string, expiresAt: number, command: string): string {
+function remoteSessionReservationShell(containerName: string, token: string, leaseSeconds: number, command: string): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
         "mkdir -p \"$_ccc_sessions\"",
         "chmod 700 \"$_ccc_sessions\"",
         `_ccc_marker=$_ccc_sessions/${token}`,
-        `printf '%s\\n' "${expiresAt}" > "$_ccc_marker"`,
+        "_ccc_now=$(date +%s)",
+        `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
         command,
     ].join("; "));
 }
 
-function remoteRefreshSessionShell(containerName: string, token: string, expiresAt: number): string {
+function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_marker=/tmp/ccc-remote-sessions-${key}/${token}`,
         `[ -f "$_ccc_marker" ] || exit 44`,
-        `printf '%s\\n' "${expiresAt}" > "$_ccc_marker"`,
+        "_ccc_now=$(date +%s)",
+        `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
     ].join("; "));
 }
 
@@ -157,7 +159,7 @@ async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
  * Start container on remote host without project volume mount.
  * Returns container name.
  */
-async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationExpiresAt: number, profile?: string): Promise<string> {
+async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationLeaseSeconds: number, profile?: string): Promise<string> {
     const projectId = getProjectId(projectPath);
     const containerName = getContainerName(projectPath, profile);
     const claudeDir = getClaudeDir(profile);
@@ -165,7 +167,7 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, r
     // Build docker run command (no project volume, just credentials and mise cache)
     const dockerCmd = `docker run -d --name ${containerName} \
         --network host \
-        -v ${claudeDir}:/home/ccc/.claude \
+        -v ${shellEscapeArg(`${claudeDir}:/home/ccc/.claude`)} \
         -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -w /project/${projectId} \
@@ -174,7 +176,7 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, r
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
-        remoteSessionReservationShell(containerName, reservationToken, reservationExpiresAt, dockerCmd),
+        remoteSessionReservationShell(containerName, reservationToken, reservationLeaseSeconds, dockerCmd),
     ], {encoding: "utf-8", timeout: 60000});
 
     if (result.status !== 0) {
@@ -392,9 +394,11 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     const remoteContainerPrefix = `remote--${hashPath(`${resolvedConfig.user}@${resolvedConfig.host}`)}--${projectId}`;
     const expectedContainerName = getContainerName(fullPath);
     const remoteReservationToken = randomBytes(16).toString("hex");
-    const reservationExpiry = () => Math.floor(Date.now() / 1000) + 300;
+    const remoteReservationLeaseSeconds = 300;
     let remoteReservationActive = false;
     let remoteReservationHeartbeat: NodeJS.Timeout | null = null;
+    let activeSshProcess: ReturnType<typeof spawn> | null = null;
+    let requestedSignal: NodeJS.Signals | null = null;
     const releaseRemoteReservation = () => {
         if (!remoteReservationActive) return;
         remoteReservationActive = false;
@@ -414,9 +418,14 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         remoteSessionLock = "";
     };
     const forwardSignalAfterCleanup = (signal: NodeJS.Signals) => {
-        cleanupRemoteSession();
+        requestedSignal = requestedSignal || signal;
         process.removeListener("SIGINT", handleSigint);
         process.removeListener("SIGTERM", handleSigterm);
+        if (activeSshProcess) {
+            activeSshProcess.kill(signal);
+            return;
+        }
+        cleanupRemoteSession();
         process.kill(process.pid, signal);
     };
     const handleSigint = () => forwardSignalAfterCleanup("SIGINT");
@@ -433,13 +442,13 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         remoteReservationActive = true;
         const containerName = await withContainerLifecycleLockAsync(
             remoteContainerPrefix,
-            () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, reservationExpiry()),
+            () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, remoteReservationLeaseSeconds),
         );
         remoteReservationHeartbeat = setInterval(() => {
             if (!remoteReservationActive) return;
             const refreshed = spawnSync("ssh", [
                 `${resolvedConfig.user}@${resolvedConfig.host}`,
-                remoteRefreshSessionShell(containerName, remoteReservationToken, reservationExpiry()),
+                remoteRefreshSessionShell(containerName, remoteReservationToken, remoteReservationLeaseSeconds),
             ], { encoding: "utf-8", timeout: 10000 });
             if (refreshed.status !== 0) console.error("Remote session lease refresh failed; container stop protection may expire.");
         }, 30_000);
@@ -482,6 +491,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         const sshProcess = spawn("ssh", ["-t", `${resolvedConfig.user}@${resolvedConfig.host}`, execCmd], {
             stdio: "inherit"
         });
+        activeSshProcess = sshProcess;
 
         // Wait for SSH to exit
         const exitCode = await new Promise<number>((resolve) => {
@@ -493,9 +503,10 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
                 resolve(1);
             });
         });
+        activeSshProcess = null;
 
         // 7. Cleanup prompt on exit
-        if (exitCode === 0) {
+        if (exitCode === 0 && !requestedSignal) {
             const answer = await prompt("\nStop container and pause sync? [y/N]: ", true);
             if (answer === "y" || answer === "yes") {
                 withContainerLifecycleLock(remoteContainerPrefix, () => {
@@ -533,7 +544,8 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         process.removeListener("SIGTERM", handleSigterm);
         cleanupRemoteSession();
     }
-    process.exit(requestedExitCode);
+    if (requestedSignal) process.kill(process.pid, requestedSignal);
+    else process.exit(requestedExitCode);
 }
 
 // === Setup and Check Commands ===
