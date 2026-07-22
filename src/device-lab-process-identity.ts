@@ -1,6 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
+import { canonicalWindowsPowerShellPath } from "./windows-system-powershell.js";
 
 export type DeviceRuntimeProcessIdentity = {
     pid: number;
@@ -48,8 +49,10 @@ function linuxProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | null 
 }
 
 function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | null {
+    const powershell = canonicalWindowsPowerShellPath();
+    if (!powershell) return null;
     const script = windowsProcessIdentityScript(pid);
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
@@ -77,7 +80,12 @@ function parseWindowsProcessIdentity(pid: number, output: string): DeviceRuntime
 
 function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessIdentity | null> {
     return new Promise((resolve) => {
-        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+        const powershell = canonicalWindowsPowerShellPath();
+        if (!powershell) {
+            resolve(null);
+            return;
+        }
+        execFile(powershell, ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
             encoding: "utf8",
             timeout: 5000,
             windowsHide: true,

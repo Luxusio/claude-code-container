@@ -1,14 +1,47 @@
 import { randomBytes } from "crypto";
-import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, rmSync, type Stats } from "fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, type Stats } from "fs";
 import { basename, dirname, join } from "path";
 
 export type QuarantinedCleanupError = Error & { quarantineRoot?: string };
-type QuarantineCleanupOperations = { rename?: typeof renameSync };
+type QuarantineCleanupOperations = { rename?: typeof renameSync; beforeRemove?: (quarantineRoot: string) => void };
 
 function sameDirectoryIdentity(original: Stats, quarantined: Stats): boolean {
     if (original.dev !== quarantined.dev || original.ino !== quarantined.ino) return false;
     if (original.ino !== 0 || quarantined.ino !== 0) return true;
     return original.birthtimeMs === quarantined.birthtimeMs && original.ctimeMs === quarantined.ctimeMs;
+}
+
+function removeBoundDirectory(path: string, expected: Stats, beforeRemove?: (path: string) => void): void {
+    let descriptor: number | null = null;
+    try {
+        descriptor = openSync(path, fsConstants.O_RDONLY);
+    } catch {
+        // Windows does not consistently expose directory descriptors through
+        // fs.open; the identity checks below remain mandatory on that path.
+    }
+    const anchored = descriptor !== null && process.platform === "linux" ? `/proc/self/fd/${descriptor}` : path;
+    const assertBound = () => {
+        const observed = descriptor !== null ? fstatSync(descriptor) : lstatSync(path);
+        const named = lstatSync(path);
+        if (!sameDirectoryIdentity(expected, observed) || !sameDirectoryIdentity(expected, named)) {
+            throw new Error("quarantined-cleanup-target-invalid");
+        }
+    };
+    try {
+        assertBound();
+        beforeRemove?.(path);
+        for (const entry of readdirSync(anchored)) {
+            assertBound();
+            const child = join(anchored, entry);
+            const childStats = lstatSync(child);
+            if (childStats.isSymbolicLink() || !childStats.isDirectory()) unlinkSync(child);
+            else removeBoundDirectory(child, childStats);
+        }
+        assertBound();
+    } finally {
+        if (descriptor !== null) closeSync(descriptor);
+    }
+    rmdirSync(path);
 }
 
 export function quarantineAndRemoveDirectory(
@@ -30,7 +63,7 @@ export function quarantineAndRemoveDirectory(
         if (!quarantined.isDirectory() || quarantined.isSymbolicLink() || !sameDirectoryIdentity(original, quarantined)) {
             throw new Error("quarantined-cleanup-target-invalid");
         }
-        rmSync(quarantineRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        removeBoundDirectory(quarantineRoot, quarantined, operations.beforeRemove);
         if (existsSync(quarantineRoot)) throw new Error("quarantined-cleanup-target-remains");
         rmdirSync(quarantineParent);
         return { quarantineRoot };

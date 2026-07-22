@@ -83,4 +83,31 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(readFileSync(join(caught!.quarantineRoot!, "foreign.txt"), "utf8")).toBe("preserved");
         expect(readFileSync(join(displaced, "owned.txt"), "utf8")).toBe("owned");
     });
+
+    it.runIf(process.platform === "linux")("anchors recursive removal to the opened directory after a final-path substitution", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-safe-cleanup-fd-race-"));
+        roots.push(root);
+        const target = join(root, "device");
+        const displaced = join(root, "displaced");
+        mkdirSync(target);
+        writeFileSync(join(target, "owned.txt"), "owned");
+        let foreignRoot = "";
+        let caught: QuarantinedCleanupError | null = null;
+        try {
+            quarantineAndRemoveDirectory(target, () => {}, {
+                beforeRemove(quarantineRoot) {
+                    foreignRoot = quarantineRoot;
+                    renameSync(quarantineRoot, displaced);
+                    mkdirSync(quarantineRoot);
+                    writeFileSync(join(quarantineRoot, "foreign.txt"), "preserved");
+                },
+            });
+        } catch (error) {
+            caught = error as QuarantinedCleanupError;
+        }
+
+        expect(caught?.message).toBe("quarantined-cleanup-target-invalid");
+        expect(readFileSync(join(foreignRoot, "foreign.txt"), "utf8")).toBe("preserved");
+        expect(readFileSync(join(displaced, "owned.txt"), "utf8")).toBe("owned");
+    });
 });

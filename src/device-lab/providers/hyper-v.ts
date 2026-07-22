@@ -321,6 +321,8 @@ function jsonScript(lines: string[]): string {
     return [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
+        "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
+        "$env:PSModulePath = $TrustedModuleRoot",
         "Import-Module Hyper-V -ErrorAction Stop",
         "function Assert-NoReparsePath([string]$Path) {",
         "  $FullPath = [IO.Path]::GetFullPath($Path)",
@@ -393,6 +395,8 @@ function elevatedNetworkCommand(executable: string, networkScript: string, deadl
         "$Envelope = $null",
         "$Watchdog = $null",
         "$WatchdogStartTicks = $null",
+        "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
+        "$env:PSModulePath = $TrustedModuleRoot",
         "if ($PipeName -notmatch '^ccc-hyper-v-network-[a-f0-9]{32}$') { throw 'hyper-v-network-pipe-name-invalid' }",
         "$Pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::Out)",
         "$Pipe.Connect(5000)",

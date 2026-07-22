@@ -68,9 +68,15 @@ vi.mock("../device-lab-admin.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
 }));
 
+vi.mock("../windows-system-powershell.js", () => ({
+    canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+}));
+
 const mockWithSharedMutationLock = vi.fn((_file: string, operation: () => unknown) => operation());
+const mockWithSharedMutationLockAsync = vi.fn(async (_file: string, operation: () => unknown) => operation());
 vi.mock("../device-lab-shared-state.js", () => ({
     withSharedMutationLock: (...args: unknown[]) => mockWithSharedMutationLock(...args as [string, () => unknown]),
+    withSharedMutationLockAsync: (...args: unknown[]) => mockWithSharedMutationLockAsync(...args as [string, () => unknown]),
 }));
 
 // Import AFTER all mocks are declared
@@ -86,6 +92,7 @@ const {
     recreateContainerWithoutInterruptingSessions,
     cleanupSession,
     setupSignalHandlers,
+    withContainerLifecycleLockAsync,
 } = await import("../session.js");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -122,6 +129,8 @@ describe("session.ts", () => {
         mockCleanupOwnerDevices.mockReset();
         mockWithSharedMutationLock.mockReset()
             .mockImplementation((_file: string, operation: () => unknown) => operation());
+        mockWithSharedMutationLockAsync.mockReset()
+            .mockImplementation(async (_file: string, operation: () => unknown) => operation());
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
     });
@@ -129,6 +138,26 @@ describe("session.ts", () => {
     afterEach(() => {
         clearSession();
         vi.restoreAllMocks();
+    });
+
+    it("holds the async lifecycle lock until the operation promise settles", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let completed = false;
+        const execution = withContainerLifecycleLockAsync("remote-project", async () => {
+            await gate;
+            completed = true;
+            return "done";
+        });
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        expect(mockWithSharedMutationLockAsync).toHaveBeenCalledWith(
+            expect.stringContaining("remote-project.container-lifecycle.guard"),
+            expect.any(Function),
+            { waitMs: 180_000 },
+        );
+        release();
+        await expect(execution).resolves.toBe("done");
     });
 
     // ── createSessionLock ────────────────────────────────────────────────────

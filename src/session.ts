@@ -8,7 +8,8 @@ import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
-import { withSharedMutationLock } from "./device-lab-shared-state.js";
+import { withSharedMutationLock, withSharedMutationLockAsync } from "./device-lab-shared-state.js";
+import { canonicalWindowsPowerShellPath } from "./windows-system-powershell.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -28,6 +29,11 @@ function ensureLocksDirectory(): void {
 export function withContainerLifecycleLock<T>(containerPrefix: string, operation: () => T): T {
     ensureLocksDirectory();
     return withSharedMutationLock(containerLifecycleLock(containerPrefix), operation, { waitMs: 180_000 });
+}
+
+export async function withContainerLifecycleLockAsync<T>(containerPrefix: string, operation: () => Promise<T> | T): Promise<T> {
+    ensureLocksDirectory();
+    return withSharedMutationLockAsync(containerLifecycleLock(containerPrefix), operation, { waitMs: 180_000 });
 }
 
 // Module state - managed via getter/setter for testability
@@ -105,8 +111,10 @@ function processStartToken(pid: number): string | null {
             return fields[19] ? `linux:${fields[19]}` : null;
         }
         if (process.platform === "win32") {
+            const powershell = canonicalWindowsPowerShellPath();
+            if (!powershell) return null;
             const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { $P.StartTime.ToUniversalTime().Ticks }`;
-            const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+            const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
                 encoding: "utf-8",
                 timeout: 1000,
                 windowsHide: true,

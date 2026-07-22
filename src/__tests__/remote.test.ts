@@ -9,6 +9,7 @@ const remoteSessionMocks = vi.hoisted(() => ({
   createSessionLock: vi.fn(() => '/locks/remote.lock'),
   removeSessionLock: vi.fn(),
   withContainerLifecycleLock: vi.fn((_prefix: string, operation: () => unknown) => operation()),
+  withContainerLifecycleLockAsync: vi.fn((_prefix: string, operation: () => unknown) => operation()),
 }))
 
 vi.mock('../session.js', () => remoteSessionMocks)
@@ -97,6 +98,7 @@ describe('checkTool helper (via checkTailscale/checkMutagen)', () => {
     vi.clearAllMocks()
     remoteSessionMocks.createSessionLock.mockReturnValue('/locks/remote.lock')
     remoteSessionMocks.withContainerLifecycleLock.mockImplementation((_prefix: string, operation: () => unknown) => operation())
+    remoteSessionMocks.withContainerLifecycleLockAsync.mockImplementation((_prefix: string, operation: () => unknown) => operation())
   })
 
   afterEach(() => {
@@ -1168,6 +1170,8 @@ describe('remoteExec', () => {
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
     expect(exitMock).toHaveBeenCalledWith(1)
+    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh'
+      && (call[1] as string[]).some((arg) => arg.includes('rm -f /tmp/ccc-remote-sessions-')))).toBe(true)
   })
 
   it('resumes paused sync session when it exists as paused', async () => {
@@ -1280,10 +1284,10 @@ describe('remoteExec', () => {
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
     expect(sshStopCalls[0][1][1]).toContain('/tmp/ccc-remote-lifecycle-')
-    expect(sshStopCalls[0][1][1]).toContain('ps -p')
-    expect(sshStopCalls[0][1][1]).toContain('-o command=')
-    expect(sshStopCalls[0][1][1]).toContain('_ccc_session_token')
-    expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(2)
+    expect(sshStopCalls[0][1][1]).toContain('_ccc_expiry')
+    expect(sshStopCalls[0][1][1]).toContain('date +%s')
+    expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(1)
+    expect(remoteSessionMocks.withContainerLifecycleLockAsync).toHaveBeenCalledTimes(1)
     expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
     expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
   })
@@ -1305,7 +1309,7 @@ describe('remoteExec', () => {
     const stopCall = mockSpawnSync.mock.calls.find((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker stop')))
     expect(stopCall).toBeTruthy()
     expect((stopCall![1] as string[])[1]).toContain('ccc-remote-sessions-active')
-    expect((stopCall![1] as string[])[1]).toContain('ps -p')
+    expect((stopCall![1] as string[])[1]).toContain('_ccc_expiry')
     expect(console.log).toHaveBeenCalledWith('Remote container remains running: another CCC remote session is active.')
     expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
   })
@@ -1459,7 +1463,7 @@ describe('remoteExec', () => {
     expect(exitMock).toHaveBeenCalledWith(1)
   })
 
-  it('passes extra args to claude command via SSH', async () => {
+  it('encodes extra args before crossing the remote shell boundary', async () => {
     setupSuccessfulSpawnSyncs()
     mockExistsSync.mockReturnValue(true)
     const config = { host: 'myhost', user: 'myuser', remotePath: '' }
@@ -1471,16 +1475,25 @@ describe('remoteExec', () => {
 
     const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
-    await expect(remoteExec('/home/user/project', undefined, ['--continue'])).rejects.toThrow('exit:0')
+    const malicious = '$(touch /tmp/ccc-injected)"`whoami`'
+    await expect(remoteExec('/home/user/project', undefined, ['--continue', malicious])).rejects.toThrow('exit:0')
 
     const spawnCall = mockSpawn.mock.calls[0]
     expect(spawnCall[0]).toBe('ssh')
     // spawn("ssh", ["-t", "user@host", execCmd], ...)
     const execCmd = spawnCall[1][2] as string
-    expect(execCmd).toContain("'--continue'")
-    expect(execCmd).toContain('/tmp/ccc-remote-lifecycle-')
-    expect(execCmd).toContain('/tmp/ccc-remote-sessions-')
-    expect(execCmd).toContain('chmod 700')
-    expect(execCmd).toContain('_ccc_owner_token')
+    expect(execCmd).not.toContain(malicious)
+    expect(execCmd).not.toContain('touch /tmp/ccc-injected')
+    const decodedPrograms = (execCmd.match(/[A-Za-z0-9+/=]{40,}/g) || [])
+      .map((candidate) => Buffer.from(candidate, 'base64').toString('utf8'))
+    expect(decodedPrograms.some((program) => program.includes("exec claude '--continue'") && program.includes(malicious))).toBe(true)
+    const startCall = mockSpawnSync.mock.calls.find((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker run -d')))
+    expect(startCall).toBeTruthy()
+    const startCommand = (startCall![1] as string[])[1]
+    expect(startCommand).toContain('/tmp/ccc-remote-lifecycle-')
+    expect(startCommand).toContain('/tmp/ccc-remote-sessions-')
+    expect(startCommand).toContain('chmod 700')
+    expect(startCommand).toContain('_ccc_owner_token')
+    expect(startCommand.indexOf('/tmp/ccc-remote-sessions-')).toBeLessThan(startCommand.indexOf('docker run -d'))
   })
 })

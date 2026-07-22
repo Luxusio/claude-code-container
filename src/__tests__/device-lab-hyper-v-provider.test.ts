@@ -577,6 +577,8 @@ describe("Hyper-V provider adapter", () => {
         const elevatedInnerEncoded = elevated.match(/\$InnerEncodedTemplate = '([^']+)'/)?.[1];
         expect(elevatedInnerEncoded).toBeTruthy();
         const elevatedInner = Buffer.from(elevatedInnerEncoded!, "base64").toString("utf16le");
+        expect(elevatedInner).toContain("$TrustedModuleRoot = Join-Path $PSHOME 'Modules'");
+        expect(elevatedInner).toContain("$env:PSModulePath = $TrustedModuleRoot");
         expect(elevatedInner).toContain("$RemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()");
         expect(elevatedInner).toContain("Start-Sleep -Milliseconds $WatchdogDelayMs");
         expect(elevatedInner).toContain("hyper-v-network-operation-deadline-exceeded");

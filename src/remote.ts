@@ -6,7 +6,7 @@ import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
 import {hashPath, getProjectId, getClaudeDir, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME, collectForwardedEnv, isValidEnvKey} from "./utils.js";
 import {getContainerName} from "./docker.js";
-import {createSessionLock, removeSessionLock, withContainerLifecycleLock} from "./session.js";
+import {createSessionLock, removeSessionLock, withContainerLifecycleLock, withContainerLifecycleLockAsync} from "./session.js";
 
 // === Types ===
 
@@ -87,7 +87,7 @@ function remoteLifecycleShell(containerName: string, body: string): string {
         `_ccc_lock=/tmp/ccc-remote-lifecycle-${key}.lock`,
         `_ccc_token=${token}`,
         "_ccc_attempt=0",
-        "until mkdir \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || exit 73; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock/owner\" 2>/dev/null || true; rmdir \"$_ccc_lock\" 2>/dev/null || true ;; esac; fi; sleep 0.1; done",
+        "until mkdir \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || exit 73; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock/owner\" 2>/dev/null || true; rmdir \"$_ccc_lock\" 2>/dev/null || true ;; esac; else rmdir \"$_ccc_lock\" 2>/dev/null || true; fi; sleep 0.1; done",
         "printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_lock/owner\"",
         "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock/owner\"; rmdir \"$_ccc_lock\" 2>/dev/null || true; fi; }",
         "trap _ccc_unlock EXIT HUP INT TERM",
@@ -95,27 +95,40 @@ function remoteLifecycleShell(containerName: string, body: string): string {
     ].join("; ");
 }
 
-function remoteSessionShell(containerName: string, command: string): string {
+function remoteSessionReservationShell(containerName: string, token: string, expiresAt: number, command: string): string {
     const key = hashPath(containerName);
-    const token = randomBytes(16).toString("hex");
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
         "mkdir -p \"$_ccc_sessions\"",
         "chmod 700 \"$_ccc_sessions\"",
         `_ccc_marker=$_ccc_sessions/${token}`,
-        `printf '%s %s\\n' "$$" "${token}" > "$_ccc_marker"`,
-        "_ccc_unlock",
-        "trap 'rm -f \"$_ccc_marker\"' EXIT HUP INT TERM",
+        `printf '%s\\n' "${expiresAt}" > "$_ccc_marker"`,
         command,
     ].join("; "));
 }
 
-function remoteStopShell(containerName: string): string {
+function remoteRefreshSessionShell(containerName: string, token: string, expiresAt: number): string {
+    const key = hashPath(containerName);
+    return remoteLifecycleShell(containerName, [
+        `_ccc_marker=/tmp/ccc-remote-sessions-${key}/${token}`,
+        `[ -f "$_ccc_marker" ] || exit 44`,
+        `printf '%s\\n' "${expiresAt}" > "$_ccc_marker"`,
+    ].join("; "));
+}
+
+function remoteReleaseSessionShell(containerName: string, token: string): string {
+    const key = hashPath(containerName);
+    return remoteLifecycleShell(containerName, `rm -f /tmp/ccc-remote-sessions-${key}/${token}`);
+}
+
+function remoteStopShell(containerName: string, ownToken: string): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
+        `rm -f "$_ccc_sessions/${ownToken}"`,
+        "_ccc_now=$(date +%s)",
         "_ccc_active=0",
-        "if [ -d \"$_ccc_sessions\" ]; then for _ccc_marker in \"$_ccc_sessions\"/*; do [ -f \"$_ccc_marker\" ] || continue; if read -r _ccc_pid _ccc_session_token < \"$_ccc_marker\" 2>/dev/null; then _ccc_command=$(ps -p \"$_ccc_pid\" -o command= 2>/dev/null || true); case \"$_ccc_command\" in *\"$_ccc_session_token\"*) _ccc_active=1 ;; *) rm -f \"$_ccc_marker\" ;; esac; else rm -f \"$_ccc_marker\"; fi; done; fi",
+        "if [ -d \"$_ccc_sessions\" ]; then for _ccc_marker in \"$_ccc_sessions\"/*; do [ -f \"$_ccc_marker\" ] || continue; _ccc_expiry=$(cat \"$_ccc_marker\" 2>/dev/null || true); case \"$_ccc_expiry\" in ''|*[!0-9]*) rm -f \"$_ccc_marker\" ;; *) if [ \"$_ccc_expiry\" -ge \"$_ccc_now\" ]; then _ccc_active=1; else rm -f \"$_ccc_marker\"; fi ;; esac; done; fi",
         "if [ \"$_ccc_active\" -ne 0 ]; then echo ccc-remote-sessions-active; exit 42; fi",
         `docker stop ${containerName}`,
     ].join("; "));
@@ -144,7 +157,7 @@ async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
  * Start container on remote host without project volume mount.
  * Returns container name.
  */
-async function startRemoteContainer(config: RemoteConfig, projectPath: string, profile?: string): Promise<string> {
+async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationExpiresAt: number, profile?: string): Promise<string> {
     const projectId = getProjectId(projectPath);
     const containerName = getContainerName(projectPath, profile);
     const claudeDir = getClaudeDir(profile);
@@ -161,7 +174,7 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, p
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
-        remoteLifecycleShell(containerName, dockerCmd),
+        remoteSessionReservationShell(containerName, reservationToken, reservationExpiresAt, dockerCmd),
     ], {encoding: "utf-8", timeout: 60000});
 
     if (result.status !== 0) {
@@ -377,9 +390,25 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     }
     const resolvedConfig = config;
     const remoteContainerPrefix = `remote--${hashPath(`${resolvedConfig.user}@${resolvedConfig.host}`)}--${projectId}`;
+    const expectedContainerName = getContainerName(fullPath);
+    const remoteReservationToken = randomBytes(16).toString("hex");
+    const reservationExpiry = () => Math.floor(Date.now() / 1000) + 300;
+    let remoteReservationActive = false;
+    let remoteReservationHeartbeat: NodeJS.Timeout | null = null;
+    const releaseRemoteReservation = () => {
+        if (!remoteReservationActive) return;
+        remoteReservationActive = false;
+        if (remoteReservationHeartbeat) clearInterval(remoteReservationHeartbeat);
+        remoteReservationHeartbeat = null;
+        spawnSync("ssh", [
+            `${resolvedConfig.user}@${resolvedConfig.host}`,
+            remoteReleaseSessionShell(expectedContainerName, remoteReservationToken),
+        ], { encoding: "utf-8", timeout: 10000 });
+    };
     let remoteSessionLock = createSessionLock(remoteContainerPrefix);
     let requestedExitCode = 0;
     const cleanupRemoteSession = () => {
+        releaseRemoteReservation();
         if (!remoteSessionLock) return;
         removeSessionLock(remoteSessionLock);
         remoteSessionLock = "";
@@ -401,10 +430,20 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
 
         // 2. Start container on remote (without project volume mount)
         console.log("Starting remote container...");
-        const containerName = await withContainerLifecycleLock(
+        remoteReservationActive = true;
+        const containerName = await withContainerLifecycleLockAsync(
             remoteContainerPrefix,
-            () => startRemoteContainer(resolvedConfig, fullPath),
+            () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, reservationExpiry()),
         );
+        remoteReservationHeartbeat = setInterval(() => {
+            if (!remoteReservationActive) return;
+            const refreshed = spawnSync("ssh", [
+                `${resolvedConfig.user}@${resolvedConfig.host}`,
+                remoteRefreshSessionShell(containerName, remoteReservationToken, reservationExpiry()),
+            ], { encoding: "utf-8", timeout: 10000 });
+            if (refreshed.status !== 0) console.error("Remote session lease refresh failed; container stop protection may expire.");
+        }, 30_000);
+        remoteReservationHeartbeat.unref();
 
         // 3. Create project directory in container
         await createContainerProjectDir(resolvedConfig, containerName, projectId);
@@ -423,11 +462,10 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         // Collect environment variables to forward without blowing up the remote docker exec environment.
         const envFlags: string[] = [];
         // Container marker: enables per-project env separation via mise.toml [env] conditionals
-        envFlags.push(`-e '${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}'`);
+        envFlags.push(`-e ${shellEscapeArg(`${CONTAINER_ENV_KEY}=${CONTAINER_ENV_VALUE}`)}`);
         const forwardedEnvPlan = collectForwardedEnv(process.env);
         for (const [key, value] of forwardedEnvPlan.forwarded) {
-            const escapedValue = value.replace(/'/g, "'\\''");
-            envFlags.push(`-e '${key}=${escapedValue}'`);
+            envFlags.push(`-e ${shellEscapeArg(`${key}=${value}`)}`);
         }
         if (forwardedEnvPlan.skippedDueToLimit.length > 0) {
             console.error(
@@ -436,10 +474,10 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         }
         const envString = envFlags.join(" ");
 
-        const execCmd = remoteSessionShell(
-            containerName,
-            `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y || true; claude ${claudeArgs}"`,
-        );
+        const containerProgram = `cd ${shellEscapeArg(`/project/${projectId}`)} && mise trust . 2>/dev/null; mise install -y || true; exec claude ${claudeArgs}`;
+        const encodedProgram = Buffer.from(containerProgram, "utf8").toString("base64");
+        const decoder = `printf %s ${shellEscapeArg(encodedProgram)} | base64 -d | sh`;
+        const execCmd = `docker exec ${envString} -it ${containerName} sh -c ${shellEscapeArg(decoder)}`;
 
         const sshProcess = spawn("ssh", ["-t", `${resolvedConfig.user}@${resolvedConfig.host}`, execCmd], {
             stdio: "inherit"
@@ -465,14 +503,20 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
                     console.log("Stopping container...");
                     const stopped = spawnSync(
                         "ssh",
-                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(containerName)],
+                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(containerName, remoteReservationToken)],
                         { encoding: "utf-8" },
                     );
                     if (stopped.status === 42 || stopped.stdout?.includes("ccc-remote-sessions-active")) {
+                        remoteReservationActive = false;
+                        if (remoteReservationHeartbeat) clearInterval(remoteReservationHeartbeat);
+                        remoteReservationHeartbeat = null;
                         console.log("Remote container remains running: another CCC remote session is active.");
                         return;
                     }
                     if (stopped.status !== 0) throw new Error(`Failed to stop remote container: ${stopped.stderr || stopped.status}`);
+                    remoteReservationActive = false;
+                    if (remoteReservationHeartbeat) clearInterval(remoteReservationHeartbeat);
+                    remoteReservationHeartbeat = null;
                     console.log("Pausing sync...");
                     spawnSync("mutagen", ["sync", "pause", sessionName], {stdio: "inherit"});
                 });
