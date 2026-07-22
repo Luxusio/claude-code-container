@@ -89,7 +89,7 @@ function makeResult(
 
 function defaultDeviceLabMountIdentity(): string {
     return createHash("sha256")
-        .update("directory:1:1|directory:1:1|file:1:1")
+        .update("2|directory:1:1|directory:1:1|file:1:1")
         .digest("hex");
 }
 
@@ -111,8 +111,10 @@ function fullCredentialMountsJson(
 ): string {
     const deviceStateRoot = join(homedir(), ".ccc", "devices");
     const credMounts = getAllCredentialMounts().map((m) => ({
-        Source: `/host${m.containerDir}`,
+        Source: resolveCredentialHostPath(m),
         Destination: m.containerDir,
+        Type: "bind",
+        RW: true,
     }));
     const gitIdentityMounts = [
         { Source: "/host/home/user/.gitconfig", Destination: "/host-stage/gitconfig" },
@@ -1012,6 +1014,15 @@ describe("docker.ts module exports", () => {
         const projectPath = "/home/user/my-project";
         const ensureDirs = vi.fn();
 
+        function expectNoContainerReplacement(): void {
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop"
+                    || args?.[0] === "rm"
+                    || args?.[0] === "run";
+            })).toBe(false);
+        }
+
         beforeEach(() => {
             ensureDirs.mockReset();
             mockExistsSync.mockReturnValue(true);
@@ -1088,6 +1099,380 @@ describe("docker.ts module exports", () => {
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
             expect(stopCall).toBeDefined();
+        });
+
+        it("preserves a running container with contract drift while another CCC session is active", () => {
+            mockExistsSync.mockReturnValue(false);
+            const driftMountsJson = JSON.stringify([
+                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
+            ]);
+
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, driftMountsJson))
+                .mockReturnValueOnce(makeResult(0, driftMountsJson))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0));
+
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            const name = startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                () => false,
+            );
+
+            expect(name).toBe(getContainerName(projectPath));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("another session is active"));
+            const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "exec" && args?.at(-1) === "true";
+            });
+            expect(readinessCalls).toHaveLength(1);
+            expect((readinessCalls[0][2] as { timeout?: number }).timeout).toBeLessThanOrEqual(200);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop" || args?.[0] === "rm" || args?.[0] === "run";
+            })).toBe(false);
+        });
+
+        it("fails closed without replacing an unsafe privileged container owned by another session", () => {
+            mockExistsSync.mockReturnValue(false);
+            const privilegedContract = fullCredentialMountsJson([], { privileged: true });
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, privilegedContract))
+                .mockReturnValueOnce(makeResult(0, privilegedContract));
+
+            expect(() => startProjectContainer(
+                    projectPath,
+                    ensureDirs,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    () => false,
+                ))
+                .toThrow("contract failed safety validation");
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop" || args?.[0] === "rm" || args?.[0] === "run";
+            })).toBe(false);
+        });
+
+        it.each([
+            ["credential source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
+                mount.Source = "/foreign/.claude";
+            }],
+            ["credential made read-only", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
+                mount.RW = false;
+            }],
+            ["credential changed from bind to volume", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
+                mount.Type = "volume";
+            }],
+            ["owner auth source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/run/ccc-device-broker-auth/owner.json");
+                mount.Source = "/foreign/owner.json";
+            }],
+            ["owner auth environment drift", (value: ReturnType<typeof JSON.parse>) => {
+                value.Config.Env = value.Config.Env.filter((item: string) => !item.startsWith("CCC_DEVICE_BROKER_AUTH_FILE="));
+            }],
+            ["unexpected host device", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.Devices.push({ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" });
+            }],
+            ["unexpected supplemental group", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.GroupAdd.push("999");
+            }],
+        ])("fails closed on %s while an active session owns the container", (_name, mutate) => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            mutate(inspected);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("contract failed safety validation");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("fails closed when contract inspection is malformed while another session owns the container", () => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, "not-json");
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("contract failed safety validation");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("executes contract-drift replacement only inside an approving session guard", () => {
+            let removed = false;
+            const driftMountsJson = JSON.stringify([
+                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
+            ]);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
+                if (args[0] === "ps") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "rm") removed = true;
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                expectNoContainerReplacement();
+                replace();
+                return true;
+            });
+
+            startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            );
+
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
+        });
+
+        it("fails fast without replacing a temporarily unresponsive container owned by another session", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson()))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
+                .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(1));
+
+            expect(() => startProjectContainer(
+                    projectPath,
+                    ensureDirs,
+                    undefined,
+                    undefined,
+                    undefined,
+                    undefined,
+                    () => false,
+                ))
+                .toThrow("another active session prevented destructive recovery");
+
+            const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "exec" && args?.at(-1) === "true";
+            });
+            expect(readinessCalls).toHaveLength(3);
+            expect(readinessCalls.every((call: unknown[]) => (
+                ((call[2] as { timeout?: number }).timeout ?? Infinity) <= 200
+            ))).toBe(true);
+
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args?.[0] === "stop" || args?.[0] === "rm" || args?.[0] === "run";
+            })).toBe(false);
+        });
+
+        it("preserves an active container when mount identity changes before readiness validation", () => {
+            let identityChanged = false;
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: identityChanged ? 2 : 1,
+                size: 1024,
+            }));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") {
+                    identityChanged = true;
+                    return makeResult(0);
+                }
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("mount source changed during validation");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("preserves an active container when mount identity changes during bundle synchronization", () => {
+            let identityChanged = false;
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: identityChanged ? 2 : 1,
+                size: 1024,
+            }));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                if (args[0] === "cp") identityChanged = true;
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("mount source changed during synchronization");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("does not replace a stopped container when its mount identity changed and another session owns it", () => {
+            let identityChanged = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps" && args[1] === "-q") {
+                    identityChanged = true;
+                    return makeResult(0, "");
+                }
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: identityChanged ? 2 : 1,
+                size: 1024,
+            }));
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("another active session prevented replacement");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("does not replace a restarted container when exec remains unavailable to another session", () => {
+            let runningChecks = 0;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps" && args[1] === "-q") {
+                    runningChecks += 1;
+                    return makeResult(0, runningChecks === 1 ? "" : "abc123\n");
+                }
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(1);
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("Restarted container is unavailable");
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "start")).toBe(true);
+            expectNoContainerReplacement();
+        });
+
+        it("does not replace a restarted container when mount identity changes before joining", () => {
+            let identityChanged = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") {
+                    identityChanged = true;
+                    return makeResult(0);
+                }
+                return makeResult(0);
+            });
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: identityChanged ? 2 : 1,
+                size: 1024,
+            }));
+            const guard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("mount source changed during restart");
+            expect(guard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("allows destructive recovery only through the session guard callback", () => {
+            let removed = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(1);
+                if (args[0] === "rm") removed = true;
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
+                    ["stop", "rm"].includes((call[1] as string[])?.[0])
+                ))).toBe(false);
+                replace();
+                return true;
+            });
+
+            startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            );
+
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
         });
 
         it("recreates a legacy container with writable shared device-lab state", () => {

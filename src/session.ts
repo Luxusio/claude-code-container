@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
@@ -8,8 +8,27 @@ import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
+import { withSharedMutationLock } from "./device-lab-shared-state.js";
 
 const locksDir = join(DATA_DIR, "locks");
+
+function containerLifecycleLock(containerPrefix: string): string {
+    return join(locksDir, `${containerPrefix}.container-lifecycle.guard`);
+}
+
+function ensureLocksDirectory(): void {
+    mkdirSync(locksDir, { recursive: true, mode: 0o700 });
+    const observed = lstatSync(locksDir);
+    if (!observed.isDirectory() || observed.isSymbolicLink()) {
+        throw new Error("CCC session lock path must be a real directory");
+    }
+    if (process.platform !== "win32") chmodSync(locksDir, 0o700);
+}
+
+export function withContainerLifecycleLock<T>(containerPrefix: string, operation: () => T): T {
+    ensureLocksDirectory();
+    return withSharedMutationLock(containerLifecycleLock(containerPrefix), operation, { waitMs: 180_000 });
+}
 
 // Module state - managed via getter/setter for testability
 let currentSessionLockFile: string | null = null;
@@ -37,11 +56,21 @@ export function clearSession(): void {
 }
 
 export function createSessionLock(projectId: string, profile?: string): string {
-    mkdirSync(locksDir, { recursive: true });
+    ensureLocksDirectory();
     const sessionId = randomBytes(16).toString("hex");
     const prefix = profile ? `${projectId}--p--${profile}` : projectId;
     const lockFile = join(locksDir, `${prefix}--${sessionId}.lock`);
-    writeFileSync(lockFile, String(process.pid), { mode: 0o600 });
+    withContainerLifecycleLock(prefix, () => {
+        const startToken = processStartToken(process.pid);
+        if (!startToken) {
+            throw new Error("Unable to establish process identity for CCC session lock");
+        }
+        writeFileSync(lockFile, JSON.stringify({
+            version: 2,
+            pid: process.pid,
+            startToken,
+        }), { mode: 0o600, flag: "wx" });
+    });
     return lockFile;
 }
 
@@ -59,9 +88,58 @@ function isPidAlive(pid: number): boolean {
     try {
         process.kill(pid, 0);
         return true;
-    } catch {
-        return false;
+    } catch (error) {
+        // Windows can deny observation of a live process. EPERM is positive
+        // liveness evidence for lock ownership, not a stale-session signal.
+        return (error as NodeJS.ErrnoException).code === "EPERM";
     }
+}
+
+function processStartToken(pid: number): string | null {
+    try {
+        if (process.platform === "linux") {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+            const close = stat.lastIndexOf(")");
+            if (close < 0) return null;
+            const fields = stat.slice(close + 1).trim().split(/\s+/);
+            return fields[19] ? `linux:${fields[19]}` : null;
+        }
+        if (process.platform === "win32") {
+            const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { $P.StartTime.ToUniversalTime().Ticks }`;
+            const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+                encoding: "utf-8",
+                timeout: 1000,
+                windowsHide: true,
+            });
+            const value = result.status === 0 ? result.stdout?.trim() : "";
+            return value ? `windows:${value}` : null;
+        }
+        const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+            encoding: "utf-8",
+            timeout: 1000,
+            windowsHide: true,
+        });
+        const value = result.status === 0 ? result.stdout?.trim() : "";
+        return value ? `ps:${value}` : null;
+    } catch {
+        return null;
+    }
+}
+
+function sessionLockRecord(content: string): { pid: number; startToken?: string } | null {
+    try {
+        const parsed = JSON.parse(content) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            const record = parsed as { pid?: unknown; startToken?: unknown };
+            const pid = Number(record.pid);
+            if (!Number.isInteger(pid) || pid <= 0) return null;
+            return { pid, ...(typeof record.startToken === "string" ? { startToken: record.startToken } : {}) };
+        }
+    } catch {
+        // Legacy lock files contain only the decimal PID.
+    }
+    const pid = parseInt(content, 10);
+    return Number.isInteger(pid) && pid > 0 ? { pid } : null;
 }
 
 /**
@@ -73,16 +151,26 @@ function isPidAlive(pid: number): boolean {
  * `${containerPrefix}--<sessionId>.lock`.
  */
 export function getActiveSessionsForContainer(containerPrefix: string): string[] {
-    if (!existsSync(locksDir)) {
-        return [];
+    let entries: string[];
+    try {
+        ensureLocksDirectory();
+        entries = readdirSync(locksDir);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        throw error;
     }
     const isProfilePrefix = containerPrefix.includes("--p--");
-    const locks = readdirSync(locksDir).filter((f) => {
+    const locks = entries.filter((f) => {
         if (!f.endsWith(".lock")) return false;
 
         // New format: prefix--sessionId.lock
         if (f.startsWith(`${containerPrefix}--`)) {
-            if (!isProfilePrefix) {
+            if (isProfilePrefix) {
+                const sessionId = f.slice(containerPrefix.length + 2, -".lock".length);
+                // Profile names may contain "--". Only the single session-id
+                // segment belongs to this exact profile prefix.
+                return sessionId.length > 0 && !sessionId.includes("--");
+            } else {
                 const afterPrefix = f.slice(containerPrefix.length + 2);
                 if (afterPrefix.startsWith("p--")) return false;
             }
@@ -102,15 +190,25 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
         const lockPath = join(locksDir, f);
         try {
             const content = readFileSync(lockPath, "utf-8").trim();
-            const pid = parseInt(content, 10);
-            if (isNaN(pid) || !isPidAlive(pid)) {
+            const record = sessionLockRecord(content);
+            // An unreadable or malformed ownership record is not proof that
+            // its owner is dead. Preserve it until an operator can inspect it.
+            if (!record) return true;
+            if (!isPidAlive(record.pid)) {
+                try { unlinkSync(lockPath); } catch { /* ignore */ }
+                return false;
+            }
+            const currentStartToken = record.startToken ? processStartToken(record.pid) : null;
+            if (record.startToken && currentStartToken && record.startToken !== currentStartToken) {
                 try { unlinkSync(lockPath); } catch { /* ignore */ }
                 return false;
             }
             return true;
         } catch {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            return false;
+            // Failure to read a candidate lock is not proof that its owner is
+            // dead. Preserve it and fail closed so transient Windows sharing,
+            // antivirus, or permission errors cannot authorize stop/rm.
+            return true;
         }
     });
 }
@@ -132,6 +230,23 @@ export function hasOtherActiveSessions(
     return sessions.some((s) => s !== currentLockName);
 }
 
+/**
+ * Atomically check for another live session and, only when none exists, run a
+ * destructive container replacement. Session creation takes the same lock, so
+ * a new CCC process cannot appear between the final check and stop/rm.
+ */
+export function recreateContainerWithoutInterruptingSessions(
+    containerPrefix: string,
+    currentLockFile: string,
+    recreate: () => void,
+): boolean {
+    return withContainerLifecycleLock(containerPrefix, () => {
+        if (hasOtherActiveSessions(containerPrefix, currentLockFile)) return false;
+        recreate();
+        return true;
+    });
+}
+
 let cleanedUp = false;
 
 function cleanupDevicesBestEffort(projectPath: string, profile?: string): void {
@@ -146,30 +261,27 @@ export function cleanupSession(): void {
     if (cleanedUp || !currentSessionLockFile || !currentProjectPath) {
         return;
     }
-    cleanedUp = true;
-
     const projectId = getProjectId(currentProjectPath);
     const containerPrefix = currentProfile ? `${projectId}--p--${currentProfile}` : projectId;
-    const hasOthers = hasOtherActiveSessions(containerPrefix, currentSessionLockFile);
-
     // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
-    stopClipboardServerIfLast(currentSessionLockFile);
-
-    // Remove our lock file
-    removeSessionLock(currentSessionLockFile);
-
-    // Stop container if no other sessions are using this project
-    if (!hasOthers) {
-        cleanupDevicesBestEffort(currentProjectPath, currentProfile);
-        const containerName = getContainerName(currentProjectPath, currentProfile);
-        if (isContainerRunning(containerName)) {
-            // Save claude binary to volume before stopping (handles `claude update`)
-            if (currentToolName === "claude") {
-                saveClaudeBinaryToVolume(containerName);
+    const containerName = getContainerName(currentProjectPath, currentProfile);
+    withContainerLifecycleLock(containerPrefix, () => {
+        // Stop clipboard server if this is the last CCC session (check BEFORE removing lock).
+        stopClipboardServerIfLast(currentSessionLockFile!);
+        const hasOthers = hasOtherActiveSessions(containerPrefix, currentSessionLockFile!);
+        removeSessionLock(currentSessionLockFile!);
+        if (!hasOthers) {
+            cleanupDevicesBestEffort(currentProjectPath!, currentProfile);
+            if (isContainerRunning(containerName)) {
+                if (currentToolName === "claude") {
+                    saveClaudeBinaryToVolume(containerName);
+                }
+                spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
             }
-            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
         }
-    }
+    });
+
+    cleanedUp = true;
 
     currentSessionLockFile = null;
     currentProjectPath = null;

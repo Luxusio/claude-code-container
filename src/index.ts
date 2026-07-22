@@ -83,7 +83,10 @@ import {
 } from "./container-setup.js";
 import {
     createSessionLock,
-    getActiveSessionsForProject,
+    getActiveSessionsForContainer,
+    hasOtherActiveSessions,
+    recreateContainerWithoutInterruptingSessions,
+    withContainerLifecycleLock,
     cleanupSession,
     setupSignalHandlers,
     setSession,
@@ -409,24 +412,33 @@ async function exec(
     progress("Checking container...");
     const containerStatus = getContainerStatus(targetContainer);
     let wasAlreadyRunning = containerStatus.running;
+    const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
+    const recreateRunningContainer = (recreate: () => void) => (
+        recreateContainerWithoutInterruptingSessions(
+            sessionContainerPrefix,
+            sessionLockFile,
+            recreate,
+        )
+    );
 
     // Auto-upgrade container if image has been rebuilt
     if (containerStatus.exists) {
         const currentImageId = getCurrentImageId();
         if (currentImageId && containerStatus.imageId && containerStatus.imageId !== currentImageId) {
-            const activeSessions = getActiveSessionsForProject(projectId);
-            if (activeSessions.length <= 1) {
+            const recreated = recreateRunningContainer(() => {
                 const oldImageId = containerStatus.imageId;
 
                 progress("Upgrading container to new image...");
                 spawnSync(runtimeCli(), ["stop", targetContainer], { stdio: "ignore" });
                 spawnSync(runtimeCli(), ["rm", targetContainer], { stdio: "ignore" });
+                wasAlreadyRunning = false;
 
                 // Remove old image (now dangling). Silently fails if still in use by other containers.
                 if (oldImageId) {
                     spawnSync(runtimeCli(), ["rmi", oldImageId], { stdio: "ignore" });
                 }
-            } else {
+            });
+            if (!recreated) {
                 console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
             }
         }
@@ -438,18 +450,25 @@ async function exec(
     await prepareHostDeviceBroker(fullPath, profile).catch((error) => {
         console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
     });
-    const containerName = startProjectContainer(
+    const recreateInsideLifecycleLock = (recreate: () => void) => {
+        if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
+        recreate();
+        return true;
+    };
+    const startContainer = (
+        mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
+        portFile: string | undefined = clipboardPortFile,
+        onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
+    ) => withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
         fullPath,
         () => ensureDirs(profile),
-        worktreeMounts.length > 0 ? worktreeMounts : undefined,
-        clipboardPortFile,
+        mounts,
+        portFile,
         profile,
-        // When the container is recreated (missing mounts), its writable layer
-        // is fresh — npm tool wrappers, claude binary, etc. must be reinstalled.
-        // Force the post-startup setup path to run even though the *old*
-        // container was running when we snapshot-ed status above.
-        () => { wasAlreadyRunning = false; },
-    );
+        onRecreate,
+        recreateInsideLifecycleLock,
+    ));
+    const containerName = startContainer();
     restoreCodexConfigHostOwnership(containerName);
 
     // Skip heavy setup if container was already running (another session set it up)
@@ -461,7 +480,7 @@ async function exec(
             for (let attempt = 0; attempt < 2; attempt++) {
                 if (!isContainerRunning(containerName)) {
                     console.log("Container stopped during setup (concurrent session), restarting...");
-                    startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
+                    startContainer(undefined, undefined, undefined);
                 }
                 try {
                     ensureTools(containerName, setupTool);
@@ -497,7 +516,7 @@ async function exec(
         // Verify container is still running before exec.
         if (!isContainerRunning(containerName)) {
             console.log("Container was stopped during setup, restarting...");
-            startProjectContainer(fullPath, () => ensureDirs(profile), undefined, undefined, profile);
+            startContainer(undefined, undefined, undefined);
         }
     } else {
         // Container already running — only rebuild MCP config (lightweight, may have changed)
@@ -922,29 +941,26 @@ function handleWorktreeRemove(
 ): void {
     const wsPath = getWorkspacePath(cwd, branch);
 
-    // Check for active sessions before removing (M2/M3 fix)
     const wsProjectId = getProjectId(wsPath);
-    const activeSessions = getActiveSessionsForProject(wsProjectId);
-    if (activeSessions.length > 0 && !force) {
-        console.error(
-            `Error: Workspace @${branch} has ${activeSessions.length} active session(s).`,
-        );
-        console.error(`Stop sessions first or use -f to force removal.`);
-        process.exit(1);
-    }
-
-    // Stop and remove associated container first
-    try {
-        ensureDockerRunning();
-        const containerName = getContainerName(wsPath);
-        if (isContainerExists(containerName)) {
-            console.log(`Stopping container ${containerName}...`);
-            spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
-            spawnSync(runtimeCli(), ["rm", containerName], { stdio: "ignore" });
+    withContainerLifecycleLock(wsProjectId, () => {
+        const activeSessions = getActiveSessionsForContainer(wsProjectId);
+        if (activeSessions.length > 0 && !force) {
+            console.error(`Error: Workspace @${branch} has ${activeSessions.length} active session(s).`);
+            console.error("Stop sessions first or use -f to force removal.");
+            process.exit(1);
         }
-    } catch {
-        // Docker not running, skip container cleanup
-    }
+        try {
+            ensureDockerRunning();
+            const containerName = getContainerName(wsPath);
+            if (isContainerExists(containerName)) {
+                console.log(`Stopping container ${containerName}...`);
+                spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
+                spawnSync(runtimeCli(), ["rm", containerName], { stdio: "ignore" });
+            }
+        } catch {
+            // Docker not running, skip container cleanup.
+        }
+    });
 
     console.log(`Removing workspace @${branch}...`);
     try {
@@ -1010,12 +1026,17 @@ CONTAINER MANAGEMENT:
     ccc devices create <backend> <id>
                             Create an owner-scoped device definition
     ccc devices start <id>  Start a device (Windows Sandbox defaults minimized)
+    ccc devices reboot <id> Reboot a Hyper-V Windows or Linux VM
     ccc devices status <id> Show broker-owned device status
     ccc devices backends    Show device backend prerequisites
     ccc devices doctor      Device-lab diagnostics
     ccc devices smoke       Non-destructive device backend smoke checks
     ccc devices smoke --real-provider
                             Opt-in real provider readiness smoke checks
+    ccc devices setup hyper-v
+                            Diagnose Hyper-V host setup without changing Windows
+    ccc devices setup hyper-v --confirm
+                            Request elevation and enable Hyper-V; never reboots automatically
     ccc devices stop <id>   Stop a current-project device definition
     ccc devices stop --all-projects
                             Stop devices across all projects
@@ -1223,11 +1244,23 @@ async function main(): Promise<void> {
             break;
 
         case "stop":
-            stopProjectContainer(cwd, profile);
+            withContainerLifecycleLock(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd), () => {
+                const sessions = getActiveSessionsForContainer(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd));
+                if (sessions.length > 0 && !cmdArgs.includes("--force") && !cmdArgs.includes("-f")) {
+                    throw new Error(`Container has ${sessions.length} active session(s); use --force to stop it.`);
+                }
+                stopProjectContainer(cwd, profile);
+            });
             break;
 
         case "rm":
-            removeProjectContainer(cwd, profile);
+            withContainerLifecycleLock(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd), () => {
+                const sessions = getActiveSessionsForContainer(profile ? `${getProjectId(cwd)}--p--${profile}` : getProjectId(cwd));
+                if (sessions.length > 0 && !cmdArgs.includes("--force") && !cmdArgs.includes("-f")) {
+                    throw new Error(`Container has ${sessions.length} active session(s); use --force to remove it.`);
+                }
+                removeProjectContainer(cwd, profile);
+            });
             break;
 
         case "status":
@@ -1396,6 +1429,9 @@ async function main(): Promise<void> {
 // Run main only when executed directly (not when imported by test frameworks)
 if (!process.env.VITEST) {
     main().catch((err) => {
+        try { cleanupSession(); } catch (cleanupError) {
+            console.error(`[ccc] cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
+        }
         console.error(err);
         process.exit(1);
     });

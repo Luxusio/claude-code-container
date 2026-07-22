@@ -53,6 +53,7 @@ const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
 const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
 const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
+const DEVICE_LAB_MOUNT_CONTRACT_VERSION = "2";
 
 type MountSourceIdentity = {
     path: string;
@@ -180,11 +181,12 @@ function deviceLabMountContractIdentity(
     ownerRoot: MountSourceIdentity,
     ownerAuthFile?: MountSourceIdentity,
 ): string {
-    const payload = [stateRoot, ownerRoot, ownerAuthFile ?? null]
+    const sourceIdentity = [stateRoot, ownerRoot, ownerAuthFile ?? null]
         .map((identity) => identity
             ? `${identity.kind}:${identity.dev}:${identity.ino}`
             : "absent")
         .join("|");
+    const payload = `${DEVICE_LAB_MOUNT_CONTRACT_VERSION}|${sourceIdentity}`;
     return createHash("sha256").update(payload).digest("hex");
 }
 
@@ -322,14 +324,14 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
     args.push(...bindMountArgs(opts.claudeJsonFile, "/home/ccc/.claude.json"));
     if (opts.deviceLabStateHostDir) {
         args.push(...bindMountArgs(opts.deviceLabStateHostDir, "/home/ccc/.ccc/devices", { readonly: true }));
-        args.push("--tmpfs", "/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/owners:rw,noexec,nosuid,nodev,mode=0711");
         if (opts.deviceLabOwnerId) {
             args.push(...bindMountArgs(
                 join(opts.deviceLabStateHostDir, "owners", opts.deviceLabOwnerId),
                 `/home/ccc/.ccc/devices/owners/${opts.deviceLabOwnerId}`,
             ));
         }
-        args.push("--tmpfs", "/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000");
+        args.push("--tmpfs", "/home/ccc/.ccc/devices/broker/auth:rw,noexec,nosuid,nodev,mode=0711");
         if (opts.deviceLabOwnerAuthFile) {
             args.push(...bindMountArgs(opts.deviceLabOwnerAuthFile, DEVICE_BROKER_AUTH_CONTAINER_FILE, { readonly: true }));
             args.push("-e", `CCC_DEVICE_BROKER_AUTH_FILE=${DEVICE_BROKER_AUTH_CONTAINER_FILE}`);
@@ -581,13 +583,26 @@ export function isContainerRunning(containerName: string): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
-export function canExecContainer(containerName: string): boolean {
+export function canExecContainer(containerName: string, timeoutMs = 5000): boolean {
     const result = spawnSync(
         runtimeCli(),
         ["exec", containerName, "true"],
-        { stdio: ["ignore", "ignore", "ignore"], timeout: 5000 },
+        { stdio: ["ignore", "ignore", "ignore"], timeout: Math.max(1, timeoutMs) },
     );
     return result.status === 0;
+}
+
+function canExecContainerAfterBriefRetry(containerName: string): boolean {
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 750;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break;
+        if (canExecContainer(containerName, Math.min(200, remainingMs))) return true;
+        const sleepMs = Math.min(75, deadline - Date.now());
+        if (attempt < 2 && sleepMs > 0) Atomics.wait(sleeper, 0, 0, sleepMs);
+    }
+    return false;
 }
 
 export function isContainerExists(containerName: string): boolean {
@@ -898,6 +913,72 @@ function containerMatchesRunContract(
     }
 }
 
+/**
+ * A missing immutable feature can be deferred while another session owns the
+ * container. Permission expansion, auth drift, source substitution, or an
+ * unreadable contract cannot: the joining session must fail closed instead.
+ */
+function containerRunContractIsSafeToDefer(
+    containerName: string,
+    requiredMounts: RequiredContainerMount[],
+    labRunner: LabRunnerRunConfig,
+): boolean {
+    const result = spawnSync(
+        runtimeCli(),
+        ["inspect", "-f", "{{json .}}", containerName],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) return false;
+    try {
+        const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
+            Config?: { Env?: string[] };
+            HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
+        };
+        if (inspected.HostConfig?.Privileged === true) return false;
+        const mounts = inspected.Mounts || [];
+        for (const req of requiredMounts) {
+            const mount = mounts.find((item) => item.Destination === req.containerPath);
+            if (!mount) continue;
+            if (req.readonly !== undefined && mount.RW !== !req.readonly) return false;
+            if (req.type !== undefined && mount.Type !== req.type) return false;
+            if (req.verifySource) {
+                if (mount.Type !== "bind" || !mount.Source) return false;
+                try {
+                    if (normalizedHostPath(mount.Source) !== canonicalHostPath(req.hostPath)) return false;
+                } catch {
+                    return false;
+                }
+            }
+        }
+        const env = envMap(inspected.Config?.Env);
+        const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
+        const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
+        // A missing newly-required auth mount is a deferred feature update.
+        // A stale/extra auth mount or a mounted token with the wrong env path
+        // could expose another owner and must fail closed.
+        if (!authRequired && authMounted) return false;
+        if (authMounted && env.get("CCC_DEVICE_BROKER_AUTH_FILE") !== DEVICE_BROKER_AUTH_CONTAINER_FILE) return false;
+        if (!authMounted && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) return false;
+
+        const devices = deviceEntries(inspected.HostConfig?.Devices);
+        const groupAdd = Array.isArray(inspected.HostConfig?.GroupAdd)
+            ? inspected.HostConfig.GroupAdd.map(String)
+            : [];
+        if (labRunner.status === "ready") {
+            const expectedDevices = labRunner.kvmDevicePath ? [labRunner.kvmDevicePath] : [];
+            if (devices.some((device) => !expectedDevices.includes(device.hostPath) || device.hostPath !== device.containerPath)) return false;
+            const expectedGroups = labRunner.kvmGroupId === undefined ? [] : [String(labRunner.kvmGroupId)];
+            if (groupAdd.some((group) => !expectedGroups.includes(group))) return false;
+        } else if (devices.length > 0 || groupAdd.length > 0) {
+            return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 // Host ~/.gitconfig is copied after the container starts instead of bind-mounted.
 // Single-file bind mounts are not portable when CCC itself runs in a container
 // with a host Docker socket: the Docker daemon may not see the caller's path, or
@@ -1060,6 +1141,20 @@ function recreateContainer(containerName: string, reason: string, onRecreate?: (
     onRecreate?.();
 }
 
+function recreateContainerWithSessionGuard(
+    containerName: string,
+    reason: string,
+    onRecreate: (() => void) | undefined,
+    guard: ((recreate: () => void) => boolean) | undefined,
+): boolean {
+    const recreate = () => recreateContainer(containerName, reason, onRecreate);
+    if (!guard) {
+        recreate();
+        return true;
+    }
+    return guard(recreate);
+}
+
 // === Container Lifecycle ===
 
 function cleanupDevicesBestEffort(projectPath: string, profile?: string): void {
@@ -1083,6 +1178,13 @@ export function startProjectContainer(
      * install, env config) must re-run even if the old container was running.
      */
     onRecreate?: () => void,
+    /**
+     * Re-evaluated immediately before replacing a running container. Callers
+     * use this to protect containers that are still owned by another live CCC
+     * session. A stale immutable contract is safe to defer; interrupting the
+     * other session is not.
+     */
+    recreateRunningContainer?: (recreate: () => void) => boolean,
 ): string {
     ensureDirs();
     mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
@@ -1110,9 +1212,11 @@ export function startProjectContainer(
         const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: RequiredContainerMount[] = [
             ...getAllCredentialMounts().map((m) => ({
-                // hostPath isn't checked — only containerPath matters
-                hostPath: m.hostDir,
+                hostPath: resolveCredentialHostPath(m, profile),
                 containerPath: m.containerDir,
+                readonly: false,
+                type: "bind" as const,
+                verifySource: true,
             })),
             ...gitIdentityMounts,
             ...(extraMounts ?? []),
@@ -1150,41 +1254,129 @@ export function startProjectContainer(
                     console.error(`[ccc:debug]   required destination: ${m.containerPath}`);
                 }
             }
-            recreateContainer(containerName, "missing tool credential / git mounts", onRecreate);
+            if (recreateRunningContainer) {
+                const recreated = recreateContainerWithSessionGuard(
+                    containerName,
+                    "missing tool credential / git mounts",
+                    onRecreate,
+                    recreateRunningContainer,
+                );
+                if (!recreated) {
+                    if (!containerRunContractIsSafeToDefer(containerName, requiredMounts, labRunner)) {
+                        throw new Error("Running container contract failed safety validation; preserving the active session without joining it.");
+                    }
+                    if (!isContainerRunning(containerName)) {
+                        throw new Error("Container contract update is required; another active session prevented replacement.");
+                    }
+                    if (!canExecContainerAfterBriefRetry(containerName)) {
+                        throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
+                    }
+                    console.warn("[ccc] Container update deferred because another session is active. Reusing the running container.");
+                    return containerName;
+                }
+            } else {
+                recreateContainer(containerName, "missing tool credential / git mounts", onRecreate);
+            }
         } else if (debug) {
             console.error(`[ccc:debug] Container ${containerName} has all required mounts`);
         }
     }
 
     if (isContainerRunning(containerName)) {
-        if (canExecContainer(containerName)) {
+        const execReady = recreateRunningContainer
+            ? canExecContainerAfterBriefRetry(containerName)
+            : canExecContainer(containerName);
+        if (execReady) {
             if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
-                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                if (recreateRunningContainer) {
+                    const recreated = recreateContainerWithSessionGuard(
+                        containerName,
+                        "device-lab mount source identity changed",
+                        onRecreate,
+                        recreateRunningContainer,
+                    );
+                    if (!recreated) {
+                        throw new Error("Device-lab mount source changed during validation; preserving the active session without joining it.");
+                    }
+                } else {
+                    recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                }
             } else {
                 syncManagedMcpBundles(containerName);
                 syncHostGitConfig(containerName);
                 if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
-                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                if (recreateRunningContainer) {
+                    const recreated = recreateContainerWithSessionGuard(
+                        containerName,
+                        "device-lab mount source identity changed",
+                        onRecreate,
+                        recreateRunningContainer,
+                    );
+                    if (!recreated) {
+                        throw new Error("Device-lab mount source changed during synchronization; preserving the active session without joining it.");
+                    }
+                } else {
+                    recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                }
             }
         } else {
-            recreateContainer(containerName, "container exec failed", onRecreate);
+            if (recreateRunningContainer) {
+                const recreated = recreateContainerWithSessionGuard(
+                    containerName,
+                    "container exec failed",
+                    onRecreate,
+                    recreateRunningContainer,
+                );
+                if (!recreated) {
+                    throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
+                }
+            } else {
+                recreateContainer(containerName, "container exec failed", onRecreate);
+            }
         }
     }
 
     if (isContainerExists(containerName)) {
         if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
         if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
-            recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+            const recreated = recreateContainerWithSessionGuard(
+                containerName,
+                "device-lab mount source identity changed",
+                onRecreate,
+                recreateRunningContainer,
+            );
+            if (!recreated) {
+                throw new Error("Device-lab mount source changed; another active session prevented replacement.");
+            }
         } else {
             spawnSync(cli, ["start", containerName], { stdio: "inherit" });
-            if (!canExecContainer(containerName)) {
-                recreateContainer(containerName, "container exec failed after restart", onRecreate);
+            const execReady = recreateRunningContainer
+                ? canExecContainerAfterBriefRetry(containerName)
+                : canExecContainer(containerName);
+            if (!execReady) {
+                const recreated = recreateContainerWithSessionGuard(
+                    containerName,
+                    "container exec failed after restart",
+                    onRecreate,
+                    recreateRunningContainer,
+                );
+                if (!recreated) {
+                    throw new Error("Restarted container is unavailable; another active session prevented replacement.");
+                }
             } else {
                 syncManagedMcpBundles(containerName);
                 syncHostGitConfig(containerName);
                 fixSshPermissions(containerName);
                 if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
-                recreateContainer(containerName, "device-lab mount source identity changed", onRecreate);
+                const recreated = recreateContainerWithSessionGuard(
+                    containerName,
+                    "device-lab mount source identity changed",
+                    onRecreate,
+                    recreateRunningContainer,
+                );
+                if (!recreated) {
+                    throw new Error("Device-lab mount source changed during restart; another active session prevented replacement.");
+                }
             }
         }
     }
