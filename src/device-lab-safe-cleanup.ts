@@ -1,6 +1,8 @@
 import { randomBytes } from "crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, type Stats } from "fs";
+import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmdirSync, unlinkSync, type Stats } from "fs";
+import { tmpdir } from "os";
 import { basename, dirname, join } from "path";
+import { withSharedMutationLock } from "./device-lab-shared-state.js";
 
 export type QuarantinedCleanupError = Error & { quarantineRoot?: string };
 type QuarantineCleanupOperations = {
@@ -10,6 +12,23 @@ type QuarantineCleanupOperations = {
     beforeDeleteEntry?: (entry: string) => void;
     beforeDeleteRoot?: (root: string) => void;
 };
+
+function safeCleanupMutationLockFile(): string {
+    const identity = typeof process.getuid === "function" ? String(process.getuid()) : "user";
+    const root = join(tmpdir(), `ccc-device-lab-safe-cleanup-${identity}`);
+    try {
+        mkdirSync(root, { mode: 0o700 });
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const stats = lstatSync(root);
+    if (!stats.isDirectory() || stats.isSymbolicLink()
+        || (typeof process.getuid === "function" && stats.uid !== process.getuid())) {
+        throw new Error("safe-cleanup-lock-directory-invalid");
+    }
+    try { chmodSync(root, 0o700); } catch { /* Windows ACLs govern the per-user temp directory. */ }
+    return join(root, "mutation.lock");
+}
 
 function sameEntryIdentity(original: Stats, quarantined: Stats): boolean {
     if (original.dev !== quarantined.dev || original.ino !== quarantined.ino) return false;
@@ -86,7 +105,7 @@ function removeBoundDirectory(
     rmdirSync(emptyPath);
 }
 
-export function quarantineAndRemoveDirectory(
+function quarantineAndRemoveDirectoryUnlocked(
     target: string,
     validate: (path: string) => void,
     operations: QuarantineCleanupOperations = {},
@@ -124,4 +143,16 @@ export function quarantineAndRemoveDirectory(
         cleanupError.quarantineRoot = quarantineRoot;
         throw cleanupError;
     }
+}
+
+export function quarantineAndRemoveDirectory(
+    target: string,
+    validate: (path: string) => void,
+    operations: QuarantineCleanupOperations = {},
+): { quarantineRoot: string } {
+    return withSharedMutationLock(
+        safeCleanupMutationLockFile(),
+        () => quarantineAndRemoveDirectoryUnlocked(target, validate, operations),
+        { waitMs: 5 * 60 * 1000, staleMs: 10 * 60 * 1000 },
+    );
 }

@@ -1285,6 +1285,7 @@ describe('remoteExec', () => {
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
     expect(sshStopCalls[0][1][1]).toContain('$_ccc_runtime/lifecycle-')
+    expect(sshStopCalls[0][2]).toMatchObject({ timeout: 60000 })
     expect(sshStopCalls[0][1][1]).toContain('_ccc_expiry')
     expect(sshStopCalls[0][1][1]).toContain('date +%s')
     expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(1)

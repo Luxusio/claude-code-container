@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
@@ -120,5 +120,34 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
             const result = spawnSync("sh", ["-c", command], { env: { ...process.env, HOME: home }, encoding: "utf8" });
             expect(result.status).toBe(74);
         }
+    });
+
+    it("bounds kernel lock waiting and exits with status 73", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-timeout-home-"));
+        roots.push(home);
+        const containerName = "ccc-timeout";
+        const holder = runShell(remoteLifecycleShell(containerName, "sleep 0.8"), home);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        const startedAt = Date.now();
+        const blocked = runShell(remoteLifecycleShell(containerName, "exit 99", 0.15), home);
+
+        await expect(blocked).resolves.toBe(73);
+        expect(Date.now() - startedAt).toBeLessThan(1000);
+        await expect(holder).resolves.toBe(0);
+    });
+
+    it("rejects runtime replacement while waiting for the kernel guard", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-runtime-race-home-"));
+        roots.push(home);
+        const containerName = "ccc-runtime-race";
+        const holder = runShell(remoteLifecycleShell(containerName, "sleep 0.5"), home);
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        const waiter = runShell(remoteLifecycleShell(containerName, "exit 99"), home);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const runtime = join(home, ".ccc", "remote-runtime");
+        renameSync(runtime, join(home, ".ccc", "displaced-runtime"));
+        mkdirSync(runtime, { mode: 0o700 });
+
+        await expect(Promise.all([holder, waiter])).resolves.toEqual([0, 74]);
     });
 });
