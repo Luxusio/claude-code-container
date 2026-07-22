@@ -1171,7 +1171,8 @@ describe('remoteExec', () => {
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
     expect(exitMock).toHaveBeenCalledWith(1)
     expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh'
-      && (call[1] as string[]).some((arg) => arg.includes('rm -f \"$_ccc_runtime/sessions-')))).toBe(true)
+      && (call[1] as string[]).some((arg) => arg.includes('_ccc_sessions=$_ccc_runtime/sessions-')
+        && arg.includes('_ccc_assert_private \"$_ccc_sessions\"')))).toBe(true)
   })
 
   it('resumes paused sync session when it exists as paused', async () => {

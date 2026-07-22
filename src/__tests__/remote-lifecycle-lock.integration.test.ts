@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawn, spawnSync } from "child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { remoteLifecycleShell, remoteSessionReservationShell, shellEscapeArg } from "../remote.js";
+import { remoteLifecycleShell, remoteRefreshSessionShell, remoteReleaseSessionShell, remoteSessionReservationShell, remoteStopShell, shellEscapeArg } from "../remote.js";
 import { hashPath } from "../utils.js";
 
 function runShell(command: string, home: string): Promise<number | null> {
@@ -67,5 +67,58 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
 
         expect(result.status).toBe(74);
         expect(statSync(external).isDirectory()).toBe(true);
+    });
+
+    it("serializes two simultaneous reclaimers of a stale owner", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-stale-home-"));
+        roots.push(home);
+        const runtime = join(home, ".ccc", "remote-runtime");
+        mkdirSync(runtime, { recursive: true, mode: 0o700 });
+        const containerName = "ccc-stale-race";
+        writeFileSync(join(runtime, `lifecycle-${hashPath(containerName)}.lock`), "999999 stale-token\n");
+        const order = join(home, "stale-order.txt");
+        const first = remoteLifecycleShell(containerName, `printf A >> ${shellEscapeArg(order)}; sleep 0.2; printf a >> ${shellEscapeArg(order)}`);
+        const second = remoteLifecycleShell(containerName, `printf B >> ${shellEscapeArg(order)}; sleep 0.2; printf b >> ${shellEscapeArg(order)}`);
+
+        await expect(Promise.all([runShell(first, home), runShell(second, home)])).resolves.toEqual([0, 0]);
+        expect(readFileSync(order, "utf8")).toMatch(/^(AaBb|BbAa)$/);
+    });
+
+    it.each(["home", "base", "runtime"])("rejects a group-writable %s directory", (kind) => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-mode-home-"));
+        roots.push(home);
+        const base = join(home, ".ccc");
+        const runtime = join(base, "remote-runtime");
+        mkdirSync(runtime, { recursive: true, mode: 0o700 });
+        chmodSync(kind === "home" ? home : kind === "base" ? base : runtime, 0o770);
+
+        const result = spawnSync("sh", ["-c", remoteLifecycleShell(`ccc-mode-${kind}`, "exit 99")], {
+            env: { ...process.env, HOME: home },
+            encoding: "utf8",
+        });
+
+        expect(result.status).toBe(74);
+    });
+
+    it("rejects a substituted session directory for every session operation", () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-session-ops-home-"));
+        const external = mkdtempSync(join(tmpdir(), "ccc-remote-session-ops-external-"));
+        roots.push(home, external);
+        const runtime = join(home, ".ccc", "remote-runtime");
+        mkdirSync(runtime, { recursive: true, mode: 0o700 });
+        const containerName = "ccc-session-ops-symlink";
+        symlinkSync(external, join(runtime, `sessions-${hashPath(containerName)}`), "dir");
+        const token = "b".repeat(32);
+        const commands = [
+            remoteSessionReservationShell(containerName, token, 60, "exit 99"),
+            remoteRefreshSessionShell(containerName, token, 60),
+            remoteReleaseSessionShell(containerName, token),
+            remoteStopShell(containerName, token),
+        ];
+
+        for (const command of commands) {
+            const result = spawnSync("sh", ["-c", command], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+            expect(result.status).toBe(74);
+        }
     });
 });

@@ -86,18 +86,26 @@ export function remoteLifecycleShell(containerName: string, body: string): strin
         "set -eu",
         "umask 077",
         `_ccc_token=${token}`,
+        "_ccc_assert_private() { [ -d \"$1\" ] && [ ! -L \"$1\" ] && [ -O \"$1\" ] || return 1; _ccc_mode=$(stat -c %a \"$1\" 2>/dev/null || stat -f %Lp \"$1\" 2>/dev/null) || return 1; case \"$_ccc_mode\" in ''|*[!0-7]*) return 1 ;; esac; [ $((0$_ccc_mode & 022)) -eq 0 ]; }",
+        "_ccc_assert_private \"$HOME\" || exit 74",
         "_ccc_base=$HOME/.ccc",
-        "if [ -e \"$_ccc_base\" ]; then [ -d \"$_ccc_base\" ] && [ ! -L \"$_ccc_base\" ] && [ -O \"$_ccc_base\" ] || exit 74; else mkdir \"$_ccc_base\"; fi",
+        "if [ -e \"$_ccc_base\" ]; then _ccc_assert_private \"$_ccc_base\" || exit 74; else mkdir \"$_ccc_base\"; fi",
         "_ccc_runtime=$_ccc_base/remote-runtime",
-        "if [ -e \"$_ccc_runtime\" ]; then [ -d \"$_ccc_runtime\" ] && [ ! -L \"$_ccc_runtime\" ] && [ -O \"$_ccc_runtime\" ] || exit 74; else mkdir \"$_ccc_runtime\"; fi",
+        "if [ -e \"$_ccc_runtime\" ]; then _ccc_assert_private \"$_ccc_runtime\" || exit 74; else mkdir \"$_ccc_runtime\"; fi",
         "chmod 700 \"$_ccc_runtime\"",
         `_ccc_lock=$_ccc_runtime/lifecycle-${key}.lock`,
+        `_ccc_guard=$_ccc_runtime/lifecycle-${key}.guard`,
         `_ccc_candidate=$_ccc_runtime/.lifecycle-${key}.$$.${token}`,
+        `_ccc_guard_candidate=$_ccc_runtime/.guard-${key}.$$.${token}`,
         "printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_candidate\"",
+        "_ccc_guard_backend=link",
+        "if command -v flock >/dev/null 2>&1; then _ccc_guard_backend=flock; eval 'exec 9>\"$_ccc_guard\"'; flock -x 9; elif command -v shlock >/dev/null 2>&1; then _ccc_guard_backend=shlock; _ccc_attempt=0; until shlock -p \"$$\" -f \"$_ccc_guard\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || { rm -f \"$_ccc_candidate\"; exit 73; }; sleep 0.1; done; else printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_guard_candidate\"; _ccc_attempt=0; until ln \"$_ccc_guard_candidate\" \"$_ccc_guard\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || { rm -f \"$_ccc_candidate\" \"$_ccc_guard_candidate\"; exit 73; }; sleep 0.1; done; fi",
+        "_ccc_release_guard() { case \"$_ccc_guard_backend\" in flock) flock -u 9 2>/dev/null || true; eval 'exec 9>&-' ;; shlock) if read -r _ccc_guard_pid < \"$_ccc_guard\" 2>/dev/null && [ \"$_ccc_guard_pid\" = \"$$\" ]; then rm -f \"$_ccc_guard\"; fi ;; link) if read -r _ccc_guard_pid _ccc_guard_token < \"$_ccc_guard\" 2>/dev/null && [ \"$_ccc_guard_pid\" = \"$$\" ] && [ \"$_ccc_guard_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_guard\"; fi ;; esac; rm -f \"$_ccc_guard_candidate\" 2>/dev/null || true; }",
         "_ccc_attempt=0",
-        "until ln \"$_ccc_candidate\" \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || { rm -f \"$_ccc_candidate\"; exit 73; }; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock\" 2>/dev/null || true ;; esac; fi; sleep 0.1; done",
+        "while [ -e \"$_ccc_lock\" ]; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || { _ccc_release_guard; rm -f \"$_ccc_candidate\"; exit 73; }; _ccc_owner_live=0; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) _ccc_owner_live=1 ;; esac; fi; if [ \"$_ccc_owner_live\" -eq 1 ]; then sleep 0.1; else rm -f \"$_ccc_lock\"; fi; done",
+        "ln \"$_ccc_candidate\" \"$_ccc_lock\" || { _ccc_release_guard; rm -f \"$_ccc_candidate\"; exit 73; }",
         "rm -f \"$_ccc_candidate\"",
-        "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; rm -f \"$_ccc_candidate\" 2>/dev/null || true; }",
+        "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock\"; fi; _ccc_release_guard; rm -f \"$_ccc_candidate\" 2>/dev/null || true; }",
         "trap _ccc_unlock EXIT HUP INT TERM",
         body,
     ].join("; ");
@@ -107,7 +115,7 @@ export function remoteSessionReservationShell(containerName: string, token: stri
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
-        "if [ -e \"$_ccc_sessions\" ]; then [ -d \"$_ccc_sessions\" ] && [ ! -L \"$_ccc_sessions\" ] && [ -O \"$_ccc_sessions\" ] || exit 74; else mkdir \"$_ccc_sessions\"; fi",
+        "if [ -e \"$_ccc_sessions\" ]; then _ccc_assert_private \"$_ccc_sessions\" || exit 74; else mkdir \"$_ccc_sessions\"; fi",
         "chmod 700 \"$_ccc_sessions\"",
         `_ccc_marker=$_ccc_sessions/${token}`,
         "_ccc_now=$(date +%s)",
@@ -116,25 +124,29 @@ export function remoteSessionReservationShell(containerName: string, token: stri
     ].join("; "));
 }
 
-function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number): string {
+export function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
-        `_ccc_marker=$_ccc_runtime/sessions-${key}/${token}`,
+        `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
+        `[ -e "$_ccc_sessions" ] || exit 44`,
+        `_ccc_assert_private "$_ccc_sessions" || exit 74`,
+        `_ccc_marker=$_ccc_sessions/${token}`,
         `[ -f "$_ccc_marker" ] || exit 44`,
         "_ccc_now=$(date +%s)",
         `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
     ].join("; "));
 }
 
-function remoteReleaseSessionShell(containerName: string, token: string): string {
+export function remoteReleaseSessionShell(containerName: string, token: string): string {
     const key = hashPath(containerName);
-    return remoteLifecycleShell(containerName, `rm -f \"$_ccc_runtime/sessions-${key}/${token}\"`);
+    return remoteLifecycleShell(containerName, `_ccc_sessions=$_ccc_runtime/sessions-${key}; if [ -e \"$_ccc_sessions\" ]; then _ccc_assert_private \"$_ccc_sessions\" || exit 74; rm -f \"$_ccc_sessions/${token}\"; fi`);
 }
 
-function remoteStopShell(containerName: string, ownToken: string): string {
+export function remoteStopShell(containerName: string, ownToken: string): string {
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
+        `if [ -e "$_ccc_sessions" ]; then _ccc_assert_private "$_ccc_sessions" || exit 74; fi`,
         `rm -f "$_ccc_sessions/${ownToken}"`,
         "_ccc_now=$(date +%s)",
         "_ccc_active=0",
