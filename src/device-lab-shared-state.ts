@@ -24,7 +24,6 @@ const PROCESS_IDENTITY_OBSERVATION_CACHE_MS = 1000;
 const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
 const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
 const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
-const PROCESS_IDENTITY_UNAVAILABLE_STALE_MS = 8 * 60 * 60 * 1000;
 const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 let ownLockProcessIdentity: DeviceRuntimeProcessIdentity | null | undefined;
@@ -55,7 +54,8 @@ function managedDirectoryComponents(file: string): string[] {
     const root = parse(parent).root;
     const segments = parent.slice(root.length).split(sep).filter(Boolean);
     const normalized = process.platform === "win32" ? segments.map((segment) => segment.toLowerCase()) : segments;
-    const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc" && normalized[index + 1] === "devices");
+    const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc"
+        && ["devices", "locks"].includes(normalized[index + 1]));
     if (cccIndex < 0) return [];
     const start = cccIndex;
     const result: string[] = [];
@@ -424,10 +424,6 @@ async function lockProcessObservationStatusAsync(lock: Record<string, unknown>):
     return promise;
 }
 
-function identityUnavailableIsStale(ageMs: number, staleMs: number): boolean {
-    return ageMs >= Math.max(staleMs, PROCESS_IDENTITY_UNAVAILABLE_STALE_MS);
-}
-
 function lockIsStale(file: string, lock: Record<string, unknown> | null, staleMs: number): boolean {
     const ageMs = fileAgeMs(file);
     if (ageMs < 100) return false;
@@ -436,15 +432,14 @@ function lockIsStale(file: string, lock: Record<string, unknown> | null, staleMs
     if (lock.host === hostname() && Number.isInteger(lock.pid)) {
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
-            if (process.platform === "win32") return identityUnavailableIsStale(ageMs, staleMs);
+            if (process.platform === "win32") return false;
             const status = lockProcessObservationStatus(lock);
-            return status === "mismatch" || status === "exited"
-                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+            return status === "mismatch" || status === "exited";
         }
-        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
-        // Older CCC versions recorded only a PID. Windows can reuse that PID,
-        // so an aged legacy lock must not remain live forever.
-        return ageMs >= staleMs;
+        // A live PID is insufficient proof of ownership, but it is also
+        // insufficient proof that the lock is abandoned. Fail closed until
+        // the process exits or a recorded identity positively mismatches.
+        return false;
     }
     return ageMs >= staleMs;
 }
@@ -458,11 +453,9 @@ async function lockIsStaleAsync(file: string, lock: Record<string, unknown> | nu
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
             const status = await lockProcessObservationStatusAsync(lock);
-            return status === "mismatch" || status === "exited"
-                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+            return status === "mismatch" || status === "exited";
         }
-        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
-        return ageMs >= staleMs;
+        return false;
     }
     return ageMs >= staleMs;
 }

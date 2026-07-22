@@ -918,18 +918,34 @@ function cleanupHyperVDeviceArtifacts(ownerId: string, backend: string, deviceId
     if (!isHyperVBackend(backend)) return { ok: false, removed: false, deviceRoot: "", error: "hyper-v-backend-invalid" };
     const backendRoot = join(brokerPrivateRoot(), "owners", ownerId, backend);
     const privateRoot = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
+    const quarantineRoot = join(backendRoot, `.${deviceId}.${randomBytes(16).toString("hex")}.cleanup`);
+    let quarantined = false;
     try {
         if (!existsSync(privateRoot)) return { ok: true, removed: false, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
         assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
         assertNoSymlinkPathComponents(privateRoot, "hyper-v-device-artifacts");
         assertDeviceLabPathWithinRoot(backendRoot, privateRoot, "hyper-v-device-artifacts");
+        assertDeviceLabPathWithinRoot(backendRoot, quarantineRoot, "hyper-v-device-artifacts");
         const stat = lstatSync(privateRoot);
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("hyper-v-device-artifacts-invalid");
-        rmSync(privateRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-        if (existsSync(privateRoot)) throw new Error("hyper-v-device-artifacts-remain");
+        renameSync(privateRoot, quarantineRoot);
+        quarantined = true;
+        assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
+        assertNoSymlinkPathComponents(quarantineRoot, "hyper-v-device-artifacts");
+        const quarantinedStat = lstatSync(quarantineRoot);
+        if (!quarantinedStat.isDirectory() || quarantinedStat.isSymbolicLink()) throw new Error("hyper-v-device-artifacts-invalid");
+        rmSync(quarantineRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (existsSync(quarantineRoot)) throw new Error("hyper-v-device-artifacts-remain");
         return { ok: true, removed: true, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
     } catch (error) {
-        return { ok: false, removed: false, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot, error: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            removed: false,
+            deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId),
+            privateRoot,
+            ...(quarantined ? { quarantineRoot } : {}),
+            error: error instanceof Error ? error.message : String(error),
+        };
     }
 }
 

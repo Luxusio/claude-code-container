@@ -942,6 +942,7 @@ function handleWorktreeRemove(
     const wsPath = getWorkspacePath(cwd, branch);
 
     const wsProjectId = getProjectId(wsPath);
+    let removalResult: ReturnType<typeof removeWorkspace> | null = null;
     withContainerLifecycleLock(wsProjectId, () => {
         const activeSessions = getActiveSessionsForContainer(wsProjectId);
         if (activeSessions.length > 0 && !force) {
@@ -960,11 +961,11 @@ function handleWorktreeRemove(
         } catch {
             // Docker not running, skip container cleanup.
         }
+        console.log(`Removing workspace @${branch}...`);
+        removalResult = removeWorkspace(cwd, branch, { force });
     });
-
-    console.log(`Removing workspace @${branch}...`);
     try {
-        const result = removeWorkspace(cwd, branch, { force });
+        const result = removalResult!;
 
         for (const name of result.removed) {
             console.log(`  removed: ${name}`);

@@ -16,7 +16,6 @@ const PROCESS_IDENTITY_OBSERVATION_CACHE_MS = 1000;
 const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
 const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
 const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
-const PROCESS_IDENTITY_UNAVAILABLE_STALE_MS = 8 * 60 * 60 * 1000;
 const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 let ownLockProcessIdentity;
@@ -48,7 +47,8 @@ function managedDirectoryComponents(file) {
     // The parent of .ccc is the host-managed state root and trust boundary.
     // Validate it plus every component below it; paths outside device state
     // retain normal filesystem semantics for upload/download destinations.
-    const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc" && normalized[index + 1] === "devices");
+    const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc"
+        && ["devices", "locks"].includes(normalized[index + 1]));
     if (cccIndex < 0) return [];
     const managedStart = Math.max(0, cccIndex - 1);
     const result = [];
@@ -411,10 +411,6 @@ async function lockProcessObservationStatusAsync(lock) {
     return promise;
 }
 
-function identityUnavailableIsStale(ageMs, staleMs) {
-    return ageMs >= Math.max(staleMs, PROCESS_IDENTITY_UNAVAILABLE_STALE_MS);
-}
-
 function lockIsStale(file, lock, staleMs) {
     const ageMs = fileAgeMs(file);
     if (ageMs < 100) return false;
@@ -423,15 +419,11 @@ function lockIsStale(file, lock, staleMs) {
     if (lock.host === hostname() && Number.isInteger(lock.pid)) {
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
-            if (process.platform === "win32") return identityUnavailableIsStale(ageMs, staleMs);
+            if (process.platform === "win32") return false;
             const status = lockProcessObservationStatus(lock);
-            return status === "mismatch" || status === "exited"
-                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+            return status === "mismatch" || status === "exited";
         }
-        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
-        // Legacy PID-only locks can outlive their process and collide with a
-        // reused Windows PID. Reclaim them after the configured stale horizon.
-        return ageMs >= staleMs;
+        return false;
     }
     return ageMs >= staleMs;
 }
@@ -445,11 +437,9 @@ async function lockIsStaleAsync(file, lock, staleMs) {
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
             const status = await lockProcessObservationStatusAsync(lock);
-            return status === "mismatch" || status === "exited"
-                || (status === "unavailable" && identityUnavailableIsStale(ageMs, staleMs));
+            return status === "mismatch" || status === "exited";
         }
-        if (lock.processIdentityStatus === "unavailable") return identityUnavailableIsStale(ageMs, staleMs);
-        return ageMs >= staleMs;
+        return false;
     }
     return ageMs >= staleMs;
 }

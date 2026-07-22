@@ -566,8 +566,17 @@ describe("Hyper-V provider adapter", () => {
         expect(elevated).toContain("Start-Process -FilePath $Executable -Verb RunAs");
         expect(elevated).toContain("GetNamedPipeClientProcessId");
         expect(elevated).toContain("$ClientProcessId -ne [uint32]$Child.Id");
+        expect(elevated).toContain("$ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks");
+        expect(elevated).toContain("-not $OperationCompleted");
+        expect(elevated).toContain("$ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks");
         expect(elevated).toContain("S-1-5-32-544");
         expect(elevated).toContain("hyper-v-network-pipe-handshake-timeout");
+        const elevatedInnerEncoded = elevated.match(/\$InnerEncodedTemplate = '([^']+)'/)?.[1];
+        expect(elevatedInnerEncoded).toBeTruthy();
+        const elevatedInner = Buffer.from(elevatedInnerEncoded!, "base64").toString("utf16le");
+        expect(elevatedInner).toContain("Start-Sleep -Seconds 150");
+        expect(elevatedInner).toContain("StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks");
+        expect(elevatedInner).toContain("$ObservedWatchdog.StartTime.ToUniversalTime().Ticks -eq $WatchdogStartTicks");
         expect(elevated).not.toContain("RedirectStandardOutput");
     });
 

@@ -84,14 +84,16 @@ describe("device-lab shared mutation lock", () => {
         expect(JSON.parse(readFileSync(live, "utf8"))).toEqual(record);
     });
 
-    it("reclaims aged legacy locks whose PID has been reused", () => {
+    it("does not steal aged legacy locks while their PID is alive", () => {
         for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
             const file = lockPath();
-            writeFileSync(file, JSON.stringify({ token: testToken(), pid: process.pid, host: hostname() }));
+            const record = { token: testToken(), pid: process.pid, host: hostname() };
+            writeFileSync(file, JSON.stringify(record));
             const old = new Date(Date.now() - 5000);
             utimesSync(file, old, old);
-            expect(acquire(file, () => "recovered", { waitMs: 1000, staleMs: 1000 })).toBe("recovered");
-            expect(existsSync(file)).toBe(false);
+            expect(() => acquire(file, () => "unexpected", { waitMs: 30, staleMs: 1 }))
+                .toThrow(/Timed out acquiring shared mutation lock/);
+            expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(record);
         }
     });
 
@@ -142,11 +144,14 @@ describe("device-lab shared mutation lock", () => {
             expect(() => acquire(live, () => "unexpected", { waitMs: 30, staleMs: 1 }))
                 .toThrow(/Timed out acquiring shared mutation lock/);
 
-            const abandoned = lockPath();
-            writeFileSync(abandoned, JSON.stringify({ ...record, token: testToken() }));
+            const veryOld = lockPath();
+            const veryOldRecord = { ...record, token: testToken() };
+            writeFileSync(veryOld, JSON.stringify(veryOldRecord));
             const nineHoursOld = new Date(Date.now() - 9 * 60 * 60 * 1000);
-            utimesSync(abandoned, nineHoursOld, nineHoursOld);
-            expect(acquire(abandoned, () => "recovered", { waitMs: 1000, staleMs: 1 })).toBe("recovered");
+            utimesSync(veryOld, nineHoursOld, nineHoursOld);
+            expect(() => acquire(veryOld, () => "unexpected", { waitMs: 30, staleMs: 1 }))
+                .toThrow(/Timed out acquiring shared mutation lock/);
+            expect(JSON.parse(readFileSync(veryOld, "utf8"))).toEqual(veryOldRecord);
         }
     });
 
@@ -381,6 +386,22 @@ describe("device-lab shared mutation lock", () => {
             expect(acquire(file, () => "recovered", { waitMs: 500, staleMs: 1000 })).toBe("recovered");
             expect(existsSync(file)).toBe(false);
             expect(readFileSync(target, "utf8")).toBe(targetContents);
+        }
+    });
+
+    it.runIf(process.platform !== "win32")("rejects a linked .ccc/locks directory", () => {
+        for (const acquire of [withHostSharedMutationLock, withNestedSharedMutationLock]) {
+            const root = mkdtempSync(join(tmpdir(), "ccc-linked-session-lock-root-"));
+            const external = mkdtempSync(join(tmpdir(), "ccc-linked-session-lock-external-"));
+            roots.push(root, external);
+            const cccRoot = join(root, ".ccc");
+            mkdirSync(cccRoot, { recursive: true });
+            symlinkSync(external, join(cccRoot, "locks"), "dir");
+            const file = join(cccRoot, "locks", "container.lock");
+
+            expect(() => acquire(file, () => "unexpected", { waitMs: 30 }))
+                .toThrow(expect.objectContaining({ code: "device-lab-state-directory-invalid" }));
+            expect(readdirSync(external)).toEqual([]);
         }
     });
 
