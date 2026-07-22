@@ -315,10 +315,17 @@ describe("Hyper-V host setup CLI", () => {
             expect(innerScript).toContain("$SetupUserSid = '__CCC_HYPER_V_SETUP_USER_SID__'");
             expect(innerScript.indexOf("$Pipe.Connect(5000)")).toBeLessThan(innerScript.indexOf("Get-CimInstance -ClassName Win32_OptionalFeature"));
             expect(innerScript).toContain("$SelfStartTicks = (Get-Process -Id $PID");
+            expect(innerScript).toContain("$ParentPid = [int]'__CCC_HYPER_V_SETUP_PARENT_PID__'");
+            expect(innerScript).toContain("$Parent.StartTime.ToUniversalTime().Ticks -ne $ParentStartTicks");
             expect(innerScript).toContain("$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks");
             expect(innerScript).toContain("$WatchdogStartTicks = $Watchdog.StartTime.ToUniversalTime().Ticks");
             expect(innerScript).toContain("$ObservedWatchdog.StartTime.ToUniversalTime().Ticks -eq $WatchdogStartTicks");
             expect(innerScript).not.toContain("Set-Content");
+            expect(outerScript).toContain("$ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks");
+            expect(outerScript).toContain("-not $OperationCompleted");
+            expect(outerScript).toContain("$ObservedChild.StartTime.ToUniversalTime().Ticks -eq $ChildStartTicks");
+            expect(outerScript).toContain("$Child.WaitForExit(5000)");
+            expect(outerScript).toContain("hyper-v-setup-elevated-child-termination-unconfirmed");
         } finally {
             if (originalModulePath === undefined) delete process.env.PSModulePath;
             else process.env.PSModulePath = originalModulePath;

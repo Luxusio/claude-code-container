@@ -1,11 +1,12 @@
 // src/remote.ts - ccc remote functionality for Tailscale + Mutagen sync
 
 import {spawn, spawnSync} from "child_process";
+import {randomBytes} from "crypto";
 import {existsSync, mkdirSync, readFileSync, writeFileSync} from "fs";
 import {join, resolve} from "path";
 import {hashPath, getProjectId, getClaudeDir, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, prompt, REMOTE_CONFIG_DIR, IMAGE_NAME, CONTAINER_PID_LIMIT, COMMON_IGNORE_DIRS, MISE_VOLUME_NAME, collectForwardedEnv, isValidEnvKey} from "./utils.js";
 import {getContainerName} from "./docker.js";
-import {createSessionLock, hasOtherActiveSessions, removeSessionLock, withContainerLifecycleLock} from "./session.js";
+import {createSessionLock, removeSessionLock, withContainerLifecycleLock} from "./session.js";
 
 // === Types ===
 
@@ -78,6 +79,48 @@ export function getMutagenSessionName(projectPath: string): string {
 
 // === Remote Container Functions ===
 
+function remoteLifecycleShell(containerName: string, body: string): string {
+    const key = hashPath(containerName);
+    const token = randomBytes(16).toString("hex");
+    return [
+        "set -eu",
+        `_ccc_lock=/tmp/ccc-remote-lifecycle-${key}.lock`,
+        `_ccc_token=${token}`,
+        "_ccc_attempt=0",
+        "until mkdir \"$_ccc_lock\" 2>/dev/null; do _ccc_attempt=$((_ccc_attempt + 1)); [ \"$_ccc_attempt\" -lt 300 ] || exit 73; if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null; then _ccc_owner_command=$(ps -p \"$_ccc_owner_pid\" -o command= 2>/dev/null || true); case \"$_ccc_owner_command\" in *\"$_ccc_owner_token\"*) ;; *) rm -f \"$_ccc_lock/owner\" 2>/dev/null || true; rmdir \"$_ccc_lock\" 2>/dev/null || true ;; esac; fi; sleep 0.1; done",
+        "printf '%s %s\\n' \"$$\" \"$_ccc_token\" > \"$_ccc_lock/owner\"",
+        "_ccc_unlock() { if read -r _ccc_owner_pid _ccc_owner_token < \"$_ccc_lock/owner\" 2>/dev/null && [ \"$_ccc_owner_pid\" = \"$$\" ] && [ \"$_ccc_owner_token\" = \"$_ccc_token\" ]; then rm -f \"$_ccc_lock/owner\"; rmdir \"$_ccc_lock\" 2>/dev/null || true; fi; }",
+        "trap _ccc_unlock EXIT HUP INT TERM",
+        body,
+    ].join("; ");
+}
+
+function remoteSessionShell(containerName: string, command: string): string {
+    const key = hashPath(containerName);
+    const token = randomBytes(16).toString("hex");
+    return remoteLifecycleShell(containerName, [
+        `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
+        "mkdir -p \"$_ccc_sessions\"",
+        "chmod 700 \"$_ccc_sessions\"",
+        `_ccc_marker=$_ccc_sessions/${token}`,
+        `printf '%s %s\\n' "$$" "${token}" > "$_ccc_marker"`,
+        "_ccc_unlock",
+        "trap 'rm -f \"$_ccc_marker\"' EXIT HUP INT TERM",
+        command,
+    ].join("; "));
+}
+
+function remoteStopShell(containerName: string): string {
+    const key = hashPath(containerName);
+    return remoteLifecycleShell(containerName, [
+        `_ccc_sessions=/tmp/ccc-remote-sessions-${key}`,
+        "_ccc_active=0",
+        "if [ -d \"$_ccc_sessions\" ]; then for _ccc_marker in \"$_ccc_sessions\"/*; do [ -f \"$_ccc_marker\" ] || continue; if read -r _ccc_pid _ccc_session_token < \"$_ccc_marker\" 2>/dev/null; then _ccc_command=$(ps -p \"$_ccc_pid\" -o command= 2>/dev/null || true); case \"$_ccc_command\" in *\"$_ccc_session_token\"*) _ccc_active=1 ;; *) rm -f \"$_ccc_marker\" ;; esac; else rm -f \"$_ccc_marker\"; fi; done; fi",
+        "if [ \"$_ccc_active\" -ne 0 ]; then echo ccc-remote-sessions-active; exit 42; fi",
+        `docker stop ${containerName}`,
+    ].join("; "));
+}
+
 /**
  * Ensure remote ccc image exists, build if needed
  */
@@ -118,7 +161,7 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, p
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
-        dockerCmd
+        remoteLifecycleShell(containerName, dockerCmd),
     ], {encoding: "utf-8", timeout: 60000});
 
     if (result.status !== 0) {
@@ -335,6 +378,22 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
     const resolvedConfig = config;
     const remoteContainerPrefix = `remote--${hashPath(`${resolvedConfig.user}@${resolvedConfig.host}`)}--${projectId}`;
     let remoteSessionLock = createSessionLock(remoteContainerPrefix);
+    let requestedExitCode = 0;
+    const cleanupRemoteSession = () => {
+        if (!remoteSessionLock) return;
+        removeSessionLock(remoteSessionLock);
+        remoteSessionLock = "";
+    };
+    const forwardSignalAfterCleanup = (signal: NodeJS.Signals) => {
+        cleanupRemoteSession();
+        process.removeListener("SIGINT", handleSigint);
+        process.removeListener("SIGTERM", handleSigterm);
+        process.kill(process.pid, signal);
+    };
+    const handleSigint = () => forwardSignalAfterCleanup("SIGINT");
+    const handleSigterm = () => forwardSignalAfterCleanup("SIGTERM");
+    process.once("SIGINT", handleSigint);
+    process.once("SIGTERM", handleSigterm);
 
     try {
         // 1. Ensure ccc image exists on remote
@@ -377,7 +436,10 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         }
         const envString = envFlags.join(" ");
 
-        const execCmd = `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y || true; claude ${claudeArgs}"`;
+        const execCmd = remoteSessionShell(
+            containerName,
+            `docker exec ${envString} -it ${containerName} sh -c "cd /project/${projectId} && mise trust . 2>/dev/null; mise install -y || true; claude ${claudeArgs}"`,
+        );
 
         const sshProcess = spawn("ssh", ["-t", `${resolvedConfig.user}@${resolvedConfig.host}`, execCmd], {
             stdio: "inherit"
@@ -400,26 +462,34 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
             if (answer === "y" || answer === "yes") {
                 withContainerLifecycleLock(remoteContainerPrefix, () => {
                     removeSessionLock(remoteSessionLock);
-                    if (hasOtherActiveSessions(remoteContainerPrefix, remoteSessionLock)) {
+                    console.log("Stopping container...");
+                    const stopped = spawnSync(
+                        "ssh",
+                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(containerName)],
+                        { encoding: "utf-8" },
+                    );
+                    if (stopped.status === 42 || stopped.stdout?.includes("ccc-remote-sessions-active")) {
                         console.log("Remote container remains running: another CCC remote session is active.");
                         return;
                     }
+                    if (stopped.status !== 0) throw new Error(`Failed to stop remote container: ${stopped.stderr || stopped.status}`);
                     console.log("Pausing sync...");
                     spawnSync("mutagen", ["sync", "pause", sessionName], {stdio: "inherit"});
-                    console.log("Stopping container...");
-                    spawnSync("ssh", [`${resolvedConfig.user}@${resolvedConfig.host}`, `docker stop ${containerName}`], {stdio: "inherit"});
                 });
                 remoteSessionLock = "";
             }
         }
 
-        process.exit(exitCode);
+        requestedExitCode = exitCode;
     } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : err}`);
-        process.exit(1);
+        requestedExitCode = 1;
     } finally {
-        if (remoteSessionLock) removeSessionLock(remoteSessionLock);
+        process.removeListener("SIGINT", handleSigint);
+        process.removeListener("SIGTERM", handleSigterm);
+        cleanupRemoteSession();
     }
+    process.exit(requestedExitCode);
 }
 
 // === Setup and Check Commands ===

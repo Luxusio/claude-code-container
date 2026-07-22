@@ -7,7 +7,6 @@ import * as utils from '../utils.js'
 
 const remoteSessionMocks = vi.hoisted(() => ({
   createSessionLock: vi.fn(() => '/locks/remote.lock'),
-  hasOtherActiveSessions: vi.fn(() => false),
   removeSessionLock: vi.fn(),
   withContainerLifecycleLock: vi.fn((_prefix: string, operation: () => unknown) => operation()),
 }))
@@ -97,7 +96,6 @@ describe('checkTool helper (via checkTailscale/checkMutagen)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     remoteSessionMocks.createSessionLock.mockReturnValue('/locks/remote.lock')
-    remoteSessionMocks.hasOtherActiveSessions.mockReturnValue(false)
     remoteSessionMocks.withContainerLifecycleLock.mockImplementation((_prefix: string, operation: () => unknown) => operation())
   })
 
@@ -1257,6 +1255,9 @@ describe('remoteExec', () => {
 
   it('pauses sync and stops container when user says yes on exit', async () => {
     setupSuccessfulSpawnSyncs()
+    mockSpawnSync.mockReturnValue({
+      status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
+    })
     mockExistsSync.mockReturnValue(true)
     const config = { host: 'myhost', user: 'myuser', remotePath: '' }
     mockReadFileSync.mockReturnValue(JSON.stringify(config) as any)
@@ -1278,8 +1279,13 @@ describe('remoteExec', () => {
       (c) => c[0] === 'ssh' && Array.isArray(c[1]) && c[1].some((a: string) => a.includes('docker stop'))
     )
     expect(sshStopCalls.length).toBeGreaterThan(0)
+    expect(sshStopCalls[0][1][1]).toContain('/tmp/ccc-remote-lifecycle-')
+    expect(sshStopCalls[0][1][1]).toContain('ps -p')
+    expect(sshStopCalls[0][1][1]).toContain('-o command=')
+    expect(sshStopCalls[0][1][1]).toContain('_ccc_session_token')
     expect(remoteSessionMocks.withContainerLifecycleLock).toHaveBeenCalledTimes(2)
     expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
   })
 
   it('keeps the remote container and sync running while another remote session is active', async () => {
@@ -1288,14 +1294,20 @@ describe('remoteExec', () => {
     mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'myhost', user: 'myuser', remotePath: '' }) as any)
     mockSpawn.mockReturnValue(makeSpawnMock(0) as any)
     mockPrompt.mockResolvedValue('y')
-    remoteSessionMocks.hasOtherActiveSessions.mockReturnValue(true)
-    vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+    mockSpawnSync.mockReturnValue({
+      status: 42, stdout: 'ccc-remote-sessions-active\n', stderr: '', pid: 0, output: [], signal: null
+    })
+    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
 
     expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'mutagen' && (call[1] as string[])[1] === 'pause')).toBe(false)
-    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker stop')))).toBe(false)
+    const stopCall = mockSpawnSync.mock.calls.find((call) => call[0] === 'ssh' && (call[1] as string[]).some((arg) => arg.includes('docker stop')))
+    expect(stopCall).toBeTruthy()
+    expect((stopCall![1] as string[])[1]).toContain('ccc-remote-sessions-active')
+    expect((stopCall![1] as string[])[1]).toContain('ps -p')
     expect(console.log).toHaveBeenCalledWith('Remote container remains running: another CCC remote session is active.')
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
   })
 
   it('does not pause/stop when user says no on exit', async () => {
@@ -1339,6 +1351,38 @@ describe('remoteExec', () => {
 
     await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
     expect(exitMock).toHaveBeenCalledWith(1)
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(exitMock.mock.invocationCallOrder[0])
+  })
+
+  it('removes the session lock before forwarding termination signals', async () => {
+    setupSuccessfulSpawnSyncs()
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'myhost', user: 'myuser', remotePath: '' }) as any)
+    mockPrompt.mockResolvedValue('n')
+    let closeCallback: ((code: number) => void) | undefined
+    const emitter: any = {
+      on: vi.fn((event: string, callback: (code: number) => void) => {
+        if (event === 'close') closeCallback = callback
+        return emitter
+      })
+    }
+    mockSpawn.mockReturnValue(emitter)
+    const killMock = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+
+    const execution = remoteExec('/home/user/project')
+    for (let attempt = 0; attempt < 10 && !closeCallback; attempt += 1) await Promise.resolve()
+    expect(closeCallback).toBeTypeOf('function')
+    process.emit('SIGTERM')
+
+    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledWith('/locks/remote.lock')
+    expect(killMock).toHaveBeenCalledWith(process.pid, 'SIGTERM')
+    expect(remoteSessionMocks.removeSessionLock.mock.invocationCallOrder[0]).toBeLessThan(killMock.mock.invocationCallOrder[0])
+
+    closeCallback!(0)
+    await expect(execution).rejects.toThrow('exit:0')
+    expect(exitMock).toHaveBeenCalledWith(0)
+    expect(remoteSessionMocks.removeSessionLock).toHaveBeenCalledTimes(1)
   })
 
   it('throws error in waitForSync when sync status is null', async () => {
@@ -1434,5 +1478,9 @@ describe('remoteExec', () => {
     // spawn("ssh", ["-t", "user@host", execCmd], ...)
     const execCmd = spawnCall[1][2] as string
     expect(execCmd).toContain("'--continue'")
+    expect(execCmd).toContain('/tmp/ccc-remote-lifecycle-')
+    expect(execCmd).toContain('/tmp/ccc-remote-sessions-')
+    expect(execCmd).toContain('chmod 700')
+    expect(execCmd).toContain('_ccc_owner_token')
   })
 })

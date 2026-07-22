@@ -1,5 +1,5 @@
 import { randomBytes } from "crypto";
-import { existsSync, lstatSync, renameSync, rmSync, type Stats } from "fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, rmSync, type Stats } from "fs";
 import { basename, dirname, join } from "path";
 
 export type QuarantinedCleanupError = Error & { quarantineRoot?: string };
@@ -16,12 +16,15 @@ export function quarantineAndRemoveDirectory(
     validate: (path: string) => void,
     operations: QuarantineCleanupOperations = {},
 ): { quarantineRoot: string } {
-    const quarantineRoot = join(dirname(target), `.${basename(target)}.${randomBytes(16).toString("hex")}.cleanup`);
+    const quarantineParent = join(dirname(target), `.ccc-cleanup-${randomBytes(16).toString("hex")}`);
+    const quarantineRoot = join(quarantineParent, basename(target));
     validate(target);
     const original = lstatSync(target);
     if (!original.isDirectory() || original.isSymbolicLink()) throw new Error("quarantined-cleanup-target-invalid");
-    (operations.rename ?? renameSync)(target, quarantineRoot);
+    mkdirSync(quarantineParent, { mode: 0o700 });
     try {
+        (operations.rename ?? renameSync)(target, quarantineRoot);
+        validate(quarantineParent);
         validate(quarantineRoot);
         const quarantined = lstatSync(quarantineRoot);
         if (!quarantined.isDirectory() || quarantined.isSymbolicLink() || !sameDirectoryIdentity(original, quarantined)) {
@@ -29,8 +32,12 @@ export function quarantineAndRemoveDirectory(
         }
         rmSync(quarantineRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
         if (existsSync(quarantineRoot)) throw new Error("quarantined-cleanup-target-remains");
+        rmdirSync(quarantineParent);
         return { quarantineRoot };
     } catch (error) {
+        if (!existsSync(quarantineRoot)) {
+            try { rmdirSync(quarantineParent); } catch { /* preserve the primary failure */ }
+        }
         const cleanupError = (error instanceof Error ? error : new Error(String(error))) as QuarantinedCleanupError;
         cleanupError.quarantineRoot = quarantineRoot;
         throw cleanupError;

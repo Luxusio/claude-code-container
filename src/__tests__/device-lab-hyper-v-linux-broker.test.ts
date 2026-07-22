@@ -1480,7 +1480,7 @@ describe("device-lab Hyper-V broker", () => {
             if (networkSetup) {
                 standardNetworkCommand = command;
                 pendingElevatedNetwork = "setup";
-                return { ...command, status: 1, stdout: "", stderr: "hyper-v-network-elevation-required" };
+                return { ...command, status: 1, stdout: "", stderr: "New-NetIPAddress: PermissionDenied (Windows System Error 5)" };
             }
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const seed = script.includes("NewFileSystemLabel cidata");

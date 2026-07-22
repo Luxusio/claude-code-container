@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { spawn, spawnSync } from "child_process";
-import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
+import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { promises as fsPromises } from "fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname, uptime } from "os";
@@ -2843,6 +2843,32 @@ function providerExecutable(name: string, normalized: NormalizedBrokerOptions): 
         if (existsSync(runtimeExecutable)) return runtimeExecutable;
     }
     return resolveExecutablePath(name);
+}
+
+const WINDOWS_SYSTEM_POWERSHELL_PATH = "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+function canonicalWindowsPowerShellForElevation(): string | null {
+    if (process.platform !== "win32") return null;
+    try {
+        assertNoSymlinkPathComponents(dirname(WINDOWS_SYSTEM_POWERSHELL_PATH), "hyper-v-system-powershell");
+        const source = lstatSync(WINDOWS_SYSTEM_POWERSHELL_PATH);
+        if (!source.isFile() || source.isSymbolicLink()) return null;
+        const resolved = realpathSync.native(WINDOWS_SYSTEM_POWERSHELL_PATH);
+        const executable = /^\\\\\?\\[A-Za-z]:\\/.test(resolved) ? resolved.slice(4) : resolved;
+        if (!/^[A-Za-z]:\\/.test(executable)) return null;
+        assertNoSymlinkPathComponents(dirname(executable), "hyper-v-system-powershell");
+        const target = lstatSync(executable);
+        return target.isFile() && !target.isSymbolicLink() ? executable : null;
+    } catch {
+        return null;
+    }
+}
+
+function hyperVNetworkElevationExecutable(standardExecutable: string): string {
+    if (process.platform !== "win32") return standardExecutable;
+    const canonical = canonicalWindowsPowerShellForElevation();
+    if (!canonical) throw new Error("hyper-v-system-powershell-unavailable");
+    return canonical;
 }
 
 function serviceProviderCommand(provider: string, executable: string | null, args: string[]): ProviderCommand {
@@ -8309,7 +8335,11 @@ function removeHyperVNetworkIntentBestEffort(): void {
 }
 
 function hyperVNetworkElevationRequired(result: ProviderCommandResult): boolean {
-    return [result.error, result.stderr, result.stdout].some((value) => String(value || "").includes("hyper-v-network-elevation-required"));
+    const diagnostic = [result.error, result.stderr, result.stdout].map((value) => String(value || "")).join("\n");
+    return diagnostic.includes("hyper-v-network-elevation-required")
+        || diagnostic.includes("PermissionDenied")
+        || diagnostic.includes("Windows System Error 5")
+        || /access (?:is )?denied/i.test(diagnostic);
 }
 
 async function runHyperVNetworkCommandWithElevation(
@@ -8325,7 +8355,13 @@ async function runHyperVNetworkCommandWithElevation(
     if (!commandSucceeded(execution) && hyperVNetworkElevationRequired(execution)) {
         const timeoutMs = hyperVRemainingTimeout(deadlineAt, 180000);
         const elevatedDeadlineUnixMs = Date.now() + Math.max(1, timeoutMs - HYPER_V_ELEVATED_TERMINATION_GRACE_MS);
-        execution = await hyperVProviderCommandRunner(normalized, elevated(elevatedDeadlineUnixMs), {
+        let elevatedCommand: ProviderCommand;
+        try {
+            elevatedCommand = elevated(elevatedDeadlineUnixMs);
+        } catch (error) {
+            return { ...execution, status: 1, error: error instanceof Error ? error.message : String(error) };
+        }
+        execution = await hyperVProviderCommandRunner(normalized, elevatedCommand, {
             timeoutMs,
             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         });
@@ -8374,7 +8410,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
     const execution = await runHyperVNetworkCommandWithElevation(
         normalized,
         hyperVEnsureNetworkCommand(networkOptions),
-        (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({ ...networkOptions, elevated: true, elevatedDeadlineUnixMs }),
+        (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({ ...networkOptions, executable: hyperVNetworkElevationExecutable(powershell), elevated: true, elevatedDeadlineUnixMs }),
         deadlineAt,
     );
     assertHyperVOperationDeadline(deadlineAt);
@@ -8442,7 +8478,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
                 const cleanupExecution = await runHyperVNetworkCommandWithElevation(
                     normalized,
                     hyperVCleanupNetworkCommand(cleanupOptions),
-                    (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true, elevatedDeadlineUnixMs }),
+                    (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, executable: hyperVNetworkElevationExecutable(powershell), elevated: true, elevatedDeadlineUnixMs }),
                     deadlineAt,
                 );
                 if (!commandSucceeded(cleanupExecution)) {
@@ -8507,7 +8543,7 @@ async function releaseHyperVNetworkAllocationAndCleanup(ownerId: string, deviceI
     const execution = await runHyperVNetworkCommandWithElevation(
         normalized,
         hyperVCleanupNetworkCommand(cleanupOptions),
-        (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, elevated: true, elevatedDeadlineUnixMs }),
+        (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, executable: hyperVNetworkElevationExecutable(powershell), elevated: true, elevatedDeadlineUnixMs }),
         deadlineAt,
     );
     if (!commandSucceeded(execution)) return { ...release, ok: false, error: execution.stderr || execution.error || "hyper-v-network-cleanup-failed", networkCleanup: execution };
@@ -8750,7 +8786,13 @@ function hyperVOwnerImageProfileRoot(ownerId: string, profile: HyperVImageProfil
 function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void {
     assertNoSymlinkPathComponents(profileRoot, "hyper-v-base-image-cleanup");
     rmSync(join(profileRoot, "base.partial.vhdx"), { force: true });
-    rmSync(join(profileRoot, ".acquire-work"), { recursive: true, force: true });
+    const acquireWork = join(profileRoot, ".acquire-work");
+    if (existsSync(acquireWork)) {
+        quarantineAndRemoveDirectory(acquireWork, (path) => {
+            assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cleanup");
+            assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
+        });
+    }
     if (!existsSync(join(profileRoot, "manifest.json"))) rmSync(join(profileRoot, "base.vhdx"), { force: true });
 }
 

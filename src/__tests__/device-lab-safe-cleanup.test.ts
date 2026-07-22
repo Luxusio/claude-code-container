@@ -24,7 +24,8 @@ describe("quarantineAndRemoveDirectory", () => {
         expect(existsSync(target)).toBe(false);
         expect(existsSync(result.quarantineRoot)).toBe(false);
         expect(validated[0]).toBe(target);
-        expect(basename(validated[1])).toMatch(/^\.device\.[a-f0-9]{32}\.cleanup$/);
+        expect(basename(validated[1])).toMatch(/^\.ccc-cleanup-[a-f0-9]{32}$/);
+        expect(basename(validated[2])).toBe("device");
     });
 
     it.runIf(process.platform !== "win32")("preserves evidence and refuses a post-rename symlink replacement", () => {
@@ -37,12 +38,10 @@ describe("quarantineAndRemoveDirectory", () => {
         writeFileSync(join(target, "artifact.txt"), "artifact");
         writeFileSync(join(external, "victim.txt"), "preserved");
 
-        let validationCount = 0;
         let caught: QuarantinedCleanupError | null = null;
         try {
             quarantineAndRemoveDirectory(target, (path) => {
-                validationCount += 1;
-                if (validationCount === 2) {
+                if (basename(path) === "device" && path !== target) {
                     renameSync(path, displaced);
                     symlinkSync(external, path, "dir");
                 }

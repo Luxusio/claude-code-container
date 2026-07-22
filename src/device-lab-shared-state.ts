@@ -25,6 +25,7 @@ const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
 const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
 const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
 const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
+const PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 let ownLockProcessIdentity: DeviceRuntimeProcessIdentity | null | undefined;
 let ownLockProcessIdentityRetryAt = 0;
@@ -43,9 +44,14 @@ type DirectoryIdentity = { path: string; stats: Stats | null };
 
 function sameDirectory(left: Stats, right: Stats): boolean {
     if (!left.isDirectory() || !right.isDirectory() || left.isSymbolicLink() || right.isSymbolicLink()) return false;
-    if (left.dev !== 0 && right.dev !== 0 && left.dev !== right.dev) return false;
-    if (left.ino !== 0 && right.ino !== 0 && left.ino !== right.ino) return false;
-    return true;
+    const leftHasFileId = left.dev !== 0 && left.ino !== 0;
+    const rightHasFileId = right.dev !== 0 && right.ino !== 0;
+    if (leftHasFileId || rightHasFileId) {
+        return leftHasFileId && rightHasFileId && left.dev === right.dev && left.ino === right.ino;
+    }
+    const leftHasBirthtime = Number.isFinite(left.birthtimeMs) && left.birthtimeMs > 0;
+    const rightHasBirthtime = Number.isFinite(right.birthtimeMs) && right.birthtimeMs > 0;
+    return leftHasBirthtime && rightHasBirthtime && left.birthtimeMs === right.birthtimeMs;
 }
 
 function managedDirectoryComponents(file: string): string[] {
@@ -432,14 +438,14 @@ function lockIsStale(file: string, lock: Record<string, unknown> | null, staleMs
     if (lock.host === hostname() && Number.isInteger(lock.pid)) {
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
-            if (process.platform === "win32") return false;
+            if (process.platform === "win32") return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
             const status = lockProcessObservationStatus(lock);
             return status === "mismatch" || status === "exited";
         }
         // A live PID is insufficient proof of ownership, but it is also
         // insufficient proof that the lock is abandoned. Fail closed until
         // the process exits or a recorded identity positively mismatches.
-        return false;
+        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
     }
     return ageMs >= staleMs;
 }
@@ -455,7 +461,7 @@ async function lockIsStaleAsync(file: string, lock: Record<string, unknown> | nu
             const status = await lockProcessObservationStatusAsync(lock);
             return status === "mismatch" || status === "exited";
         }
-        return false;
+        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
     }
     return ageMs >= staleMs;
 }

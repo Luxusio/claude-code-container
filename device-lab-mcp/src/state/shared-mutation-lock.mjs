@@ -17,6 +17,7 @@ const PROCESS_IDENTITY_UNAVAILABLE_CACHE_MS = 30 * 1000;
 const PROCESS_IDENTITY_OBSERVATION_MAP_LIMIT = 128;
 const PROCESS_IDENTITY_OBSERVATION_CONCURRENCY = 4;
 const PROCESS_IDENTITY_RETRY_MS = 60 * 1000;
+const PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 let ownLockProcessIdentity;
 let ownLockProcessIdentityRetryAt = 0;
@@ -419,11 +420,11 @@ function lockIsStale(file, lock, staleMs) {
     if (lock.host === hostname() && Number.isInteger(lock.pid)) {
         if (!processIsAlive(lock.pid)) return true;
         if (lock.processIdentity) {
-            if (process.platform === "win32") return false;
+            if (process.platform === "win32") return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
             const status = lockProcessObservationStatus(lock);
             return status === "mismatch" || status === "exited";
         }
-        return false;
+        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
     }
     return ageMs >= staleMs;
 }
@@ -439,7 +440,7 @@ async function lockIsStaleAsync(file, lock, staleMs) {
             const status = await lockProcessObservationStatusAsync(lock);
             return status === "mismatch" || status === "exited";
         }
-        return false;
+        return ageMs >= PROCESS_IDENTITY_UNAVAILABLE_MAX_AGE_MS;
     }
     return ageMs >= staleMs;
 }

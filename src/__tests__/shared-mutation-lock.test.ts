@@ -149,9 +149,8 @@ describe("device-lab shared mutation lock", () => {
             writeFileSync(veryOld, JSON.stringify(veryOldRecord));
             const nineHoursOld = new Date(Date.now() - 9 * 60 * 60 * 1000);
             utimesSync(veryOld, nineHoursOld, nineHoursOld);
-            expect(() => acquire(veryOld, () => "unexpected", { waitMs: 30, staleMs: 1 }))
-                .toThrow(/Timed out acquiring shared mutation lock/);
-            expect(JSON.parse(readFileSync(veryOld, "utf8"))).toEqual(veryOldRecord);
+            expect(acquire(veryOld, () => "recovered", { waitMs: 1000, staleMs: 1 })).toBe("recovered");
+            expect(existsSync(veryOld)).toBe(false);
         }
     });
 
@@ -546,6 +545,48 @@ describe("device-lab shared mutation lock", () => {
             expect(entered).toBe(false);
             expect(readdirSync(backend)).toEqual([]);
             expect(existsSync(join(displaced, "devices.mutation.lock"))).toBe(true);
+        } finally {
+            vi.doUnmock("fs");
+            vi.resetModules();
+        }
+    });
+
+    it("uses birth time to reject replacements when filesystem IDs are unavailable", async () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-ts-zero-file-id-"));
+        roots.push(root);
+        const backend = join(root, ".ccc", "devices", "owners", "test-owner", "android");
+        const file = join(backend, "devices.mutation.lock");
+        mkdirSync(backend, { recursive: true });
+        let replaced = false;
+
+        vi.resetModules();
+        vi.doMock("fs", async (importOriginal) => {
+            const actual = await importOriginal<typeof import("fs")>();
+            return {
+                ...actual,
+                lstatSync(path: import("fs").PathLike, options?: import("fs").StatOptions) {
+                    const stats = actual.lstatSync(path, options as never);
+                    const birthtimeMs = replaced ? 200 : 100;
+                    return new Proxy(stats, {
+                        get(target, property, receiver) {
+                            if (property === "dev" || property === "ino") return 0;
+                            if (property === "birthtimeMs") return birthtimeMs;
+                            const value = Reflect.get(target, property, receiver);
+                            return typeof value === "function" ? value.bind(target) : value;
+                        },
+                    });
+                },
+            };
+        });
+
+        try {
+            const module = await import("../device-lab-shared-state.js?zero-file-id-replacement");
+            const identities = module.secureStateParentDirectory(file);
+            expect(identities.length).toBeGreaterThan(0);
+            expect(identities.every((identity) => identity.stats?.dev === 0 && identity.stats?.ino === 0)).toBe(true);
+            replaced = true;
+            expect(() => module.assertStateDirectoriesUnchanged(identities))
+                .toThrow(expect.objectContaining({ code: "device-lab-state-directory-invalid" }));
         } finally {
             vi.doUnmock("fs");
             vi.resetModules();
