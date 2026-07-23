@@ -16,7 +16,12 @@ import { inspectDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess } from 
 import { assertOwnerDeviceStateWritable, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease } from "./device-lab-ownership-state.js";
 import { DeviceLabProjectEnumerationError, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
-import { withSharedMutationLock, writeJsonFileAtomically } from "./device-lab-shared-state.js";
+import {
+    assertStateDirectoriesUnchanged,
+    secureStateParentDirectory,
+    withSharedMutationLock,
+    writeJsonFileAtomically,
+} from "./device-lab-shared-state.js";
 import { readDeviceLabStateFile } from "./device-lab-state-file.js";
 import {
     acceptHyperVWindowsEvaluationLicense,
@@ -115,75 +120,140 @@ function canonicalWindowsPowerShellPath(testSystemRoot?: string): string | null 
     }
 }
 
+type HyperVSetupNetworkAllocation = {
+    ownerId: string;
+    deviceId: string;
+    incarnationId?: string;
+    address: string;
+    macAddress: string;
+    allocatedAt: string;
+};
+
+type HyperVSetupNetworkState = {
+    version: 1;
+    switchName: string;
+    switchId: string;
+    marker: string;
+    natName: string;
+    natInstanceId: string;
+    prefix: string;
+    gateway: string;
+    outboundPolicy: "nat";
+    managedNat: boolean;
+    allocations: HyperVSetupNetworkAllocation[];
+};
+
+function readHyperVSetupNetworkState(file: string): HyperVSetupNetworkState | null {
+    if (!existsSync(file)) return null;
+    try {
+        return readDeviceLabStateFile(file, (parsed) => {
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                throw new Error("hyper-v-network-state-identity-conflict");
+            }
+            const current = parsed as Record<string, unknown>;
+            if (current.version !== 1
+                || current.switchName !== HYPER_V_NETWORK_SWITCH
+                || typeof current.switchId !== "string"
+                || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(current.switchId)
+                || (current.natName !== HYPER_V_NETWORK_NAT && !/^CCCDeviceLab-[a-f0-9]{24}$/.test(String(current.natName || "")))
+                || typeof current.natInstanceId !== "string" || !current.natInstanceId
+                || current.natInstanceId.length > 256 || /[\u0000-\u001f]/.test(current.natInstanceId)
+                || typeof current.marker !== "string"
+                || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(current.marker)
+                || current.prefix !== HYPER_V_NETWORK_PREFIX
+                || current.gateway !== HYPER_V_NETWORK_GATEWAY
+                || current.outboundPolicy !== "nat"
+                || typeof current.managedNat !== "boolean"
+                || !Array.isArray(current.allocations)) {
+                throw new Error("hyper-v-network-state-identity-conflict");
+            }
+            const identities = new Set<string>();
+            const addresses = new Set<string>();
+            const macAddresses = new Set<string>();
+            const allocations = current.allocations.map((candidate) => {
+                if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+                    throw new Error("hyper-v-network-state-identity-conflict");
+                }
+                const allocation = candidate as Record<string, unknown>;
+                if (typeof allocation.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(allocation.ownerId)
+                    || typeof allocation.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(allocation.deviceId)
+                    || (allocation.incarnationId !== undefined
+                        && (typeof allocation.incarnationId !== "string" || !/^[a-f0-9]{32}$/.test(allocation.incarnationId)))
+                    || typeof allocation.address !== "string" || !/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(allocation.address)
+                    || (allocation.macAddress !== undefined
+                        && (typeof allocation.macAddress !== "string" || !/^02(?::[a-f0-9]{2}){5}$/.test(allocation.macAddress)))
+                    || typeof allocation.allocatedAt !== "string" || Number.isNaN(Date.parse(allocation.allocatedAt))) {
+                    throw new Error("hyper-v-network-state-identity-conflict");
+                }
+                const identity = `${allocation.ownerId}:${allocation.deviceId}`;
+                const digest = createHash("sha256").update(`${allocation.ownerId}\0${allocation.deviceId}\0${0}`).digest();
+                const macAddress = typeof allocation.macAddress === "string"
+                    ? allocation.macAddress
+                    : [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]]
+                        .map((byte) => byte.toString(16).padStart(2, "0"))
+                        .join(":");
+                if (identities.has(identity) || addresses.has(allocation.address) || macAddresses.has(macAddress)) {
+                    throw new Error("hyper-v-network-state-identity-conflict");
+                }
+                identities.add(identity);
+                addresses.add(allocation.address);
+                macAddresses.add(macAddress);
+                return {
+                    ownerId: allocation.ownerId,
+                    deviceId: allocation.deviceId,
+                    ...(typeof allocation.incarnationId === "string" ? { incarnationId: allocation.incarnationId } : {}),
+                    address: allocation.address,
+                    macAddress,
+                    allocatedAt: allocation.allocatedAt,
+                };
+            });
+            return {
+                version: 1,
+                switchName: current.switchName,
+                switchId: current.switchId.toLowerCase(),
+                marker: current.marker,
+                natName: current.natName,
+                natInstanceId: current.natInstanceId,
+                prefix: current.prefix,
+                gateway: current.gateway,
+                outboundPolicy: "nat",
+                managedNat: current.managedNat,
+                allocations,
+            } as HyperVSetupNetworkState;
+        }, "hyper-v-network-state", 256 * 1024);
+    } catch {
+        throw new Error("hyper-v-network-state-identity-conflict");
+    }
+}
+
 function persistHyperVSetupNetworkState(
-    setupRoot: string,
-    networkStateRoot: string | undefined,
+    file: string,
+    current: HyperVSetupNetworkState | null,
     network: NonNullable<ReturnType<typeof parseHyperVSetupObservation>>["network"],
 ): void {
     if (!network) throw new Error("hyper-v-setup-network-result-invalid");
-    const root = resolve(networkStateRoot || join(setupRoot, "network"));
-    mkdirSync(root, { recursive: true });
-    assertPlainDirectoryPath(root, "hyper-v-network-state-root");
-    const file = join(root, "hyper-v.json");
-    let allocations: unknown[] = [];
-    if (existsSync(file)) {
-        const current = readDeviceLabStateFile(file, (parsed) => parsed as Record<string, unknown>, "hyper-v-network-state", 256 * 1024);
-        if (!current || current.version !== 1
-            || current.switchName !== network.switchName
-            || String(current.switchId || "").toLowerCase() !== network.switchId.toLowerCase()
-            || current.natName !== network.natName
-            || current.natInstanceId !== network.natInstanceId
-            || current.prefix !== network.prefix
-            || current.gateway !== network.gateway
-            || !Array.isArray(current.allocations)) {
-            throw new Error("hyper-v-network-state-identity-conflict");
-        }
-        const identities = new Set<string>();
-        const addresses = new Set<string>();
-        const macAddresses = new Set<string>();
-        allocations = current.allocations.map((candidate) => {
-            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-                throw new Error("hyper-v-network-state-identity-conflict");
-            }
-            const allocation = candidate as Record<string, unknown>;
-            if (typeof allocation.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(allocation.ownerId)
-                || typeof allocation.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(allocation.deviceId)
-                || (allocation.incarnationId !== undefined
-                    && (typeof allocation.incarnationId !== "string" || !/^[a-f0-9]{32}$/.test(allocation.incarnationId)))
-                || typeof allocation.address !== "string" || !/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(allocation.address)
-                || (allocation.macAddress !== undefined
-                    && (typeof allocation.macAddress !== "string" || !/^02(?::[a-f0-9]{2}){5}$/.test(allocation.macAddress)))
-                || typeof allocation.allocatedAt !== "string" || Number.isNaN(Date.parse(allocation.allocatedAt))) {
-                throw new Error("hyper-v-network-state-identity-conflict");
-            }
-            const identity = `${allocation.ownerId}:${allocation.deviceId}`;
-            const digest = createHash("sha256").update(`${allocation.ownerId}\0${allocation.deviceId}\0${0}`).digest();
-            const macAddress = typeof allocation.macAddress === "string"
-                ? allocation.macAddress
-                : [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]]
-                    .map((byte) => byte.toString(16).padStart(2, "0"))
-                    .join(":");
-            if (identities.has(identity) || addresses.has(allocation.address) || macAddresses.has(macAddress)) {
-                throw new Error("hyper-v-network-state-identity-conflict");
-            }
-            identities.add(identity);
-            addresses.add(allocation.address);
-            macAddresses.add(macAddress);
-            return { ...allocation, macAddress };
-        });
+    const expectedSwitchName = current?.switchName || HYPER_V_NETWORK_SWITCH;
+    const expectedNatName = current?.natName || HYPER_V_NETWORK_NAT;
+    if (network.switchName !== expectedSwitchName
+        || (current && network.switchId.toLowerCase() !== current.switchId)
+        || network.natName !== expectedNatName
+        || (current && network.natInstanceId !== current.natInstanceId)
+        || network.prefix !== HYPER_V_NETWORK_PREFIX
+        || network.gateway !== HYPER_V_NETWORK_GATEWAY) {
+        throw new Error("hyper-v-network-state-identity-conflict");
     }
     writeJsonFileAtomically(file, {
         version: 1,
         switchName: network.switchName,
         switchId: network.switchId.toLowerCase(),
-        marker: HYPER_V_NETWORK_MARKER,
+        marker: current?.marker || HYPER_V_NETWORK_MARKER,
         natName: network.natName,
         natInstanceId: network.natInstanceId,
         prefix: network.prefix,
         gateway: network.gateway,
         outboundPolicy: "nat",
-        managedNat: false,
-        allocations,
+        managedNat: current?.managedNat === true,
+        allocations: current?.allocations || [],
     });
 }
 
@@ -773,15 +843,6 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
     } catch (error) {
         return { ok: false, text: `CCC Hyper-V setup failed: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const setupCommand = hyperVSetupCommand(powershell, {
-        switchName: HYPER_V_NETWORK_SWITCH,
-        natName: HYPER_V_NETWORK_NAT,
-        marker: HYPER_V_NETWORK_MARKER,
-        prefix: HYPER_V_NETWORK_PREFIX,
-        gateway: HYPER_V_NETWORK_GATEWAY,
-        prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
-        allowExistingNat: true,
-    });
     const mutationLockFile = resolve(options.mutationLockFile
         || (options.stateRoot
             ? join(setupRoot, "host-locks", "hyper-v.mutation.lock")
@@ -794,12 +855,32 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
         mkdirSync(dirname(mutationLockFile), { recursive: true });
         assertPlainDirectoryPath(dirname(mutationLockFile), "hyper-v-setup-mutation-lock-root");
         prepared = withSharedMutationLock(mutationLockFile, () => {
+            const networkStateRoot = resolve(options.networkStateRoot
+                || (options.stateRoot ? join(setupRoot, "network") : join(dirname(setupRoot), "network")));
+            mkdirSync(networkStateRoot, { recursive: true });
+            assertPlainDirectoryPath(networkStateRoot, "hyper-v-network-state-root");
+            const networkStateFile = join(networkStateRoot, "hyper-v.json");
+            const networkDirectories = secureStateParentDirectory(networkStateFile);
+            const current = readHyperVSetupNetworkState(networkStateFile);
+            const setupCommand = hyperVSetupCommand(powershell, {
+                switchName: current?.switchName || HYPER_V_NETWORK_SWITCH,
+                natName: current?.natName || HYPER_V_NETWORK_NAT,
+                marker: current?.marker || HYPER_V_NETWORK_MARKER,
+                prefix: HYPER_V_NETWORK_PREFIX,
+                gateway: HYPER_V_NETWORK_GATEWAY,
+                prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
+                allowExistingNat: current !== null,
+                expectedSwitchId: current?.switchId,
+                expectedNatInstanceId: current?.natInstanceId,
+            });
             const execution = runner(setupCommand.executable, setupCommand.args, 15 * 60_000, setupCommand.input);
             const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
             if (!observation?.ok || !observation.network) return { execution, observation };
-            const networkStateRoot = options.networkStateRoot
-                || (options.stateRoot ? join(setupRoot, "network") : join(dirname(setupRoot), "network"));
-            persistHyperVSetupNetworkState(setupRoot, networkStateRoot, observation.network);
+            assertStateDirectoriesUnchanged(networkDirectories);
+            const latest = readHyperVSetupNetworkState(networkStateFile);
+            if (!isDeepStrictEqual(latest, current)) throw new Error("hyper-v-network-state-identity-conflict");
+            persistHyperVSetupNetworkState(networkStateFile, current, observation.network);
+            assertStateDirectoriesUnchanged(networkDirectories);
             return { execution, observation };
         }, { waitMs: 10 * 60_000, staleMs: 20 * 60_000 });
     } catch (error) {

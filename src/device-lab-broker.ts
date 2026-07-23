@@ -179,7 +179,7 @@ const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-reco
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v7";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v2";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
@@ -8406,9 +8406,9 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
         prefixLength: DEVICE_BROKER_HYPER_V_NETWORK_PREFIX_LENGTH,
         // The random-token intent proves ownership when the first provider
         // call created the NAT but its result was interrupted or lost.
-        allowExistingNat: current?.managedNat === true || Boolean(intent),
+        allowExistingNat: Boolean(current?.natInstanceId) || Boolean(intent),
         expectedSwitchId: current?.switchId,
-        expectedNatInstanceId: current?.managedNat === true ? current.natInstanceId : undefined,
+        expectedNatInstanceId: current?.natInstanceId,
     };
     const execution = await runHyperVNetworkCommandWithElevation(
         normalized,
@@ -8428,7 +8428,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
     }
     try {
         if (current && current.switchId.toLowerCase() !== observation.switchId.toLowerCase()) throw new Error("hyper-v-network-switch-identity-conflict");
-        if (current?.managedNat === true && current.natInstanceId !== observation.natInstanceId) throw new Error("hyper-v-network-nat-identity-conflict");
+        if (current?.natInstanceId && current.natInstanceId !== observation.natInstanceId) throw new Error("hyper-v-network-nat-identity-conflict");
         const allocations = current?.allocations || [];
         const existing = allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
         if (existing) {

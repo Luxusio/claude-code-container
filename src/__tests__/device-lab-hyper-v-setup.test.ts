@@ -83,9 +83,18 @@ describe("Hyper-V host setup CLI", () => {
         const root = join(tmpdir(), `ccc-hyper-v-license-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
         const mutationLockFile = join(root, "host-locks", "hyper-v.mutation.lock");
-        const runner = vi.fn(() => {
+        const runner = vi.fn((_command: string, args: string[], _timeoutMs: number, input?: string) => {
             expect(existsSync(mutationLockFile)).toBe(true);
             expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+            const outer = input
+                ? Buffer.from(input, "base64").toString("utf8")
+                : Buffer.from(args.at(-1) || "", "base64").toString("utf16le");
+            const networkProgramEncoded = outer.match(/\$NetworkProgramEncoded = '([^']+)'/)?.[1];
+            expect(networkProgramEncoded).toBeTruthy();
+            const networkProgram = Buffer.from(networkProgramEncoded!, "base64").toString("utf8");
+            expect(networkProgram).toContain("$AllowExistingNat = $false");
+            expect(networkProgram).toContain("$ExpectedSwitchId = ''");
+            expect(networkProgram).toContain("$ExpectedNatInstanceId = ''");
             return {
                 command: "powershell.exe",
                 status: 0,
@@ -171,21 +180,7 @@ describe("Hyper-V host setup CLI", () => {
             allocations: [{ ownerId: "../outside" }],
         }));
         const original = readFileSync(stateFile, "utf8");
-        const runner = vi.fn(() => ({
-            command: "powershell.exe",
-            status: 0,
-            stdout: JSON.stringify({
-                ok: true,
-                featureName: "Microsoft-Hyper-V-All",
-                beforeState: "Enabled",
-                afterState: "Enabled",
-                changed: false,
-                elevated: true,
-                rebootRequired: false,
-                network: setupNetwork,
-            }),
-            stderr: "",
-        }));
+        const runner = vi.fn();
 
         const result = setupHyperVHost(true, {
             platform: "win32",
@@ -198,6 +193,7 @@ describe("Hyper-V host setup CLI", () => {
             ok: false,
             text: "CCC Hyper-V setup failed: hyper-v-network-state-identity-conflict",
         });
+        expect(runner).not.toHaveBeenCalled();
         expect(readFileSync(stateFile, "utf8")).toBe(original);
     });
 
@@ -224,23 +220,35 @@ describe("Hyper-V host setup CLI", () => {
                 incarnationId: "0123456789abcdef0123456789abcdef",
                 address: "172.29.0.10",
                 allocatedAt: "2026-07-23T00:00:00.000Z",
+                unexpected: "discard-me",
             }],
         }));
-        const runner = vi.fn(() => ({
-            command: "powershell.exe",
-            status: 0,
-            stdout: JSON.stringify({
-                ok: true,
-                featureName: "Microsoft-Hyper-V-All",
-                beforeState: "Enabled",
-                afterState: "Enabled",
-                changed: false,
-                elevated: true,
-                rebootRequired: false,
-                network: setupNetwork,
-            }),
-            stderr: "",
-        }));
+        const runner = vi.fn((_command: string, args: string[], _timeoutMs: number, input?: string) => {
+            const outer = input
+                ? Buffer.from(input, "base64").toString("utf8")
+                : Buffer.from(args.at(-1) || "", "base64").toString("utf16le");
+            const networkProgramEncoded = outer.match(/\$NetworkProgramEncoded = '([^']+)'/)?.[1];
+            expect(networkProgramEncoded).toBeTruthy();
+            const networkProgram = Buffer.from(networkProgramEncoded!, "base64").toString("utf8");
+            expect(networkProgram).toContain("$AllowExistingNat = $true");
+            expect(networkProgram).toContain(`$ExpectedSwitchId = '${setupNetwork.switchId}'`);
+            expect(networkProgram).toContain(`$ExpectedNatInstanceId = '${setupNetwork.natInstanceId}'`);
+            return {
+                command: "powershell.exe",
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    featureName: "Microsoft-Hyper-V-All",
+                    beforeState: "Enabled",
+                    afterState: "Enabled",
+                    changed: false,
+                    elevated: true,
+                    rebootRequired: false,
+                    network: setupNetwork,
+                }),
+                stderr: "",
+            };
+        });
 
         const result = setupHyperVHost(true, {
             platform: "win32",
@@ -251,12 +259,14 @@ describe("Hyper-V host setup CLI", () => {
 
         expect(result.ok).toBe(true);
         expect(JSON.parse(readFileSync(stateFile, "utf8")).allocations).toEqual([
-            expect.objectContaining({
+            {
                 ownerId: "0123456789abcdef",
                 deviceId: "windows-vm-1",
+                incarnationId: "0123456789abcdef0123456789abcdef",
                 address: "172.29.0.10",
                 macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/),
-            }),
+                allocatedAt: "2026-07-23T00:00:00.000Z",
+            },
         ]);
     });
 

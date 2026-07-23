@@ -12,6 +12,7 @@ import {
     copyFileAtomically as copyHostFileAtomically,
     withSharedMutationLock as withHostSharedMutationLock,
     withSharedMutationLockAsync as withHostSharedMutationLockAsync,
+    writeFileAtomically as writeHostFileAtomically,
 } from "../device-lab-shared-state.js";
 import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
 import { readProcessIdentity } from "../../device-lab-mcp/src/state/process-identity.mjs";
@@ -402,6 +403,20 @@ describe("device-lab shared mutation lock", () => {
                 .toThrow(expect.objectContaining({ code: "device-lab-state-directory-invalid" }));
             expect(readdirSync(external)).toEqual([]);
         }
+    });
+
+    it.runIf(process.platform !== "win32")("rejects a linked .ccc/device-broker-private directory", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-linked-broker-private-root-"));
+        const external = mkdtempSync(join(tmpdir(), "ccc-linked-broker-private-external-"));
+        roots.push(root, external);
+        const cccRoot = join(root, ".ccc");
+        mkdirSync(cccRoot, { recursive: true });
+        symlinkSync(external, join(cccRoot, "device-broker-private"), "dir");
+        const file = join(cccRoot, "device-broker-private", "network", "hyper-v.json");
+
+        expect(() => writeHostFileAtomically(file, "{}"))
+            .toThrow(expect.objectContaining({ code: "device-lab-state-directory-invalid" }));
+        expect(readdirSync(external)).toEqual([]);
     });
 
     it("holds an async lock until the operation settles and serializes a waiter", async () => {

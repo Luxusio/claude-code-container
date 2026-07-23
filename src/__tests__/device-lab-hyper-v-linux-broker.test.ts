@@ -341,7 +341,7 @@ describe("device-lab Hyper-V broker", () => {
             prefix: "172.29.0.0/24",
             gateway: "172.29.0.1",
             outboundPolicy: "nat",
-            managedNat: true,
+            managedNat: false,
             allocations: [],
         }));
         mkdirSync(intentPath);
@@ -355,6 +355,8 @@ describe("device-lab Hyper-V broker", () => {
                 networkReached = true;
                 expect(existsSync(intentPath)).toBe(false);
                 expect(script).toContain("$AllowExistingNat = $true");
+                expect(script).toContain("$ExpectedSwitchId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'");
+                expect(script).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-1'");
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command, { createdSwitch: false, createdNat: false })), stderr: "" };
             }
             const cleanup = hyperVNetworkCleanupResult(command);

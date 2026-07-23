@@ -61,7 +61,7 @@ function managedDirectoryComponents(file: string): string[] {
     const segments = parent.slice(root.length).split(sep).filter(Boolean);
     const normalized = process.platform === "win32" ? segments.map((segment) => segment.toLowerCase()) : segments;
     const cccIndex = normalized.findIndex((segment, index) => segment === ".ccc"
-        && ["devices", "locks"].includes(normalized[index + 1]));
+        && ["devices", "locks", "device-broker-private"].includes(normalized[index + 1]));
     if (cccIndex < 0) return [];
     const start = cccIndex;
     const result: string[] = [];
