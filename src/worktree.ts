@@ -1,6 +1,7 @@
 // src/worktree.ts - Git worktree workspace management for ccc
 
 import { spawnSync } from "child_process";
+import { randomBytes } from "crypto";
 import {
     existsSync,
     mkdirSync,
@@ -63,6 +64,211 @@ function assertDirectoryIdentity(path: string, expected: DirectoryIdentity): voi
         || actual.dev !== expected.dev
         || actual.ino !== expected.ino) {
         throw new Error(`Workspace path identity changed before deletion: ${path}`);
+    }
+}
+
+function capturePathIdentity(path: string): DirectoryIdentity {
+    const observed = lstatSync(path, { bigint: true });
+    if (observed.isSymbolicLink()) {
+        throw new Error(`Workspace entry '${path}' must not be a symbolic link.`);
+    }
+    return {
+        realpath: realpathSync(path),
+        dev: observed.dev.toString(),
+        ino: observed.ino.toString(),
+    };
+}
+
+function assertPathIdentity(path: string, expected: DirectoryIdentity): void {
+    const actual = capturePathIdentity(path);
+    if (actual.realpath !== expected.realpath
+        || actual.dev !== expected.dev
+        || actual.ino !== expected.ino) {
+        throw new Error(`Workspace entry identity changed before deletion: ${path}`);
+    }
+}
+
+function assertQuarantinedIdentity(
+    path: string,
+    expected: DirectoryIdentity,
+    kind: "directory" | "entry",
+): void {
+    const observed = lstatSync(path, { bigint: true });
+    if (observed.isSymbolicLink()
+        || (kind === "directory" && !observed.isDirectory())
+        || observed.dev.toString() !== expected.dev
+        || observed.ino.toString() !== expected.ino) {
+        throw new Error(`Workspace ${kind} identity changed after quarantine: ${path}`);
+    }
+}
+
+function pathExistsStrict(path: string): boolean {
+    try {
+        lstatSync(path);
+        return true;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw new Error(`Unable to inspect workspace path '${path}'.`, { cause: error });
+    }
+}
+
+function quarantinePath(path: string): string {
+    return join(
+        dirname(path),
+        `.${basename(path)}.ccc-removing-${randomBytes(16).toString("hex")}`,
+    );
+}
+
+function restoreQuarantinedPath(
+    originalPath: string,
+    quarantinedPath: string,
+    expectedIdentity: DirectoryIdentity,
+    parentIdentity: DirectoryIdentity,
+    kind: "directory" | "entry",
+): boolean {
+    if (!pathExistsStrict(quarantinedPath) || pathExistsStrict(originalPath)) return false;
+    assertDirectoryIdentity(dirname(originalPath), parentIdentity);
+    assertQuarantinedIdentity(quarantinedPath, expectedIdentity, kind);
+    renameSync(quarantinedPath, originalPath);
+    if (kind === "directory") {
+        assertDirectoryIdentity(originalPath, expectedIdentity);
+    } else {
+        assertPathIdentity(originalPath, expectedIdentity);
+    }
+    return true;
+}
+
+function removeRegisteredWorktree(
+    sourceRepository: string,
+    worktreePath: string,
+    expectedIdentity: DirectoryIdentity,
+    force: boolean,
+): void {
+    const parentIdentity = captureDirectoryIdentity(dirname(worktreePath));
+    assertDirectoryIdentity(worktreePath, expectedIdentity);
+    assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
+    const quarantinedPath = quarantinePath(worktreePath);
+    renameSync(worktreePath, quarantinedPath);
+    try {
+        assertDirectoryIdentity(dirname(quarantinedPath), parentIdentity);
+        assertQuarantinedIdentity(quarantinedPath, expectedIdentity, "directory");
+        const repaired = spawnSync(
+            "git",
+            ["worktree", "repair", quarantinedPath],
+            { cwd: sourceRepository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (repaired.error || repaired.status !== 0
+            || !isValidWorktree(quarantinedPath, sourceRepository)) {
+            throw new Error((repaired.stderr ?? "").trim() || "git worktree repair failed");
+        }
+        const args = ["worktree", "remove", quarantinedPath];
+        if (force) args.push("--force");
+        const removed = spawnSync(
+            "git",
+            args,
+            { cwd: sourceRepository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (removed.error || removed.status !== 0) {
+            throw new Error((removed.stderr ?? "").trim() || "git worktree remove failed");
+        }
+        if (pathExistsStrict(quarantinedPath)) {
+            throw new Error(`Git left quarantined worktree content behind: ${quarantinedPath}`);
+        }
+        if (pathExistsStrict(worktreePath)) {
+            throw new Error(`Worktree path was recreated during deletion: ${worktreePath}`);
+        }
+    } catch (error) {
+        try {
+            if (restoreQuarantinedPath(
+                worktreePath,
+                quarantinedPath,
+                expectedIdentity,
+                parentIdentity,
+                "directory",
+            )) {
+                const repaired = spawnSync(
+                    "git",
+                    ["worktree", "repair", worktreePath],
+                    { cwd: sourceRepository, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                );
+                if (repaired.error || repaired.status !== 0
+                    || !isValidWorktree(worktreePath, sourceRepository)) {
+                    throw new Error(
+                        (repaired.stderr ?? "").trim() || "git worktree rollback repair failed",
+                    );
+                }
+            }
+        } catch (rollbackError) {
+            throw new Error(
+                `${(error as Error).message}; quarantine rollback failed: ${(rollbackError as Error).message}`,
+                { cause: error },
+            );
+        }
+        throw error;
+    }
+}
+
+function removeDirectoryByQuarantine(path: string, expectedIdentity: DirectoryIdentity): void {
+    const parentIdentity = captureDirectoryIdentity(dirname(path));
+    assertDirectoryIdentity(path, expectedIdentity);
+    assertDirectoryIdentity(dirname(path), parentIdentity);
+    const quarantinedPath = quarantinePath(path);
+    renameSync(path, quarantinedPath);
+    try {
+        assertDirectoryIdentity(dirname(quarantinedPath), parentIdentity);
+        assertQuarantinedIdentity(quarantinedPath, expectedIdentity, "directory");
+        rmSync(quarantinedPath, { recursive: true, force: true });
+        if (pathExistsStrict(quarantinedPath)) {
+            throw new Error(`Quarantined workspace directory was not removed: ${quarantinedPath}`);
+        }
+    } catch (error) {
+        try {
+            restoreQuarantinedPath(
+                path,
+                quarantinedPath,
+                expectedIdentity,
+                parentIdentity,
+                "directory",
+            );
+        } catch (rollbackError) {
+            throw new Error(
+                `${(error as Error).message}; quarantine rollback failed: ${(rollbackError as Error).message}`,
+                { cause: error },
+            );
+        }
+        throw error;
+    }
+}
+
+function removePathByQuarantine(path: string, expectedIdentity: DirectoryIdentity): void {
+    const parentIdentity = captureDirectoryIdentity(dirname(path));
+    assertPathIdentity(path, expectedIdentity);
+    assertDirectoryIdentity(dirname(path), parentIdentity);
+    const quarantinedPath = quarantinePath(path);
+    renameSync(path, quarantinedPath);
+    try {
+        assertDirectoryIdentity(dirname(quarantinedPath), parentIdentity);
+        assertQuarantinedIdentity(quarantinedPath, expectedIdentity, "entry");
+        rmSync(quarantinedPath, { recursive: true, force: true });
+        if (pathExistsStrict(quarantinedPath)) {
+            throw new Error(`Quarantined workspace entry was not removed: ${quarantinedPath}`);
+        }
+    } catch (error) {
+        try {
+            restoreQuarantinedPath(
+                path,
+                quarantinedPath,
+                expectedIdentity,
+                parentIdentity,
+                "entry",
+            );
+        } catch (rollbackError) {
+            throw new Error(
+                `${(error as Error).message}; quarantine rollback failed: ${(rollbackError as Error).message}`,
+                { cause: error },
+            );
+        }
+        throw error;
     }
 }
 
@@ -262,14 +468,47 @@ function gitLinkKind(gitPath: string): GitLinkKind {
     }
     try {
         if (!commonDir) throw new Error("empty commondir");
+        const gitDirObserved = lstatSync(gitDir);
+        if (!gitDirObserved.isDirectory() || gitDirObserved.isSymbolicLink()) {
+            throw new Error("worktree management entry is not a real directory");
+        }
         const registeredGitFile = readFileSync(join(gitDir, "gitdir"), "utf-8").trim();
         if (!registeredGitFile) throw new Error("empty gitdir registration");
         if (realpathSync(registeredGitFile) !== realpathSync(gitPath)) {
             throw new Error("worktree registration does not point back to workspace");
         }
-        if (!lstatSync(resolve(gitDir, commonDir)).isDirectory()) {
+        const commonGitDir = resolve(gitDir, commonDir);
+        if (!lstatSync(commonGitDir).isDirectory()) {
             throw new Error("worktree common directory is not a directory");
         }
+        const managementRootPath = join(realpathSync(commonGitDir), "worktrees");
+        const managementRootObserved = lstatSync(managementRootPath);
+        if (!managementRootObserved.isDirectory() || managementRootObserved.isSymbolicLink()) {
+            throw new Error("worktree management root is not a real directory");
+        }
+        if (dirname(realpathSync(gitDir)) !== realpathSync(managementRootPath)) {
+            throw new Error("worktree management entry is outside its source repository");
+        }
+        const listed = spawnSync(
+            "git",
+            ["--git-dir", realpathSync(commonGitDir), "worktree", "list", "--porcelain"],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (listed.error || listed.status !== 0) {
+            throw new Error("unable to verify Git worktree registry");
+        }
+        const expectedPath = realpathSync(dirname(gitPath));
+        const registered = (listed.stdout ?? "")
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("worktree "))
+            .some((line) => {
+                try {
+                    return realpathSync(line.slice("worktree ".length).trim()) === expectedPath;
+                } catch {
+                    return false;
+                }
+            });
+        if (!registered) throw new Error("workspace is absent from Git worktree registry");
         return "worktree";
     } catch (error) {
         throw new Error(`Unable to inspect worktree common directory '${gitPath}'.`, { cause: error });
@@ -311,9 +550,20 @@ function branchRepositories(workspacePath: string): Array<{ name: string; path: 
         .map(({ name, path }) => ({ name, path }));
 }
 
+export function hasGitMetadata(repositoryPath: string): boolean {
+    const gitPath = join(resolve(repositoryPath), ".git");
+    try {
+        lstatSync(gitPath);
+        return true;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw new Error(`Unable to inspect Git metadata '${gitPath}'.`, { cause: error });
+    }
+}
+
 function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): void {
     const resolvedSource = resolve(sourcePath);
-    if (existsSync(join(resolvedSource, ".git"))) {
+    if (hasGitMetadata(resolvedSource)) {
         assertWorkspaceRootOwnership(workspacePath, resolvedSource);
         const sourceRepositories = new Map(
             scanDirectory(resolvedSource, { strict: true })
@@ -585,7 +835,7 @@ export function needsSubmoduleSetup(dirPath: string): string[] | null {
     const resolved = resolve(dirPath);
 
     // Already a git repo → no setup needed
-    if (existsSync(join(resolved, ".git"))) {
+    if (hasGitMetadata(resolved)) {
         return null;
     }
 
@@ -774,7 +1024,7 @@ export function createWorkspace(
     const wsPath = getWorkspacePath(resolved, branch);
 
     // Unified mode: top-level is a git repo
-    if (existsSync(join(resolved, ".git"))) {
+    if (hasGitMetadata(resolved)) {
         return createUnifiedWorkspace(resolved, wsPath, branch);
     }
 
@@ -974,7 +1224,7 @@ export function repairWorkspace(
     const resolved = resolve(sourcePath);
 
     // Only works in unified mode (source is a git repo)
-    if (!existsSync(join(resolved, ".git"))) {
+    if (!hasGitMetadata(resolved)) {
         return [];
     }
     assertWorkspaceRootOwnership(wsPath, resolved);
@@ -1010,15 +1260,7 @@ export function repairWorkspace(
             try {
                 const contents = readdirSync(destPath);
                 if (contents.length > 0) {
-                    // Has content — skip if already a valid worktree
-                    if (isValidWorktree(destPath, entry.path)) {
-                        continue;
-                    }
-                    // Not a valid worktree (submodule checkout, copy, etc.) — auto-fix
-                    const fixed = fixBrokenWorktree(resolved, wsPath, entry.name, branch);
-                    if (fixed) {
-                        created.push(fixed);
-                    }
+                    // Non-empty invalid entries require the explicit repair prompt.
                     continue;
                 }
                 // Empty directory — remove so git worktree add can create it
@@ -1231,7 +1473,12 @@ export function isValidWorktree(
         try {
             const sourceGitRealpath = realpathSync(actualSourceGitDir);
             if (realpathSync(commonGitDir) !== sourceGitRealpath) return false;
-            const managementRoot = realpathSync(join(sourceGitRealpath, "worktrees"));
+            const managementRootPath = join(sourceGitRealpath, "worktrees");
+            const managementRootObserved = lstatSync(managementRootPath);
+            if (!managementRootObserved.isDirectory() || managementRootObserved.isSymbolicLink()) {
+                return false;
+            }
+            const managementRoot = realpathSync(managementRootPath);
             const managementEntry = realpathSync(resolvedGitdir);
             if (dirname(managementEntry) !== managementRoot) return false;
             const listed = spawnSync(
@@ -1274,7 +1521,7 @@ export function detectBrokenWorktrees(
 ): BrokenWorktreeEntry[] {
     const resolved = resolve(sourcePath);
 
-    if (!existsSync(join(resolved, ".git"))) {
+    if (!hasGitMetadata(resolved)) {
         return [];
     }
 
@@ -1323,7 +1570,11 @@ export function fixBrokenWorktree(
     wsPath: string,
     repoName: string,
     branch: string,
+    confirmed = false,
 ): WorktreeRepoResult | null {
+    if (!confirmed) {
+        throw new Error("Explicit confirmation is required to replace broken worktree content.");
+    }
     const resolved = resolve(sourcePath);
     const destPath = join(wsPath, repoName);
     const backupPath = destPath + ".ccc-backup";
@@ -1431,7 +1682,7 @@ export function removeWorkspace(
     const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     // Unified mode: top-level is a git repo → remove single worktree
-    if (existsSync(join(resolved, ".git"))) {
+    if (hasGitMetadata(resolved)) {
         return removeUnifiedWorkspace(resolved, wsPath, branch, workspaceIdentity, opts);
     }
 
@@ -1468,41 +1719,23 @@ function removeUnifiedWorkspace(
             errors.push(`${entry.name}: worktree ownership changed before deletion`);
             continue;
         }
-
-        const nestedArgs = ["worktree", "remove", nestedPath];
-        if (opts?.force) nestedArgs.push("--force");
-
-        const nestedResult = spawnSync("git", nestedArgs, {
-            cwd: entry.path,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-        });
-        if (nestedResult.status === 0) {
+        const nestedIdentity = captureDirectoryIdentity(nestedPath);
+        try {
+            removeRegisteredWorktree(entry.path, nestedPath, nestedIdentity, opts?.force === true);
             removed.push(entry.name);
-        } else {
-            errors.push(`${entry.name}: ${(nestedResult.stderr ?? "").trim() || "git worktree remove failed"}`);
+        } catch (error) {
+            errors.push(`${entry.name}: ${(error as Error).message}`);
         }
-    }
-
-    const args = ["worktree", "remove", wsPath];
-    if (opts?.force) {
-        args.push("--force");
     }
 
     if (errors.length > 0) return { removed, errors };
     assertDirectoryIdentity(wsPath, workspaceIdentity);
     assertWorkspaceBranch(wsPath, branch, spawnSync, resolved);
-    const result = spawnSync("git", args, {
-        cwd: resolved,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    if (result.status !== 0) {
-        const stderr = (result.stderr ?? "").trim();
-        errors.push(stderr);
-    } else {
+    try {
+        removeRegisteredWorktree(resolved, wsPath, workspaceIdentity, opts?.force === true);
         removed.push(basename(resolved));
+    } catch (error) {
+        errors.push((error as Error).message);
     }
 
     return { removed, errors };
@@ -1531,22 +1764,17 @@ function removeMultiRepoWorkspace(
                 errors.push(`${entry.name}: worktree ownership changed before deletion`);
                 continue;
             }
-            const args = ["worktree", "remove", wsEntryPath];
-            if (opts?.force) {
-                args.push("--force");
-            }
-
-            const result = spawnSync("git", args, {
-                cwd: entry.path,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-            });
-
-            if (result.status !== 0) {
-                const stderr = (result.stderr ?? "").trim();
-                errors.push(`${entry.name}: ${stderr}`);
-            } else {
+            const entryIdentity = captureDirectoryIdentity(wsEntryPath);
+            try {
+                removeRegisteredWorktree(
+                    entry.path,
+                    wsEntryPath,
+                    entryIdentity,
+                    opts?.force === true,
+                );
                 removed.push(entry.name);
+            } catch (error) {
+                errors.push(`${entry.name}: ${(error as Error).message}`);
             }
         } else {
             try {
@@ -1557,7 +1785,12 @@ function removeMultiRepoWorkspace(
                     errors.push(`${entry.name}: became a Git repository before deletion`);
                     continue;
                 }
-                rmSync(wsEntryPath, { recursive: true, force: true });
+                const entryIdentity = capturePathIdentity(wsEntryPath);
+                removePathByQuarantine(wsEntryPath, entryIdentity);
+                if (existsSync(wsEntryPath)) {
+                    errors.push(`${entry.name}: path was recreated during deletion`);
+                    continue;
+                }
                 removed.push(entry.name);
             } catch (error) {
                 errors.push(`${entry.name}: ${(error as Error).message}`);
@@ -1572,7 +1805,7 @@ function removeMultiRepoWorkspace(
             if (errors.length > 0) return { removed, errors };
             const remaining = readdirSync(wsPath);
             if (remaining.length === 0) {
-                rmSync(wsPath, { recursive: true });
+                removeDirectoryByQuarantine(wsPath, workspaceIdentity);
             } else if (opts?.force) {
                 const remainingRepositories = scanDirectory(wsPath, { strict: true })
                     .filter((entry) => entry.isGitRepo);
@@ -1582,7 +1815,7 @@ function removeMultiRepoWorkspace(
                     );
                     return { removed, errors };
                 }
-                rmSync(wsPath, { recursive: true, force: true });
+                removeDirectoryByQuarantine(wsPath, workspaceIdentity);
             } else {
                 errors.push(
                     `Workspace directory not empty (${remaining.length} items remaining). Use -f to force.`,

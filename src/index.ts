@@ -51,6 +51,7 @@ import {
     getWorktreeGitMounts,
     assertWorkspaceBranch,
     assertWorkspaceRootOwnership,
+    hasGitMetadata,
     detectWorktreeWorkspaceBranch,
     workspaceExists,
     needsSubmoduleSetup,
@@ -953,7 +954,7 @@ async function prepareWorktreeUnlocked(
     const wsPath = getWorkspacePath(cwd, branch);
 
     if (workspaceExists(cwd, branch)) {
-        if (existsSync(join(cwd, ".git"))) {
+        if (hasGitMetadata(cwd)) {
             assertWorkspaceRootOwnership(wsPath, cwd);
         } else {
             assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
@@ -996,7 +997,7 @@ async function prepareWorktreeUnlocked(
             );
             if (answer === "y" || answer === "yes") {
                 for (const entry of broken) {
-                    const fixed = fixBrokenWorktree(cwd, wsPath, entry.name, branch);
+                    const fixed = fixBrokenWorktree(cwd, wsPath, entry.name, branch, true);
                     if (fixed) {
                         console.log(`  ${entry.name}: fixed (content preserved)`);
                     } else {

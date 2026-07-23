@@ -1802,7 +1802,7 @@ function stopProjectContainerUnlocked(projectPath: string, profile?: string): vo
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath, profile);
 
-    const identity = getContainerIdentity(containerName);
+    const identity = getManagedProjectContainerIdentity(containerName, fullPath);
     if (!identity) {
         console.log("Container not found");
         return;
@@ -1843,7 +1843,7 @@ export function removeProjectContainer(projectPath: string, profile?: string, op
         ensureDockerRunning();
         const containerName = getContainerName(resolve(projectPath), profile);
 
-        const identity = getContainerIdentity(containerName);
+        const identity = getManagedProjectContainerIdentity(containerName, resolve(projectPath));
         if (!identity) {
             console.log("Container not found");
             return;

@@ -1337,7 +1337,7 @@ describe("repairWorkspace", () => {
         expect(repairedNames).not.toContain("frontend");
     });
 
-    it("auto-fixes nested repos with content that are not valid worktrees", () => {
+    it("leaves nested repos with content unchanged for explicit repair", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
         writeFileSync(join(tmpDir, "frontend", "app.ts"), "export default {}");
@@ -1363,15 +1363,14 @@ describe("repairWorkspace", () => {
         const gitPath = join(destFrontend, ".git");
         expect(statSync(gitPath).isDirectory()).toBe(true); // .git is a directory, not a file
 
-        // Repair should auto-fix it
+        // Repair must not mutate non-empty content without explicit confirmation.
         const repaired = repairWorkspace(tmpDir, wsPath, "autofix-test");
         const repairedNames = repaired.map((r) => r.name);
-        expect(repairedNames).toContain("frontend");
+        expect(repairedNames).not.toContain("frontend");
 
-        // Should now be a valid worktree with content preserved
         expect(existsSync(join(destFrontend, "app.ts"))).toBe(true);
         const gitStat = lstatSync(join(destFrontend, ".git"));
-        expect(gitStat.isFile()).toBe(true); // .git is now a file (worktree gitlink)
+        expect(gitStat.isDirectory()).toBe(true);
     });
 
     it("auto-fixes submodule gitlink to proper worktree", () => {
@@ -1402,13 +1401,12 @@ describe("repairWorkspace", () => {
         expect(lstatSync(join(destBackend, ".git")).isFile()).toBe(true);
         expect(isValidWorktree(destBackend, join(tmpDir, "backend"))).toBe(false);
 
-        // Repair should auto-fix: replace submodule checkout with proper worktree
+        // Repair must leave the invalid gitlink for the explicit repair prompt.
         const repaired = repairWorkspace(tmpDir, wsPath, "submod-fix");
         const repairedNames = repaired.map((r) => r.name);
-        expect(repairedNames).toContain("backend");
+        expect(repairedNames).not.toContain("backend");
 
-        // Should now be a valid worktree
-        expect(isValidWorktree(destBackend, join(tmpDir, "backend"))).toBe(true);
+        expect(isValidWorktree(destBackend, join(tmpDir, "backend"))).toBe(false);
 
         // Content should be preserved
         expect(existsSync(join(destBackend, "api.ts"))).toBe(true);
@@ -1632,6 +1630,21 @@ describe("fixBrokenWorktree", () => {
         rmSync(tmpDir, { recursive: true, force: true });
     });
 
+    it("requires explicit confirmation before touching workspace content", () => {
+        initRepo(tmpDir);
+        const wsResult = createWorkspace(tmpDir, "confirmation");
+        const marker = join(wsResult.workspacePath, "preserve.txt");
+        writeFileSync(marker, "preserve");
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "confirmation",
+        )).toThrow("Explicit confirmation");
+        expect(readFileSync(marker, "utf-8")).toBe("preserve");
+    });
+
     it("backs up content, creates worktree, restores content", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
@@ -1649,7 +1662,7 @@ describe("fixBrokenWorktree", () => {
         mkdirSync(join(wsResult.workspacePath, "frontend"));
         writeFileSync(join(wsResult.workspacePath, "frontend", "wip.ts"), "work in progress");
 
-        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fix-broken");
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fix-broken", true);
 
         expect(result).not.toBeNull();
         expect(result!.name).toBe("frontend");
@@ -1668,7 +1681,7 @@ describe("fixBrokenWorktree", () => {
     it("returns null for non-existent repo name", () => {
         initRepo(tmpDir);
         const wsResult = createWorkspace(tmpDir, "no-repo");
-        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "nonexistent", "no-repo");
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "nonexistent", "no-repo", true);
         expect(result).toBeNull();
     });
 
@@ -1692,7 +1705,7 @@ describe("fixBrokenWorktree", () => {
         });
 
         // fail-fix branch is now checked out in source, so worktree add should fail
-        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fail-fix");
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "fail-fix", true);
 
         // Should fail gracefully
         expect(result).toBeNull();
@@ -1725,7 +1738,7 @@ describe("fixBrokenWorktree", () => {
 
         // Without prune, git worktree add would fail because "stale-wt" is
         // still registered. With prune (in fixBrokenWorktree), it should succeed.
-        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "stale-wt");
+        const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "stale-wt", true);
 
         expect(result).not.toBeNull();
         expect(result!.name).toBe("frontend");
