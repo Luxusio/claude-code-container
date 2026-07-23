@@ -93,6 +93,7 @@ const {
     cleanupSession,
     setupSignalHandlers,
     withContainerLifecycleLockAsync,
+    withProjectFamilyLifecycleLockAsync,
 } = await import("../session.js");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -157,6 +158,27 @@ describe("session.ts", () => {
         );
         release();
         await expect(execution).resolves.toBe("done");
+    });
+
+    it("holds the async project-family lock across worktree preparation", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let completed = false;
+        const execution = withProjectFamilyLifecycleLockAsync("worktree-project", async () => {
+            await gate;
+            completed = true;
+            return "prepared";
+        });
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        expect(mockWithSharedMutationLockAsync).toHaveBeenCalledWith(
+            expect.stringContaining("worktree-project.project-family-lifecycle.guard"),
+            expect.any(Function),
+            { waitMs: 180_000 },
+        );
+
+        release();
+        await expect(execution).resolves.toBe("prepared");
     });
 
     // ── createSessionLock ────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { hashPath, getProjectId } from '../utils.js'
+import { canonicalProjectPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, runWorktreeLifecycleOperation, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -54,6 +54,27 @@ describe('getProjectId', () => {
     const id1 = getProjectId('/home/user/project')
     const id2 = getProjectId('/home/user/project')
     expect(id1).toBe(id2)
+  })
+})
+
+describe('canonicalProjectPath', () => {
+  it('uses Windows filesystem identity for existing path aliases', () => {
+    const realpath = vi.fn(() => 'C:\\Users\\Luxus\\Project\\Repo')
+
+    expect(canonicalProjectPath('c:\\users\\luxus\\project\\repo', 'win32', realpath))
+      .toBe('C:\\Users\\Luxus\\Project\\Repo')
+    expect(canonicalProjectPath('C:\\USERS\\LUXUS\\PROJECT\\REPO', 'win32', realpath))
+      .toBe('C:\\Users\\Luxus\\Project\\Repo')
+  })
+
+  it('canonicalizes the parent of a not-yet-created Windows worktree path', () => {
+    const realpath = vi.fn((path: string) => {
+      if (path.endsWith('repo--feature')) throw new Error('ENOENT')
+      return 'C:\\Users\\Luxus\\Project'
+    })
+
+    expect(canonicalProjectPath('c:\\users\\luxus\\project\\repo--feature', 'win32', realpath))
+      .toContain('C:\\Users\\Luxus\\Project')
   })
 })
 
@@ -133,6 +154,25 @@ describe('workspace removal lifecycle lock', () => {
     expect(activeSessions).toHaveBeenCalledWith('project-id')
     expect(removal).not.toHaveBeenCalled()
   })
+
+  it('allows explicit force removal after observing base and profile sessions under the lock', () => {
+    const lifecycleLock = (_projectId: string, operation: () => string) => operation()
+    const activeSessions = vi.fn(() => [
+      'project-id--base.lock',
+      'project-id--p--work--profile.lock',
+    ])
+    const removal = vi.fn(() => 'forced')
+
+    expect(withWorkspaceRemovalLifecycleLock(
+      'project-id',
+      true,
+      removal,
+      lifecycleLock,
+      activeSessions,
+    )).toBe('forced')
+    expect(activeSessions).toHaveBeenCalledWith('project-id')
+    expect(removal).toHaveBeenCalledOnce()
+  })
 })
 
 describe('worktree session registration', () => {
@@ -179,6 +219,36 @@ describe('worktree session registration', () => {
     )).toThrow('no longer exists')
     expect(lockCreator).not.toHaveBeenCalled()
   })
+
+  it('guards stop and other destructive worktree operations with the same branch/family lock', () => {
+    const operation = vi.fn(() => 'stopped')
+    const familyLock = (_projectId: string, callback: () => string) => callback()
+    const branchGuard = vi.fn()
+
+    expect(runWorktreeLifecycleOperation(
+      '/projects/repo--feature',
+      'feature',
+      operation,
+      familyLock,
+      branchGuard,
+    )).toBe('stopped')
+    expect(branchGuard).toHaveBeenCalledWith('/projects/repo--feature', 'feature')
+    expect(operation).toHaveBeenCalledOnce()
+  })
+
+  it('does not run stop or rm after the final branch guard fails', () => {
+    const operation = vi.fn()
+    const familyLock = (_projectId: string, callback: () => unknown) => callback()
+
+    expect(() => runWorktreeLifecycleOperation(
+      '/projects/repo--feature',
+      'feature',
+      operation,
+      familyLock,
+      () => { throw new Error('workspace branch changed') },
+    )).toThrow('workspace branch changed')
+    expect(operation).not.toHaveBeenCalled()
+  })
 })
 
 describe('workspace profile container discovery', () => {
@@ -215,6 +285,7 @@ describe('workspace profile container discovery', () => {
 
     expect(removeWorkspaceContainers(workspace, listContainers, removeContainer)).toEqual(discovered)
     expect(removeContainer.mock.calls.map(([name]) => name)).toEqual(discovered)
+    expect(removeContainer.mock.calls.every(([, path]) => path === workspace)).toBe(true)
     expect(removeContainer.mock.calls.flat()).not.toContain(getContainerName('/projects/repo'))
     expect(removeContainer.mock.calls.flat()).not.toContain(getContainerName('/projects/repo--other'))
   })
@@ -230,6 +301,41 @@ describe('workspace profile container discovery', () => {
     expect(() => removeWorkspaceContainers('/projects/repo--feature', listContainers, removeContainer))
       .toThrow('identity inspection failed')
     expect(removeContainer).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('managed workspace container identity fencing', () => {
+  it('passes the exact workspace path into the managed identity probe before stop/rm', () => {
+    const runner = vi.fn(() => ({ status: 0 })) as any
+    const identityProbe = vi.fn(() => ({ containerId: 'managed123456', running: true }))
+
+    expect(removeManagedWorkspaceContainerByIdentity(
+      'ccc-worktree--p--work',
+      '/projects/repo--feature',
+      identityProbe,
+      runner,
+      'docker',
+    )).toBe(true)
+    expect(identityProbe).toHaveBeenCalledWith(
+      'ccc-worktree--p--work',
+      '/projects/repo--feature',
+    )
+    expect(runner).toHaveBeenNthCalledWith(1, 'docker', ['stop', 'managed123456'], { stdio: 'ignore' })
+    expect(runner).toHaveBeenNthCalledWith(2, 'docker', ['rm', 'managed123456'], { stdio: 'ignore' })
+  })
+
+  it('preserves an existing foreign or mislabeled container when managed identity fails', () => {
+    const runner = vi.fn() as any
+
+    expect(() => removeManagedWorkspaceContainerByIdentity(
+      'ccc-worktree--p--work',
+      '/projects/repo--feature',
+      () => null,
+      runner,
+      'docker',
+      () => true,
+    )).toThrow('identity inspection failed')
+    expect(runner).not.toHaveBeenCalled()
   })
 })
 

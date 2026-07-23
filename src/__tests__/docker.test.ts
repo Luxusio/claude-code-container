@@ -59,6 +59,7 @@ const {
     isContainerConfirmedStopped,
     getConfirmedRunningContainerId,
     getContainerIdentity,
+    getManagedProjectContainerIdentity,
     isContainerExists,
     isContainerImageOutdated,
     getContainerStatus,
@@ -431,6 +432,86 @@ describe("docker.ts module exports", () => {
         ])("fails closed for %s", (_name, result) => {
             spawnSyncMock.mockReturnValue(result as SpawnSyncReturns<string>);
             expect(getContainerIdentity("my-container")).toBeNull();
+        });
+    });
+
+    describe("getManagedProjectContainerIdentity", () => {
+        it("returns a pinned identity only for the exact CCC-managed project", () => {
+            spawnSyncMock.mockReturnValue({
+                status: 0,
+                stdout: JSON.stringify({
+                    Id: "managed123456",
+                    State: { Running: true },
+                    Config: {
+                        Labels: {
+                            "ccc.managed": "true",
+                            "ccc.project.path": "/projects/repo--feature",
+                        },
+                    },
+                }),
+                stderr: "",
+            } as SpawnSyncReturns<string>);
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree--p--work",
+                "/projects/repo--feature",
+            )).toEqual({ containerId: "managed123456", running: true });
+        });
+
+        it.each([
+            {
+                "ccc.managed": "false",
+                "ccc.project.path": "/projects/repo--feature",
+            },
+            {
+                "ccc.managed": "true",
+                "ccc.project.path": "/projects/repo--other",
+            },
+        ])("rejects foreign or wrong-project labels %#", (labels) => {
+            spawnSyncMock.mockReturnValue({
+                status: 0,
+                stdout: JSON.stringify({
+                    Id: "foreign123456",
+                    State: { Running: false },
+                    Config: { Labels: labels },
+                }),
+                stderr: "",
+            } as SpawnSyncReturns<string>);
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree--p--work",
+                "/projects/repo--feature",
+            )).toBeNull();
+        });
+
+        it("rejects malformed inspection output", () => {
+            spawnSyncMock.mockReturnValue({
+                status: 0,
+                stdout: "{not-json",
+                stderr: "",
+            } as SpawnSyncReturns<string>);
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree",
+                "/projects/repo--feature",
+            )).toBeNull();
+        });
+
+        it.each([
+            { Id: "", State: { Running: true } },
+            { Id: "managed123456", State: { Running: "true" } },
+            { Id: "managed123456", State: { Running: true }, Config: { Labels: null } },
+        ])("rejects incomplete identity metadata %#", (inspection) => {
+            spawnSyncMock.mockReturnValue({
+                status: 0,
+                stdout: JSON.stringify(inspection),
+                stderr: "",
+            } as SpawnSyncReturns<string>);
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree",
+                "/projects/repo--feature",
+            )).toBeNull();
         });
     });
 

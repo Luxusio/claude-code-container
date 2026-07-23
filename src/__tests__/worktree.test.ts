@@ -30,6 +30,7 @@ import {
     fixBrokenWorktree,
     getWorktreeGitMounts,
     assertWorkspaceBranch,
+    detectWorktreeWorkspaceBranch,
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
@@ -740,6 +741,7 @@ describe("assertWorkspaceBranch", () => {
             encoding: "utf-8",
         }).stdout.trim();
         expect(() => assertWorkspaceBranch(repoPath, current)).not.toThrow();
+        expect(detectWorktreeWorkspaceBranch(repoPath)).toBeNull();
         expect(() => assertWorkspaceBranch(repoPath, "feature/login"))
             .toThrow("not 'feature/login'");
     });
@@ -763,6 +765,37 @@ describe("assertWorkspaceBranch", () => {
 
         expect(() => assertWorkspaceBranch(slashBranch, "feature/login"))
             .toThrow("belongs to branch 'feature-login'");
+    });
+
+    it("detects a unified workspace only when .git is a worktree file", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+
+        expect(detectWorktreeWorkspaceBranch(workspace)).toBe("feature-login");
+        expect(() => assertWorkspaceBranch(workspace, "feature-login")).not.toThrow();
+    });
+
+    it("validates every child repository in a multi-repo workspace", () => {
+        const source = join(repoPath, "source");
+        mkdirSync(source);
+        initRepo(join(source, "frontend"));
+        initRepo(join(source, "backend"));
+        const result = createWorkspace(source, "feature");
+
+        expect(() => assertWorkspaceBranch(result.workspacePath, "feature")).not.toThrow();
+        expect(detectWorktreeWorkspaceBranch(result.workspacePath)).toBe("feature");
+
+        spawnSync("git", ["switch", "-c", "wrong-branch"], {
+            cwd: join(result.workspacePath, "backend"),
+            stdio: "pipe",
+        });
+        expect(() => assertWorkspaceBranch(result.workspacePath, "feature"))
+            .toThrow("repository 'backend' belongs to branch 'wrong-branch'");
+        expect(detectWorktreeWorkspaceBranch(result.workspacePath)).toBeNull();
     });
 });
 

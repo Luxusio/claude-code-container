@@ -618,6 +618,34 @@ export function getContainerIdentity(containerName: string): ContainerIdentity |
     return { containerId, running: running === "true" };
 }
 
+export function getManagedProjectContainerIdentity(
+    containerName: string,
+    projectPath: string,
+): ContainerIdentity | null {
+    const result = spawnSync(
+        runtimeCli(),
+        ["inspect", "-f", "{{json .}}", containerName],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) return null;
+    try {
+        const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Id?: unknown;
+            State?: { Running?: unknown };
+            Config?: { Labels?: Record<string, string> };
+        };
+        if (typeof inspected.Id !== "string" || inspected.Id.length === 0) return null;
+        if (typeof inspected.State?.Running !== "boolean") return null;
+        const labels = inspected.Config?.Labels;
+        if (labels?.["ccc.managed"] !== "true") return null;
+        const labeledPath = labels["ccc.project.path"];
+        if (!labeledPath || normalizedHostPath(labeledPath) !== normalizedHostPath(projectPath)) return null;
+        return { containerId: inspected.Id, running: inspected.State.Running };
+    } catch {
+        return null;
+    }
+}
+
 /** Destructive lifecycle operations require a successful, explicit stopped result. */
 export function getConfirmedStoppedContainerId(containerName: string): string | null {
     const identity = getContainerIdentity(containerName);

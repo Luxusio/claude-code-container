@@ -50,6 +50,7 @@ import {
     getWorkspacePath,
     getWorktreeGitMounts,
     assertWorkspaceBranch,
+    detectWorktreeWorkspaceBranch,
     workspaceExists,
     needsSubmoduleSetup,
     initWithSubmodules,
@@ -62,6 +63,7 @@ import {
     isContainerConfirmedStopped,
     isContainerExists,
     getContainerIdentity,
+    getManagedProjectContainerIdentity,
     isImageExists,
     getImageLabel,
     startProjectContainer,
@@ -91,6 +93,7 @@ import {
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
     withProjectFamilyLifecycleLock,
+    withProjectFamilyLifecycleLockAsync,
     cleanupSession,
     setupSignalHandlers,
     setSession,
@@ -128,6 +131,20 @@ export function createWorktreeSessionLock(
     return familyLock(projectId, () => {
         branchGuard(workspacePath, expectedBranch);
         return lockCreator(projectId, profile);
+    });
+}
+
+export function runWorktreeLifecycleOperation<T>(
+    workspacePath: string,
+    expectedBranch: string,
+    operation: () => T,
+    familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
+    branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
+): T {
+    const projectId = getProjectId(workspacePath);
+    return familyLock(projectId, () => {
+        branchGuard(workspacePath, expectedBranch);
+        return operation();
     });
 }
 
@@ -444,8 +461,9 @@ async function exec(
     }
     const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
     const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
-    const sessionLockFile = options.expectedWorktreeBranch
-        ? createWorktreeSessionLock(projectId, fullPath, options.expectedWorktreeBranch, profile)
+    const worktreeBranch = options.expectedWorktreeBranch ?? detectWorktreeWorkspaceBranch(fullPath);
+    const sessionLockFile = worktreeBranch
+        ? createWorktreeSessionLock(projectId, fullPath, worktreeBranch, profile)
         : createSessionLock(projectId, profile);
     setSession(sessionLockFile, fullPath, profile, (commandTool ?? options.tool)?.name ?? "command");
     setupSignalHandlers();
@@ -907,7 +925,7 @@ function handleWorktreeList(cwd: string): void {
  * Prepare worktree workspace (create or reuse), return the workspace path.
  * Does NOT execute any command — the caller runs the standard command dispatch.
  */
-async function prepareWorktree(
+async function prepareWorktreeUnlocked(
     cwd: string,
     branch: string,
 ): Promise<string> {
@@ -1016,6 +1034,15 @@ async function prepareWorktree(
     return wsPath;
 }
 
+async function prepareWorktree(cwd: string, branch: string): Promise<string> {
+    const workspacePath = getWorkspacePath(cwd, branch);
+    const projectId = getProjectId(workspacePath);
+    return withProjectFamilyLifecycleLockAsync(
+        projectId,
+        () => prepareWorktreeUnlocked(cwd, branch),
+    );
+}
+
 export function withWorkspaceRemovalLifecycleLock<T>(
     projectId: string,
     force: boolean,
@@ -1075,14 +1102,31 @@ export function removeWorkspaceContainerByIdentity(
     return true;
 }
 
+export function removeManagedWorkspaceContainerByIdentity(
+    containerName: string,
+    workspacePath: string,
+    identityProbe: typeof getManagedProjectContainerIdentity = getManagedProjectContainerIdentity,
+    runner: typeof spawnSync = spawnSync,
+    cli = runtimeCli(),
+    existsProbe: typeof isContainerExists = isContainerExists,
+): boolean {
+    return removeWorkspaceContainerByIdentity(
+        containerName,
+        (name) => identityProbe(name, workspacePath),
+        runner,
+        cli,
+        existsProbe,
+    );
+}
+
 export function removeWorkspaceContainers(
     workspacePath: string,
     listContainers: (workspacePath: string) => string[] = listWorkspaceContainerNames,
-    removeContainer: (containerName: string) => boolean = removeWorkspaceContainerByIdentity,
+    removeContainer: (containerName: string, workspacePath: string) => boolean = removeManagedWorkspaceContainerByIdentity,
 ): string[] {
     const removed: string[] = [];
     for (const containerName of listContainers(workspacePath)) {
-        if (!removeContainer(containerName)) continue;
+        if (!removeContainer(containerName, workspacePath)) continue;
         removed.push(containerName);
     }
     return removed;
@@ -1374,6 +1418,7 @@ async function main(): Promise<void> {
             // command stays as filteredArgs[0] (parseArgs already separated @branch)
         }
     }
+    expectedWorktreeBranch ??= detectWorktreeWorkspaceBranch(cwd) ?? undefined;
 
     switch (command) {
         case "-h":
@@ -1389,11 +1434,23 @@ async function main(): Promise<void> {
             break;
 
         case "stop":
-            stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+            if (expectedWorktreeBranch) {
+                runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
+                    stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+                });
+            } else {
+                stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+            }
             break;
 
         case "rm":
-            removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+            if (expectedWorktreeBranch) {
+                runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
+                    removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+                });
+            } else {
+                removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
+            }
             break;
 
         case "status":

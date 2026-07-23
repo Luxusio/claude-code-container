@@ -183,20 +183,67 @@ export function assertWorkspaceBranch(
     if (!existsSync(workspacePath)) {
         throw new Error(`Workspace for branch '${expectedBranch}' no longer exists.`);
     }
-    const result = runner(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd: workspacePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const actualBranch = (result.stdout ?? "").trim();
-    if (result.error || result.status !== 0 || !actualBranch) {
-        throw new Error(`Unable to verify workspace branch '${expectedBranch}'.`);
+    const repositories = existsSync(join(workspacePath, ".git"))
+        ? [{ name: basename(workspacePath), path: workspacePath }]
+        : scanDirectory(workspacePath)
+            .filter((entry) => entry.isGitRepo)
+            .map(({ name, path }) => ({ name, path }));
+    if (repositories.length === 0) {
+        throw new Error(`Unable to verify workspace branch '${expectedBranch}': no worktree repositories found.`);
     }
-    if (actualBranch !== expectedBranch) {
-        throw new Error(
-            `Workspace path belongs to branch '${actualBranch}', not '${expectedBranch}'.`,
+    for (const repository of repositories) {
+        const result = runner(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: repository.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
+        const actualBranch = (result.stdout ?? "").trim();
+        if (result.error || result.status !== 0 || !actualBranch) {
+            throw new Error(`Unable to verify workspace branch '${expectedBranch}' in '${repository.name}'.`);
+        }
+        if (actualBranch !== expectedBranch) {
+            throw new Error(
+                `Workspace repository '${repository.name}' belongs to branch '${actualBranch}', not '${expectedBranch}'.`,
+            );
+        }
     }
+}
+
+export function detectWorktreeWorkspaceBranch(
+    workspacePath: string,
+    runner: typeof spawnSync = spawnSync,
+): string | null {
+    if (!existsSync(workspacePath)) return null;
+    const rootGit = join(workspacePath, ".git");
+    let repositories: Array<{ path: string; gitPath: string }>;
+    if (existsSync(rootGit)) {
+        repositories = [{ path: workspacePath, gitPath: rootGit }];
+    } else {
+        repositories = scanDirectory(workspacePath)
+            .filter((entry) => entry.isGitRepo)
+            .map((entry) => ({ path: entry.path, gitPath: join(entry.path, ".git") }));
+    }
+    if (repositories.length === 0) return null;
+    if (repositories.some(({ gitPath }) => {
+        try {
+            return !lstatSync(gitPath).isFile();
+        } catch {
+            return true;
+        }
+    })) return null;
+
+    const branches = new Set<string>();
+    for (const repository of repositories) {
+        const result = runner(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: repository.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const branch = (result.stdout ?? "").trim();
+        if (result.error || result.status !== 0 || !branch) return null;
+        branches.add(branch);
+    }
+    return branches.size === 1 ? [...branches][0] : null;
 }
 
 // === Read-only Functions ===

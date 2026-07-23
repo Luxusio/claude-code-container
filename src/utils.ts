@@ -2,9 +2,9 @@
 
 import {createHash, randomBytes} from "crypto";
 import {createInterface} from "readline";
-import {writeFileSync} from "fs";
+import {realpathSync, writeFileSync} from "fs";
 import {homedir, tmpdir} from "os";
-import {basename, join, resolve} from "path";
+import {basename, dirname, join, resolve} from "path";
 
 // === CLI Version (injected at build time) ===
 export const CLI_VERSION: string = "__CLI_VERSION__";
@@ -70,12 +70,31 @@ export function hashPath(path: string): string {
     return createHash("sha256").update(path).digest("hex").slice(0, 12);
 }
 
+export function canonicalProjectPath(
+    projectPath: string,
+    platform = process.platform,
+    realpath: (path: string) => string = realpathSync.native,
+): string {
+    const resolved = resolve(projectPath);
+    if (platform !== "win32") return resolved;
+    try {
+        return realpath(resolved);
+    } catch {
+        try {
+            return join(realpath(dirname(resolved)), basename(resolved));
+        } catch {
+            return resolved;
+        }
+    }
+}
+
 /**
  * Generate project ID in format: name-hash
  */
 export function getProjectId(projectPath: string): string {
-    const name = basename(resolve(projectPath)).toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const hash = hashPath(resolve(projectPath));
+    const canonicalPath = canonicalProjectPath(projectPath);
+    const name = basename(canonicalPath).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const hash = hashPath(canonicalPath);
     return `${name}-${hash}`;
 }
 
