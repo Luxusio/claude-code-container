@@ -226,14 +226,39 @@ function gitLinkKind(gitPath: string): GitLinkKind {
     const match = content.match(/^gitdir:\s*(.+)$/);
     if (!match) throw new Error(`Invalid worktree metadata '${gitPath}'.`);
     const gitDir = resolve(dirname(gitPath), match[1].trim());
+    let commonDir: string;
     try {
-        const commonDir = readFileSync(join(gitDir, "commondir"), "utf-8").trim();
-        if (!commonDir) throw new Error("empty commondir");
-        return "worktree";
+        commonDir = readFileSync(join(gitDir, "commondir"), "utf-8").trim();
     } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gitlink";
         throw new Error(`Unable to inspect worktree common directory '${gitPath}'.`, { cause: error });
     }
+    try {
+        if (!commonDir) throw new Error("empty commondir");
+        const registeredGitFile = readFileSync(join(gitDir, "gitdir"), "utf-8").trim();
+        if (!registeredGitFile) throw new Error("empty gitdir registration");
+        if (realpathSync(registeredGitFile) !== realpathSync(gitPath)) {
+            throw new Error("worktree registration does not point back to workspace");
+        }
+        if (!lstatSync(resolve(gitDir, commonDir)).isDirectory()) {
+            throw new Error("worktree common directory is not a directory");
+        }
+        return "worktree";
+    } catch (error) {
+        throw new Error(`Unable to inspect worktree common directory '${gitPath}'.`, { cause: error });
+    }
+}
+
+function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
+    const result = spawnSync(
+        "git",
+        ["ls-files", "--stage", "--", entryName],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) return false;
+    return (result.stdout ?? "")
+        .split(/\r?\n/)
+        .some((line) => line.startsWith("160000 "));
 }
 
 function branchRepositories(workspacePath: string): Array<{ name: string; path: string }> {
@@ -242,9 +267,15 @@ function branchRepositories(workspacePath: string): Array<{ name: string; path: 
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
         for (const entry of scanDirectory(workspacePath)) {
             if (!entry.isGitRepo) continue;
-            if (gitLinkKind(join(entry.path, ".git")) === "worktree") {
+            const kind = gitLinkKind(join(entry.path, ".git"));
+            if (kind === "worktree") {
                 repositories.push({ name: entry.name, path: entry.path });
+                continue;
             }
+            if (kind === "gitlink" && isTrackedGitlink(workspacePath, entry.name)) {
+                continue;
+            }
+            throw new Error(`Workspace contains unmanaged Git repository '${entry.name}'.`);
         }
         return repositories;
     }
@@ -259,13 +290,20 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         if (!isValidWorktree(workspacePath, resolvedSource)) {
             throw new Error(`Workspace is not owned by source repository '${resolvedSource}'.`);
         }
-        for (const entry of scanDirectory(resolvedSource)) {
-            if (!entry.isGitRepo) continue;
-            const destination = join(workspacePath, entry.name);
-            if (!existsSync(join(destination, ".git"))) continue;
-            if (gitLinkKind(join(destination, ".git")) !== "worktree") continue;
-            if (!isValidWorktree(destination, entry.path)) {
-                throw new Error(`Workspace repository '${entry.name}' is not owned by its source repository.`);
+        const sourceRepositories = new Map(
+            scanDirectory(resolvedSource)
+                .filter((entry) => entry.isGitRepo)
+                .map((entry) => [entry.name, entry]),
+        );
+        for (const destination of scanDirectory(workspacePath).filter((entry) => entry.isGitRepo)) {
+            const source = sourceRepositories.get(destination.name);
+            if (!source) {
+                throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
+            }
+            const kind = gitLinkKind(join(destination.path, ".git"));
+            if (kind === "gitlink" && isTrackedGitlink(workspacePath, destination.name)) continue;
+            if (kind !== "worktree" || !isValidWorktree(destination.path, source.path)) {
+                throw new Error(`Workspace repository '${destination.name}' is not owned by its source repository.`);
             }
         }
         return;
@@ -279,6 +317,12 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         const destination = join(workspacePath, source.name);
         if (!isValidWorktree(destination, source.path)) {
             throw new Error(`Workspace repository '${source.name}' is not owned by its source repository.`);
+        }
+    }
+    const sourceNames = new Set(sourceRepositories.map(({ name }) => name));
+    for (const destination of scanDirectory(workspacePath).filter((entry) => entry.isGitRepo)) {
+        if (!sourceNames.has(destination.name)) {
+            throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
         }
     }
 }
@@ -1294,6 +1338,8 @@ export function removeWorkspace(
     if (!existsSync(wsPath)) {
         throw new Error(`Workspace not found: ${wsPath}`);
     }
+
+    assertWorkspaceBranch(wsPath, branch, spawnSync, resolved);
 
     // Unified mode: top-level is a git repo → remove single worktree
     if (existsSync(join(resolved, ".git"))) {

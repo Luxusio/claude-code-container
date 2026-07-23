@@ -842,6 +842,47 @@ describe("assertWorkspaceBranch", () => {
         expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
             .toThrow("do not share one checked-out branch");
     });
+
+    it("rejects an unmanaged nested repository during direct worktree detection", () => {
+        const result = createWorkspace(repoPath, "nested-foreign");
+        const foreign = join(result.workspacePath, "foreign");
+        initRepo(foreign);
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("contains unmanaged Git repository 'foreign'");
+    });
+
+    it("rejects worktree metadata whose registration does not point back to the workspace", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const gitDir = readFileSync(join(workspace, ".git"), "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        writeFileSync(join(gitDir, "gitdir"), join(repoPath, ".git"));
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace))
+            .toThrow("Unable to inspect worktree common directory");
+    });
+
+    it("rejects worktree metadata with a missing registration back-pointer", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const gitDir = readFileSync(join(workspace, ".git"), "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        rmSync(join(gitDir, "gitdir"));
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace))
+            .toThrow("Unable to inspect worktree common directory");
+    });
 });
 
 describe("removeWorkspace", () => {
@@ -868,6 +909,31 @@ describe("removeWorkspace", () => {
         expect(() => removeWorkspace(sourceDir, "nonexistent")).toThrow(
             /Workspace not found/,
         );
+    });
+
+    it("preserves a foreign same-branch sibling directory even with force", () => {
+        initRepo(sourceDir);
+        spawnSync("git", ["branch", "feature"], { cwd: sourceDir, stdio: "pipe" });
+        const workspace = getWorkspacePath(sourceDir, "feature");
+        initRepo(workspace);
+        spawnSync("git", ["switch", "-c", "feature"], { cwd: workspace, stdio: "pipe" });
+
+        expect(() => removeWorkspace(sourceDir, "feature", { force: true }))
+            .toThrow("is not owned by source repository");
+        expect(existsSync(workspace)).toBe(true);
+    });
+
+    it("preserves a valid multi-repo workspace containing an extra repository even with force", () => {
+        initRepo(join(sourceDir, "repo-a"));
+        const result = createWorkspace(sourceDir, "feature");
+        const foreign = join(result.workspacePath, "foreign");
+        initRepo(foreign);
+        spawnSync("git", ["switch", "-c", "feature"], { cwd: foreign, stdio: "pipe" });
+
+        expect(() => removeWorkspace(sourceDir, "feature", { force: true }))
+            .toThrow("contains unowned Git repository 'foreign'");
+        expect(existsSync(result.workspacePath)).toBe(true);
+        expect(existsSync(foreign)).toBe(true);
     });
 
     it("removes a workspace with worktrees and copied items", () => {
