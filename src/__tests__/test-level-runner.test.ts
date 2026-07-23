@@ -11,6 +11,11 @@ import { androidDeviceE2EPrerequisites, prepareAndroidDeviceApp } from "../../sc
 import { androidEmulatorAppSelection, androidEmulatorCreateRequest } from "../../scripts/real-tests/android-emulator-e2e.ts";
 import { currentDisplayPrerequisiteResult } from "../../scripts/real-tests/level1-display-e2e.ts";
 import { startWindowsSandboxE2EDevice } from "../../scripts/real-tests/windows-sandbox-e2e.ts";
+import {
+    normalizeProviderConcurrency,
+    partitionProviderFiles,
+    runResourceAware,
+} from "../../scripts/real-tests/provider-parallelism.ts";
 import { repoRoot } from "./helpers/device-lab-mcp-fixture.js";
 
 const runner = join(repoRoot, "scripts", "test-level.js");
@@ -808,6 +813,116 @@ describe("test level runner", () => {
         expect(level3.args.join("\n")).toContain("scripts/real-tests/level2-android-device-e2e.ts");
         expect(level3.args.join("\n")).not.toContain("scripts/real-tests/level2-android-emulator-e2e.ts");
         expect(level3.args.join("\n")).toContain("scripts/real-tests/level3-real-destructive.ts");
+        expect(level3.args).toEqual(expect.arrayContaining(["--provider-concurrency", "2"]));
+    });
+
+    it("validates and forwards the Level 3 provider concurrency override", () => {
+        const result = spawnSync(process.execPath, [runner, "3", "--dry-run", "--node-test", "--provider-concurrency", "4"], {
+            cwd: repoRoot,
+            encoding: "utf-8",
+        });
+        expect(result.status).toBe(0);
+        const plan = JSON.parse(result.stdout) as { args: string[] };
+        expect(plan.args).toEqual(expect.arrayContaining(["--provider-concurrency", "4"]));
+
+        const invalid = spawnSync(process.execPath, [runner, "3", "--dry-run", "--node-test", "--provider-concurrency", "0"], {
+            cwd: repoRoot,
+            encoding: "utf-8",
+        });
+        expect(invalid.status).toBe(1);
+        expect(invalid.stderr).toContain("Provider concurrency must be an integer from 1 to 8");
+        expect(() => normalizeProviderConcurrency("9", 2)).toThrow("integer from 1 to 8");
+    });
+
+    it("partitions provider modules from serial Level 3 setup modules", () => {
+        const files = [
+            "/repo/scripts/real-tests/level2-broker-e2e.ts",
+            "/repo/scripts/real-tests/level2-hyper-v-windows-vm.ts",
+            "/repo/scripts/real-tests/level3-real-destructive.ts",
+        ];
+        const partitioned = partitionProviderFiles(files);
+        expect(partitioned.serial).toEqual([files[0]]);
+        expect(partitioned.providers).toEqual([
+            { file: files[1], resources: ["hyper-v-windows"] },
+            { file: files[2], resources: ["android-emulator", "macos-vm"] },
+        ]);
+    });
+
+    it("runs independent providers concurrently while serializing shared resources", async () => {
+        const events: string[] = [];
+        let active = 0;
+        let maxActive = 0;
+        const items = [
+            { file: "macos-a", resources: ["macos-vm"] },
+            { file: "windows", resources: ["windows-sandbox"] },
+            { file: "macos-b", resources: ["macos-vm"] },
+        ];
+        const results = await runResourceAware(items, 2, async (file) => {
+            events.push(`start:${file}`);
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+            active -= 1;
+            events.push(`end:${file}`);
+            return file;
+        });
+
+        expect(results).toEqual(["macos-a", "windows", "macos-b"]);
+        expect(maxActive).toBe(2);
+        expect(events.indexOf("start:macos-b")).toBeGreaterThan(events.indexOf("end:macos-a"));
+    });
+
+    it("executes provider modules in isolated child processes and keeps summary order", () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-workers-"));
+        const windowsFile = join(tempDir, "level2-hyper-v-windows-vm.ts");
+        const linuxFile = join(tempDir, "level2-hyper-v-linux-vm.ts");
+        const windowsStarted = join(tempDir, "windows.started");
+        const linuxStarted = join(tempDir, "linux.started");
+        const summaryFile = join(tempDir, "summary.json");
+        const moduleText = (name: string, ownMarker: string, peerMarker: string) => `
+            import { existsSync, writeFileSync } from "fs";
+            export const name = ${JSON.stringify(name)};
+            export async function run() {
+                writeFileSync(${JSON.stringify(ownMarker)}, String(process.pid));
+                const deadline = Date.now() + 3000;
+                while (!existsSync(${JSON.stringify(peerMarker)}) && Date.now() < deadline) {
+                    await new Promise((resolve) => setTimeout(resolve, 20));
+                }
+                return existsSync(${JSON.stringify(peerMarker)})
+                    ? { status: "PASS" }
+                    : { status: "FAIL", reason: "peer provider did not start concurrently" };
+            }
+        `;
+        writeFileSync(windowsFile, moduleText("windows worker", windowsStarted, linuxStarted));
+        writeFileSync(linuxFile, moduleText("linux worker", linuxStarted, windowsStarted));
+        try {
+            const result = spawnSync(process.execPath, [
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
+                "--compact",
+                "--provider-concurrency",
+                "2",
+                "--json-summary-file",
+                summaryFile,
+                windowsFile,
+                linuxFile,
+            ], {
+                cwd: repoRoot,
+                encoding: "utf-8",
+                timeout: 10_000,
+            });
+            expect(result.status, result.stderr || result.stdout).toBe(0);
+            const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
+                records: Array<{ test: string; status: string }>;
+            };
+            expect(summary.records).toEqual([
+                expect.objectContaining({ test: "windows worker", status: "PASS" }),
+                expect.objectContaining({ test: "linux worker", status: "PASS" }),
+            ]);
+            expect(readFileSync(windowsStarted, "utf-8")).not.toBe(String(process.pid));
+            expect(readFileSync(linuxStarted, "utf-8")).not.toBe(String(process.pid));
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
     });
 
     it("always uses the current checkout CLI for real broker autolaunch", async () => {

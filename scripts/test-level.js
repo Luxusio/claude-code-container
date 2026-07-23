@@ -95,7 +95,7 @@ function normalizeLevel(value) {
 
 function usage() {
     return [
-        "Usage: node scripts/test-level.js <0|1|2|3> [--dry-run|--list|--node-test|--compact|--fail-on-skip|--fail-on-coverage-gap|--json-summary|--json-summary-file <path>|--summarize-json <path>|--assert-json <path> [--platform-result]]",
+        "Usage: node scripts/test-level.js <0|1|2|3> [--dry-run|--list|--node-test|--compact|--provider-concurrency <1-8>|--fail-on-skip|--fail-on-coverage-gap|--json-summary|--json-summary-file <path>|--summarize-json <path>|--assert-json <path> [--platform-result]]",
         "",
         "Levels:",
         ...Object.entries(LEVELS).map(([level, config]) => `  ${level}: ${config.description}`),
@@ -124,6 +124,8 @@ function commandFor(level, options = {}) {
                 ...(options.failOnCoverageGap ? ["--fail-on-coverage-gap"] : []),
                 ...(options.jsonSummary ? ["--json-summary"] : []),
                 ...(options.jsonSummaryFile ? ["--json-summary-file", options.jsonSummaryFile] : []),
+                "--provider-concurrency",
+                String(options.providerConcurrency ?? (level === 3 ? 2 : 1)),
                 ...config.nodeFiles.map((file) => join(root, file)),
             ],
         env: {
@@ -140,6 +142,13 @@ const summarizeJsonIndex = args.indexOf("--summarize-json");
 const summarizeJsonFile = summarizeJsonIndex >= 0 ? args[summarizeJsonIndex + 1] : "";
 const assertJsonIndex = args.indexOf("--assert-json");
 const assertJsonFile = assertJsonIndex >= 0 ? args[assertJsonIndex + 1] : "";
+const providerConcurrencyIndex = args.indexOf("--provider-concurrency");
+const providerConcurrencyText = providerConcurrencyIndex >= 0 ? args[providerConcurrencyIndex + 1] : "";
+const providerConcurrency = providerConcurrencyText === "" ? undefined : Number(providerConcurrencyText);
+if (providerConcurrency !== undefined && (!Number.isInteger(providerConcurrency) || providerConcurrency < 1 || providerConcurrency > 8)) {
+    console.error("Provider concurrency must be an integer from 1 to 8.");
+    process.exit(1);
+}
 if (args.includes("--list")) {
     console.log(usage());
     process.exit(0);
@@ -177,11 +186,13 @@ if (assertJsonIndex >= 0) {
 const jsonSummaryFileValueIndex = jsonSummaryFileIndex >= 0 ? jsonSummaryFileIndex + 1 : -1;
 const summarizeJsonFileValueIndex = summarizeJsonIndex >= 0 ? summarizeJsonIndex + 1 : -1;
 const assertJsonFileValueIndex = assertJsonIndex >= 0 ? assertJsonIndex + 1 : -1;
+const providerConcurrencyValueIndex = providerConcurrencyIndex >= 0 ? providerConcurrencyIndex + 1 : -1;
 const level = normalizeLevel(args.find((arg, index) => (
     !arg.startsWith("--")
     && index !== jsonSummaryFileValueIndex
     && index !== summarizeJsonFileValueIndex
     && index !== assertJsonFileValueIndex
+    && index !== providerConcurrencyValueIndex
 )) ?? "0");
 if (level === null) {
     console.error(usage());
@@ -195,6 +206,7 @@ const planned = commandFor(level, {
     failOnCoverageGap: args.includes("--fail-on-coverage-gap"),
     jsonSummary: args.includes("--json-summary"),
     jsonSummaryFile,
+    providerConcurrency,
 });
 if (args.includes("--dry-run")) {
     console.log(JSON.stringify(planned, null, 2));

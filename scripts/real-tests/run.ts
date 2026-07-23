@@ -1,9 +1,12 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, resolve } from "path";
-import { pathToFileURL } from "url";
+import { spawn } from "child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from "./device-lab-mcp-client.ts";
+import { normalizeProviderConcurrency, partitionProviderFiles, runResourceAware } from "./provider-parallelism.ts";
 import { aggregateStepResult } from "./result-status.ts";
 
 let failed = false;
@@ -273,13 +276,19 @@ const jsonSummary = args.includes("--json-summary");
 const jsonSummaryFileIndex = args.indexOf("--json-summary-file");
 const jsonSummaryFile = jsonSummaryFileIndex >= 0 ? args[jsonSummaryFileIndex + 1] : "";
 const jsonSummaryFileValueIndex = jsonSummaryFileIndex >= 0 ? jsonSummaryFileIndex + 1 : -1;
+const providerConcurrencyIndex = args.indexOf("--provider-concurrency");
+const providerConcurrencyValue = providerConcurrencyIndex >= 0 ? args[providerConcurrencyIndex + 1] : "";
+const providerConcurrencyValueIndex = providerConcurrencyIndex >= 0 ? providerConcurrencyIndex + 1 : -1;
+const providerConcurrency = normalizeProviderConcurrency(providerConcurrencyValue, 1);
 const files = args.filter((arg, index) => (
     arg !== "--compact"
     && arg !== "--fail-on-skip"
     && arg !== "--fail-on-coverage-gap"
     && arg !== "--json-summary"
     && arg !== "--json-summary-file"
+    && arg !== "--provider-concurrency"
     && index !== jsonSummaryFileValueIndex
+    && index !== providerConcurrencyValueIndex
 ));
 const scriptedRecords: any[] = scriptedToolRecords(files);
 
@@ -355,16 +364,76 @@ function providerFacetIsExplained(facet, explainedProviderValues) {
     return explainedProviderValues.has(`${key}=${value}`);
 }
 
-for (const file of files) {
-    let currentTestName = file;
+async function executeModule(file: string) {
+    let name = file;
     try {
         const mod = await import(pathToFileURL(file).href);
-        currentTestName = mod.name || file;
+        name = mod.name || file;
         consumeDeviceLabMcpToolCalls();
         consumeDeviceLabMcpToolSessions();
         const result = await mod.run();
-        const moduleToolCalls = consumeDeviceLabMcpToolCalls();
-        const moduleToolSessions = consumeDeviceLabMcpToolSessions();
+        return {
+            ok: true,
+            file,
+            name,
+            result,
+            toolCalls: consumeDeviceLabMcpToolCalls(),
+            toolSessions: consumeDeviceLabMcpToolSessions(),
+        };
+    } catch (error) {
+        consumeDeviceLabMcpToolCalls();
+        consumeDeviceLabMcpToolSessions();
+        return {
+            ok: false,
+            file,
+            name,
+            error: { message: error?.message || String(error), stack: error?.stack },
+        };
+    }
+}
+
+async function executeProviderModule(file: string, workDir: string) {
+    const outputFile = join(workDir, `${createHash("sha256").update(file).digest("hex")}.json`);
+    const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
+    try {
+        await new Promise<void>((resolvePromise, rejectPromise) => {
+            const child = spawn(process.execPath, [worker, file, outputFile], {
+                cwd: process.cwd(),
+                env: process.env,
+                stdio: ["ignore", "inherit", "inherit"],
+                windowsHide: true,
+            });
+            child.once("error", rejectPromise);
+            child.once("exit", () => resolvePromise());
+        });
+    } catch (error) {
+        return {
+            ok: false,
+            file,
+            name: file,
+            error: { message: error?.message || String(error), stack: error?.stack },
+        };
+    }
+    if (!existsSync(outputFile)) {
+        return {
+            ok: false,
+            file,
+            name: file,
+            error: { message: "provider worker exited without a result" },
+        };
+    }
+    return JSON.parse(readFileSync(outputFile, "utf-8"));
+}
+
+function collectExecution(execution) {
+    const file = execution.file;
+    const currentTestName = execution.name || file;
+    try {
+        if (!execution.ok) throw Object.assign(new Error(execution.error?.message || "provider worker failed"), execution.error || {});
+        const result = execution.result;
+        const moduleToolCalls = Array.isArray(execution.toolCalls) ? execution.toolCalls : [];
+        const moduleToolSessions = Array.isArray(execution.toolSessions) ? execution.toolSessions : [];
+        const moduleName = execution.name || file;
         const explicitTools = Array.isArray(result?.tools) ? result.tools.map(String) : [];
         const explicitScriptedTools = Array.isArray(result?.scriptedTools) ? result.scriptedTools.map(String) : [];
         const explicitScriptedArgumentFacets = Array.isArray(result?.scriptedArgumentFacets) ? result.scriptedArgumentFacets.map(String) : [];
@@ -374,7 +443,7 @@ for (const file of files) {
             const flowSchemaFailures = flowStepArgumentSchemaFailures(call.name, call.arguments);
             toolCallRecords.push({
                 file,
-                test: mod.name || file,
+                test: moduleName,
                 tool: call.name,
                 ...(call.mcpSessionId ? { mcpSessionId: call.mcpSessionId } : {}),
                 schemaValid: schemaErrors.length === 0,
@@ -401,7 +470,7 @@ for (const file of files) {
         for (const session of moduleToolSessions) {
             toolSessionRecords.push({
                 file,
-                test: mod.name || file,
+                test: moduleName,
                 id: session.id || "",
                 name: session.name || "unknown",
                 serverPath: session.serverPath || "",
@@ -413,11 +482,11 @@ for (const file of files) {
             });
         }
         for (const tool of explicitScriptedTools) {
-            scriptedRecords.push({ file, test: mod.name || file, tool, source: "declared-scripted-result" });
+            scriptedRecords.push({ file, test: moduleName, tool, source: "declared-scripted-result" });
         }
         for (const facet of explicitScriptedArgumentFacets) {
             const tool = facet.split(":")[0];
-            if (tool) scriptedRecords.push({ file, test: mod.name || file, tool, source: "declared-scripted-argument-facet", facets: [facet] });
+            if (tool) scriptedRecords.push({ file, test: moduleName, tool, source: "declared-scripted-argument-facet", facets: [facet] });
         }
         const status = result?.status;
         const reason = result?.reason ? ` - ${compact ? compactMessage(result.reason) : result.reason}` : "";
@@ -437,12 +506,12 @@ for (const file of files) {
                 recordStatus("FAIL");
                 records.push({
                     file,
-                    test: mod.name || file,
+                    test: moduleName,
                     step: "validates parent result status",
                     status: "FAIL",
                     reason: consistencyReason,
                 });
-                console.log(`FAIL ${mod.name || file}: validates parent result status - ${compact ? compactMessage(consistencyReason) : consistencyReason}`);
+                console.log(`FAIL ${moduleName}: validates parent result status - ${compact ? compactMessage(consistencyReason) : consistencyReason}`);
             }
             for (const step of result.steps) {
                 const invalidStatusReason = step?.status === "PASS" || step?.status === "SKIP" || step?.status === "FAIL"
@@ -454,7 +523,7 @@ for (const file of files) {
                 const stepDetail = step?.detail ? ` (${step.detail})` : "";
                 records.push({
                     file,
-                    test: mod.name || file,
+                    test: moduleName,
                     step: step?.name || "unnamed step",
                     status: stepStatus,
                     ...(effectiveReason ? { reason: effectiveReason } : {}),
@@ -462,7 +531,7 @@ for (const file of files) {
                     ...(Array.isArray(step?.tools) ? { tools: uniqueSorted(step.tools) } : {}),
                 });
                 if (!compact || stepStatus === "FAIL" || (failOnSkip && stepStatus === "SKIP")) {
-                    console.log(`${stepStatus} ${mod.name || file}: ${step?.name || "unnamed step"}${stepReason}${stepDetail}`);
+                    console.log(`${stepStatus} ${moduleName}: ${step?.name || "unnamed step"}${stepReason}${stepDetail}`);
                 }
             }
         } else {
@@ -473,7 +542,7 @@ for (const file of files) {
             const normalizedStatus = recordStatus(status);
             records.push({
                 file,
-                test: mod.name || file,
+                test: moduleName,
                 status: normalizedStatus,
                 ...(effectiveReason ? { reason: effectiveReason } : {}),
                 ...(result?.detail ? { detail: result.detail } : {}),
@@ -481,13 +550,11 @@ for (const file of files) {
             });
             if (!compact || normalizedStatus === "FAIL" || (failOnSkip && normalizedStatus === "SKIP")) {
                 const effectiveReasonText = effectiveReason ? ` - ${compact ? compactMessage(effectiveReason) : effectiveReason}` : reason;
-                console.log(`${normalizedStatus} ${mod.name || file}${effectiveReasonText}${detail}`);
+                console.log(`${normalizedStatus} ${moduleName}${effectiveReasonText}${detail}`);
             }
         }
     } catch (error) {
         recordStatus("FAIL");
-        consumeDeviceLabMcpToolCalls();
-        consumeDeviceLabMcpToolSessions();
         records.push({
             file,
             test: currentTestName,
@@ -495,6 +562,28 @@ for (const file of files) {
             reason: error?.message || String(error),
         });
         console.error(`FAIL ${currentTestName} - ${compact ? compactMessage(error?.message || error) : (error?.stack || error?.message || String(error))}`);
+    }
+}
+
+const { serial: serialFiles, providers: providerFiles } = partitionProviderFiles(files);
+for (const file of serialFiles) {
+    collectExecution(await executeModule(file));
+}
+
+if (providerFiles.length > 0) {
+    const workDir = mkdtempSync(join(tmpdir(), "ccc-level3-provider-"));
+    try {
+        if (providerConcurrency > 1) {
+            console.log(`PROVIDERS concurrency=${providerConcurrency} count=${providerFiles.length}`);
+        }
+        const executions = await runResourceAware(
+            providerFiles,
+            providerConcurrency,
+            (file) => executeProviderModule(file, workDir),
+        );
+        executions.forEach(collectExecution);
+    } finally {
+        rmSync(workDir, { recursive: true, force: true });
     }
 }
 

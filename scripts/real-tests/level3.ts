@@ -4,15 +4,25 @@ import { repoRoot } from "./helpers.ts";
 import { withExclusiveRealProviderRunSync } from "./exclusive-real-provider-run.ts";
 import { buildLevel3Artifacts, ensureHostBrokerReady } from "./support/level3-host.ts";
 
-const resultFiles = process.argv.slice(2);
+const args = process.argv.slice(2);
+const providerConcurrencyIndex = args.indexOf("--provider-concurrency");
+const providerConcurrency = providerConcurrencyIndex >= 0 ? args[providerConcurrencyIndex + 1] : "";
+if (providerConcurrencyIndex >= 0 && (!/^[1-8]$/.test(providerConcurrency))) {
+    throw new Error("--provider-concurrency must be an integer from 1 to 8");
+}
+const resultFiles = args.filter((arg, index) => (
+    arg !== "--provider-concurrency"
+    && index !== (providerConcurrencyIndex >= 0 ? providerConcurrencyIndex + 1 : -1)
+));
 const assertMatrix = join(repoRoot, "scripts", "real-tests", "assert-matrix.ts");
 const hiddenChildProcessPreload = join(repoRoot, "scripts", "real-tests", "hidden-child-processes.cjs");
 
 function hiddenChildProcessEnv() {
-    if (process.platform !== "win32") return process.env;
+    const baseEnv = providerConcurrency ? { ...process.env, CCC_LEVEL3_PROVIDER_CONCURRENCY: providerConcurrency } : process.env;
+    if (process.platform !== "win32") return baseEnv;
     const preload = hiddenChildProcessPreload.replace(/\\/g, "/").replace(/"/g, '\\"');
-    const nodeOptions = [process.env.NODE_OPTIONS?.trim(), `--require="${preload}"`].filter(Boolean).join(" ");
-    return { ...process.env, NODE_OPTIONS: nodeOptions };
+    const nodeOptions = [baseEnv.NODE_OPTIONS?.trim(), `--require="${preload}"`].filter(Boolean).join(" ");
+    return { ...baseEnv, NODE_OPTIONS: nodeOptions };
 }
 
 function run(command, args) {

@@ -7,6 +7,7 @@ import { repoRoot } from "./helpers.ts";
 const outputFile = resolve(join(repoRoot, "results", `device-lab-level3-${process.platform}.json`));
 const runner = join(repoRoot, "scripts", "test-level.js");
 const LEVEL3_REAL_PROVIDER_TIMEOUT_MS = 10 * 60 * 60 * 1000;
+const providerConcurrency = process.env.CCC_LEVEL3_PROVIDER_CONCURRENCY || "2";
 
 function realTestEnv() {
     return Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "VITEST" && !key.startsWith("VITEST_")));
@@ -48,6 +49,8 @@ const collected = run([
     "3",
     "--node-test",
     "--compact",
+    "--provider-concurrency",
+    providerConcurrency,
     "--json-summary-file",
     outputFile,
 ]);
