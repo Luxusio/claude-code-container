@@ -42,7 +42,10 @@ export function getMutagenSyncStatus(sessionName: string): string | null {
     if (result.error || result.status !== 0) {
         return null;
     }
-    const output = result.stdout ?? "";
+    return parseMutagenSyncStatus(result.stdout ?? "");
+}
+
+function parseMutagenSyncStatus(output: string): string {
     const statusMatch = output.match(/Status:\s*(.+)/);
     return statusMatch ? statusMatch[1].trim() : "Unknown";
 }
@@ -375,18 +378,29 @@ async function ensureSync(projectPath: string, config: RemoteConfig, containerTa
     // Ensure mutagen daemon is running
     spawnSync("mutagen", ["daemon", "start"], {stdio: "ignore"});
 
-    // Check if session already exists
-    const existingStatus = getMutagenSyncStatus(sessionName);
-
-    if (existingStatus) {
-        // Resume if paused
-        if (existingStatus.toLowerCase().includes("paused")) {
-            console.log("Resuming paused sync...");
-            spawnSync("mutagen", ["sync", "resume", sessionName], {stdio: "inherit"});
+    // Existing sessions are reusable only when their endpoint is the exact
+    // container ID pinned for this invocation.
+    const existing = spawnSync("mutagen", ["sync", "list", sessionName], { encoding: "utf-8" });
+    if (!existing.error && existing.status === 0) {
+        const output = existing.stdout ?? "";
+        const expectedEndpoint = `docker://${containerTarget}/`;
+        if (!output.includes(expectedEndpoint)) {
+            console.log("Replacing stale sync session...");
+            const terminated = spawnSync("mutagen", ["sync", "terminate", sessionName], { stdio: "inherit" });
+            if (terminated.error || terminated.status !== 0) {
+                throw new Error("Failed to terminate stale sync session");
+            }
         } else {
-            console.log(`Sync already running (${existingStatus})`);
+            const existingStatus = parseMutagenSyncStatus(output);
+            if (existingStatus.toLowerCase().includes("paused")) {
+                console.log("Resuming paused sync...");
+                const resumed = spawnSync("mutagen", ["sync", "resume", sessionName], {stdio: "inherit"});
+                if (resumed.error || resumed.status !== 0) throw new Error("Failed to resume sync session");
+            } else {
+                console.log(`Sync already running (${existingStatus})`);
+            }
+            return sessionName;
         }
-        return sessionName;
     }
 
     // Create new sync session - sync to container via SSH

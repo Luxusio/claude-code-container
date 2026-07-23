@@ -181,6 +181,30 @@ describe("cleanContainers", () => {
         expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), ["rm", "222222222222"], { stdio: "inherit" });
     });
 
+    it("reports image removal failure", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") return makeResult(0, "");
+            if (argsArr[0] === "images") return makeResult(0, "ccc\tsha256bad\t500MB");
+            if (argsArr[0] === "rmi") return makeResult(1, "");
+            return makeResult(0, "");
+        });
+
+        await expect(cleanContainers({ yes: true })).rejects.toThrow("cleanup aborted");
+    });
+
+    it("reports volume removal failure", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps" || argsArr[0] === "images") return makeResult(0, "");
+            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "ccc-mise-cache");
+            if (argsArr[0] === "volume" && argsArr[1] === "rm") return makeResult(1, "");
+            return makeResult(0, "");
+        });
+
+        await expect(cleanContainers({ volumes: true, yes: true })).rejects.toThrow("cleanup aborted");
+    });
+
     it("never stops or removes a container with an active CCC session", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];

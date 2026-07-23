@@ -1242,13 +1242,13 @@ describe('remoteExec', () => {
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // getMutagenSyncStatus -> paused
-        status: 0, stdout: 'Status: Paused\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'Beta:\n\tURL: user@host:docker://abcdef1234567890/project/project\nStatus: Paused\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // mutagen sync resume
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // waitForSync getMutagenSyncStatus -> watching
-        status: 0, stdout: 'Status: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'Beta:\n\tURL: user@host:docker://abcdef1234567890/project/project\nStatus: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null
       })
 
     mockExistsSync.mockReturnValue(true)
@@ -1285,7 +1285,7 @@ describe('remoteExec', () => {
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // getMutagenSyncStatus -> already watching
-        status: 0, stdout: 'Status: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'Beta:\n\tURL: user@host:docker://abcdef1234567890/project/project\nStatus: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // waitForSync getMutagenSyncStatus -> watching
         status: 0, stdout: 'Status: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null
@@ -1305,6 +1305,35 @@ describe('remoteExec', () => {
 
     const logCalls = (console.log as any).mock.calls.map((c: any[]) => c.join(' '))
     expect(logCalls.some((l: string) => l.includes('Sync already running'))).toBe(true)
+  })
+
+  it('replaces an existing sync session that targets a different container ID', async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ status: 0, stdout: 'mutagen version 0.17.0\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'Beta:\n\tURL: user@host:docker://1111111111111111/project/project\nStatus: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'Status: Watching for changes\n', stderr: '', pid: 0, output: [], signal: null })
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'myhost', user: 'myuser', remotePath: '' }) as any)
+    mockSpawn.mockReturnValue(makeSpawnMock(0) as any)
+    mockPrompt.mockResolvedValue('n')
+    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:0') })
+
+    await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:0')
+
+    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'mutagen'
+      && (call[1] as string[]).join(' ') === `sync terminate ${getMutagenSessionName('/home/user/project')}`)).toBe(true)
+    const createCall = mockSpawnSync.mock.calls.find((call) => call[0] === 'mutagen'
+      && (call[1] as string[])[1] === 'create')
+    expect(createCall?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining('docker://abcdef1234567890/project/'),
+    ]))
+    expect(exitMock).toHaveBeenCalledWith(0)
   })
 
   it('pauses sync and stops container when user says yes on exit', async () => {

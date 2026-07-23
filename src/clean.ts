@@ -189,14 +189,20 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
     for (const img of images) {
         console.log(`Removing image ${img.repository} (${img.id})...`);
         const r = spawnSync(cli, ["rmi", img.id], { stdio: "inherit" });
-        if (r.status === 0) removed++;
+        if (r.error || r.status !== 0) {
+            throw new Error(`Failed to remove image ${img.repository}; cleanup aborted.`);
+        }
+        removed++;
     }
 
     // Remove volumes
     for (const v of volumes) {
         console.log(`Removing volume ${v}...`);
         const r = spawnSync(cli, ["volume", "rm", v], { stdio: "inherit" });
-        if (r.status === 0) removed++;
+        if (r.error || r.status !== 0) {
+            throw new Error(`Failed to remove volume ${v}; cleanup aborted.`);
+        }
+        removed++;
     }
 
     console.log(`\nDone. Removed ${removed} item(s).`);
