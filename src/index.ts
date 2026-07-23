@@ -127,9 +127,10 @@ export function createWorktreeSessionLock(
     familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
     branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
     lockCreator: typeof createSessionLock = createSessionLock,
+    sourcePath?: string,
 ): string {
     return familyLock(projectId, () => {
-        branchGuard(workspacePath, expectedBranch);
+        branchGuard(workspacePath, expectedBranch, spawnSync, sourcePath);
         return lockCreator(projectId, profile);
     });
 }
@@ -140,10 +141,11 @@ export function runWorktreeLifecycleOperation<T>(
     operation: () => T,
     familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
     branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
+    sourcePath?: string,
 ): T {
     const projectId = getProjectId(workspacePath);
     return familyLock(projectId, () => {
-        branchGuard(workspacePath, expectedBranch);
+        branchGuard(workspacePath, expectedBranch, spawnSync, sourcePath);
         return operation();
     });
 }
@@ -431,6 +433,7 @@ async function exec(
         env?: Record<string, string>;
         tool?: ToolDefinition;
         expectedWorktreeBranch?: string;
+        expectedWorktreeSourcePath?: string;
     } = {},
     profile?: string,
 ): Promise<void> {
@@ -463,7 +466,16 @@ async function exec(
     const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
     const worktreeBranch = options.expectedWorktreeBranch ?? detectWorktreeWorkspaceBranch(fullPath);
     const sessionLockFile = worktreeBranch
-        ? createWorktreeSessionLock(projectId, fullPath, worktreeBranch, profile)
+        ? createWorktreeSessionLock(
+            projectId,
+            fullPath,
+            worktreeBranch,
+            profile,
+            withProjectFamilyLifecycleLock,
+            assertWorkspaceBranch,
+            createSessionLock,
+            options.expectedWorktreeSourcePath,
+        )
         : createSessionLock(projectId, profile);
     setSession(sessionLockFile, fullPath, profile, (commandTool ?? options.tool)?.name ?? "command");
     setupSignalHandlers();
@@ -1031,6 +1043,7 @@ async function prepareWorktreeUnlocked(
         }
     }
 
+    assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
     return wsPath;
 }
 
@@ -1143,7 +1156,7 @@ function handleWorktreeRemove(
     let removalResult: ReturnType<typeof removeWorkspace> | null = null;
     try {
         withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
-            assertWorkspaceBranch(wsPath, branch);
+            assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
             ensureDockerRunning();
             for (const containerName of removeWorkspaceContainers(wsPath)) {
                 console.log(`Removed associated container ${containerName}.`);
@@ -1392,6 +1405,7 @@ async function main(): Promise<void> {
     let command = cmdArgs[0];
     let cwd = process.cwd();
     let expectedWorktreeBranch: string | undefined;
+    let expectedWorktreeSourcePath: string | undefined;
 
     // @ prefix → worktree workspace
     if (worktreeArg) {
@@ -1413,6 +1427,7 @@ async function main(): Promise<void> {
             if (process.env.DEBUG) {
                 console.error(`[ccc:debug] worktree: originalCwd=${cwd} branch=${parsed.branch}`);
             }
+            expectedWorktreeSourcePath = cwd;
             cwd = await prepareWorktree(cwd, parsed.branch);
             expectedWorktreeBranch = parsed.branch;
             // command stays as filteredArgs[0] (parseArgs already separated @branch)
@@ -1437,7 +1452,7 @@ async function main(): Promise<void> {
             if (expectedWorktreeBranch) {
                 runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
                     stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
-                });
+                }, withProjectFamilyLifecycleLock, assertWorkspaceBranch, expectedWorktreeSourcePath);
             } else {
                 stopProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             }
@@ -1447,7 +1462,7 @@ async function main(): Promise<void> {
             if (expectedWorktreeBranch) {
                 runWorktreeLifecycleOperation(cwd, expectedWorktreeBranch, () => {
                     removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
-                });
+                }, withProjectFamilyLifecycleLock, assertWorkspaceBranch, expectedWorktreeSourcePath);
             } else {
                 removeProjectContainer(cwd, profile, { force: cmdArgs.includes("--force") || cmdArgs.includes("-f") });
             }
@@ -1481,7 +1496,7 @@ async function main(): Promise<void> {
             const subcommand = cmdArgs[1] || "status";
             if (subcommand === "shell") {
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             if (subcommand === "run") {
@@ -1491,7 +1506,7 @@ async function main(): Promise<void> {
                     process.exit(1);
                 }
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, labCommand, { ...envOpt, expectedWorktreeBranch }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, labCommand, { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             const status = labsCli(cmdArgs.slice(1), cwd);
@@ -1586,18 +1601,18 @@ async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch }, profile);
+            await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             break;
 
         case "update": {
             const tool = resolveTool(process.env);
-            await exec(cwd, tool.updateCommand, { tool, ...envOpt, expectedWorktreeBranch }, profile);
+            await exec(cwd, tool.updateCommand, { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             break;
         }
 
         case undefined: {
             const tool = resolveTool(process.env);
-            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt, expectedWorktreeBranch }, profile);
+            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             break;
         }
 
@@ -1605,12 +1620,12 @@ async function main(): Promise<void> {
             const tool = getToolByName(command);
             if (tool) {
                 const toolArgs = cmdArgs.slice(1);
-                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt, expectedWorktreeBranch }, profile);
+                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             } else if (command.startsWith("-")) {
                 const defTool = resolveTool(process.env);
-                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt, expectedWorktreeBranch }, profile);
+                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             } else {
-                await exec(cwd, cmdArgs, { ...envOpt, expectedWorktreeBranch }, profile);
+                await exec(cwd, cmdArgs, { ...envOpt, expectedWorktreeBranch, expectedWorktreeSourcePath }, profile);
             }
             break;
     }

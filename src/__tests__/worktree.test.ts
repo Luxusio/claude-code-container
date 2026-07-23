@@ -795,7 +795,52 @@ describe("assertWorkspaceBranch", () => {
         });
         expect(() => assertWorkspaceBranch(result.workspacePath, "feature"))
             .toThrow("repository 'backend' belongs to branch 'wrong-branch'");
-        expect(detectWorktreeWorkspaceBranch(result.workspacePath)).toBeNull();
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("do not share one checked-out branch");
+    });
+
+    it("rejects a same-branch directory that is not owned by the source repositories", () => {
+        const source = join(repoPath, "owned-source");
+        const sourceRepo = join(source, "frontend");
+        mkdirSync(source);
+        initRepo(sourceRepo);
+        spawnSync("git", ["branch", "feature"], { cwd: sourceRepo, stdio: "pipe" });
+
+        const workspace = getWorkspacePath(source, "feature");
+        const foreignRepo = join(workspace, "frontend");
+        mkdirSync(workspace);
+        initRepo(foreignRepo);
+        spawnSync("git", ["switch", "-c", "feature"], { cwd: foreignRepo, stdio: "pipe" });
+
+        expect(() => assertWorkspaceBranch(workspace, "feature", spawnSync, source))
+            .toThrow("is not owned by its source repository");
+    });
+
+    it("validates independently managed nested worktrees in a unified workspace", () => {
+        const nestedSource = join(repoPath, "nested");
+        initRepo(nestedSource);
+        const result = createWorkspace(repoPath, "nested-feature");
+        const nestedWorkspace = join(result.workspacePath, "nested");
+
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-feature",
+            spawnSync,
+            repoPath,
+        )).not.toThrow();
+
+        spawnSync("git", ["switch", "-c", "wrong-nested"], {
+            cwd: nestedWorkspace,
+            stdio: "pipe",
+        });
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-feature",
+            spawnSync,
+            repoPath,
+        )).toThrow("repository 'nested' belongs to branch 'wrong-nested'");
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("do not share one checked-out branch");
     });
 });
 
@@ -1350,6 +1395,25 @@ describe("isValidWorktree", () => {
     it("returns false for regular git repo (not a worktree)", () => {
         initRepo(join(tmpDir, "regular-repo"));
         expect(isValidWorktree(join(tmpDir, "regular-repo"), tmpDir)).toBe(false);
+    });
+
+    it("rejects a forged gitlink that reuses another worktree registration", () => {
+        const sourceRepo = join(tmpDir, "source-forged");
+        const realWorktree = join(tmpDir, "real-worktree");
+        const forgedWorktree = join(tmpDir, "forged-worktree");
+        initRepo(sourceRepo);
+        spawnSync("git", ["worktree", "add", "-b", "forged-test", realWorktree], {
+            cwd: sourceRepo,
+            stdio: "pipe",
+        });
+        mkdirSync(forgedWorktree);
+        writeFileSync(
+            join(forgedWorktree, ".git"),
+            readFileSync(join(realWorktree, ".git"), "utf-8"),
+        );
+
+        expect(isValidWorktree(realWorktree, sourceRepo)).toBe(true);
+        expect(isValidWorktree(forgedWorktree, sourceRepo)).toBe(false);
     });
 
     it("returns false for non-existent directory", () => {

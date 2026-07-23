@@ -24,6 +24,7 @@ import { dirname, join, normalize, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     getProjectId,
+    projectPathsEquivalent,
     getClaudeDir,
     getClaudeJsonFile,
     IMAGE_NAME,
@@ -639,7 +640,7 @@ export function getManagedProjectContainerIdentity(
         const labels = inspected.Config?.Labels;
         if (labels?.["ccc.managed"] !== "true") return null;
         const labeledPath = labels["ccc.project.path"];
-        if (!labeledPath || normalizedHostPath(labeledPath) !== normalizedHostPath(projectPath)) return null;
+        if (!labeledPath || !projectPathsEquivalent(labeledPath, projectPath)) return null;
         return { containerId: inspected.Id, running: inspected.State.Running };
     } catch {
         return null;

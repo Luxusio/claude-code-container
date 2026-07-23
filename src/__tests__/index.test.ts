@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { canonicalProjectPath, hashPath, getProjectId } from '../utils.js'
+import { canonicalProjectPath, projectPathsEquivalent, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
 import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, runWorktreeLifecycleOperation, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
@@ -69,12 +69,39 @@ describe('canonicalProjectPath', () => {
 
   it('canonicalizes the parent of a not-yet-created Windows worktree path', () => {
     const realpath = vi.fn((path: string) => {
-      if (path.endsWith('repo--feature')) throw new Error('ENOENT')
+      if (path.endsWith('repo--feature')) {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+      }
       return 'C:\\Users\\Luxus\\Project'
     })
 
     expect(canonicalProjectPath('c:\\users\\luxus\\project\\repo--feature', 'win32', realpath))
       .toContain('C:\\Users\\Luxus\\Project')
+  })
+
+  it('fails closed when Windows filesystem identity cannot be observed', () => {
+    const denied = Object.assign(new Error('access denied'), { code: 'EACCES' })
+    expect(() => canonicalProjectPath('C:\\Users\\Luxus\\Project\\Repo', 'win32', () => {
+      throw denied
+    })).toThrow('Unable to establish canonical Windows project identity')
+  })
+
+  it('fails closed when a missing worktree parent cannot be canonicalized', () => {
+    const realpath = vi.fn(() => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    expect(() => canonicalProjectPath('C:\\missing\\repo--feature', 'win32', realpath))
+      .toThrow('Unable to establish canonical Windows project parent identity')
+  })
+
+  it('compares Windows junction and casing aliases by canonical filesystem identity', () => {
+    const realpath = vi.fn(() => 'C:\\Users\\Luxus\\Project\\Repo')
+    expect(projectPathsEquivalent(
+      'C:\\junction\\repo',
+      'c:\\users\\luxus\\project\\repo',
+      'win32',
+      realpath,
+    )).toBe(true)
   })
 })
 
@@ -196,8 +223,14 @@ describe('worktree session registration', () => {
       familyLock,
       branchGuard,
       lockCreator,
+      '/projects/repo',
     )).toBe('/locks/worktree.lock')
-    expect(branchGuard).toHaveBeenCalledWith('/projects/repo--feature', 'feature')
+    expect(branchGuard).toHaveBeenCalledWith(
+      '/projects/repo--feature',
+      'feature',
+      expect.any(Function),
+      '/projects/repo',
+    )
     expect(lockCreator).toHaveBeenCalledWith('worktree-id', 'work')
   })
 
@@ -231,8 +264,14 @@ describe('worktree session registration', () => {
       operation,
       familyLock,
       branchGuard,
+      '/projects/repo',
     )).toBe('stopped')
-    expect(branchGuard).toHaveBeenCalledWith('/projects/repo--feature', 'feature')
+    expect(branchGuard).toHaveBeenCalledWith(
+      '/projects/repo--feature',
+      'feature',
+      expect.any(Function),
+      '/projects/repo',
+    )
     expect(operation).toHaveBeenCalledOnce()
   })
 

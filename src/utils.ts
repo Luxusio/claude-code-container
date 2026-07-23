@@ -73,19 +73,35 @@ export function hashPath(path: string): string {
 export function canonicalProjectPath(
     projectPath: string,
     platform = process.platform,
-    realpath: (path: string) => string = realpathSync.native,
+    realpath: (path: string) => string = realpathSync.native ?? realpathSync,
 ): string {
     const resolved = resolve(projectPath);
     if (platform !== "win32") return resolved;
     try {
         return realpath(resolved);
-    } catch {
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw new Error("Unable to establish canonical Windows project identity", { cause: error });
+        }
         try {
             return join(realpath(dirname(resolved)), basename(resolved));
-        } catch {
-            return resolved;
+        } catch (parentError) {
+            throw new Error("Unable to establish canonical Windows project parent identity", { cause: parentError });
         }
     }
+}
+
+export function projectPathsEquivalent(
+    left: string,
+    right: string,
+    platform = process.platform,
+    realpath: (path: string) => string = realpathSync.native ?? realpathSync,
+): boolean {
+    const canonicalLeft = canonicalProjectPath(left, platform, realpath);
+    const canonicalRight = canonicalProjectPath(right, platform, realpath);
+    return platform === "win32"
+        ? canonicalLeft.toLowerCase() === canonicalRight.toLowerCase()
+        : canonicalLeft === canonicalRight;
 }
 
 /**

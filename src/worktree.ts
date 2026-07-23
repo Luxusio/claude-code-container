@@ -179,15 +179,15 @@ export function assertWorkspaceBranch(
     workspacePath: string,
     expectedBranch: string,
     runner: typeof spawnSync = spawnSync,
+    sourcePath?: string,
 ): void {
     if (!existsSync(workspacePath)) {
         throw new Error(`Workspace for branch '${expectedBranch}' no longer exists.`);
     }
-    const repositories = existsSync(join(workspacePath, ".git"))
-        ? [{ name: basename(workspacePath), path: workspacePath }]
-        : scanDirectory(workspacePath)
-            .filter((entry) => entry.isGitRepo)
-            .map(({ name, path }) => ({ name, path }));
+    if (sourcePath) {
+        assertWorkspaceOwnership(workspacePath, sourcePath);
+    }
+    const repositories = branchRepositories(workspacePath);
     if (repositories.length === 0) {
         throw new Error(`Unable to verify workspace branch '${expectedBranch}': no worktree repositories found.`);
     }
@@ -209,28 +209,104 @@ export function assertWorkspaceBranch(
     }
 }
 
+type GitLinkKind = "directory" | "worktree" | "gitlink";
+
+function gitLinkKind(gitPath: string): GitLinkKind {
+    let observed;
+    try {
+        observed = lstatSync(gitPath);
+    } catch (error) {
+        throw new Error(`Unable to inspect worktree metadata '${gitPath}'.`, { cause: error });
+    }
+    if (observed.isDirectory()) return "directory";
+    if (!observed.isFile()) {
+        throw new Error(`Invalid worktree metadata '${gitPath}'.`);
+    }
+    const content = readFileSync(gitPath, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) throw new Error(`Invalid worktree metadata '${gitPath}'.`);
+    const gitDir = resolve(dirname(gitPath), match[1].trim());
+    try {
+        const commonDir = readFileSync(join(gitDir, "commondir"), "utf-8").trim();
+        if (!commonDir) throw new Error("empty commondir");
+        return "worktree";
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "gitlink";
+        throw new Error(`Unable to inspect worktree common directory '${gitPath}'.`, { cause: error });
+    }
+}
+
+function branchRepositories(workspacePath: string): Array<{ name: string; path: string }> {
+    const rootGit = join(workspacePath, ".git");
+    if (existsSync(rootGit)) {
+        const repositories = [{ name: basename(workspacePath), path: workspacePath }];
+        for (const entry of scanDirectory(workspacePath)) {
+            if (!entry.isGitRepo) continue;
+            if (gitLinkKind(join(entry.path, ".git")) === "worktree") {
+                repositories.push({ name: entry.name, path: entry.path });
+            }
+        }
+        return repositories;
+    }
+    return scanDirectory(workspacePath)
+        .filter((entry) => entry.isGitRepo)
+        .map(({ name, path }) => ({ name, path }));
+}
+
+function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): void {
+    const resolvedSource = resolve(sourcePath);
+    if (existsSync(join(resolvedSource, ".git"))) {
+        if (!isValidWorktree(workspacePath, resolvedSource)) {
+            throw new Error(`Workspace is not owned by source repository '${resolvedSource}'.`);
+        }
+        for (const entry of scanDirectory(resolvedSource)) {
+            if (!entry.isGitRepo) continue;
+            const destination = join(workspacePath, entry.name);
+            if (!existsSync(join(destination, ".git"))) continue;
+            if (gitLinkKind(join(destination, ".git")) !== "worktree") continue;
+            if (!isValidWorktree(destination, entry.path)) {
+                throw new Error(`Workspace repository '${entry.name}' is not owned by its source repository.`);
+            }
+        }
+        return;
+    }
+
+    const sourceRepositories = scanDirectory(resolvedSource).filter((entry) => entry.isGitRepo);
+    if (sourceRepositories.length === 0) {
+        throw new Error(`Unable to verify workspace ownership: no source repositories found.`);
+    }
+    for (const source of sourceRepositories) {
+        const destination = join(workspacePath, source.name);
+        if (!isValidWorktree(destination, source.path)) {
+            throw new Error(`Workspace repository '${source.name}' is not owned by its source repository.`);
+        }
+    }
+}
+
 export function detectWorktreeWorkspaceBranch(
     workspacePath: string,
     runner: typeof spawnSync = spawnSync,
 ): string | null {
     if (!existsSync(workspacePath)) return null;
     const rootGit = join(workspacePath, ".git");
-    let repositories: Array<{ path: string; gitPath: string }>;
+    let repositories: Array<{ name: string; path: string }>;
     if (existsSync(rootGit)) {
-        repositories = [{ path: workspacePath, gitPath: rootGit }];
+        if (gitLinkKind(rootGit) !== "worktree") return null;
+        repositories = branchRepositories(workspacePath);
     } else {
-        repositories = scanDirectory(workspacePath)
-            .filter((entry) => entry.isGitRepo)
-            .map((entry) => ({ path: entry.path, gitPath: join(entry.path, ".git") }));
+        const candidates = scanDirectory(workspacePath).filter((entry) => entry.isGitRepo);
+        const kinds = candidates.map((entry) => ({
+            entry,
+            kind: gitLinkKind(join(entry.path, ".git")),
+        }));
+        const worktrees = kinds.filter(({ kind }) => kind === "worktree");
+        if (worktrees.length === 0) return null;
+        if (worktrees.length !== kinds.length) {
+            throw new Error("Workspace contains a mixture of worktrees and regular repositories.");
+        }
+        repositories = worktrees.map(({ entry: { name, path } }) => ({ name, path }));
     }
     if (repositories.length === 0) return null;
-    if (repositories.some(({ gitPath }) => {
-        try {
-            return !lstatSync(gitPath).isFile();
-        } catch {
-            return true;
-        }
-    })) return null;
 
     const branches = new Set<string>();
     for (const repository of repositories) {
@@ -240,10 +316,15 @@ export function detectWorktreeWorkspaceBranch(
             { cwd: repository.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         const branch = (result.stdout ?? "").trim();
-        if (result.error || result.status !== 0 || !branch) return null;
+        if (result.error || result.status !== 0 || !branch) {
+            throw new Error(`Unable to determine worktree branch in '${repository.name}'.`);
+        }
         branches.add(branch);
     }
-    return branches.size === 1 ? [...branches][0] : null;
+    if (branches.size !== 1) {
+        throw new Error("Workspace repositories do not share one checked-out branch.");
+    }
+    return [...branches][0];
 }
 
 // === Read-only Functions ===
@@ -1003,6 +1084,16 @@ export function isValidWorktree(
 
         const gitdirPath = match[1].trim();
         const resolvedGitdir = resolve(dirPath, gitdirPath);
+        const registeredGitFile = readFileSync(
+            join(resolvedGitdir, "gitdir"),
+            "utf-8",
+        ).trim();
+        if (!registeredGitFile) return false;
+        try {
+            if (realpathSync(registeredGitFile) !== realpathSync(gitPath)) return false;
+        } catch {
+            return false;
+        }
 
         // gitdir format: <source>/.git/worktrees/<name>
         // Navigate up to find the common .git dir
@@ -1027,12 +1118,12 @@ export function isValidWorktree(
             return false;
         }
 
-        // Compare with realpathSync to handle symlinks (common on macOS)
+        // Compare with realpathSync to handle symlinks (common on macOS).
+        // Observation failure cannot establish destructive ownership.
         try {
             return realpathSync(commonGitDir) === realpathSync(actualSourceGitDir);
         } catch {
-            // Fallback: compare without symlink resolution
-            return resolve(commonGitDir) === resolve(actualSourceGitDir);
+            return false;
         }
     } catch {
         return false;
