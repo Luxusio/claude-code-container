@@ -2430,6 +2430,40 @@ describe("fixBrokenWorktree", () => {
         expect(listed.stdout).toContain("branch refs/heads/foreign-stale");
     });
 
+    it("restores stale registration and content when replacement merge fails", () => {
+        initRepo(tmpDir);
+        const nestedRepo = join(tmpDir, "frontend");
+        initRepo(nestedRepo);
+        writeFileSync(join(nestedRepo, "app.ts"), "tracked");
+        spawnSync("git", ["add", "app.ts"], { cwd: nestedRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "tracked app"], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        const wsResult = createWorkspace(tmpDir, "stale-atomic");
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        rmSync(wsFrontend, { recursive: true, force: true });
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "app.ts"), "user work");
+        writeFileSync(join(wsFrontend, ".git"), "gitdir: /broken/metadata\n");
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "stale-atomic",
+            true,
+        )).toThrow("Workspace content conflicts");
+
+        expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8")).toBe("user work");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).toContain(`worktree ${wsFrontend}`);
+        expect(listed.stdout).toContain("branch refs/heads/stale-atomic");
+    });
+
     it("restores the original directory when checked-out content conflicts", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
