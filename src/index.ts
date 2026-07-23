@@ -61,7 +61,6 @@ import {
     isContainerConfirmedStopped,
     isContainerExists,
     getContainerIdentity,
-    getConfirmedRunningContainerId,
     isImageExists,
     getImageLabel,
     startProjectContainer,
@@ -504,7 +503,7 @@ async function exec(
         portFile: string | undefined = clipboardPortFile,
         onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
     ) => {
-        const startedName = withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
+        return withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
             fullPath,
             () => ensureDirs(profile),
             mounts,
@@ -512,9 +511,8 @@ async function exec(
             profile,
             onRecreate,
             recreateInsideLifecycleLock,
+            setSessionContainerId,
         ));
-        setSessionContainerId(getConfirmedRunningContainerId(startedName));
-        return startedName;
     };
     const containerName = startContainer();
     restoreCodexConfigHostOwnership(containerName);
@@ -1006,8 +1004,12 @@ export function removeWorkspaceContainerByIdentity(
 ): boolean {
     const identity = identityProbe(containerName);
     if (!identity) return false;
-    if (identity.running) runner(cli, ["stop", identity.containerId], { stdio: "ignore" });
-    runner(cli, ["rm", identity.containerId], { stdio: "ignore" });
+    if (identity.running) {
+        const stopped = runner(cli, ["stop", identity.containerId], { stdio: "ignore" });
+        if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop workspace container.");
+    }
+    const removed = runner(cli, ["rm", identity.containerId], { stdio: "ignore" });
+    if (removed.error || removed.status !== 0) throw new Error("Failed to remove workspace container.");
     return true;
 }
 
@@ -1021,14 +1023,10 @@ function handleWorktreeRemove(
     const wsProjectId = getProjectId(wsPath);
     let removalResult: ReturnType<typeof removeWorkspace> | null = null;
     withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
-        try {
-            ensureDockerRunning();
-            const containerName = getContainerName(wsPath);
-            if (removeWorkspaceContainerByIdentity(containerName)) {
-                console.log(`Removed associated container ${containerName}.`);
-            }
-        } catch {
-            // Docker not running, skip container cleanup.
+        ensureDockerRunning();
+        const containerName = getContainerName(wsPath);
+        if (removeWorkspaceContainerByIdentity(containerName)) {
+            console.log(`Removed associated container ${containerName}.`);
         }
         console.log(`Removing workspace @${branch}...`);
         removalResult = removeWorkspace(cwd, branch, { force });

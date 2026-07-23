@@ -134,6 +134,24 @@ describe('workspace container cleanup identity fencing', () => {
     expect(removeWorkspaceContainerByIdentity('ccc-worktree', () => null, runner, 'docker')).toBe(false)
     expect(runner).not.toHaveBeenCalled()
   })
+
+  it('does not remove when stopping the captured container fails', () => {
+    const runner = vi.fn()
+      .mockReturnValueOnce({ status: 1 }) as any
+    const probe = () => ({ containerId: 'pinned123456', running: true })
+
+    expect(() => removeWorkspaceContainerByIdentity('ccc-worktree', probe, runner, 'docker'))
+      .toThrow('Failed to stop workspace container')
+    expect(runner).toHaveBeenCalledOnce()
+  })
+
+  it('reports removal failure for a captured stopped container', () => {
+    const runner = vi.fn(() => ({ status: 1 })) as any
+    const probe = () => ({ containerId: 'stopped12345', running: false })
+
+    expect(() => removeWorkspaceContainerByIdentity('ccc-worktree', probe, runner, 'docker'))
+      .toThrow('Failed to remove workspace container')
+  })
 })
 
 describe('named volume integration', () => {

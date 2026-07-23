@@ -240,4 +240,47 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         expect(existsSync(join(sessions, token))).toBe(false);
         expect(existsSync(join(displaced, token))).toBe(true);
     });
+
+    it("preserves the start-time container ID across refresh and stop", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-pinned-home-"));
+        const bin = mkdtempSync(join(tmpdir(), "ccc-remote-pinned-bin-"));
+        roots.push(home, bin);
+        const originalId = "a".repeat(64);
+        const stoppedFile = join(home, "stopped.txt");
+        const docker = join(bin, "docker");
+        writeFileSync(docker, [
+            "#!/bin/sh",
+            "if [ \"$1\" = inspect ]; then printf '%s\\n' " + shellEscapeArg(originalId) + "; exit 0; fi",
+            "if [ \"$1\" = stop ]; then printf '%s\\n' \"$2\" > " + shellEscapeArg(stoppedFile) + "; exit 0; fi",
+            "exit 99",
+        ].join("\n"));
+        chmodSync(docker, 0o755);
+        const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
+        const containerName = "ccc-pinned-remote";
+        const token = "e".repeat(32);
+
+        await expect(runShell(
+            remoteSessionReservationShell(containerName, token, 60, ":", true),
+            home,
+            env,
+        )).resolves.toBe(0);
+        const marker = join(home, ".ccc", "remote-runtime", "sessions-" + hashPath(containerName), token);
+        expect(readFileSync(marker, "utf8").trim().split(/\s+/)[1]).toBe(originalId);
+
+        await expect(runShell(remoteRefreshSessionShell(containerName, token, 60, true), home, env)).resolves.toBe(0);
+        expect(readFileSync(marker, "utf8").trim().split(/\s+/)[1]).toBe(originalId);
+
+        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(0);
+        expect(readFileSync(stoppedFile, "utf8").trim()).toBe(originalId);
+    });
+
+    it("refuses to stop from a legacy reservation without a pinned container ID", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-unpinned-home-"));
+        roots.push(home);
+        const containerName = "ccc-unpinned-remote";
+        const token = "f".repeat(32);
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(0);
+
+        await expect(runShell(remoteStopShell(containerName, token), home)).resolves.toBe(74);
+    });
 });

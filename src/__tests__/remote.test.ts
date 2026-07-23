@@ -74,21 +74,22 @@ describe('getProjectHash', () => {
 })
 
 describe('remote stop identity fencing', () => {
-  it('captures an exact container ID before session mutation and stops only that ID', () => {
+  it('loads the start-time container ID before removing its reservation', () => {
     const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32))
-    const inspectAt = shell.indexOf('docker inspect')
+    const readAt = shell.indexOf('read -r _ccc_own_expiry _ccc_container_id')
     const removeMarkerAt = shell.indexOf('rm -f "$_ccc_sessions/')
 
-    expect(inspectAt).toBeGreaterThan(-1)
-    expect(inspectAt).toBeLessThan(removeMarkerAt)
+    expect(readAt).toBeGreaterThan(-1)
+    expect(readAt).toBeLessThan(removeMarkerAt)
     expect(shell).toContain('docker stop "$_ccc_container_id"')
     expect(shell).not.toContain('docker stop ccc-project-safe')
+    expect(shell).not.toContain('docker inspect')
     expect(shell).toContain("*[!a-fA-F0-9]*")
   })
 
-  it('shell-quotes the inspected container name', () => {
+  it('does not use the container name as a stop target', () => {
     const shell = remoteStopShell("ccc-name'; touch /tmp/unsafe; '", 'b'.repeat(32))
-    expect(shell).toContain(shellEscapeArg("ccc-name'; touch /tmp/unsafe; '"))
+    expect(shell).not.toContain(shellEscapeArg("ccc-name'; touch /tmp/unsafe; '"))
     expect(shell).toContain('docker stop "$_ccc_container_id"')
   })
 })

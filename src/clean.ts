@@ -28,7 +28,7 @@ interface ImageInfo {
 function listContainers(): ContainerInfo[] {
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
+        ["ps", "-a", "--no-trunc", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
         { encoding: "utf-8" },
     );
     const out = (result.stdout ?? "").trim();
@@ -171,7 +171,10 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
             }
             if (stopNames.has(c.name)) {
                 console.log(`Stopping ${c.name}...`);
-                spawnSync(cli, ["stop", c.id], { stdio: "inherit" });
+                const stopped = spawnSync(cli, ["stop", c.id], { stdio: "inherit" });
+                if (stopped.error || stopped.status !== 0) {
+                    throw new Error(`Failed to stop container ${c.name}; cleanup aborted.`);
+                }
             }
             console.log(`Removing container ${c.name}...`);
             const r = spawnSync(cli, ["rm", c.id], { stdio: "inherit" });

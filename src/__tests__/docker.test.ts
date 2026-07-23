@@ -1191,8 +1191,60 @@ describe("docker.ts module exports", () => {
             expect(ensureDirs).toHaveBeenCalled();
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+                return args[0] === "cp" && args[2]?.startsWith("abc123:/tmp/ccc-managed-");
             })).toHaveLength(2);
+        });
+
+        it("hands off the exact validated running ID and never targets its name", () => {
+            const ready = vi.fn();
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                return makeResult(0);
+            });
+
+            const name = startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, undefined, ready,
+            );
+
+            expect(ready).toHaveBeenCalledOnce();
+            expect(ready).toHaveBeenCalledWith("abc123");
+            const targeted = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return ["exec", "cp", "start"].includes(args[0]);
+            });
+            expect(targeted.length).toBeGreaterThan(0);
+            expect(targeted.every((call: unknown[]) => (call[1] as string[]).includes("abc123")
+                || (call[1] as string[]).some((arg) => arg.startsWith("abc123:")))).toBe(true);
+            expect(targeted.flatMap((call: unknown[]) => call[1] as string[])).not.toContain(name);
+        });
+
+        it("refuses session handoff when the pinned container identity changes", () => {
+            const ready = vi.fn();
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "def456|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, undefined, ready,
+            )).toThrow("Container identity changed before session handoff");
+            expect(ready).not.toHaveBeenCalled();
         });
 
         it("starts a stopped container and returns its name", () => {
@@ -1216,7 +1268,7 @@ describe("docker.ts module exports", () => {
             expect(startCall).toBeDefined();
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+                return args[0] === "cp" && args[2]?.startsWith("abc123:/tmp/ccc-managed-");
             })).toHaveLength(2);
         });
 
@@ -1237,7 +1289,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                    // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))                // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))                // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                    // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             const name = startWithApprovedReplacement();
             expect(name).toMatch(/^ccc-/);
@@ -1486,6 +1538,7 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "inspect") return makeResult(0, driftMountsJson);
                 if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
                 if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
                 if (args[0] === "rm") removed = true;
                 return makeResult(0);
             });
@@ -1794,7 +1847,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
-                .mockReturnValue(makeResult(0));
+                .mockReturnValue(makeResult(0, "c0ffee123456\n"));
 
             startWithApprovedReplacement();
 
@@ -1821,7 +1874,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
-                .mockReturnValue(makeResult(0));
+                .mockReturnValue(makeResult(0, "c0ffee123456\n"));
 
             startWithApprovedReplacement();
 
@@ -1844,7 +1897,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
-                .mockReturnValue(makeResult(0));
+                .mockReturnValue(makeResult(0, "c0ffee123456\n"));
 
             startWithApprovedReplacement();
 
@@ -1866,7 +1919,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
-                .mockReturnValue(makeResult(0));
+                .mockReturnValue(makeResult(0, "c0ffee123456\n"));
 
             startWithApprovedReplacement();
 
@@ -2071,7 +2124,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
-                .mockReturnValue(makeResult(0));
+                .mockReturnValue(makeResult(0, "c0ffee123456\n"));
 
             startWithApprovedReplacement();
 
@@ -2092,7 +2145,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run (and any extra calls)
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run (and any extra calls)
 
             const name = startProjectContainer(projectPath, ensureDirs);
             expect(name).toMatch(/^ccc-/);
@@ -2103,7 +2156,7 @@ describe("docker.ts module exports", () => {
             expect(runCall).toBeDefined();
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args[0] === "cp" && args[2]?.startsWith(`${name}:/tmp/ccc-managed-`);
+                return args[0] === "cp" && args[2]?.startsWith("c0ffee123456:/tmp/ccc-managed-");
             })).toHaveLength(2);
             const runArgs = runCall![1] as string[];
             expect(runArgs.some((arg) => /^CCC_DEVICE_LAB_OWNER_BASIS=/.test(arg))).toBe(false);
@@ -2134,7 +2187,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run
 
             const name = startProjectContainer(projectPath, ensureDirs);
             expect(name).not.toMatch(/--p--lab-runner$/);
@@ -2172,7 +2225,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run
 
             const name = startProjectContainer(projectPath, ensureDirs, undefined, undefined, "lab-runner");
             expect(name).toMatch(/--p--lab-runner$/);
@@ -2208,7 +2261,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run
 
             const name = startProjectContainer(projectPath, ensureDirs, undefined, undefined, "lab-runner");
             expect(name).toMatch(/--p--lab-runner$/);
@@ -2234,7 +2287,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run
 
             startProjectContainer(projectPath, ensureDirs);
 
@@ -2259,7 +2312,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run
 
             startProjectContainer(projectPath, ensureDirs);
 
@@ -2275,7 +2328,7 @@ describe("docker.ts module exports", () => {
                     && (c[1] as string[])[0] === "exec",
             );
             expect(gitConfigInstall?.[1]).toEqual(expect.arrayContaining([
-                "exec", "--user", "root", getContainerName(projectPath),
+                "exec", "--user", "root", "c0ffee123456",
             ]));
             expect((gitConfigInstall?.[1] as string[]).at(-1)).toContain("chown ccc:ccc /home/ccc/.gitconfig");
         });
@@ -2291,7 +2344,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard) -> false (no extraMounts)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0))                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")) // docker run
                 .mockReturnValueOnce(makeResult(0));                 // docker exec (SSH fix)
 
             startProjectContainer(projectPath, ensureDirs);
@@ -2335,7 +2388,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run (and any extra)
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run (and any extra)
 
             startProjectContainer(projectPath, ensureDirs);
 
@@ -2363,7 +2416,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists (extraMounts guard)
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run (and any extra)
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run (and any extra)
 
             startProjectContainer(projectPath, ensureDirs);
 
@@ -2393,7 +2446,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                  // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             const name = startWithApprovedReplacement(extraMounts);
             expect(name).toMatch(/^ccc-/);
@@ -2423,7 +2476,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2453,7 +2506,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2487,7 +2540,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2525,7 +2578,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2554,7 +2607,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2584,7 +2637,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2619,7 +2672,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2653,7 +2706,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2683,7 +2736,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
-                .mockReturnValueOnce(makeResult(0));                 // docker run
+                .mockReturnValueOnce(makeResult(0, "c0ffee123456\n")); // docker run
 
             startWithApprovedReplacement();
 
@@ -2753,7 +2806,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> not exists, skip inspect
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
-                .mockReturnValue(makeResult(0));                     // docker run (and any extra)
+                .mockReturnValue(makeResult(0, "c0ffee123456\n")); // docker run (and any extra)
 
             const name = startProjectContainer(projectPath, ensureDirs, extraMounts);
             expect(name).toMatch(/^ccc-/);
@@ -2835,6 +2888,16 @@ describe("docker.ts module exports", () => {
             expect(stopCall).toBeDefined();
             expect(stopCall![1]).toEqual(["stop", "abc123"]);
             expect(mockWithContainerLifecycleLock).toHaveBeenCalledWith(expect.any(String), expect.any(Function));
+        });
+
+        it("reports stop failure instead of claiming the container stopped", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|true\n"))
+                .mockReturnValueOnce(makeResult(1));
+
+            expect(() => stopProjectContainer(projectPath)).toThrow("Failed to stop container");
+            expect(console.log).not.toHaveBeenCalledWith("Container stopped");
         });
 
         it("refuses to stop a container with active sessions unless forced", () => {
@@ -2934,6 +2997,26 @@ describe("docker.ts module exports", () => {
 
             expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "stop")).toBe(false);
             expect(spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "rm")![1]).toEqual(["rm", "stopped123456"]);
+        });
+
+        it("does not remove after a failed stop", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|true\n"))
+                .mockReturnValueOnce(makeResult(1));
+
+            expect(() => removeProjectContainer(projectPath)).toThrow("Failed to stop container");
+            expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "rm")).toBe(false);
+        });
+
+        it("reports remove failure instead of claiming removal", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
+                .mockReturnValueOnce(makeResult(1));
+
+            expect(() => removeProjectContainer(projectPath)).toThrow("Failed to remove container");
+            expect(console.log).not.toHaveBeenCalledWith("Container removed");
         });
 
         it("calls process.exit(1) when Docker is not running", () => {

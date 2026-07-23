@@ -65,6 +65,13 @@ describe("cleanContainers", () => {
         expect(ensureDockerRunningMock).toHaveBeenCalled();
     });
 
+    it("requests untruncated container IDs for destructive cleanup", async () => {
+        spawnSyncMock.mockReturnValue(makeResult(0, ""));
+        await cleanContainers({ yes: true });
+        const listCall = spawnSyncMock.mock.calls.find((call) => (call[1] as string[])[0] === "ps");
+        expect(listCall?.[1]).toContain("--no-trunc");
+    });
+
     it("shows 'Nothing to clean' when no containers or images found", async () => {
         spawnSyncMock.mockReturnValue(makeResult(0, ""));
         await cleanContainers({ yes: true });
@@ -144,6 +151,20 @@ describe("cleanContainers", () => {
         expect(calls).toContain("rm 222222222222");
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("running-aabb1122ccdd", expect.any(Function));
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("stopped-eeff33445566", expect.any(Function));
+    });
+
+    it("does not remove a running container when its pinned stop fails", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-running-aabb1122ccdd\tUp 10 minutes");
+            if (argsArr[0] === "images") return makeResult(0, "");
+            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
+            if (argsArr[0] === "stop") return makeResult(1, "");
+            return makeResult(0, "");
+        });
+
+        await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("cleanup aborted");
+        expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "rm")).toBe(false);
     });
 
     it("never stops or removes a container with an active CCC session", async () => {

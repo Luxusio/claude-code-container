@@ -1267,6 +1267,8 @@ export function startProjectContainer(
      * containers whose lifecycle is still owned by another live CCC session.
      */
     recreateRunningContainer?: (recreate: () => void) => boolean,
+    /** Receives the exact running container ID before the lifecycle lock is released. */
+    onContainerReady?: (containerId: string) => void,
 ): string {
     ensureDirs();
     mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
@@ -1292,6 +1294,21 @@ export function startProjectContainer(
     // Otherwise an old container created before a tool was added to the
     // registry would silently miss that tool's auth dir on subsequent runs.
     const listedContainer = getListedContainerId(containerName);
+    let lifecycleContainerId = listedContainer.containerId;
+    const markRecreated = () => {
+        lifecycleContainerId = null;
+        onRecreate?.();
+    };
+    const finish = (containerId: string): string => {
+        if (onContainerReady) {
+            const finalIdentity = getContainerIdentity(containerId);
+            if (!finalIdentity?.running || finalIdentity.containerId !== containerId) {
+                throw new Error("Container identity changed before session handoff; refusing to join.");
+            }
+            onContainerReady(containerId);
+        }
+        return containerName;
+    };
     if (!listedContainer.known) {
         throw new Error("Container identity inspection failed; the existing container was preserved.");
     }
@@ -1356,7 +1373,7 @@ export function startProjectContainer(
                 const recreated = recreateContainerWithSessionGuard(
                     containerName,
                     contractMismatchReason,
-                    onRecreate,
+                    markRecreated,
                     recreateRunningContainer,
                     listedContainer.containerId,
                 );
@@ -1373,11 +1390,11 @@ export function startProjectContainer(
                     if (!isContainerRunning(containerName)) {
                         throw new Error("Container contract update is required, but automatic replacement was not authorized.");
                     }
-                    if (!canExecContainerAfterBriefRetry(containerName)) {
+                    if (!canExecContainerAfterBriefRetry(listedContainer.containerId)) {
                         throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
                     }
                     console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the container is still running. Exit active CCC sessions, run 'ccc stop', then retry.`);
-                    return containerName;
+                    return finish(listedContainer.containerId);
                 }
             } else {
                 recreateContainerWithSessionGuard(containerName, contractMismatchReason, onRecreate, undefined);
@@ -1387,18 +1404,20 @@ export function startProjectContainer(
         }
     }
 
-    if (isContainerRunning(containerName)) {
+    const namedContainerIsRunning = isContainerRunning(containerName);
+    if (lifecycleContainerId && namedContainerIsRunning) {
         const execReady = recreateRunningContainer
-            ? canExecContainerAfterBriefRetry(containerName)
-            : canExecContainer(containerName);
+            ? canExecContainerAfterBriefRetry(lifecycleContainerId)
+            : canExecContainer(lifecycleContainerId);
         if (execReady) {
             if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
                 if (recreateRunningContainer) {
                     const recreated = recreateContainerWithSessionGuard(
                         containerName,
                         "device-lab mount source identity changed",
-                        onRecreate,
+                        markRecreated,
                         recreateRunningContainer,
+                        lifecycleContainerId,
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during validation; preserving the active session without joining it.");
@@ -1407,15 +1426,16 @@ export function startProjectContainer(
                     recreateContainerWithSessionGuard(containerName, "device-lab mount source identity changed", onRecreate, undefined);
                 }
             } else {
-                syncManagedMcpBundles(containerName);
-                syncHostGitConfig(containerName);
-                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
+                syncManagedMcpBundles(lifecycleContainerId);
+                syncHostGitConfig(lifecycleContainerId);
+                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return finish(lifecycleContainerId);
                 if (recreateRunningContainer) {
                     const recreated = recreateContainerWithSessionGuard(
                         containerName,
                         "device-lab mount source identity changed",
-                        onRecreate,
+                        markRecreated,
                         recreateRunningContainer,
+                        lifecycleContainerId,
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during synchronization; preserving the active session without joining it.");
@@ -1429,8 +1449,9 @@ export function startProjectContainer(
                 const recreated = recreateContainerWithSessionGuard(
                     containerName,
                     "container exec failed",
-                    onRecreate,
+                    markRecreated,
                     recreateRunningContainer,
+                    lifecycleContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
@@ -1441,43 +1462,49 @@ export function startProjectContainer(
         }
     }
 
-    if (isContainerExists(containerName)) {
+    if (lifecycleContainerId) {
         if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
         if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
             const recreated = recreateContainerWithSessionGuard(
                 containerName,
                 "device-lab mount source identity changed",
-                onRecreate,
+                markRecreated,
                 recreateRunningContainer,
+                lifecycleContainerId,
             );
             if (!recreated) {
                 throw new Error("Device-lab mount source changed; automatic replacement was not authorized.");
             }
         } else {
-            spawnSync(cli, ["start", containerName], { stdio: "inherit" });
+            const started = spawnSync(cli, ["start", lifecycleContainerId], { stdio: "inherit" });
+            if (started.error || started.status !== 0) {
+                throw new Error("Stopped container could not be restarted; automatic replacement was refused.");
+            }
             const execReady = recreateRunningContainer
-                ? canExecContainerAfterBriefRetry(containerName)
-                : canExecContainer(containerName);
+                ? canExecContainerAfterBriefRetry(lifecycleContainerId)
+                : canExecContainer(lifecycleContainerId);
             if (!execReady) {
                 const recreated = recreateContainerWithSessionGuard(
                     containerName,
                     "container exec failed after restart",
-                    onRecreate,
+                    markRecreated,
                     recreateRunningContainer,
+                    lifecycleContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Restarted container is unavailable; automatic replacement was refused.");
                 }
             } else {
-                syncManagedMcpBundles(containerName);
-                syncHostGitConfig(containerName);
-                fixSshPermissions(containerName);
-                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return containerName;
+                syncManagedMcpBundles(lifecycleContainerId);
+                syncHostGitConfig(lifecycleContainerId);
+                fixSshPermissions(lifecycleContainerId);
+                if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return finish(lifecycleContainerId);
                 const recreated = recreateContainerWithSessionGuard(
                     containerName,
                     "device-lab mount source identity changed",
-                    onRecreate,
+                    markRecreated,
                     recreateRunningContainer,
+                    lifecycleContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Device-lab mount source changed during restart; automatic replacement was refused.");
@@ -1486,7 +1513,7 @@ export function startProjectContainer(
         }
     }
 
-    if (isContainerExists(containerName)) {
+    if (lifecycleContainerId || isContainerExists(containerName)) {
         console.error(`Failed to remove unhealthy container ${containerName}`);
         process.exit(1);
     }
@@ -1567,11 +1594,14 @@ export function startProjectContainer(
         throw error;
     }
 
-    syncManagedMcpBundles(containerName);
-    syncHostGitConfig(containerName);
-    fixSshPermissions(containerName);
+    if (!createdContainerId) {
+        throw new Error("Container runtime did not return the created container ID; refusing an unpinned session.");
+    }
+    syncManagedMcpBundles(createdContainerId);
+    syncHostGitConfig(createdContainerId);
+    fixSshPermissions(createdContainerId);
 
-    return containerName;
+    return finish(createdContainerId);
 }
 
 type DestructiveContainerOptions = { force?: boolean };
@@ -1590,7 +1620,8 @@ function stopProjectContainerUnlocked(projectPath: string, profile?: string): vo
     cleanupDevicesBestEffort(fullPath, profile);
     if (identity.running) {
         console.log("Stopping container...");
-        spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+        const stopped = spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+        if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop container.");
     }
     console.log("Container stopped");
 }
@@ -1630,11 +1661,13 @@ export function removeProjectContainer(projectPath: string, profile?: string, op
         cleanupDevicesBestEffort(resolve(projectPath), profile);
         if (identity.running) {
             console.log("Stopping container...");
-            spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+            const stopped = spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+            if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop container.");
             console.log("Container stopped");
         }
         console.log("Removing container...");
-        spawnSync(runtimeCli(), ["rm", identity.containerId], { stdio: "inherit" });
+        const removed = spawnSync(runtimeCli(), ["rm", identity.containerId], { stdio: "inherit" });
+        if (removed.error || removed.status !== 0) throw new Error("Failed to remove container.");
         console.log("Container removed");
     });
 }
