@@ -844,8 +844,8 @@ describe("test level runner", () => {
         const partitioned = partitionProviderFiles(files);
         expect(partitioned.serial).toEqual([files[0]]);
         expect(partitioned.providers).toEqual([
-            { file: files[1], resources: ["hyper-v", "*"] },
-            { file: files[2], resources: ["android-emulator", "macos-vm"] },
+            { file: files[1], resources: ["hyper-v", "host-virtualization"] },
+            { file: files[2], resources: ["android-emulator", "macos-vm", "host-virtualization"] },
         ]);
     });
 
@@ -873,14 +873,14 @@ describe("test level runner", () => {
         expect(events.indexOf("start:macos-b")).toBeGreaterThan(events.indexOf("end:macos-a"));
     });
 
-    it("runs an exclusive Hyper-V provider without overlapping other providers", async () => {
+    it("serializes host virtualization while allowing a physical provider concurrently", async () => {
         const events: string[] = [];
         let active = 0;
         let maxActive = 0;
         await runResourceAware([
-            { file: "hyper-v", resources: ["hyper-v", "*"] },
+            { file: "hyper-v", resources: ["hyper-v", "host-virtualization"] },
             { file: "android", resources: ["android-device"] },
-            { file: "windows", resources: ["windows-sandbox"] },
+            { file: "windows", resources: ["windows-sandbox", "host-virtualization"] },
         ], 2, async (file) => {
             events.push(`start:${file}`);
             active += 1;
@@ -891,7 +891,7 @@ describe("test level runner", () => {
             return file;
         });
 
-        expect(events.indexOf("start:android")).toBeGreaterThan(events.indexOf("end:hyper-v"));
+        expect(events.indexOf("start:android")).toBeLessThan(events.indexOf("end:hyper-v"));
         expect(events.indexOf("start:windows")).toBeGreaterThan(events.indexOf("end:hyper-v"));
         expect(maxActive).toBe(2);
     });
@@ -1008,11 +1008,18 @@ describe("test level runner", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-signal-"));
         const providerFile = join(tempDir, "level2-windows-sandbox.ts");
         const workerPidFile = join(tempDir, "worker.pid");
+        const grandchildPidFile = join(tempDir, "grandchild.pid");
         writeFileSync(providerFile, `
+            import { spawn } from "child_process";
             import { writeFileSync } from "fs";
             export const name = "interrupt worker";
             export async function run() {
                 writeFileSync(${JSON.stringify(workerPidFile)}, String(process.pid));
+                const grandchild = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+                    stdio: "ignore",
+                    windowsHide: true,
+                });
+                writeFileSync(${JSON.stringify(grandchildPidFile)}, String(grandchild.pid));
                 await new Promise((resolve) => setTimeout(resolve, 30_000));
                 return { status: "PASS" };
             }
@@ -1030,38 +1037,45 @@ describe("test level runner", () => {
         });
         try {
             const deadline = Date.now() + 30_000;
-            while (!existsSync(workerPidFile) && Date.now() < deadline) {
+            while ((!existsSync(workerPidFile) || !existsSync(grandchildPidFile)) && Date.now() < deadline) {
                 await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
             }
             expect(existsSync(workerPidFile)).toBe(true);
+            expect(existsSync(grandchildPidFile)).toBe(true);
             const workerPid = Number(readFileSync(workerPidFile, "utf-8"));
+            const grandchildPid = Number(readFileSync(grandchildPidFile, "utf-8"));
             expect(Number.isInteger(workerPid)).toBe(true);
-            const killSignal = process.platform === "win32" ? "SIGTERM" : "SIGKILL";
+            expect(Number.isInteger(grandchildPid)).toBe(true);
+            const killSignal = "SIGTERM";
             collector.kill(killSignal);
             const collectorExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolvePromise) => {
                 collector.once("close", (code, signal) => resolvePromise({ code, signal }));
             });
-            expect(collectorExit.code).toBeNull();
-            expect(collectorExit.signal).toBe(killSignal);
+            expect(
+                collectorExit.signal === killSignal
+                || collectorExit.code === (process.platform === "win32" ? 1 : 143),
+            ).toBe(true);
 
-            const workerDeadline = Date.now() + 5000;
-            let workerAlive = true;
-            while (workerAlive && Date.now() < workerDeadline) {
-                try {
-                    process.kill(workerPid, 0);
-                    if (process.platform === "linux") {
-                        const stat = readFileSync(`/proc/${workerPid}/stat`, "utf-8");
-                        if (/\)\s+Z\s/.test(stat)) {
-                            workerAlive = false;
-                            break;
+            for (const pid of [workerPid, grandchildPid]) {
+                const workerDeadline = Date.now() + 5000;
+                let processAlive = true;
+                while (processAlive && Date.now() < workerDeadline) {
+                    try {
+                        process.kill(pid, 0);
+                        if (process.platform === "linux") {
+                            const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
+                            if (/\)\s+Z\s/.test(stat)) {
+                                processAlive = false;
+                                break;
+                            }
                         }
+                        await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+                    } catch {
+                        processAlive = false;
                     }
-                    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
-                } catch {
-                    workerAlive = false;
                 }
+                expect(processAlive).toBe(false);
             }
-            expect(workerAlive).toBe(false);
         } finally {
             if (collector.exitCode === null) collector.kill("SIGKILL");
             rmSync(tempDir, { recursive: true, force: true });

@@ -2,14 +2,14 @@ import { basename } from "path";
 
 const PROVIDER_RESOURCES = new Map<string, string[]>([
     ["level2-ios-e2e.ts", ["ios"]],
-    ["level2-android-emulator-e2e.ts", ["android-emulator"]],
+    ["level2-android-emulator-e2e.ts", ["android-emulator", "host-virtualization"]],
     ["level2-android-device-e2e.ts", ["android-device"]],
     ["level2-macos-vm-e2e.ts", ["macos-vm"]],
-    ["level2-windows-sandbox.ts", ["windows-sandbox"]],
-    ["level2-hyper-v-windows-vm.ts", ["hyper-v", "*"]],
-    ["level2-hyper-v-linux-vm.ts", ["hyper-v", "*"]],
+    ["level2-windows-sandbox.ts", ["windows-sandbox", "host-virtualization"]],
+    ["level2-hyper-v-windows-vm.ts", ["hyper-v", "host-virtualization"]],
+    ["level2-hyper-v-linux-vm.ts", ["hyper-v", "host-virtualization"]],
     ["level2-real-linux-vm.ts", ["linux-vm"]],
-    ["level3-real-destructive.ts", ["android-emulator", "macos-vm"]],
+    ["level3-real-destructive.ts", ["android-emulator", "macos-vm", "host-virtualization"]],
 ]);
 
 export function normalizeProviderConcurrency(value: unknown, fallback = 1) {

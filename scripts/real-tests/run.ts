@@ -404,9 +404,13 @@ function terminateProviderChild(child, force = false) {
         return;
     }
     try {
-        child.kill(force ? "SIGKILL" : "SIGTERM");
+        if (Number.isInteger(child.pid)) {
+            process.kill(-child.pid, force ? "SIGKILL" : "SIGTERM");
+        } else {
+            child.kill(force ? "SIGKILL" : "SIGTERM");
+        }
     } catch {
-        // The worker may have exited between observation and termination.
+        // The worker group may have exited between observation and termination.
     }
 }
 
