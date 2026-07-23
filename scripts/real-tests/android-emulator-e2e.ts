@@ -216,9 +216,11 @@ export async function runAndroidEmulatorE2E(options: any = {}) {
     let deleted = false;
     let recordingActive = false;
     let primaryFailure = null;
+    let currentStep = "start MCP session";
 
     return withDeviceLabMcp(async ({ callTool: rawCallTool }) => {
         const callTool = async (tool, args) => {
+            currentStep = tool;
             if (advertisedCapabilities.includes(tool)) calledCapabilities.add(tool);
             return rawCallTool(tool, args);
         };
@@ -621,8 +623,9 @@ export async function runAndroidEmulatorE2E(options: any = {}) {
                 verifiedCapabilities: [...calledCapabilities].sort(),
             };
         } catch (error) {
-            primaryFailure = error;
-            throw error;
+            const failure = new Error(`${currentStep}: ${error instanceof Error ? error.message : String(error)}`);
+            primaryFailure = failure;
+            throw failure;
         } finally {
             const cleanupErrors = [];
             if (recordingActive) {

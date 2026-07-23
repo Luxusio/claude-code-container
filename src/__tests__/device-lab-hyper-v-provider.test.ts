@@ -451,6 +451,11 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $SeedSource $SeedDisk 'cidata'");
+        expect(seedScript).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
+        expect(seedScript).toContain("for (long block = 0; block < totalBlocks; block++)");
+        expect(seedScript).toContain("output.Length != checked((long)blockSize * totalBlocks)");
+        expect(seedScript).not.toContain("byte[] buffer = new byte[65536]");
+        expect(seedScript).not.toContain("while (true)");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
         expect(seedScript).toContain("ssh_host_ed25519_key");
@@ -923,6 +928,9 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(script).toContain("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'");
+        expect(script).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
+        expect(script).toContain("hyper-v-provisioning-media-read-incomplete");
+        expect(script).toContain("hyper-v-provisioning-media-length-mismatch");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).toContain("Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction Stop");
         expect(script).not.toContain("Mount-VHD");

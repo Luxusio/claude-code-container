@@ -293,6 +293,34 @@ export function parseToolPayload(result) {
     return JSON.parse(text);
 }
 
+export function formatBrokerToolFailure(value: any, fallback: string) {
+    const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body)
+        ? value.body
+        : null;
+    const execution = value?.provisioning && typeof value.provisioning === "object"
+        ? value.provisioning
+        : body?.provisioning && typeof body.provisioning === "object"
+            ? body.provisioning
+            : null;
+    const diagnostic = execution
+        ? JSON.stringify({
+            status: execution.status,
+            signal: execution.signal,
+            error: execution.error,
+            diagnosticCode: execution.diagnosticCode,
+            stdout: String(execution.stdout || "").slice(-1024),
+            stderr: String(execution.stderr || "").slice(-2048),
+        })
+        : "";
+    return [
+        value?.error,
+        value?.detail,
+        body?.error,
+        body?.detail,
+        diagnostic,
+    ].filter(Boolean).join(": ") || fallback;
+}
+
 export function parseContractToolPayload<K extends keyof DeviceLabToolOutputMap>(name: K, result: any): DeviceLabToolOutputMap[K] {
     if (!hasDeviceLabOutputContract(name)) throw new Error(`No output contract registered for ${name}`);
     if (DEVICE_LAB_OUTPUT_CONTRACTS[name] === "image-content-v1") return validateDeviceLabToolOutput(name, result);

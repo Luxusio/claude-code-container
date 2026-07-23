@@ -7,7 +7,7 @@ import { ownerId } from "../../device-lab-mcp/src/context.mjs";
 import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/device-lab/providers/hyper-v.ts";
 import { isHyperVWindowsEvaluationReceipt } from "../../src/device-lab/hyper-v-image-contracts.ts";
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
-import { lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
+import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 
 const DEVICE_PREFIX = "windows-vm-real-e2e-";
@@ -25,18 +25,7 @@ function readHyperVWindowsEvaluationReceipt(setupRoot = join(homedir(), ".ccc", 
 function payload(result: any) {
     const value = parseToolPayload(result);
     if (value?.ok === false) {
-        const execution = value.provisioning && typeof value.provisioning === "object" ? value.provisioning : null;
-        const diagnostic = execution
-            ? JSON.stringify({
-                status: execution.status,
-                signal: execution.signal,
-                error: execution.error,
-                diagnosticCode: execution.diagnosticCode,
-                stdout: String(execution.stdout || "").slice(-1024),
-                stderr: String(execution.stderr || "").slice(-2048),
-            })
-            : "";
-        throw new Error([value.error, value.detail, diagnostic].filter(Boolean).join(": ") || "Hyper-V broker operation failed");
+        throw new Error(formatBrokerToolFailure(value, "Hyper-V broker operation failed"));
     }
     return value;
 }

@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
 import { createPackagedCccCandidate, hyperVWindowsVmE2ECapability, selectHyperVWindowsProfile } from "./hyper-v-windows-vm-e2e.ts";
+import { formatBrokerToolFailure } from "./device-lab-mcp-client.ts";
 import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
     HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
@@ -163,6 +164,27 @@ describe("Hyper-V E2E zero-config image selection", () => {
             const source = readFileSync(new URL(file, import.meta.url), "utf8");
             expect(source).not.toContain("rpcTimeoutMs:");
         }
+    });
+
+    it("reports nested broker provisioning diagnostics without dumping unbounded output", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "broker-operation-failed",
+            body: {
+                error: "hyper-v-linux-seed-failed",
+                provisioning: {
+                    status: 1,
+                    diagnosticCode: "hyper-v-provisioning-media-stream-invalid",
+                    stdout: `prefix-${"x".repeat(2000)}`,
+                    stderr: `prefix-${"y".repeat(3000)}`,
+                },
+            },
+        }, "fallback");
+        expect(message).toContain("broker-operation-failed");
+        expect(message).toContain("hyper-v-linux-seed-failed");
+        expect(message).toContain("hyper-v-provisioning-media-stream-invalid");
+        expect(message).not.toContain("prefix-");
+        expect(message.length).toBeLessThan(4096);
     });
 
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {
