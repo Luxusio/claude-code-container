@@ -2398,6 +2398,38 @@ describe("fixBrokenWorktree", () => {
         rmSync(movedUnrelated, { recursive: true, force: true });
     });
 
+    it("preserves broken content and a stale registration for another branch", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        const wsResult = createWorkspace(tmpDir, "stale-collision");
+        const nestedRepo = join(tmpDir, "frontend");
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        spawnSync("git", ["branch", "-m", "foreign-stale"], {
+            cwd: wsFrontend,
+            stdio: "pipe",
+        });
+        rmSync(wsFrontend, { recursive: true, force: true });
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "user.txt"), "preserve");
+        writeFileSync(join(wsFrontend, ".git"), "gitdir: /foreign/metadata\n");
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "stale-collision",
+            true,
+        )).toThrow("belongs to another branch");
+
+        expect(readFileSync(join(wsFrontend, "user.txt"), "utf-8")).toBe("preserve");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).toContain(`worktree ${wsFrontend}`);
+        expect(listed.stdout).toContain("branch refs/heads/foreign-stale");
+    });
+
     it("restores the original directory when checked-out content conflicts", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));

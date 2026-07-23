@@ -1394,6 +1394,11 @@ type WorktreeRegistrationFence = {
     expectedRef: string;
 };
 
+type MissingWorktreeRegistrationFence = Omit<
+    WorktreeRegistrationFence,
+    "destinationIdentity"
+>;
+
 function requireWorktreeRegistrationFence(
     fence: WorktreeRegistrationFence | null,
     worktreePath: string,
@@ -1413,6 +1418,160 @@ function captureWorktreeManagementIdentity(
         throw new Error(`Worktree registration metadata is invalid: ${worktreePath}`);
     }
     return captureDirectoryIdentity(resolve(worktreePath, match[1].trim()));
+}
+
+function captureExistingWorktreeRegistrationFence(
+    repositoryPath: string,
+    worktreePath: string,
+    branch: string,
+    expectedDestinationIdentity?: DirectoryIdentity,
+): WorktreeRegistrationFence {
+    const destinationIdentity = captureDirectoryIdentity(worktreePath);
+    if (expectedDestinationIdentity) {
+        assertDirectoryIdentity(worktreePath, expectedDestinationIdentity);
+    }
+    const head = spawnSync(
+        "git",
+        ["rev-parse", "--verify", "HEAD^{commit}"],
+        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (head.error || head.status !== 0) {
+        throw new Error(`Unable to capture worktree HEAD ownership: ${worktreePath}`);
+    }
+    const fence = {
+        destinationIdentity,
+        managementIdentity: captureWorktreeManagementIdentity(worktreePath),
+        expectedOid: (head.stdout ?? "").trim(),
+        expectedRef: `refs/heads/${branch}`,
+    };
+    if (!worktreeRegistrationMatches(
+        repositoryPath,
+        worktreePath,
+        branch,
+        fence.expectedOid,
+        fence,
+    )) {
+        throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
+    }
+    return fence;
+}
+
+function captureMissingWorktreeRegistrationFence(
+    repositoryPath: string,
+    worktreePath: string,
+    branch: string,
+): MissingWorktreeRegistrationFence | null {
+    const expectedRef = `refs/heads/${branch}`;
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) {
+        throw new Error(`Unable to inspect stale worktree registration: ${worktreePath}`);
+    }
+    const records = (listed.stdout ?? "")
+        .split(/\r?\n\r?\n/)
+        .filter((block) => {
+            const worktreeLine = block
+                .split(/\r?\n/)
+                .find((line) => line.startsWith("worktree "));
+            return worktreeLine !== undefined
+                && sameObservedPath(
+                    worktreeLine.slice("worktree ".length).trim(),
+                    worktreePath,
+                );
+        });
+    if (records.length === 0) return null;
+    if (records.length !== 1) {
+        throw new Error(`Ambiguous stale worktree registration: ${worktreePath}`);
+    }
+    const lines = records[0].split(/\r?\n/);
+    const branchLine = lines.find((line) => line.startsWith("branch "));
+    const headLine = lines.find((line) => line.startsWith("HEAD "));
+    if (branchLine !== `branch ${expectedRef}` || !headLine) {
+        throw new Error(`Stale worktree registration belongs to another branch: ${worktreePath}`);
+    }
+    const expectedOid = headLine.slice("HEAD ".length).trim();
+    const branchHead = spawnSync(
+        "git",
+        ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (branchHead.error || branchHead.status !== 0
+        || (branchHead.stdout ?? "").trim() !== expectedOid) {
+        throw new Error(`Stale worktree branch ownership changed: ${worktreePath}`);
+    }
+    const common = spawnSync(
+        "git",
+        ["rev-parse", "--git-common-dir"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (common.error || common.status !== 0) {
+        throw new Error(`Unable to inspect worktree management root: ${repositoryPath}`);
+    }
+    const commonDirectory = resolve(repositoryPath, (common.stdout ?? "").trim());
+    const commonIdentity = captureDirectoryIdentity(commonDirectory);
+    const managementRoot = join(commonDirectory, "worktrees");
+    const managementRootIdentity = captureDirectoryIdentity(managementRoot);
+    const matches: DirectoryIdentity[] = [];
+    for (const entry of readdirSync(managementRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const candidate = join(managementRoot, entry.name);
+        const gitdirPath = join(candidate, "gitdir");
+        try {
+            const registeredGitFile = readFileSync(gitdirPath, "utf-8").trim();
+            if (sameObservedPath(registeredGitFile, join(worktreePath, ".git"))) {
+                matches.push(captureDirectoryIdentity(candidate));
+            }
+        } catch {
+            // A malformed unrelated registration cannot own this exact path.
+        }
+    }
+    assertDirectoryIdentity(commonDirectory, commonIdentity);
+    assertDirectoryIdentity(managementRoot, managementRootIdentity);
+    if (matches.length !== 1) {
+        throw new Error(`Unable to prove stale worktree management ownership: ${worktreePath}`);
+    }
+    const fence = {
+        managementIdentity: matches[0],
+        expectedOid,
+        expectedRef,
+    };
+    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+    if (!worktreeRegistryEntryMatches(
+        repositoryPath,
+        worktreePath,
+        fence.expectedRef,
+        fence.expectedOid,
+    )) {
+        throw new Error(`Stale worktree registration changed during inspection: ${worktreePath}`);
+    }
+    return fence;
+}
+
+function removeMissingWorktreeRegistration(
+    repositoryPath: string,
+    worktreePath: string,
+    fence: MissingWorktreeRegistrationFence,
+): void {
+    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+    if (!worktreeRegistryEntryMatches(
+        repositoryPath,
+        worktreePath,
+        fence.expectedRef,
+        fence.expectedOid,
+    )) {
+        throw new Error(`Stale worktree registration changed before deletion: ${worktreePath}`);
+    }
+    removeDirectoryByQuarantine(
+        fence.managementIdentity.realpath,
+        fence.managementIdentity,
+        dirname(fence.managementIdentity.realpath),
+    );
+    if (registeredWorktreePath(repositoryPath, worktreePath)) {
+        throw new Error(`Failed to remove stale worktree registration: ${worktreePath}`);
+    }
 }
 
 function worktreeRegistryEntryMatches(
@@ -1617,14 +1776,11 @@ function rollbackFailedWorktreeAdd(
                 `Failed worktree creation registry entry changed at '${worktreePath}'; preserving it.`,
             );
         }
-        removeDirectoryByQuarantine(
-            registrationFence.managementIdentity.realpath,
-            registrationFence.managementIdentity,
-            dirname(registrationFence.managementIdentity.realpath),
+        removeMissingWorktreeRegistration(
+            repositoryPath,
+            worktreePath,
+            registrationFence,
         );
-        if (registeredWorktreePath(repositoryPath, worktreePath)) {
-            throw new Error(`Failed to remove owned worktree registration: ${worktreePath}`);
-        }
     }
     rollbackFailedCreatedBranch(
         repositoryPath,
@@ -2996,6 +3152,11 @@ export function fixBrokenWorktree(
     const sourceEntries = scanDirectory(resolved, { strict: true });
     const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
     if (!sourceRepo) return null;
+    const staleRegistrationFence = captureMissingWorktreeRegistrationFence(
+        sourceRepo.path,
+        destPath,
+        branch,
+    );
 
     let backup: QuarantineLocation | null = null;
     let backupIdentity: DirectoryIdentity | null = null;
@@ -3014,18 +3175,24 @@ export function fixBrokenWorktree(
         }
     }
 
-    if (registeredWorktreePath(sourceRepo.path, destPath)) {
-        const removed = spawnSync(
-            "git",
-            ["worktree", "remove", "--force", destPath],
-            { cwd: sourceRepo.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        if (removed.error || removed.status !== 0
-            || registeredWorktreePath(sourceRepo.path, destPath)) {
-            throw new Error(
-                (removed.stderr ?? "").trim()
-                || `Failed to remove stale worktree registration: ${destPath}`,
+    if (staleRegistrationFence) {
+        try {
+            removeMissingWorktreeRegistration(
+                sourceRepo.path,
+                destPath,
+                staleRegistrationFence,
             );
+        } catch (error) {
+            if (backup && backupIdentity) {
+                rollbackQuarantinedPath(
+                    destPath,
+                    backup,
+                    backupIdentity,
+                    workspaceIdentity,
+                    "directory",
+                );
+            }
+            throw error;
         }
     }
 
@@ -3207,7 +3374,7 @@ export function removeWorkspace(
     }
 
     // Multi-repo mode
-    return removeMultiRepoWorkspace(resolved, wsPath, workspaceIdentity, opts);
+    return removeMultiRepoWorkspace(resolved, wsPath, branch, workspaceIdentity, opts);
 }
 
 function removeUnifiedWorkspace(
@@ -3241,12 +3408,19 @@ function removeUnifiedWorkspace(
         }
         const nestedIdentity = captureDirectoryIdentity(nestedPath);
         try {
+            const registrationFence = captureExistingWorktreeRegistrationFence(
+                entry.path,
+                nestedPath,
+                branch,
+                nestedIdentity,
+            );
             removeRegisteredWorktree(
                 entry.path,
                 nestedPath,
                 nestedIdentity,
                 opts?.force === true,
                 dirname(wsPath),
+                registrationFence,
             );
             removed.push(entry.name);
         } catch (error) {
@@ -3271,7 +3445,20 @@ function removeUnifiedWorkspace(
         );
     }
     try {
-        removeRegisteredWorktree(resolved, wsPath, workspaceIdentity, opts?.force === true);
+        const registrationFence = captureExistingWorktreeRegistrationFence(
+            resolved,
+            wsPath,
+            branch,
+            workspaceIdentity,
+        );
+        removeRegisteredWorktree(
+            resolved,
+            wsPath,
+            workspaceIdentity,
+            opts?.force === true,
+            dirname(wsPath),
+            registrationFence,
+        );
         removed.push(basename(resolved));
     } catch (error) {
         errors.push((error as Error).message);
@@ -3283,6 +3470,7 @@ function removeUnifiedWorkspace(
 function removeMultiRepoWorkspace(
     resolved: string,
     wsPath: string,
+    branch: string,
     workspaceIdentity: DirectoryIdentity,
     opts?: { force?: boolean },
 ): RemoveResult {
@@ -3305,12 +3493,19 @@ function removeMultiRepoWorkspace(
             }
             const entryIdentity = captureDirectoryIdentity(wsEntryPath);
             try {
+                const registrationFence = captureExistingWorktreeRegistrationFence(
+                    entry.path,
+                    wsEntryPath,
+                    branch,
+                    entryIdentity,
+                );
                 removeRegisteredWorktree(
                     entry.path,
                     wsEntryPath,
                     entryIdentity,
                     opts?.force === true,
                     dirname(wsPath),
+                    registrationFence,
                 );
                 removed.push(entry.name);
             } catch (error) {
