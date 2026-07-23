@@ -1673,6 +1673,49 @@ describe("repairWorkspace", () => {
         expect(listed.stdout).not.toContain(wsPath);
     });
 
+    it("preserves unrelated stale registrations while rolling back a missing worktree", () => {
+        initRepo(tmpDir);
+        const unrelated = join(dirname(tmpDir), `${basename(tmpDir)}-unrelated-stale`);
+        const movedUnrelated = `${unrelated}.moved`;
+        const branch = "missing-worktree-rollback";
+        const wsPath = getWorkspacePath(tmpDir, branch);
+        const movedWorkspace = `${wsPath}.moved`;
+        spawnSync("git", ["worktree", "add", "-b", "unrelated-stale", unrelated], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        renameSync(unrelated, movedUnrelated);
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            [
+                "#!/bin/sh",
+                `mv "$PWD" "${movedWorkspace}"`,
+                "exit 1",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, branch))
+            .toThrow("Failed to create worktree");
+
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).toContain(`worktree ${unrelated}`);
+        expect(listed.stdout).not.toContain(`worktree ${wsPath}`);
+        expect(branchExistsInRepo(tmpDir, branch)).toBe("none");
+
+        spawnSync("git", ["worktree", "remove", "--force", unrelated], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        rmSync(movedUnrelated, { recursive: true, force: true });
+        rmSync(movedWorkspace, { recursive: true, force: true });
+    });
+
     it("preserves a failed-add branch when its ref changes concurrently", () => {
         initRepo(tmpDir);
         const original = spawnSync("git", ["rev-parse", "HEAD"], {
@@ -2302,7 +2345,7 @@ describe("fixBrokenWorktree", () => {
         expect(existsSync(join(wsResult.workspacePath, "frontend", "precious.ts"))).toBe(true);
         expect(readFileSync(join(wsResult.workspacePath, "frontend", "precious.ts"), "utf-8")).toBe("don't lose me");
     });
-    it("succeeds with stale worktree registration (prune cleans it up)", () => {
+    it("repairs its stale registration without pruning unrelated worktrees", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
         writeFileSync(join(tmpDir, "frontend", "app.ts"), "original");
@@ -2314,6 +2357,14 @@ describe("fixBrokenWorktree", () => {
         // frontend is now a worktree on branch "stale-wt"
         const wsFrontend = join(wsResult.workspacePath, "frontend");
         expect(isValidWorktree(wsFrontend, join(tmpDir, "frontend"))).toBe(true);
+        const unrelated = join(dirname(tmpDir), `${basename(tmpDir)}-unrelated-stale`);
+        const movedUnrelated = `${unrelated}.moved`;
+        spawnSync(
+            "git",
+            ["worktree", "add", "-b", "unrelated-stale", unrelated],
+            { cwd: join(tmpDir, "frontend"), stdio: "pipe" },
+        );
+        renameSync(unrelated, movedUnrelated);
 
         // Simulate: delete the worktree directory WITHOUT git cleanup
         // This leaves a stale registration in frontend/.git/worktrees/
@@ -2324,8 +2375,6 @@ describe("fixBrokenWorktree", () => {
         writeFileSync(join(wsFrontend, "app.ts"), "original");
         writeFileSync(join(wsFrontend, ".git"), "gitdir: /some/fake/modules/path\n");
 
-        // Without prune, git worktree add would fail because "stale-wt" is
-        // still registered. With prune (in fixBrokenWorktree), it should succeed.
         const result = fixBrokenWorktree(tmpDir, wsResult.workspacePath, "frontend", "stale-wt", true);
 
         expect(result).not.toBeNull();
@@ -2336,6 +2385,17 @@ describe("fixBrokenWorktree", () => {
 
         // Content should be preserved
         expect(existsSync(join(wsFrontend, "app.ts"))).toBe(true);
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: join(tmpDir, "frontend"),
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).toContain(`worktree ${unrelated}`);
+
+        spawnSync("git", ["worktree", "remove", "--force", unrelated], {
+            cwd: join(tmpDir, "frontend"),
+            stdio: "pipe",
+        });
+        rmSync(movedUnrelated, { recursive: true, force: true });
     });
 
     it("restores the original directory when checked-out content conflicts", () => {

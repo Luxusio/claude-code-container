@@ -1617,13 +1617,12 @@ function rollbackFailedWorktreeAdd(
                 `Failed worktree creation registry entry changed at '${worktreePath}'; preserving it.`,
             );
         }
-        const pruned = spawnSync(
-            "git",
-            ["worktree", "prune", "--expire", "now"],
-            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        removeDirectoryByQuarantine(
+            registrationFence.managementIdentity.realpath,
+            registrationFence.managementIdentity,
+            dirname(registrationFence.managementIdentity.realpath),
         );
-        if (pruned.error || pruned.status !== 0
-            || registeredWorktreePath(repositoryPath, worktreePath)) {
+        if (registeredWorktreePath(repositoryPath, worktreePath)) {
             throw new Error(`Failed to remove owned worktree registration: ${worktreePath}`);
         }
     }
@@ -3015,11 +3014,20 @@ export function fixBrokenWorktree(
         }
     }
 
-    // Prune stale worktree references (previous fix attempts may leave orphaned entries)
-    spawnSync("git", ["worktree", "prune"], {
-        cwd: sourceRepo.path,
-        stdio: "pipe",
-    });
+    if (registeredWorktreePath(sourceRepo.path, destPath)) {
+        const removed = spawnSync(
+            "git",
+            ["worktree", "remove", "--force", destPath],
+            { cwd: sourceRepo.path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (removed.error || removed.status !== 0
+            || registeredWorktreePath(sourceRepo.path, destPath)) {
+            throw new Error(
+                (removed.stderr ?? "").trim()
+                || `Failed to remove stale worktree registration: ${destPath}`,
+            );
+        }
+    }
 
     // Create worktree
     const existence = branchExistsInRepo(sourceRepo.path, branch);
