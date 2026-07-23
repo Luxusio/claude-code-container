@@ -644,6 +644,8 @@ describe("createWorkspace", () => {
         // Workspace directory should be cleaned up
         const wsPath = getWorkspacePath(sourceDir, "conflict-branch");
         expect(existsSync(wsPath)).toBe(false);
+        expect(branchExistsInRepo(join(sourceDir, "repo-a"), "conflict-branch"))
+            .toBe("none");
     });
 
     it("rolls back a unified workspace when nested worktree creation fails", () => {
@@ -658,6 +660,7 @@ describe("createWorkspace", () => {
         expect(() => createWorkspace(sourceDir, "nested-conflict"))
             .toThrow("Failed to create nested worktree for nested");
         expect(existsSync(getWorkspacePath(sourceDir, "nested-conflict"))).toBe(false);
+        expect(branchExistsInRepo(sourceDir, "nested-conflict")).toBe("none");
     });
 
     it.skipIf(process.platform === "win32")("fails and rolls back when a source entry cannot be copied safely", () => {
@@ -1444,6 +1447,8 @@ describe("repairWorkspace", () => {
         expect(existsSync(join(wsPath, "a-first"))).toBe(false);
         expect(existsSync(join(wsPath, "z-failing"))).toBe(false);
         expect(isValidWorktree(wsPath, tmpDir)).toBe(true);
+        expect(branchExistsInRepo(join(tmpDir, "a-first"), "repair-conflict"))
+            .toBe("none");
     });
 
     it("skips nested repos that are already valid worktrees", () => {

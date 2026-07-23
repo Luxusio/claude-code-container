@@ -967,6 +967,25 @@ export function branchExistsInRepo(
     return "none";
 }
 
+function rollbackCreatedBranch(
+    repositoryPath: string,
+    branch: string,
+    action: WorktreeRepoResult["action"],
+): void {
+    if (action === "worktree-existing") return;
+    const result = spawnSync(
+        "git",
+        ["branch", "-D", branch],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) {
+        const detail = (result.stderr ?? "").trim()
+            || result.error?.message
+            || `git exited with status ${String(result.status)}`;
+        throw new Error(`Failed to roll back branch '${branch}': ${detail}`);
+    }
+}
+
 /**
  * Check if a workspace already exists for the given source path and branch.
  */
@@ -1304,6 +1323,7 @@ function createUnifiedWorkspace(
                 true,
                 dirname(wsPath),
             );
+            rollbackCreatedBranch(resolved, branch, action);
         } catch (rollbackError) {
             rollbackErrors.push((rollbackError as Error).message);
         }
@@ -1419,6 +1439,7 @@ function createMultiRepoWorkspace(
                     true,
                     dirname(wsPath),
                 );
+                rollbackCreatedBranch(sourceRepo.path, branch, c.action);
             } catch (rollbackError) {
                 rollbackErrors.push(`${c.name}: ${(rollbackError as Error).message}`);
             }
@@ -1537,6 +1558,11 @@ export function repairWorkspace(
                     captureDirectoryIdentity(destination),
                     true,
                     dirname(wsPath),
+                );
+                rollbackCreatedBranch(
+                    sourceEntry.path,
+                    branch,
+                    createdEntry.action,
                 );
             } catch (rollbackError) {
                 rollbackErrors.push(
@@ -1981,6 +2007,7 @@ export function fixBrokenWorktree(
                     true,
                     dirname(wsPath),
                 );
+                rollbackCreatedBranch(sourceRepo.path, branch, c.action);
             }
             const restored = rollbackQuarantinedPath(
                 destPath,
