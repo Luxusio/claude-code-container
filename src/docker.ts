@@ -585,13 +585,20 @@ export function isContainerRunning(containerName: string): boolean {
 }
 
 /** Destructive lifecycle operations require a successful, explicit stopped result. */
-export function isContainerConfirmedStopped(containerName: string): boolean {
+export function getConfirmedStoppedContainerId(containerName: string): string | null {
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-q", "-f", `name=^${containerName}$`],
+        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    return !result.error && result.status === 0 && (result.stdout ?? "").trim().length === 0;
+    if (result.error || result.status !== 0) return null;
+    const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
+    if (!containerId || running !== "false" || extra.length > 0) return null;
+    return containerId;
+}
+
+export function isContainerConfirmedStopped(containerName: string): boolean {
+    return getConfirmedStoppedContainerId(containerName) !== null;
 }
 
 export function canExecContainer(containerName: string, timeoutMs = 5000): boolean {
@@ -622,6 +629,10 @@ export function isContainerExists(containerName: string): boolean {
         ["ps", "-aq", "-f", `name=^${containerName}$`],
         { encoding: "utf-8" },
     );
+    // Unknown must not bypass contract validation or authorize creation of a
+    // same-name container. Callers treat it as potentially existing and use
+    // inspect/confirmed-stopped probes to establish the exact state.
+    if (result.error || result.status !== 0) return true;
     return (result.stdout ?? "").trim().length > 0;
 }
 
@@ -1155,13 +1166,13 @@ export function syncManagedMcpBundles(containerName: string): void {
     }
 }
 
-function recreateContainer(containerName: string, reason: string, onRecreate?: () => void): void {
+function recreateContainer(containerName: string, containerId: string, reason: string, onRecreate?: () => void): void {
     console.log(`Recreating container (${reason})...`);
     const cli = runtimeCli();
     // Do not stop here. The caller confirmed the container was stopped under
     // the lifecycle lock; plain `rm` fails if an external actor starts it in
     // the meantime, closing the destructive TOCTOU window.
-    const removed = spawnSync(cli, ["rm", containerName], {
+    const removed = spawnSync(cli, ["rm", containerId], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
     });
@@ -1177,13 +1188,12 @@ function recreateContainerWithSessionGuard(
     onRecreate: (() => void) | undefined,
     guard: ((recreate: () => void) => boolean) | undefined,
 ): boolean {
-    const recreate = () => recreateContainer(containerName, reason, onRecreate);
     if (!guard) {
         throw new Error("Container replacement requires a lifecycle/session guard.");
     }
-    // A running project container is itself live ownership evidence. Mount or
-    // image drift is applied after it stops; it never authorizes stop/rm.
-    if (!isContainerConfirmedStopped(containerName)) return false;
+    const stoppedContainerId = getConfirmedStoppedContainerId(containerName);
+    if (!stoppedContainerId) return false;
+    const recreate = () => recreateContainer(containerName, stoppedContainerId, reason, onRecreate);
     return guard(recreate);
 }
 

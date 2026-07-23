@@ -184,20 +184,21 @@ describe('auto container version-up', () => {
     expect(typeof isContainerImageOutdated).toBe('function')
   })
 
-  it('auto-upgrade captures old image ID and removes it after container deletion', () => {
+  it('auto-upgrade captures the old image ID before removing the stopped container', () => {
     // Simulates the upgrade logic from index.ts exec():
-    // 1. Capture old image SHA before stopping container
-    // 2. Stop + rm container
+    // 1. Capture old image SHA before container removal
+    // 2. Remove only the exact container ID confirmed stopped under the lock
     // 3. Remove old image (silently fails if still in use)
     const oldImageId = "sha256:oldimage111"
     const currentImageId = "sha256:newimage222"
+    const stoppedContainerId = "sha256:stoppedcontainer333"
 
     // The upgrade condition: old image differs from current
     expect(oldImageId).not.toBe(currentImageId)
 
-    // After upgrade, docker rmi is called with the old SHA
-    // This is a logic verification, not a mock integration test
+    const rmArgs = ["rm", stoppedContainerId]
     const rmiArgs = ["rmi", oldImageId]
+    expect(rmArgs).toEqual(["rm", stoppedContainerId])
     expect(rmiArgs[0]).toBe("rmi")
     expect(rmiArgs[1]).toBe(oldImageId)
   })
@@ -222,7 +223,7 @@ describe('auto container version-up', () => {
       operation()
       return true
     })
-    const confirmedStopped = vi.fn(() => false)
+    const confirmedStopped = vi.fn(() => null)
 
     expect(replaceStoppedContainerWithoutInterruptingSessions(
       'ccc-project', 'project', '/locks/current.lock', replace,
@@ -242,9 +243,9 @@ describe('auto container version-up', () => {
 
     expect(replaceStoppedContainerWithoutInterruptingSessions(
       'ccc-project', 'project', '/locks/current.lock', replace,
-      replacementGuard, () => true,
+      replacementGuard, () => 'container-id',
     )).toBe(true)
-    expect(replace).toHaveBeenCalledOnce()
+    expect(replace).toHaveBeenCalledWith('container-id')
   })
 })
 

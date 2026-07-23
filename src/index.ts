@@ -58,7 +58,7 @@ import {
     isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
-    isContainerConfirmedStopped,
+    getConfirmedStoppedContainerId,
     isContainerExists,
     isImageExists,
     getImageLabel,
@@ -146,15 +146,19 @@ export function replaceStoppedContainerWithoutInterruptingSessions(
     containerName: string,
     containerPrefix: string,
     currentLockFile: string,
-    replace: () => void,
+    replace: (containerId: string) => void,
     replacementGuard: typeof recreateContainerWithoutInterruptingSessions = recreateContainerWithoutInterruptingSessions,
-    confirmedStopped: typeof isContainerConfirmedStopped = isContainerConfirmedStopped,
+    confirmedStoppedContainerId: typeof getConfirmedStoppedContainerId = getConfirmedStoppedContainerId,
 ): boolean {
+    let stoppedContainerId: string | null = null;
     return replacementGuard(
         containerPrefix,
         currentLockFile,
-        replace,
-        () => confirmedStopped(containerName),
+        () => replace(stoppedContainerId!),
+        () => {
+            stoppedContainerId = confirmedStoppedContainerId(containerName);
+            return stoppedContainerId !== null;
+        },
     );
 }
 
@@ -430,7 +434,7 @@ async function exec(
     const containerStatus = getContainerStatus(targetContainer);
     let wasAlreadyRunning = containerStatus.running;
     const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
-    const recreateRunningContainer = (recreate: () => void) => (
+    const recreateStoppedContainer = (recreate: (containerId: string) => void) => (
         replaceStoppedContainerWithoutInterruptingSessions(
             targetContainer,
             sessionContainerPrefix,
@@ -443,12 +447,14 @@ async function exec(
     if (containerStatus.exists) {
         const currentImageId = getCurrentImageId();
         if (currentImageId && containerStatus.imageId && containerStatus.imageId !== currentImageId) {
-            const recreated = recreateRunningContainer(() => {
+            const recreated = recreateStoppedContainer((stoppedContainerId) => {
                 const oldImageId = containerStatus.imageId;
 
                 progress("Upgrading container to new image...");
-                spawnSync(runtimeCli(), ["stop", targetContainer], { stdio: "ignore" });
-                spawnSync(runtimeCli(), ["rm", targetContainer], { stdio: "ignore" });
+                const removed = spawnSync(runtimeCli(), ["rm", stoppedContainerId], { stdio: "ignore" });
+                if (removed.error || removed.status !== 0) {
+                    throw new Error("Container image upgrade aborted because the stopped container could not be removed.");
+                }
                 wasAlreadyRunning = false;
 
                 // Remove old image (now dangling). Silently fails if still in use by other containers.

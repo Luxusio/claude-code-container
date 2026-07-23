@@ -308,13 +308,13 @@ describe("docker.ts module exports", () => {
     });
 
     describe("isContainerConfirmedStopped", () => {
-        it("returns true only for a successful empty running-container query", () => {
-            spawnSyncMock.mockReturnValue(makeResult(0, ""));
+        it("returns true only for a successful stopped inspect result", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, "abc123|false\n"));
             expect(isContainerConfirmedStopped("my-container")).toBe(true);
         });
 
         it("returns false when the container is running", () => {
-            spawnSyncMock.mockReturnValue(makeResult(0, "abc123\n"));
+            spawnSyncMock.mockReturnValue(makeResult(0, "abc123|true\n"));
             expect(isContainerConfirmedStopped("my-container")).toBe(false);
         });
 
@@ -340,6 +340,17 @@ describe("docker.ts module exports", () => {
         it("returns false when container not found", () => {
             spawnSyncMock.mockReturnValue(makeResult(0, ""));
             expect(isContainerExists("my-container")).toBe(false);
+        });
+
+        it.each([
+            ["nonzero status", makeResult(1, "")],
+            ["Windows EINVAL", {
+                ...makeResult(null, ""),
+                error: Object.assign(new Error("spawnSync docker EINVAL"), { code: "EINVAL" }),
+            }],
+        ])("fails closed as potentially existing on %s", (_name, result) => {
+            spawnSyncMock.mockReturnValue(result as SpawnSyncReturns<string>);
+            expect(isContainerExists("my-container")).toBe(true);
         });
     });
 
@@ -1146,7 +1157,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))   // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))       // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, driftMountsJson))  // inspect -> missing codex/gemini/opencode mounts
-                .mockReturnValueOnce(makeResult(0))                    // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                    // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))                // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))                // isContainerExists -> false
@@ -1359,6 +1370,9 @@ describe("docker.ts module exports", () => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|false\n");
+                }
                 if (args[0] === "inspect") return makeResult(0, driftMountsJson);
                 if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
                 if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
@@ -1388,6 +1402,9 @@ describe("docker.ts module exports", () => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|false\n");
+                }
                 if (args[0] === "inspect") return makeResult(0, driftMountsJson);
                 if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
                 if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
@@ -1511,6 +1528,10 @@ describe("docker.ts module exports", () => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    identityChanged = true;
+                    return makeResult(0, "abc123|false\n");
+                }
                 if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
                 if (args[0] === "ps" && args[1] === "-q") {
                     identityChanged = true;
@@ -1542,6 +1563,9 @@ describe("docker.ts module exports", () => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
                 if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
                 if (args[0] === "ps" && args[1] === "-q") {
                     runningChecks += 1;
@@ -1567,6 +1591,9 @@ describe("docker.ts module exports", () => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
                 if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
                 if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
                 if (args[0] === "ps") return makeResult(0, "abc123\n");
@@ -1589,7 +1616,7 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("mount source changed during restart");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
@@ -1625,7 +1652,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
-                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
@@ -1652,7 +1679,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
-                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
@@ -1675,7 +1702,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
-                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
@@ -1697,7 +1724,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
-                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
@@ -1862,7 +1889,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, JSON.stringify(inspected)))
-                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n"))
                 .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0, ""))
                 .mockReturnValueOnce(makeResult(0, ""))
@@ -2184,7 +2211,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, missingMountsJson)) // docker inspect (containerHasMounts)
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2214,7 +2241,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, missingGitIdentityMountsJson)) // inspect -> missing git identity mount
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2244,7 +2271,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { labState: false }))) // inspect -> missing lab state mount
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2278,7 +2305,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { deviceLabState: false }))) // inspect -> missing device state mount
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2316,7 +2343,7 @@ describe("docker.ts module exports", () => {
                     unsupportedReason: "/dev/kvm is not available on the container host",
                     kvmDevice: false,
                 }))) // inspect -> stale unsupported VM contract
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2345,7 +2372,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson())) // inspect -> stale ready VM contract
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2375,7 +2402,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { groupAdd: ["108", "999"] }))) // inspect -> extra group-add
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2410,7 +2437,7 @@ describe("docker.ts module exports", () => {
                         { PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" },
                     ],
                 }))) // inspect -> extra device
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2444,7 +2471,7 @@ describe("docker.ts module exports", () => {
                     groupAdd: [],
                     devices: [{ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" }],
                 }))) // inspect -> unsupported but stale device
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2474,7 +2501,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, fullCredentialMountsJson([], { privileged: true }))) // inspect -> privileged
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2562,7 +2589,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(1, ""))             // docker inspect -> fails (containerHasMounts false)
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
@@ -2582,7 +2609,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n")) // getImageLabel -> dev build
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists (extraMounts guard) -> exists
                 .mockReturnValueOnce(makeResult(0, "not-json"))     // docker inspect -> bad JSON
-                .mockReturnValueOnce(makeResult(0))                  // docker stop
+                .mockReturnValueOnce(makeResult(0, "abc123|false\n")) // confirmed stopped container
                 .mockReturnValueOnce(makeResult(0))                  // docker rm
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerRunning -> false
                 .mockReturnValueOnce(makeResult(0, ""))              // isContainerExists -> false
