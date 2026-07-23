@@ -774,6 +774,62 @@ describe("createWorkspace", () => {
         expect(upstream.stdout.trim()).toBe("origin/remote-only");
     });
 
+    it("restores pre-existing tracking config when remote worktree checkout fails", () => {
+        const bareRepo = join(tmpDir, "rollback-origin.git");
+        const publisher = join(tmpDir, "rollback-publisher");
+        const repoInSource = join(sourceDir, "repo-remote-rollback");
+        spawnSync("git", ["init", "--bare", bareRepo], { stdio: "pipe" });
+        spawnSync("git", ["clone", bareRepo, publisher], { stdio: "pipe" });
+        spawnSync("git", ["config", "user.email", "t@t.com"], {
+            cwd: publisher,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["config", "user.name", "T"], {
+            cwd: publisher,
+            stdio: "pipe",
+        });
+        writeFileSync(join(publisher, "file.txt"), "content");
+        spawnSync("git", ["add", "."], { cwd: publisher, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "init"], { cwd: publisher, stdio: "pipe" });
+        spawnSync("git", ["switch", "-c", "remote-rollback"], {
+            cwd: publisher,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["push", "origin", "remote-rollback"], {
+            cwd: publisher,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["clone", bareRepo, repoInSource], { stdio: "pipe" });
+        spawnSync("git", ["fetch", "origin"], { cwd: repoInSource, stdio: "pipe" });
+        spawnSync(
+            "git",
+            ["config", "--local", "--add", "branch.remote-rollback.remote", "pre-existing"],
+            { cwd: repoInSource, stdio: "pipe" },
+        );
+        spawnSync(
+            "git",
+            ["config", "--local", "--add", "branch.remote-rollback.merge", "refs/heads/old"],
+            { cwd: repoInSource, stdio: "pipe" },
+        );
+        installFailingCheckoutHook(repoInSource);
+
+        expect(() => createWorkspace(sourceDir, "remote-rollback"))
+            .toThrow("Failed to create worktree");
+        expect(branchExistsInRepo(repoInSource, "remote-rollback")).toBe("remote");
+        const remote = spawnSync(
+            "git",
+            ["config", "--local", "--get-all", "branch.remote-rollback.remote"],
+            { cwd: repoInSource, encoding: "utf-8" },
+        );
+        const merge = spawnSync(
+            "git",
+            ["config", "--local", "--get-all", "branch.remote-rollback.merge"],
+            { cwd: repoInSource, encoding: "utf-8" },
+        );
+        expect(remote.stdout.trim()).toBe("pre-existing");
+        expect(merge.stdout.trim()).toBe("refs/heads/old");
+    });
+
     it("handles EEXIST gracefully when workspace dir already exists", () => {
         initRepo(join(sourceDir, "repo-a"));
         writeFileSync(join(sourceDir, "config.yml"), "key: val");
@@ -1526,16 +1582,26 @@ describe("repairWorkspace", () => {
         chmodSync(hook, 0o755);
 
         expect(() => createWorkspace(tmpDir, "hook-race"))
-            .toThrow("changed during failed creation");
+            .toThrow("foreign registration");
 
         const wsPath = getWorkspacePath(tmpDir, "hook-race");
-        expect(existsSync(wsPath)).toBe(false);
+        expect(existsSync(wsPath)).toBe(true);
         expect(branchExistsInRepo(tmpDir, "hook-race")).toBe("local");
         const preserved = spawnSync("git", ["rev-parse", "refs/heads/hook-race"], {
             cwd: tmpDir,
             encoding: "utf-8",
         });
         expect(preserved.stdout.trim()).toBe(alternate);
+
+        rmSync(hook);
+        spawnSync("git", ["worktree", "remove", "--force", wsPath], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["branch", "-D", "hook-race"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
     });
 
     it("rejects a successful checkout whose branch ref changes concurrently", () => {
@@ -1560,14 +1626,132 @@ describe("repairWorkspace", () => {
         chmodSync(hook, 0o755);
 
         expect(() => createWorkspace(tmpDir, "hook-success-race"))
-            .toThrow("changed during failed creation");
-        expect(existsSync(getWorkspacePath(tmpDir, "hook-success-race"))).toBe(false);
+            .toThrow("foreign registration");
+        const workspace = getWorkspacePath(tmpDir, "hook-success-race");
+        expect(existsSync(workspace)).toBe(true);
         const preserved = spawnSync(
             "git",
             ["rev-parse", "refs/heads/hook-success-race"],
             { cwd: tmpDir, encoding: "utf-8" },
         );
         expect(preserved.stdout.trim()).toBe(alternate);
+
+        rmSync(hook);
+        spawnSync("git", ["worktree", "remove", "--force", workspace], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["branch", "-D", "hook-success-race"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+    });
+
+    it("preserves branch tracking config changed during failed checkout", () => {
+        initRepo(tmpDir);
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            [
+                "#!/bin/sh",
+                "git config --local branch.config-race.remote foreign-owner",
+                "exit 1",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, "config-race"))
+            .toThrow("tracking configuration changed during failed creation");
+        expect(existsSync(getWorkspacePath(tmpDir, "config-race"))).toBe(false);
+        expect(branchExistsInRepo(tmpDir, "config-race")).toBe("local");
+        const preserved = spawnSync(
+            "git",
+            ["config", "--local", "--get", "branch.config-race.remote"],
+            { cwd: tmpDir, encoding: "utf-8" },
+        );
+        expect(preserved.stdout.trim()).toBe("foreign-owner");
+
+        rmSync(hook);
+        spawnSync("git", ["branch", "-D", "config-race"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        spawnSync(
+            "git",
+            ["config", "--local", "--unset-all", "branch.config-race.remote"],
+            { cwd: tmpDir, stdio: "pipe" },
+        );
+    });
+
+    it("rejects a checkout attached to another branch at the same commit", () => {
+        initRepo(tmpDir);
+        spawnSync("git", ["branch", "same-oid-alternate"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/same-oid-alternate\nexit 0\n",
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, "same-oid-target"))
+            .toThrow("worktree branch identity changed during checkout");
+        const workspace = getWorkspacePath(tmpDir, "same-oid-target");
+        expect(existsSync(workspace)).toBe(true);
+        expect(detectWorktreeWorkspaceBranch(workspace)).toBe("same-oid-alternate");
+        expect(branchExistsInRepo(tmpDir, "same-oid-target")).toBe("local");
+
+        rmSync(hook);
+        spawnSync("git", ["worktree", "remove", "--force", workspace], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["branch", "-D", "same-oid-target"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+    });
+
+    it.skipIf(process.platform === "win32")("preserves a replacement path after worktree registration", () => {
+        initRepo(tmpDir);
+        const foreign = join(tmpDir, "foreign-destination");
+        mkdirSync(foreign);
+        writeFileSync(join(foreign, "marker.txt"), "preserve");
+        const workspace = getWorkspacePath(tmpDir, "replacement-race");
+        const movedWorkspace = `${workspace}.moved`;
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            [
+                "#!/bin/sh",
+                `mv "$PWD" "${movedWorkspace}"`,
+                `ln -s "${foreign}" "$PWD"`,
+                "exit 0",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, "replacement-race"))
+            .toThrow("Workspace path");
+        expect(readFileSync(join(foreign, "marker.txt"), "utf-8")).toBe("preserve");
+        expect(lstatSync(workspace).isSymbolicLink()).toBe(true);
+        expect(existsSync(movedWorkspace)).toBe(true);
+
+        rmSync(hook);
+        rmSync(workspace);
+        renameSync(movedWorkspace, workspace);
+        spawnSync("git", ["worktree", "remove", "--force", workspace], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["branch", "-D", "replacement-race"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
     });
 
     it("rolls back a side-effecting failed nested repair add", () => {
@@ -1771,6 +1955,21 @@ describe("isValidWorktree", () => {
 
         expect(isValidWorktree(realWorktree, sourceRepo)).toBe(true);
         expect(isValidWorktree(forgedWorktree, sourceRepo)).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("rejects a symlink alias to a valid worktree", () => {
+        const sourceRepo = join(tmpDir, "source-alias");
+        const realWorktree = join(tmpDir, "real-alias-worktree");
+        const aliasWorktree = join(tmpDir, "alias-worktree");
+        initRepo(sourceRepo);
+        spawnSync("git", ["worktree", "add", "-b", "alias-test", realWorktree], {
+            cwd: sourceRepo,
+            stdio: "pipe",
+        });
+        symlinkSync(realWorktree, aliasWorktree, "dir");
+
+        expect(isValidWorktree(realWorktree, sourceRepo)).toBe(true);
+        expect(isValidWorktree(aliasWorktree, sourceRepo)).toBe(false);
     });
 
     it.skipIf(process.platform === "win32")("rejects symlinked worktree management metadata", () => {

@@ -1141,16 +1141,85 @@ function expectedFailedCreationBranchOid(
     return oid;
 }
 
+type BranchTrackingConfig = {
+    remote: string[];
+    merge: string[];
+};
+
+type BranchCreationFence = {
+    expectedOid: string;
+    configBefore: BranchTrackingConfig;
+    configAfter: BranchTrackingConfig;
+};
+
+function readBranchTrackingConfig(
+    repositoryPath: string,
+    branch: string,
+): BranchTrackingConfig {
+    const readValues = (suffix: "remote" | "merge"): string[] => {
+        const result = spawnSync(
+            "git",
+            ["config", "--local", "--get-all", `branch.${branch}.${suffix}`],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (result.error || (result.status !== 0 && result.status !== 1)) {
+            throw new Error(`Unable to inspect branch tracking configuration for '${branch}'.`);
+        }
+        if (result.status === 1) return [];
+        return (result.stdout ?? "").replace(/\r?\n$/, "").split(/\r?\n/);
+    };
+    return {
+        remote: readValues("remote"),
+        merge: readValues("merge"),
+    };
+}
+
+function sameBranchTrackingConfig(
+    left: BranchTrackingConfig,
+    right: BranchTrackingConfig,
+): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function restoreBranchTrackingConfig(
+    repositoryPath: string,
+    branch: string,
+    snapshot: BranchTrackingConfig,
+): void {
+    for (const suffix of ["remote", "merge"] as const) {
+        const key = `branch.${branch}.${suffix}`;
+        const unset = spawnSync(
+            "git",
+            ["config", "--local", "--unset-all", key],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (unset.error || (unset.status !== 0 && unset.status !== 5)) {
+            throw new Error(`Failed to clear branch tracking configuration for '${branch}'.`);
+        }
+        for (const value of snapshot[suffix]) {
+            const restored = spawnSync(
+                "git",
+                ["config", "--local", "--add", key, value],
+                { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            if (restored.error || restored.status !== 0) {
+                throw new Error(`Failed to restore branch tracking configuration for '${branch}'.`);
+            }
+        }
+    }
+}
+
 function rollbackFailedCreatedBranch(
     repositoryPath: string,
     branch: string,
     action: WorktreeRepoResult["action"],
-    expectedOid: string | null,
+    fence: BranchCreationFence | null,
 ): void {
     if (action === "worktree-existing") return;
-    if (!expectedOid) {
+    if (!fence) {
         throw new Error(`Missing branch ownership snapshot for '${branch}'.`);
     }
+    const { expectedOid } = fence;
     const ref = `refs/heads/${branch}`;
     const current = spawnSync(
         "git",
@@ -1170,6 +1239,12 @@ function rollbackFailedCreatedBranch(
             `Branch '${branch}' changed during failed creation; preserving ref ${currentOid || "<unknown>"}.`,
         );
     }
+    const currentConfig = readBranchTrackingConfig(repositoryPath, branch);
+    if (!sameBranchTrackingConfig(currentConfig, fence.configAfter)) {
+        throw new Error(
+            `Branch '${branch}' tracking configuration changed during failed creation; preserving it.`,
+        );
+    }
     const removed = spawnSync(
         "git",
         ["update-ref", "-d", ref, expectedOid],
@@ -1184,6 +1259,7 @@ function rollbackFailedCreatedBranch(
         || remaining.error || remaining.status !== 1) {
         throw new Error(`Failed to roll back branch '${branch}' by exact ref identity.`);
     }
+    restoreBranchTrackingConfig(repositoryPath, branch, fence.configBefore);
 }
 
 function registeredWorktreePath(
@@ -1207,19 +1283,130 @@ function registeredWorktreePath(
         ));
 }
 
+type WorktreeRegistrationFence = {
+    destinationIdentity: DirectoryIdentity;
+    managementIdentity: DirectoryIdentity;
+    expectedOid: string;
+    expectedRef: string;
+};
+
+function captureWorktreeManagementIdentity(
+    worktreePath: string,
+): DirectoryIdentity {
+    const content = readFileSync(join(worktreePath, ".git"), "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) {
+        throw new Error(`Worktree registration metadata is invalid: ${worktreePath}`);
+    }
+    return captureDirectoryIdentity(resolve(worktreePath, match[1].trim()));
+}
+
+function worktreeRegistryEntryMatches(
+    repositoryPath: string,
+    worktreePath: string,
+    expectedRef: string,
+    expectedOid: string,
+): boolean {
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return listed.status === 0
+        && (listed.stdout ?? "")
+            .split(/\r?\n\r?\n/)
+            .some((block) => {
+                const lines = block.split(/\r?\n/);
+                const worktreeLine = lines.find((line) => line.startsWith("worktree "));
+                const branchLine = lines.find((line) => line.startsWith("branch "));
+                const headLine = lines.find((line) => line.startsWith("HEAD "));
+                return worktreeLine !== undefined
+                    && branchLine === `branch ${expectedRef}`
+                    && headLine === `HEAD ${expectedOid}`
+                    && sameObservedPath(
+                        worktreeLine.slice("worktree ".length).trim(),
+                        worktreePath,
+                    );
+            });
+}
+
+function worktreeRegistrationMatches(
+    repositoryPath: string,
+    worktreePath: string,
+    branch: string,
+    expectedOid: string,
+    fence?: WorktreeRegistrationFence,
+    requireBranchRef = true,
+): boolean {
+    try {
+        if (fence) {
+            assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
+            assertDirectoryIdentity(
+                resolve(
+                    worktreePath,
+                    readFileSync(join(worktreePath, ".git"), "utf-8")
+                        .trim()
+                        .replace(/^gitdir:\s*/, ""),
+                ),
+                fence.managementIdentity,
+            );
+        }
+        const branchResult = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const worktreeResult = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "HEAD^{commit}"],
+            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const symbolicHead = spawnSync(
+            "git",
+            ["symbolic-ref", "-q", "HEAD"],
+            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const expectedRef = fence?.expectedRef ?? `refs/heads/${branch}`;
+        return (!requireBranchRef || (
+            branchResult.status === 0
+            && (branchResult.stdout ?? "").trim() === expectedOid
+        ))
+            && worktreeResult.status === 0
+            && symbolicHead.status === 0
+            && (symbolicHead.stdout ?? "").trim() === expectedRef
+            && worktreeRegistryEntryMatches(
+                repositoryPath,
+                worktreePath,
+                expectedRef,
+                expectedOid,
+            )
+            && (worktreeResult.stdout ?? "").trim() === expectedOid;
+    } catch {
+        return false;
+    }
+}
+
 function rollbackFailedWorktreeAdd(
     repositoryPath: string,
     worktreePath: string,
     branch: string,
     action: WorktreeRepoResult["action"],
-    expectedBranchOid: string | null,
+    expectedBranchOid: BranchCreationFence | null,
     destinationIdentity: DirectoryIdentity,
-    registrationOwned: boolean,
+    registrationFence: WorktreeRegistrationFence | null,
 ): void {
     if (pathExistsStrict(worktreePath)) {
         assertDirectoryIdentity(worktreePath, destinationIdentity);
         if (isValidWorktree(worktreePath, repositoryPath)) {
-            if (!registrationOwned) {
+            if (!registrationFence
+                || !worktreeRegistrationMatches(
+                    repositoryPath,
+                    worktreePath,
+                    branch,
+                    registrationFence.expectedOid,
+                    registrationFence,
+                    false,
+                )) {
                 throw new Error(
                     `Failed worktree creation found a foreign registration at '${worktreePath}'; preserving it.`,
                 );
@@ -1240,9 +1427,29 @@ function rollbackFailedWorktreeAdd(
             );
         }
     } else if (registeredWorktreePath(repositoryPath, worktreePath)) {
-        if (!registrationOwned) {
+        if (!registrationFence) {
             throw new Error(
                 `Failed worktree creation left an unowned registry entry at '${worktreePath}'.`,
+            );
+        }
+        try {
+            assertDirectoryIdentity(
+                registrationFence.managementIdentity.realpath,
+                registrationFence.managementIdentity,
+            );
+        } catch {
+            throw new Error(
+                `Failed worktree creation registry ownership changed at '${worktreePath}'; preserving it.`,
+            );
+        }
+        if (!worktreeRegistryEntryMatches(
+            repositoryPath,
+            worktreePath,
+            registrationFence.expectedRef,
+            registrationFence.expectedOid,
+        )) {
+            throw new Error(
+                `Failed worktree creation registry entry changed at '${worktreePath}'; preserving it.`,
             );
         }
         const pruned = spawnSync(
@@ -1270,7 +1477,7 @@ type PreparedWorktreeAddResult = {
         stdout?: string;
         stderr?: string;
     };
-    registrationOwned: boolean;
+    registrationFence: WorktreeRegistrationFence | null;
 };
 
 function runPreparedWorktreeAdd(
@@ -1278,38 +1485,52 @@ function runPreparedWorktreeAdd(
     worktreePath: string,
     branch: string,
     expectedBranchOid: string,
+    destinationIdentity: DirectoryIdentity,
 ): PreparedWorktreeAddResult {
+    try {
+        assertDirectoryIdentity(worktreePath, destinationIdentity);
+    } catch (error) {
+        return {
+            result: { status: 1, error: error as Error },
+            registrationFence: null,
+        };
+    }
     const registered = spawnSync(
         "git",
         ["worktree", "add", "--no-checkout", worktreePath, branch],
         { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (registered.error || registered.status !== 0) {
-        return { result: registered, registrationOwned: false };
+        return { result: registered, registrationFence: null };
     }
-    const identityMatches = () => {
-        const branchResult = spawnSync(
-            "git",
-            ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
-            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        const worktreeResult = spawnSync(
-            "git",
-            ["rev-parse", "--verify", "HEAD^{commit}"],
-            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        return branchResult.status === 0
-            && worktreeResult.status === 0
-            && (branchResult.stdout ?? "").trim() === expectedBranchOid
-            && (worktreeResult.stdout ?? "").trim() === expectedBranchOid;
-    };
-    if (!identityMatches()) {
+    let registrationFence: WorktreeRegistrationFence;
+    try {
+        assertDirectoryIdentity(worktreePath, destinationIdentity);
+        registrationFence = {
+            destinationIdentity,
+            managementIdentity: captureWorktreeManagementIdentity(worktreePath),
+            expectedOid: expectedBranchOid,
+            expectedRef: `refs/heads/${branch}`,
+        };
+    } catch (error) {
+        return {
+            result: { status: 1, error: error as Error },
+            registrationFence: null,
+        };
+    }
+    if (!worktreeRegistrationMatches(
+        repositoryPath,
+        worktreePath,
+        branch,
+        expectedBranchOid,
+        registrationFence,
+    )) {
         return {
             result: {
                 status: 1,
                 stderr: "worktree branch identity changed after registration",
             },
-            registrationOwned: true,
+            registrationFence,
         };
     }
     const checkout = spawnSync(
@@ -1318,16 +1539,22 @@ function runPreparedWorktreeAdd(
         { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (checkout.error || checkout.status !== 0) {
-        return { result: checkout, registrationOwned: true };
+        return { result: checkout, registrationFence };
     }
-    return identityMatches()
-        ? { result: checkout, registrationOwned: true }
+    return worktreeRegistrationMatches(
+        repositoryPath,
+        worktreePath,
+        branch,
+        expectedBranchOid,
+        registrationFence,
+    )
+        ? { result: checkout, registrationFence }
         : {
             result: {
                 status: 1,
                 stderr: "worktree branch identity changed during checkout",
             },
-            registrationOwned: true,
+            registrationFence,
         };
 }
 
@@ -1343,20 +1570,28 @@ function prepareWorktreeCreation(
     action: WorktreeRepoResult["action"],
 ): {
     destinationIdentity: DirectoryIdentity;
-    expectedBranchOid: string;
+    expectedBranchOid: BranchCreationFence;
 } {
-    const expectedBranchOid = expectedFailedCreationBranchOid(
+    const sourceOid = expectedFailedCreationBranchOid(
         repositoryPath,
         branch,
         action,
     );
+    const configBefore = readBranchTrackingConfig(repositoryPath, branch);
     const destinationIdentity = reserveWorktreeDestination(worktreePath);
     if (action === "worktree-existing") {
-        return { destinationIdentity, expectedBranchOid };
+        return {
+            destinationIdentity,
+            expectedBranchOid: {
+                expectedOid: sourceOid,
+                configBefore,
+                configAfter: configBefore,
+            },
+        };
     }
     const branchArgs = action === "worktree-remote"
         ? ["branch", "--track", branch, `origin/${branch}`]
-        : ["branch", branch, expectedBranchOid as string];
+        : ["branch", branch, sourceOid];
     const created = spawnSync(
         "git",
         branchArgs,
@@ -1369,7 +1604,7 @@ function prepareWorktreeCreation(
     );
     if (created.error || created.status !== 0
         || current.error || current.status !== 0
-        || (current.stdout ?? "").trim() !== expectedBranchOid) {
+        || (current.stdout ?? "").trim() !== sourceOid) {
         removeDirectoryByQuarantine(
             worktreePath,
             destinationIdentity,
@@ -1380,7 +1615,32 @@ function prepareWorktreeCreation(
             `Branch '${branch}' changed while reserving worktree creation; preserving any existing ref.`,
         );
     }
-    return { destinationIdentity, expectedBranchOid };
+    const configAfter = readBranchTrackingConfig(repositoryPath, branch);
+    const expectedConfigAfter = action === "worktree-remote"
+        ? {
+            remote: ["origin"],
+            merge: [`refs/heads/${branch}`],
+        }
+        : configBefore;
+    if (!sameBranchTrackingConfig(configAfter, expectedConfigAfter)) {
+        removeDirectoryByQuarantine(
+            worktreePath,
+            destinationIdentity,
+            dirname(worktreePath),
+            true,
+        );
+        throw new Error(
+            `Branch '${branch}' tracking configuration changed during creation; preserving it.`,
+        );
+    }
+    return {
+        destinationIdentity,
+        expectedBranchOid: {
+            expectedOid: sourceOid,
+            configBefore,
+            configAfter,
+        },
+    };
 }
 
 /**
@@ -1682,11 +1942,12 @@ function createUnifiedWorkspace(
         branch,
         action,
     );
-    const { result, registrationOwned } = runPreparedWorktreeAdd(
+    const { result, registrationFence } = runPreparedWorktreeAdd(
         resolved,
         wsPath,
         branch,
-        expectedBranchOid,
+        expectedBranchOid.expectedOid,
+        destinationIdentity,
     );
 
     if (result.status !== 0) {
@@ -1699,7 +1960,7 @@ function createUnifiedWorkspace(
                 action,
                 expectedBranchOid,
                 destinationIdentity,
-                registrationOwned,
+                registrationFence,
             );
         } catch (rollbackError) {
             throw new Error(
@@ -1796,7 +2057,7 @@ function createMultiRepoWorkspace(
     const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     const created: WorktreeRepoResult[] = [];
-    const rollbackOids = new Map<string, string | null>();
+    const rollbackOids = new Map<string, BranchCreationFence | null>();
     const copied: string[] = [];
 
     // Process git repos → worktree (with rollback on failure)
@@ -1827,11 +2088,12 @@ function createMultiRepoWorkspace(
                 branch,
                 action,
             );
-            const { result, registrationOwned } = runPreparedWorktreeAdd(
+            const { result, registrationFence } = runPreparedWorktreeAdd(
                 repo.path,
                 destPath,
                 branch,
-                expectedBranchOid,
+                expectedBranchOid.expectedOid,
+                destinationIdentity,
             );
 
             if (result.status !== 0) {
@@ -1844,7 +2106,7 @@ function createMultiRepoWorkspace(
                         action,
                         expectedBranchOid,
                         destinationIdentity,
-                        registrationOwned,
+                        registrationFence,
                     );
                 } catch (rollbackError) {
                     throw new Error(
@@ -1998,7 +2260,7 @@ export function repairWorkspace(
     // Nested git repos (gitignored or gitlink entries without submodule config)
     // end up as empty or missing directories in the worktree.
     const created: WorktreeRepoResult[] = [];
-    const rollbackOids = new Map<string, string | null>();
+    const rollbackOids = new Map<string, BranchCreationFence | null>();
     const removedEmptyDestinations: string[] = [];
     const sourceEntries = scanDirectory(resolved, { strict: true });
 
@@ -2100,12 +2362,13 @@ export function repairWorkspace(
         const { expectedBranchOid, destinationIdentity } = prepared;
         const {
             result: nestedResult,
-            registrationOwned,
+            registrationFence,
         } = runPreparedWorktreeAdd(
             entry.path,
             destPath,
             branch,
-            expectedBranchOid,
+            expectedBranchOid.expectedOid,
+            destinationIdentity,
         );
 
         if (nestedResult.error || nestedResult.status !== 0) {
@@ -2120,7 +2383,7 @@ export function repairWorkspace(
                     nestedAction,
                     expectedBranchOid,
                     destinationIdentity,
-                    registrationOwned,
+                    registrationFence,
                 );
             } catch (rollbackError) {
                 rollbackNestedCreation(new Error(
@@ -2305,6 +2568,11 @@ export function isValidWorktree(
     sourceRepoPath: string,
 ): boolean {
     if (!existsSync(dirPath)) return false;
+    try {
+        captureDirectoryIdentity(dirPath);
+    } catch {
+        return false;
+    }
 
     const gitPath = join(dirPath, ".git");
     if (!existsSync(gitPath)) return false;
@@ -2514,7 +2782,7 @@ export function fixBrokenWorktree(
             action = "worktree-new";
             break;
     }
-    let expectedBranchOid: string;
+    let expectedBranchOid: BranchCreationFence;
     let destinationIdentity: DirectoryIdentity;
     try {
         ({
@@ -2538,11 +2806,12 @@ export function fixBrokenWorktree(
         }
         throw error;
     }
-    const { result, registrationOwned } = runPreparedWorktreeAdd(
+    const { result, registrationFence } = runPreparedWorktreeAdd(
         sourceRepo.path,
         destPath,
         branch,
-        expectedBranchOid,
+        expectedBranchOid.expectedOid,
+        destinationIdentity,
     );
 
     if (result.status !== 0) {
@@ -2554,7 +2823,7 @@ export function fixBrokenWorktree(
                 action,
                 expectedBranchOid,
                 destinationIdentity,
-                registrationOwned,
+                registrationFence,
             );
         } catch (rollbackError) {
             const preservation = backup
