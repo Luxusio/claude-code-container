@@ -553,7 +553,7 @@ describe("Hyper-V provider adapter", () => {
         expect(preserveForeignNat).toContain("$RemoveNat = $false");
         expect(preserveForeignNat).toContain("$Nats.Count -eq 1 -and $RemoveNat");
 
-        const elevated = scriptOf(hyperVEnsureNetworkCommand({
+        const elevatedCommand = hyperVEnsureNetworkCommand({
             executable: "powershell.exe",
             switchName: "CCC Device Lab",
             natName: "CCCDeviceLab",
@@ -563,7 +563,10 @@ describe("Hyper-V provider adapter", () => {
             prefixLength: 24,
             elevated: true,
             elevatedDeadlineUnixMs: Date.now() + 180000,
-        }));
+        });
+        const elevated = scriptOf(elevatedCommand);
+        expect(elevatedCommand.input).toMatch(/^[A-Za-z0-9+/=]+$/);
+        expect(elevatedCommand.args.join(" ").length).toBeLessThan(2048);
         expect(elevated).toContain("Start-Process -FilePath $Executable -Verb RunAs");
         expect(elevated).toContain("GetNamedPipeClientProcessId");
         expect(elevated).toContain("$ClientProcessId -ne [uint32]$Child.Id");
