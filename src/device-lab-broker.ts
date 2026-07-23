@@ -10802,10 +10802,15 @@ function providerFailureDetail(result: ProviderCommandResult): string {
     return truncateOutput(parts.join("\n") || `provider exited with status ${String(result.status)}`, 8192);
 }
 
-function redactProviderCommandInput(result: ProviderCommandResult, redactOutput = false): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
+function redactProviderCommandInput(
+    result: ProviderCommandResult,
+    redactOutput = false,
+    fallbackDiagnosticCode?: string,
+): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
     const { input, ...publicResult } = result;
     const diagnosticCode = redactOutput
         ? `${publicResult.error || ""}\n${publicResult.stderr || ""}\n${publicResult.stdout || ""}`.match(/\bhyper-v-[a-z0-9-]{3,128}\b/i)?.[0]?.toLowerCase()
+            || fallbackDiagnosticCode
         : undefined;
     return {
         ...publicResult,
@@ -11877,7 +11882,11 @@ async function lifecycleCommandInvokeUnlocked(
                 return { status: rollback.ok ? 500 : 502, payload: { ok: false, error: "hyper-v-guest-provision-plan-failed", ownerId, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error), rollback } };
             }
             const rawProvisioningExecution = await hyperVProviderCommandRunner(normalized, provisionCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 180000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            hyperVProvisioningExecution = redactProviderCommandInput(rawProvisioningExecution, true);
+            hyperVProvisioningExecution = redactProviderCommandInput(
+                rawProvisioningExecution,
+                true,
+                "hyper-v-guest-provision-command-failed",
+            );
             if (hyperVOperationDeadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
                 return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };

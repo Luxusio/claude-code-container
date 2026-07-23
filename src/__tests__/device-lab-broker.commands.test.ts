@@ -773,7 +773,7 @@ describe("device-lab host broker lifecycle commands", () => {
             vhdType: "Dynamic",
             preparedAt: new Date().toISOString(),
         }));
-        const variants = ["nonzero", "timeout", "overflow", "malformed", "wrong-name", "wrong-disk", "artifact-cleanup-failure", "allocation-cleanup-failure", "provision-failure", "state-claim-conflict"] as const;
+        const variants = ["nonzero", "timeout", "overflow", "malformed", "wrong-name", "wrong-disk", "artifact-cleanup-failure", "allocation-cleanup-failure", "provision-failure", "provision-untagged-failure", "state-claim-conflict"] as const;
         const cleanupOutside = join(cwd, "cleanup-outside");
         mkdirSync(cleanupOutside, { recursive: true });
         let createIndex = 0;
@@ -797,7 +797,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
             if (script.includes("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'")
-                && (activeVariant === "provision-failure" || activeVariant === "state-claim-conflict")) {
+                && (activeVariant === "provision-failure" || activeVariant === "provision-untagged-failure" || activeVariant === "state-claim-conflict")) {
                 const deviceId = `invalid-create-${activeVariant}`;
                 const vmName = script.match(/\$ExpectedName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
@@ -806,8 +806,16 @@ describe("device-lab host broker lifecycle commands", () => {
                 const provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
                 mkdirSync(dirname(credentialPath), { recursive: true });
                 writeFileSync(credentialPath, "fake-dpapi-credential");
-                if (activeVariant === "provision-failure") {
-                    return { mode: command.mode, provider: command.provider, status: 1, stdout: provisioningSecretEcho, stderr: `hyper-v-provisioning-media-create-failed: ${provisioningSecretEcho}` };
+                if (activeVariant === "provision-failure" || activeVariant === "provision-untagged-failure") {
+                    return {
+                        mode: command.mode,
+                        provider: command.provider,
+                        status: 1,
+                        stdout: provisioningSecretEcho,
+                        stderr: activeVariant === "provision-failure"
+                            ? `hyper-v-provisioning-media-create-failed: ${provisioningSecretEcho}`
+                            : `untagged provisioning failure: ${provisioningSecretEcho}`,
+                    };
                 }
                 const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
                 mkdirSync(dirname(stateFile), { recursive: true });
@@ -878,18 +886,20 @@ describe("device-lab host broker lifecycle commands", () => {
                     expect(body).toEqual(expect.objectContaining({ error: "hyper-v-create-invalid-result", rollback: expect.objectContaining({ ok: false, error: "hyper-v-recovery-cleanup-failed" }) }));
                     expect(existsSync(privateRoot)).toBe(true);
                     rmSync(networkStatePath, { force: true });
-                } else if (variant === "provision-failure" || variant === "state-claim-conflict") {
+                } else if (variant === "provision-failure" || variant === "provision-untagged-failure" || variant === "state-claim-conflict") {
                     expect(body).toEqual(expect.objectContaining({
-                        error: variant === "provision-failure" ? "hyper-v-guest-provision-failed" : "owner-device-id-conflict",
+                        error: variant === "state-claim-conflict" ? "owner-device-id-conflict" : "hyper-v-guest-provision-failed",
                         rollback: expect.objectContaining({ ok: true }),
                     }));
-                    if (variant === "provision-failure") {
+                    if (variant === "provision-failure" || variant === "provision-untagged-failure") {
                         expect(JSON.stringify(body)).not.toContain(provisioningSecretEcho);
                         expect(body.provisioning).toEqual(expect.objectContaining({
                             stdout: "[redacted]",
                             stderr: "[redacted]",
                             outputRedacted: true,
-                            diagnosticCode: "hyper-v-provisioning-media-create-failed",
+                            diagnosticCode: variant === "provision-failure"
+                                ? "hyper-v-provisioning-media-create-failed"
+                                : "hyper-v-guest-provision-command-failed",
                         }));
                     }
                     expect(existsSync(privateRoot)).toBe(false);
@@ -905,8 +915,8 @@ describe("device-lab host broker lifecycle commands", () => {
                     expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));
                 }
             }
-            expect(createIndex).toBe(10);
-            expect(recoveryCalls).toBe(10);
+            expect(createIndex).toBe(11);
+            expect(recoveryCalls).toBe(11);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
