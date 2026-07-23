@@ -15,7 +15,19 @@ const CAPABILITIES = [
 
 function payload(result: any) {
     const value = parseToolPayload(result);
-    if (value?.ok === false) throw new Error([value.error, value.detail].filter(Boolean).join(": ") || "Hyper-V Linux broker operation failed");
+    if (value?.ok === false) {
+        const execution = value.provisioning && typeof value.provisioning === "object" ? value.provisioning : null;
+        const diagnostic = execution
+            ? JSON.stringify({
+                status: execution.status,
+                signal: execution.signal,
+                error: execution.error,
+                stdout: String(execution.stdout || "").slice(-1024),
+                stderr: String(execution.stderr || "").slice(-2048),
+            })
+            : "";
+        throw new Error([value.error, value.detail, diagnostic].filter(Boolean).join(": ") || "Hyper-V Linux broker operation failed");
+    }
     return value;
 }
 

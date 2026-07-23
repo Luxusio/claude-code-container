@@ -179,7 +179,7 @@ const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-reco
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v7";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v2";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
@@ -4993,7 +4993,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
             diskPath,
             guestTransport: linuxGuest ? "ssh" : "powershell-direct",
             ...(linuxGuest ? {
-                seedDiskPath: join(deviceRoot, "disks", "cidata.vhdx"),
+                seedDiskPath: join(deviceRoot, "disks", "cidata.iso"),
                 sshPrivateKeyPath: join(privateRoot, "secrets", "id_ed25519"),
                 sshPublicKeyPath: join(privateRoot, "secrets", "id_ed25519.pub"),
                 sshHostPrivateKeyPath: join(privateRoot, "secrets", "ssh_host_ed25519_key"),
@@ -5118,7 +5118,9 @@ async function rollbackProviderCreateAfterConflict(
                 vmName: device.vmName,
                 deviceRoot: device.deviceRoot,
                 diskPath: device.diskPath,
-                auxiliaryDiskPaths: typeof device.seedDiskPath === "string" ? [device.seedDiskPath] : [],
+                auxiliaryMediaPaths: [
+                    join(device.deviceRoot, "disks", parsed.backend === "linux-vm" ? "cidata.iso" : "autounattend.iso"),
+                ],
             });
             const result = await hyperVProviderCommandRunner(normalized, rollbackCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
             if (!commandSucceeded(result)) return { attempted: true, ok: false, result };
@@ -8596,7 +8598,16 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
     const diskPath = join(deviceRoot, "disks", "root.vhdx");
     let command: ProviderCommand;
     try {
-        command = hyperVRecoverOrphanCommand({ executable: powershell, ownerId, deviceId, incarnationId: expectedIncarnationId, vmName: hyperVVmName(ownerId, deviceId, expectedIncarnationId), deviceRoot, diskPath, auxiliaryDiskPaths: backend === "linux-vm" ? [join(deviceRoot, "disks", "cidata.vhdx")] : [] });
+        command = hyperVRecoverOrphanCommand({
+            executable: powershell,
+            ownerId,
+            deviceId,
+            incarnationId: expectedIncarnationId,
+            vmName: hyperVVmName(ownerId, deviceId, expectedIncarnationId),
+            deviceRoot,
+            diskPath,
+            auxiliaryMediaPaths: [join(deviceRoot, "disks", backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")],
+        });
     } catch (error) {
         return { ok: false, status: 400, error: "hyper-v-recovery-plan-failed", detail: error instanceof Error ? error.message : String(error) };
     }
@@ -8711,7 +8722,16 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
     const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
     if (!powershell) return { ok: false, status: 503, error: "missing-provider-command", detail: "powershell" };
     const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
-    const base = { executable: powershell, ownerId, deviceId, incarnationId: journal.incarnationId, vmName: journal.vmName, vmId: journal.vmId, diskPath: journal.diskPath, auxiliaryDiskPaths: backend === "linux-vm" ? [join(deviceRoot, "disks", "cidata.vhdx")] : [] };
+    const base = {
+        executable: powershell,
+        ownerId,
+        deviceId,
+        incarnationId: journal.incarnationId,
+        vmName: journal.vmName,
+        vmId: journal.vmId,
+        diskPath: journal.diskPath,
+        auxiliaryMediaPaths: [join(deviceRoot, "disks", backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")],
+    };
     if (journal.command === "device_delete") {
         const execution = await hyperVProviderCommandRunner(normalized, hyperVDeleteCommand(base), { timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
         assertHyperVOperationDeadline(deadlineAt);
@@ -9576,7 +9596,11 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
                 startIfStopped: parsed.startIfStopped,
             });
             if (!diskPath) return { error: "missing-provider-metadata", missing: ["diskPath"] };
-            return hyperVDeleteCommand({ ...options, diskPath, auxiliaryDiskPaths: parsed.backend === "linux-vm" ? [join(expectedDeviceRoot, "disks", "cidata.vhdx")] : [] });
+            return hyperVDeleteCommand({
+                ...options,
+                diskPath,
+                auxiliaryMediaPaths: [join(expectedDeviceRoot, "disks", parsed.backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")],
+            });
         } catch (error) {
             return { error: error instanceof Error ? error.message : "invalid-hyper-v-lifecycle-options", missing: [] };
         }
@@ -11730,7 +11754,7 @@ async function lifecycleCommandInvokeUnlocked(
                 return { status: 502, payload: { ok: false, error: "hyper-v-create-invalid-result", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
             }
             const guestUsername = `ccc${ownerId.slice(0, 8)}`;
-            const seedDiskPath = join(deviceRoot, "disks", "cidata.vhdx");
+            const seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
             const sshPrivateKeyPath = join(privateRoot, "secrets", "id_ed25519");
             const sshPublicKeyPath = `${sshPrivateKeyPath}.pub`;
             const sshHostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
@@ -11813,6 +11837,7 @@ async function lifecycleCommandInvokeUnlocked(
             const deviceRoot = hyperVDeviceRoot(ownerId, "windows-vm", parsed.deviceId);
             const privateRoot = hyperVPrivateDeviceRoot(ownerId, "windows-vm", parsed.deviceId);
             const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+            const provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
             const guestUsername = `ccc${ownerId.slice(0, 8)}`;
             const guestPassword = `Ccc!7${randomBytes(24).toString("base64url")}`;
             const observedParsed = { ...parsed, create: { ...(parsed.create || {}), vmId: observation.vmId } };
@@ -11834,6 +11859,7 @@ async function lifecycleCommandInvokeUnlocked(
                     deviceRoot,
                     privateRoot,
                     credentialPath,
+                    provisioningMediaPath,
                     guestUsername,
                     guestPassword,
                     networkAddress: typeof parsed.create?.networkAddress === "string" ? parsed.create.networkAddress : null,
@@ -11868,6 +11894,7 @@ async function lifecycleCommandInvokeUnlocked(
                 || provisioned.vmName !== expectedVmName
                 || provisioned.guestUsername !== guestUsername
                 || resolve(provisioned.credentialPath) !== resolve(credentialPath)
+                || resolve(provisioned.unattendPath) !== resolve(provisioningMediaPath)
                 || !credentialAvailable) {
                 const rollback = await rollbackProvisioning();
                 return { status: 502, payload: { ok: false, error: "hyper-v-guest-provision-invalid-result", ownerId, deviceId: parsed.deviceId, provisioning: hyperVProvisioningExecution, rollback } };
@@ -12301,7 +12328,13 @@ async function lifecycleCommandInvokeUnlocked(
             const privateRoot = field(device, "privateRoot") || "";
             const expectedPrivateRoot = hyperVPrivateDeviceRoot(ownerId, "windows-vm", parsed.deviceId);
             const credentialPath = field(device, "guestCredentialPath") || "";
-            if (privateRoot !== expectedPrivateRoot || credentialPath !== join(expectedPrivateRoot, "secrets", "guest.credential.xml")) throw new Error("hyper-v-guest-metadata-invalid");
+            const provisioningMediaPath = field(device, "guestUnattendPath") || "";
+            const expectedProvisioningMediaPath = join(hyperVDeviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "autounattend.iso");
+            if (privateRoot !== expectedPrivateRoot
+                || credentialPath !== join(expectedPrivateRoot, "secrets", "guest.credential.xml")
+                || provisioningMediaPath !== expectedProvisioningMediaPath) {
+                throw new Error("hyper-v-guest-metadata-invalid");
+            }
             assertHyperVPrivateDeviceRoot(ownerId, "windows-vm", parsed.deviceId, privateRoot);
             const readyCommand = hyperVGuestReadyCommand({
                 executable: providerCommand.executable || "powershell.exe",
@@ -12313,6 +12346,7 @@ async function lifecycleCommandInvokeUnlocked(
                 deviceRoot: field(device, "deviceRoot") || "",
                 privateRoot,
                 credentialPath,
+                provisioningMediaPath,
                 timeoutMs,
                 expectedNetworkAddress: field(device, "networkAddress"),
             });

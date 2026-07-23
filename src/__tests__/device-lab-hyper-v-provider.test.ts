@@ -422,7 +422,7 @@ describe("Hyper-V provider adapter", () => {
         const vmName = hyperVVmName(ownerId, linuxDeviceId, incarnationId);
         const deviceRoot = "/state/owners/0123456789abcdef/linux-vm/linux-ci-01";
         const privateRoot = "/private/owners/0123456789abcdef/linux-vm/linux-ci-01";
-        const seedDiskPath = `${deviceRoot}/disks/cidata.vhdx`;
+        const seedDiskPath = `${deviceRoot}/disks/cidata.iso`;
         const sshPrivateKeyPath = `${privateRoot}/secrets/id_ed25519`;
         const sshPublicKeyPath = `${sshPrivateKeyPath}.pub`;
         const sshHostPrivateKeyPath = `${privateRoot}/secrets/ssh_host_ed25519_key`;
@@ -449,14 +449,16 @@ describe("Hyper-V provider adapter", () => {
             networkPrefixLength: 24,
         });
         const seedScript = scriptOf(seed);
-        expect(seedScript).toContain("New-VHD -Path $SeedDisk -Dynamic -SizeBytes 64MB");
-        expect(seedScript).toContain("NewFileSystemLabel cidata");
+        expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
+        expect(seedScript).toContain("Write-CccIso $SeedSource $SeedDisk 'cidata'");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
         expect(seedScript).toContain("ssh_host_ed25519_key");
         expect(seedScript).toContain("ssh_deletekeys: true");
         expect(seedScript).toContain("sshHostKeyFingerprint");
-        expect(seedScript).toContain("Add-VMHardDiskDrive -VM $Vm -Path $SeedDisk");
+        expect(seedScript).toContain("Add-VMDvdDrive -VM $Vm -Path $SeedDisk");
+        expect(seedScript).not.toContain("Mount-VHD");
+        expect(seedScript).not.toContain("Initialize-Disk");
         expect(seedScript).toContain("Get-VM -Id $ExpectedId");
         expect(seedScript).not.toContain("cloud-init status --wait");
 
@@ -477,12 +479,12 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             vmId,
             diskPath: `${deviceRoot}/disks/root.vhdx`,
-            auxiliaryDiskPaths: [seedDiskPath],
+            auxiliaryMediaPaths: [seedDiskPath],
         }));
         expect(deleteScript).toContain("$ExpectedDisks");
         expect(deleteScript).toContain("Compare-Object");
         expect(deleteScript).toContain(seedDiskPath);
-        expect(deleteScript).toContain("Assert-NoReparsePath $OwnedDisk");
+        expect(deleteScript).toContain("Assert-NoReparsePath $OwnedPath");
 
         const recoverScript = scriptOf(hyperVRecoverOrphanCommand({
             executable: "powershell.exe",
@@ -492,7 +494,7 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             deviceRoot,
             diskPath: `${deviceRoot}/disks/root.vhdx`,
-            auxiliaryDiskPaths: [seedDiskPath],
+            auxiliaryMediaPaths: [seedDiskPath],
         }));
         expect(recoverScript).toContain("$ExpectedPaths -notcontains $_");
         expect(recoverScript).not.toContain("$AttachedPaths.Count -ne $ExpectedPaths.Count");
@@ -505,7 +507,7 @@ describe("Hyper-V provider adapter", () => {
             vmName: hyperVVmName(ownerId, linuxDeviceId, "2".repeat(32)),
             deviceRoot,
             diskPath: `${deviceRoot}/disks/root.vhdx`,
-            auxiliaryDiskPaths: [seedDiskPath],
+            auxiliaryMediaPaths: [seedDiskPath],
         })).toThrow("hyper-v-vm-name-not-owner-scoped");
     });
 
@@ -719,8 +721,14 @@ describe("Hyper-V provider adapter", () => {
         expect(rebootScript).toContain("Restart-VM -VM $Vm -Force:$Force -Confirm:$false");
         expect(rebootScript).toContain("hyper-v-reboot-requires-running-vm");
         expect(rebootScript).toContain("Start-VM -VM $Vm");
-        const deleteScript = scriptOf(hyperVDeleteCommand({ ...options, diskPath: "/state/root.vhdx" }));
+        const deleteScript = scriptOf(hyperVDeleteCommand({
+            ...options,
+            diskPath: "/state/root.vhdx",
+            auxiliaryMediaPaths: ["/state/autounattend.iso"],
+        }));
         expect(deleteScript).toContain("hyper-v-vm-disk-ownership-mismatch");
+        expect(deleteScript).toContain("hyper-v-vm-media-ownership-mismatch");
+        expect(deleteScript).toContain("$ExpectedMedia = @('/state/autounattend.iso')");
         expect(deleteScript).toContain("alreadyMissing = $true");
         expect(deleteScript).toContain("hyper-v-vm-identity-conflict");
         expect(deleteScript).toContain("Remove-VM -VM $Vm -Force");
@@ -772,16 +780,28 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
             diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
+            auxiliaryMediaPaths: ["/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/autounattend.iso"],
         });
         const script = scriptOf(command);
         expect(script).toContain("hyper-v-orphan-vm-ownership-mismatch");
         expect(script).toContain("hyper-v-orphan-vm-disk-mismatch");
         expect(script).toContain("hyper-v-orphan-vm-unmarked-disk-mismatch");
+        expect(script).toContain("hyper-v-orphan-vm-media-mismatch");
         expect(script).toContain("$AttachedPaths.Count -ne 1");
         expect(script).toContain("$AttachedPaths[0] -cne [IO.Path]::GetFullPath($DiskPath)");
         expect(script).toContain("[IO.FileAttributes]::ReparsePoint");
         expect(parseHyperVRecoveryObservation('noise\n{"ok":true,"recoveredVm":true,"removedDisk":true}')).toEqual({ ok: true, recoveredVm: true, removedDisk: true });
         expect(parseHyperVRecoveryObservation('{"ok":true,"recoveredVm":true}')).toBeNull();
+        expect(() => hyperVRecoverOrphanCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
+            diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
+            auxiliaryMediaPaths: ["/state/owners/foreign/autounattend.iso"],
+        })).toThrow("hyper-v-auxiliary-media-path-outside-owner-root");
     });
 
     it("uses owner-scoped production checkpoints and exact snapshot identity fencing", () => {
@@ -841,22 +861,49 @@ describe("Hyper-V provider adapter", () => {
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
         const credentialPath = `${deviceRoot}/secrets/guest.credential.xml`;
-        const command = hyperVGuestReadyCommand({ executable: "powershell.exe", ownerId, deviceId, incarnationId, vmName, vmId, deviceRoot, credentialPath, timeoutMs: 300000 });
+        const provisioningMediaPath = `${deviceRoot}/disks/autounattend.iso`;
+        const command = hyperVGuestReadyCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            deviceRoot,
+            credentialPath,
+            provisioningMediaPath,
+            timeoutMs: 300000,
+        });
         const script = scriptOf(command);
         expect(script).toContain("[DateTime]::UtcNow.AddMilliseconds(300000)");
         expect(script).toContain("New-PSSession -VMId $ExpectedId -Credential $Credential");
         expect(script).toContain("Invoke-Command -Session $Session");
+        expect(script).toContain("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
+        expect(script).toContain("Remove-Item -LiteralPath $ProvisioningMedia");
         expect(script).toContain("hyper-v-guest-ready-timeout");
         expect(script).toContain("hyper-v-vm-ownership-mismatch");
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId: vmId.toUpperCase(), vmName, computerName: "CCC-WIN", attempts: 4 })))
             .toEqual({ ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 4 });
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
+        expect(() => hyperVGuestReadyCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            deviceRoot,
+            credentialPath,
+            provisioningMediaPath: "/state/owners/foreign/autounattend.iso",
+            timeoutMs: 300000,
+        })).toThrow("hyper-v-guest-provisioning-media-path-outside-owner-root");
     });
 
     it("provisions a per-device Windows guest account without putting its password on the command line", () => {
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
         const credentialPath = `${deviceRoot}/secrets/guest.credential.xml`;
+        const provisioningMediaPath = `${deviceRoot}/disks/autounattend.iso`;
         const guestPassword = "Ccc!7this-is-a-long-disposable-password";
         const command = hyperVGuestProvisionCommand({
             executable: "powershell.exe",
@@ -868,19 +915,40 @@ describe("Hyper-V provider adapter", () => {
             diskPath: `${deviceRoot}/disks/root.vhdx`,
             deviceRoot,
             credentialPath,
+            provisioningMediaPath,
             guestUsername: "ccc01234567",
             guestPassword,
         });
         const script = scriptOf(command);
-        expect(script).toContain("Mount-VHD -Path $DiskPath");
+        expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
+        expect(script).toContain("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'");
+        expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
+        expect(script).not.toContain("Mount-VHD");
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");
         expect(script).toContain("Remove CCC bootstrap secrets");
         expect(script).not.toContain(guestPassword);
         expect(command.args.join(" ")).not.toContain(guestPassword);
-        expect(JSON.parse(command.input || "{}")).toEqual({ username: "ccc01234567", password: guestPassword });
-        expect(parseHyperVGuestProvisionObservation(JSON.stringify({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" })))
-            .toEqual({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" });
+        const payloadBase64 = script.match(/\$CccCommandInputBase64 = '([A-Za-z0-9+/=]+)'/)?.[1];
+        expect(payloadBase64).toBeTruthy();
+        expect(JSON.parse(Buffer.from(payloadBase64!, "base64").toString("utf8")))
+            .toEqual({ username: "ccc01234567", password: guestPassword });
+        expect(parseHyperVGuestProvisionObservation(JSON.stringify({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath })))
+            .toEqual({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath });
+        expect(() => hyperVGuestProvisionCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            diskPath: `${deviceRoot}/disks/root.vhdx`,
+            deviceRoot,
+            credentialPath,
+            provisioningMediaPath: "/state/owners/foreign/autounattend.iso",
+            guestUsername: "ccc01234567",
+            guestPassword,
+        })).toThrow("hyper-v-guest-provisioning-media-path-outside-owner-root");
     });
 
     it("frames credentials inside streamed PowerShell when the provisioning script is too long to encode", () => {
@@ -900,6 +968,7 @@ describe("Hyper-V provider adapter", () => {
             deviceRoot,
             privateRoot: credentialRoot,
             credentialPath: `${credentialRoot}/secrets/guest.credential.xml`,
+            provisioningMediaPath: `${deviceRoot}/disks/autounattend.iso`,
             guestUsername: "ccc01234567",
             guestPassword,
         });

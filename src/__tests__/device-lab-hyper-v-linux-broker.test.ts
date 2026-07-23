@@ -1096,7 +1096,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
-            if (script.includes("NewFileSystemLabel cidata")) return { ...command, status: 1, stdout: "", stderr: "seed failed before attachment" };
+            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed before attachment" };
             return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
         });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
@@ -1183,7 +1183,7 @@ describe("device-lab Hyper-V broker", () => {
                 const diskPath = powerShellString(script, "DiskPath");
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
             }
-            if (script.includes("NewFileSystemLabel cidata")) return { ...command, status: 1, stdout: "", stderr: "seed failed" };
+            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed" };
             if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) return { ...command, status: 0, stdout: "malformed recovery output", stderr: "" };
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -1412,7 +1412,7 @@ describe("device-lab Hyper-V broker", () => {
         const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
         const deviceRoot = join(privateRoot, "artifacts");
         const diskPath = join(deviceRoot, "disks", "root.vhdx");
-        const seedDiskPath = join(deviceRoot, "disks", "cidata.vhdx");
+        const seedDiskPath = join(deviceRoot, "disks", "cidata.iso");
         const privateKeyPath = join(privateRoot, "secrets", "id_ed25519");
         const publicKeyPath = `${privateKeyPath}.pub`;
         const hostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
@@ -1485,7 +1485,7 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 1, stdout: "", stderr: "New-NetIPAddress: PermissionDenied (Windows System Error 5)" };
             }
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
-            const seed = script.includes("NewFileSystemLabel cidata");
+            const seed = script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'");
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");

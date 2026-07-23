@@ -15,7 +15,12 @@ import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, 
 
 function providerScript(command: { args: string[]; input?: string }): string {
     if (command.args.at(-1) === "-" && typeof command.input === "string") return command.input;
-    return Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
+    const decoded = Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
+    if (decoded.includes("$CccEncodedProgram = [Console]::In.ReadToEnd().Trim()")) {
+        if (!command.input) throw new Error("missing streamed PowerShell program");
+        return Buffer.from(command.input, "base64").toString("utf8");
+    }
+    return decoded;
 }
 
 function hyperVNetworkObservation(command: { args: string[]; input?: string }) {
@@ -427,6 +432,7 @@ describe("device-lab host broker lifecycle commands", () => {
         const imagePath = join(imageProfileRoot, "base.vhdx");
         const sourceImagePath = join(cwd, "windows-11-generalized.vhdx");
         const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+        const provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
         const uploadPath = join(cwd, "upload.txt");
         const downloadPath = join(cwd, "download.txt");
         const staleMarkerPath = join(dirname(diskPath), "stale-operation.txt");
@@ -471,7 +477,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const vmCreate = script.includes("New-VM");
             if (vmCreate) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
             if (orphanRecovery) orphanRecoveryCalls += 1;
-            const guestProvision = script.includes("Mount-VHD -Path $DiskPath");
+            const guestProvision = script.includes("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'");
             const guestReady = script.includes("hyper-v-guest-ready-timeout");
             const guestExec = script.includes("Start-Process -FilePath 'powershell.exe'");
             const guestUpload = script.includes("-ToSession $Session");
@@ -511,7 +517,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     : guestReady
                     ? { ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 2, networkAddress: expectedNetworkAddress }
                     : guestProvision
-                    ? { ok: true, vmId, vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" }
+                    ? { ok: true, vmId, vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: provisioningMediaPath }
                     : guestExec
                     ? { ok: true, status: 0, stdout: "guest-ok\r\n", stderr: "" }
                     : guestUpload || guestDownload
@@ -546,9 +552,9 @@ describe("device-lab host broker lifecycle commands", () => {
         });
         try {
             const created = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", sourceImage: sourceImagePath, memoryMb: 4096, cpus: 2 });
-            expect(created.status).toBe(200);
-            expect(existsSync(staleMarkerPath)).toBe(false);
             const createdBody = await created.json();
+            expect(created.status, JSON.stringify(createdBody)).toBe(200);
+            expect(existsSync(staleMarkerPath)).toBe(false);
             expect(createdBody).toEqual(expect.objectContaining({
                 result: expect.objectContaining({
                     device: expect.objectContaining({ id: deviceId, backend: "windows-vm", provider: "hyper-v", vmId, vmName, diskPath, status: "stopped", guestProvisioned: true, guestUsername: `ccc${ownerId.slice(0, 8)}`, switchName: "CCC Device Lab", networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/), macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/), outboundPolicy: "nat" }),
@@ -790,11 +796,14 @@ describe("device-lab host broker lifecycle commands", () => {
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
-            if (script.includes("Mount-VHD -Path $DiskPath") && (activeVariant === "provision-failure" || activeVariant === "state-claim-conflict")) {
+            if (script.includes("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'")
+                && (activeVariant === "provision-failure" || activeVariant === "state-claim-conflict")) {
                 const deviceId = `invalid-create-${activeVariant}`;
                 const vmName = script.match(/\$ExpectedName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
+                const deviceRoot = join(privateRoot, "artifacts");
                 const credentialPath = join(privateRoot, "secrets", "guest.credential.xml");
+                const provisioningMediaPath = join(deviceRoot, "disks", "autounattend.iso");
                 mkdirSync(dirname(credentialPath), { recursive: true });
                 writeFileSync(credentialPath, "fake-dpapi-credential");
                 if (activeVariant === "provision-failure") {
@@ -803,7 +812,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
                 mkdirSync(dirname(stateFile), { recursive: true });
                 writeFileSync(stateFile, JSON.stringify({ devices: [{ id: deviceId, backend: "windows-vm", ownerId, vmId: "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb", vmName: "foreign-vm", diskPath: join(cwd, "foreign.vhdx"), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }] }));
-                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: "Z:\\Windows\\Panther\\unattend.xml" }), stderr: "" };
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName, guestUsername: `ccc${ownerId.slice(0, 8)}`, credentialPath, unattendPath: provisioningMediaPath }), stderr: "" };
             }
             if (script.includes("New-VM @VmArgs")) {
                 const variant = variants[createIndex++];

@@ -155,6 +155,7 @@ type HyperVCommandOptions = {
     vmId?: string | null;
     diskPath?: string | null;
     auxiliaryDiskPaths?: string[];
+    auxiliaryMediaPaths?: string[];
 };
 
 type HyperVCreateOptions = HyperVCommandOptions & {
@@ -204,6 +205,7 @@ type HyperVGuestTransferOptions = HyperVGuestOptions & {
 };
 
 type HyperVGuestProvisionOptions = HyperVGuestOptions & {
+    provisioningMediaPath: string;
     guestUsername: string;
     guestPassword: string;
     networkAddress?: string | null;
@@ -214,6 +216,7 @@ type HyperVGuestProvisionOptions = HyperVGuestOptions & {
 type HyperVGuestReadyOptions = HyperVGuestOptions & {
     timeoutMs: number;
     expectedNetworkAddress?: string | null;
+    provisioningMediaPath?: string | null;
 };
 
 type HyperVBaseImageOptions = {
@@ -390,6 +393,53 @@ function command(executable: string, script: string, input?: string): HyperVProv
         args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
         ...(input !== undefined ? { input } : {}),
     };
+}
+
+function isoWriterLines(): string[] {
+    return [
+        "if (-not ('CccIsoStreamWriter' -as [type])) {",
+        "  Add-Type -TypeDefinition @'",
+        "using System;",
+        "using System.IO;",
+        "using System.Runtime.InteropServices;",
+        "using System.Runtime.InteropServices.ComTypes;",
+        "public static class CccIsoStreamWriter {",
+        "  public static void Write(object source, string destination) {",
+        "    IStream input = (IStream)source;",
+        "    byte[] buffer = new byte[65536];",
+        "    IntPtr readPointer = Marshal.AllocHGlobal(sizeof(int));",
+        "    try {",
+        "      using (FileStream output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {",
+        "        while (true) {",
+        "          Marshal.WriteInt32(readPointer, 0);",
+        "          input.Read(buffer, buffer.Length, readPointer);",
+        "          int count = Marshal.ReadInt32(readPointer);",
+        "          if (count <= 0) break;",
+        "          output.Write(buffer, 0, count);",
+        "        }",
+        "        output.Flush(true);",
+        "      }",
+        "    } finally { Marshal.FreeHGlobal(readPointer); }",
+        "  }",
+        "}",
+        "'@ -Language CSharp -ErrorAction Stop",
+        "}",
+        "function Write-CccIso([string]$SourceRoot, [string]$IsoPath, [string]$VolumeName) {",
+        "  Assert-NoReparsePath $SourceRoot",
+        "  Assert-NoReparsePath $IsoPath",
+        "  if (-not (Test-Path -LiteralPath $SourceRoot -PathType Container)) { throw 'hyper-v-provisioning-source-missing' }",
+        "  if (Test-Path -LiteralPath $IsoPath) { Remove-Item -LiteralPath $IsoPath -Force -ErrorAction Stop }",
+        "  $Image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage",
+        "  $Image.ChooseImageDefaultsForMediaType(1)",
+        "  $Image.FileSystemsToCreate = 3",
+        "  $Image.VolumeName = $VolumeName",
+        "  $Image.Root.AddTree($SourceRoot, $false)",
+        "  $ResultImage = $Image.CreateResultImage()",
+        "  [CccIsoStreamWriter]::Write($ResultImage.ImageStream, $IsoPath)",
+        "  $IsoItem = Get-Item -LiteralPath $IsoPath -Force -ErrorAction Stop",
+        "  if ($IsoItem.Length -le 0 -or $IsoItem.Length -gt 32MB -or ($IsoItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'hyper-v-provisioning-media-invalid' }",
+        "}",
+    ];
 }
 
 function elevatedNetworkCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
@@ -1065,6 +1115,8 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
     const deviceRoot = assertPlainPath(options.deviceRoot, "device-root");
     const privateRoot = assertPlainPath(options.privateRoot, "private-root");
     const seedDiskPath = assertPathInside(deviceRoot, options.seedDiskPath, "linux-seed-disk");
+    if (!/\.iso$/i.test(seedDiskPath)) throw new Error("hyper-v-linux-seed-media-format-invalid");
+    const seedSourcePath = assertPathInside(deviceRoot, `${seedDiskPath}.source`, "linux-seed-source");
     const privateKeyPath = assertPathInside(privateRoot, options.sshPrivateKeyPath, "linux-ssh-private-key");
     const publicKeyPath = assertPathInside(privateRoot, options.sshPublicKeyPath, "linux-ssh-public-key");
     const hostPrivateKeyPath = assertPathInside(privateRoot, options.sshHostPrivateKeyPath, "linux-ssh-host-private-key");
@@ -1093,6 +1145,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         ...ownedVmPrelude(options),
         `$DeviceRoot = ${psQuote(deviceRoot)}`,
         `$SeedDisk = ${psQuote(seedDiskPath)}`,
+        `$SeedSource = ${psQuote(seedSourcePath)}`,
         `$PrivateKey = ${psQuote(privateKeyPath)}`,
         `$PublicKey = ${psQuote(publicKeyPath)}`,
         `$HostPrivateKey = ${psQuote(hostPrivateKeyPath)}`,
@@ -1104,6 +1157,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-linux-seed-requires-stopped-vm' }",
         "Assert-NoReparsePath $DeviceRoot",
         "Assert-NoReparsePath $SeedDisk",
+        "Assert-NoReparsePath $SeedSource",
         "Assert-NoReparsePath $PrivateKey",
         "Assert-NoReparsePath $PublicKey",
         "Assert-NoReparsePath $HostPrivateKey",
@@ -1138,26 +1192,22 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
         "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), 'runcmd:', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
-        "$ExistingAttachment = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $SeedDisk })",
-        "if ($ExistingAttachment.Count -gt 1) { throw 'hyper-v-linux-seed-attachment-ambiguous' }",
+        "$ExistingAttachment = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $SeedDisk })",
+        "if ($ExistingAttachment.Count -ne 0) { throw 'hyper-v-linux-seed-media-already-attached' }",
         "if ($ExistingAttachment.Count -eq 0) {",
-        "  if (Test-Path -LiteralPath $SeedDisk) { Remove-Item -LiteralPath $SeedDisk -Force -ErrorAction Stop }",
-        "  New-VHD -Path $SeedDisk -Dynamic -SizeBytes 64MB -ErrorAction Stop | Out-Null",
-        "  $Mounted = $null",
+        "  if (Test-Path -LiteralPath $SeedSource) { Remove-Item -LiteralPath $SeedSource -Recurse -Force -ErrorAction Stop }",
+        "  New-Item -ItemType Directory -Path $SeedSource -Force | Out-Null",
         "  try {",
-        "    $Mounted = Mount-VHD -Path $SeedDisk -Passthru -ErrorAction Stop",
-        "    $Disk = $Mounted | Get-Disk -ErrorAction Stop",
-        "    Initialize-Disk -Number $Disk.Number -PartitionStyle MBR -ErrorAction Stop | Out-Null",
-        "    $Partition = New-Partition -DiskNumber $Disk.Number -UseMaximumSize -AssignDriveLetter -ErrorAction Stop",
-        "    $Volume = Format-Volume -Partition $Partition -FileSystem FAT32 -NewFileSystemLabel cidata -Confirm:$false -Force -ErrorAction Stop",
-        "    $Drive = $Volume.DriveLetter + ':\\'",
-        "    [IO.File]::WriteAllBytes((Join-Path $Drive 'meta-data'), [Convert]::FromBase64String($MetadataBase64))",
-        "    [IO.File]::WriteAllBytes((Join-Path $Drive 'network-config'), [Convert]::FromBase64String($NetworkBase64))",
-        "    [IO.File]::WriteAllBytes((Join-Path $Drive 'user-data'), [Convert]::FromBase64String($UserDataBase64))",
+        "    [IO.File]::WriteAllBytes((Join-Path $SeedSource 'meta-data'), [Convert]::FromBase64String($MetadataBase64))",
+        "    [IO.File]::WriteAllBytes((Join-Path $SeedSource 'network-config'), [Convert]::FromBase64String($NetworkBase64))",
+        "    [IO.File]::WriteAllBytes((Join-Path $SeedSource 'user-data'), [Convert]::FromBase64String($UserDataBase64))",
+        ...isoWriterLines(),
+        "    Write-CccIso $SeedSource $SeedDisk 'cidata'",
         "  } finally {",
-        "    if ($Mounted) { Dismount-VHD -Path $SeedDisk -ErrorAction SilentlyContinue }",
+        "    Assert-NoReparsePath $SeedSource",
+        "    if (Test-Path -LiteralPath $SeedSource) { Remove-Item -LiteralPath $SeedSource -Recurse -Force -ErrorAction SilentlyContinue }",
         "  }",
-        "  Add-VMHardDiskDrive -VM $Vm -Path $SeedDisk -ControllerType SCSI -ErrorAction Stop | Out-Null",
+        "  Add-VMDvdDrive -VM $Vm -Path $SeedDisk -ErrorAction Stop | Out-Null",
         "}",
         "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; seedDiskPath = $SeedDisk; sshPrivateKeyPath = $PrivateKey; sshPublicKeyPath = $PublicKey; sshHostPublicKeyPath = $HostPublicKey; sshHostKeyFingerprint = $HostFingerprint; knownHostsPath = $KnownHosts; guestUsername = $GuestUsername; networkAddress = " + psQuote(address) + " }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
@@ -1476,12 +1526,16 @@ export function hyperVStartCommand(options: HyperVStartOptions): HyperVProviderC
 
 export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): HyperVProviderCommand {
     const credentialPath = assertPathInside(options.privateRoot || options.deviceRoot, options.credentialPath, "guest-credential-path");
+    const provisioningMediaPath = options.provisioningMediaPath
+        ? assertPathInside(options.deviceRoot, options.provisioningMediaPath, "guest-provisioning-media-path")
+        : "";
     const timeoutMs = Math.min(10 * 60 * 1000, Math.max(1000, Math.floor(options.timeoutMs)));
     const expectedNetworkAddress = options.expectedNetworkAddress ? String(options.expectedNetworkAddress) : "";
     if (expectedNetworkAddress && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedNetworkAddress)) throw new Error("hyper-v-guest-network-address-invalid");
     return command(options.executable, jsonScript([
         ...ownedVmPrelude(options),
         `$CredentialPath = ${psQuote(credentialPath)}`,
+        `$ProvisioningMedia = ${psQuote(provisioningMediaPath)}`,
         `$ExpectedNetworkAddress = ${psQuote(expectedNetworkAddress)}`,
         `$Deadline = [DateTime]::UtcNow.AddMilliseconds(${timeoutMs})`,
         "$Attempts = 0",
@@ -1499,6 +1553,13 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "    $Session = New-PSSession -VMId $ExpectedId -Credential $Credential -ErrorAction Stop",
         "    $Probe = Invoke-Command -Session $Session -ScriptBlock { [ordered]@{ computerName = [Environment]::MachineName; addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress) } } -ErrorAction Stop",
         "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
+        "    if ($ProvisioningMedia) {",
+        "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",
+        "      if ($ProvisioningDrives.Count -gt 1) { throw 'hyper-v-guest-provisioning-media-attachment-ambiguous' }",
+        "      if ($ProvisioningDrives.Count -eq 1) { Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0] -ErrorAction Stop }",
+        "      Assert-NoReparsePath $ProvisioningMedia",
+        "      if (Test-Path -LiteralPath $ProvisioningMedia) { Remove-Item -LiteralPath $ProvisioningMedia -Force -ErrorAction Stop }",
+        "    }",
         "    $Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; computerName = [string]$Probe.computerName; attempts = $Attempts; networkAddress = $ExpectedNetworkAddress }",
         "    $Result | ConvertTo-Json -Compress -Depth 5",
         "    exit 0",
@@ -1529,8 +1590,13 @@ export function hyperVDeleteCommand(options: HyperVCommandOptions): HyperVProvid
     if (!options.diskPath) throw new Error("hyper-v-disk-path-missing");
     const diskPath = assertPlainPath(options.diskPath, "disk-path");
     const auxiliaryDiskPaths = (options.auxiliaryDiskPaths || []).map((candidate) => assertPlainPath(candidate, "auxiliary-disk-path"));
+    const auxiliaryMediaPaths = (options.auxiliaryMediaPaths || []).map((candidate) => assertPlainPath(candidate, "auxiliary-media-path"));
     if (new Set([diskPath, ...auxiliaryDiskPaths].map((candidate) => candidate.toLowerCase())).size !== auxiliaryDiskPaths.length + 1) {
         throw new Error("hyper-v-disk-path-duplicate");
+    }
+    if (new Set(auxiliaryMediaPaths.map((candidate) => candidate.toLowerCase())).size !== auxiliaryMediaPaths.length
+        || auxiliaryMediaPaths.some((candidate) => [diskPath, ...auxiliaryDiskPaths].some((disk) => disk.toLowerCase() === candidate.toLowerCase()))) {
+        throw new Error("hyper-v-media-path-duplicate");
     }
     const marker = ownershipMarker(options.ownerId, options.deviceId, options.incarnationId);
     return command(options.executable, jsonScript([
@@ -1539,10 +1605,11 @@ export function hyperVDeleteCommand(options: HyperVCommandOptions): HyperVProvid
         `$ExpectedMarker = ${psQuote(marker)}`,
         `$ExpectedDisk = ${psQuote(diskPath)}`,
         `$ExpectedDisks = @(${[diskPath, ...auxiliaryDiskPaths].map(psQuote).join(", ")})`,
+        `$ExpectedMedia = @(${auxiliaryMediaPaths.map(psQuote).join(", ")})`,
         "$Vm = Get-VM -Id $ExpectedId -ErrorAction SilentlyContinue",
         "if (-not $Vm) {",
         "  if (Get-VM -Name $ExpectedName -ErrorAction SilentlyContinue) { throw 'hyper-v-vm-identity-conflict' }",
-        "  foreach ($OwnedDisk in $ExpectedDisks) { Assert-NoReparsePath $OwnedDisk; if (Test-Path -LiteralPath $OwnedDisk) { Remove-Item -LiteralPath $OwnedDisk -Force -ErrorAction Stop } }",
+        "  foreach ($OwnedPath in @($ExpectedDisks) + @($ExpectedMedia)) { Assert-NoReparsePath $OwnedPath; if (Test-Path -LiteralPath $OwnedPath) { Remove-Item -LiteralPath $OwnedPath -Force -ErrorAction Stop } }",
         "  $Result = [ordered]@{ ok = $true; vmId = [string]$ExpectedId; vmName = $ExpectedName; deleted = $true; alreadyMissing = $true; diskPath = $ExpectedDisk }",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "  exit 0",
@@ -1550,9 +1617,11 @@ export function hyperVDeleteCommand(options: HyperVCommandOptions): HyperVProvid
         "if ($Vm.Name -ne $ExpectedName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-vm-ownership-mismatch' }",
         "$Attached = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction SilentlyContinue | ForEach-Object { $_.Path })",
         "if ($Attached.Count -ne $ExpectedDisks.Count -or @(Compare-Object -ReferenceObject @($ExpectedDisks | Sort-Object) -DifferenceObject @($Attached | Sort-Object)).Count -ne 0) { throw 'hyper-v-vm-disk-ownership-mismatch' }",
+        "$AttachedMedia = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path } | ForEach-Object { $_.Path })",
+        "if (@($AttachedMedia | Where-Object { $ExpectedMedia -notcontains $_ }).Count -ne 0) { throw 'hyper-v-vm-media-ownership-mismatch' }",
         "if ($Vm.State -ne 'Off') { Stop-VM -VM $Vm -TurnOff -Force -ErrorAction Stop | Out-Null }",
         "Remove-VM -VM $Vm -Force -ErrorAction Stop",
-        "foreach ($OwnedDisk in $ExpectedDisks) { Assert-NoReparsePath $OwnedDisk; if (Test-Path -LiteralPath $OwnedDisk) { Remove-Item -LiteralPath $OwnedDisk -Force -ErrorAction Stop } }",
+        "foreach ($OwnedPath in @($ExpectedDisks) + @($ExpectedMedia)) { Assert-NoReparsePath $OwnedPath; if (Test-Path -LiteralPath $OwnedPath) { Remove-Item -LiteralPath $OwnedPath -Force -ErrorAction Stop } }",
         "$Result = [ordered]@{ ok = $true; vmId = [string]$ExpectedId; vmName = $ExpectedName; deleted = $true; diskPath = $ExpectedDisk }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ]));
@@ -1566,14 +1635,20 @@ export function hyperVRecoverOrphanCommand(options: Omit<HyperVCommandOptions, "
     const deviceRoot = assertPlainPath(options.deviceRoot, "device-root");
     const diskPath = assertPathInside(deviceRoot, options.diskPath, "disk-path");
     const auxiliaryDiskPaths = (options.auxiliaryDiskPaths || []).map((candidate) => assertPathInside(deviceRoot, candidate, "auxiliary-disk-path"));
+    const auxiliaryMediaPaths = (options.auxiliaryMediaPaths || []).map((candidate) => assertPathInside(deviceRoot, candidate, "auxiliary-media-path"));
     const expectedDisks = [diskPath, ...auxiliaryDiskPaths];
     if (new Set(expectedDisks.map((candidate) => candidate.toLowerCase())).size !== expectedDisks.length) throw new Error("hyper-v-disk-path-duplicate");
+    if (new Set(auxiliaryMediaPaths.map((candidate) => candidate.toLowerCase())).size !== auxiliaryMediaPaths.length
+        || auxiliaryMediaPaths.some((candidate) => expectedDisks.some((disk) => disk.toLowerCase() === candidate.toLowerCase()))) {
+        throw new Error("hyper-v-media-path-duplicate");
+    }
     const marker = ownershipMarker(options.ownerId, options.deviceId, options.incarnationId);
     return command(options.executable, jsonScript([
         `$VmName = ${psQuote(options.vmName)}`,
         `$ExpectedMarker = ${psQuote(marker)}`,
         `$DiskPath = ${psQuote(diskPath)}`,
         `$ExpectedDisks = @(${expectedDisks.map(psQuote).join(", ")})`,
+        `$ExpectedMedia = @(${auxiliaryMediaPaths.map(psQuote).join(", ")})`,
         "$RecoveredVm = $false",
         "$RemovedDisk = $false",
         "$Matches = @(Get-VM -Name $VmName -ErrorAction SilentlyContinue)",
@@ -1586,11 +1661,14 @@ export function hyperVRecoverOrphanCommand(options: Omit<HyperVCommandOptions, "
         "  $ExpectedPaths = @($ExpectedDisks | ForEach-Object { [IO.Path]::GetFullPath([string]$_) } | Sort-Object)",
         "  if (@($AttachedPaths | Where-Object { $ExpectedPaths -notcontains $_ }).Count -ne 0) { throw 'hyper-v-orphan-vm-disk-mismatch' }",
         "  if (-not [string]$Vm.Notes -and ($AttachedPaths.Count -ne 1 -or $AttachedPaths[0] -cne [IO.Path]::GetFullPath($DiskPath))) { throw 'hyper-v-orphan-vm-unmarked-disk-mismatch' }",
+        "  $AttachedMedia = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path } | ForEach-Object { [IO.Path]::GetFullPath([string]$_.Path) })",
+        "  $ExpectedMediaPaths = @($ExpectedMedia | ForEach-Object { [IO.Path]::GetFullPath([string]$_) })",
+        "  if (@($AttachedMedia | Where-Object { $ExpectedMediaPaths -notcontains $_ }).Count -ne 0) { throw 'hyper-v-orphan-vm-media-mismatch' }",
         "  if ($Vm.State -ne 'Off') { Stop-VM -VM $Vm -TurnOff -Force -ErrorAction Stop | Out-Null }",
         "  Remove-VM -VM $Vm -Force -ErrorAction Stop",
         "  $RecoveredVm = $true",
         "}",
-        "foreach ($OwnedDisk in $ExpectedDisks) {",
+        "foreach ($OwnedDisk in @($ExpectedDisks) + @($ExpectedMedia)) {",
         "  Assert-NoReparsePath $OwnedDisk",
         "  if (Test-Path -LiteralPath $OwnedDisk) {",
         "    $DiskItem = Get-Item -LiteralPath $OwnedDisk -Force -ErrorAction Stop",
@@ -1676,6 +1754,9 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
     if (options.guestPassword.length < 20 || options.guestPassword.length > 128 || options.guestPassword.includes("\0")) throw new Error("hyper-v-guest-password-invalid");
     const diskPath = assertPathInside(options.deviceRoot, options.diskPath, "guest-disk-path");
     const credentialPath = assertPathInside(options.privateRoot || options.deviceRoot, options.credentialPath, "guest-credential-path");
+    const provisioningMediaPath = assertPathInside(options.deviceRoot, options.provisioningMediaPath, "guest-provisioning-media-path");
+    if (!/\.iso$/i.test(provisioningMediaPath)) throw new Error("hyper-v-guest-provisioning-media-format-invalid");
+    const provisioningSourcePath = assertPathInside(options.deviceRoot, `${provisioningMediaPath}.source`, "guest-provisioning-source-path");
     const input = JSON.stringify({ username: options.guestUsername, password: options.guestPassword });
     const networkAddress = options.networkAddress ? String(options.networkAddress) : "";
     const networkGateway = options.networkGateway ? String(options.networkGateway) : "";
@@ -1701,12 +1782,15 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "foreach ($Name in @('DefaultPassword','DefaultUserName','AutoAdminLogon','AutoLogonCount')) { Remove-ItemProperty -LiteralPath $Winlogon -Name $Name -Force -ErrorAction SilentlyContinue }",
         "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
     ].join("\r\n");
+    const firstLogonEncoded = Buffer.from(firstLogonScript, "utf16le").toString("base64");
     const script = jsonScript([
         ...ownedVmPrelude(options),
         `$DiskPath = ${psQuote(diskPath)}`,
         `$CredentialPath = ${psQuote(credentialPath)}`,
+        `$ProvisioningMedia = ${psQuote(provisioningMediaPath)}`,
+        `$ProvisioningSource = ${psQuote(provisioningSourcePath)}`,
         `$ExpectedUsername = ${psQuote(options.guestUsername)}`,
-        `$FirstLogonScript = ${psQuote(firstLogonScript)}`,
+        `$FirstLogonEncoded = ${psQuote(firstLogonEncoded)}`,
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-guest-provision-requires-stopped-vm' }",
         "$RawInput = $CccCommandInput",
         "$Provisioning = $RawInput | ConvertFrom-Json -ErrorAction Stop",
@@ -1718,20 +1802,9 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "$SecurePassword = ConvertTo-SecureString -String $PlainPassword -AsPlainText -Force",
         "$Credential = [System.Management.Automation.PSCredential]::new($ExpectedUsername, $SecurePassword)",
         "$Credential | Export-Clixml -LiteralPath $CredentialPath -Force",
-        "$Mounted = $false",
-        "$UnattendPath = $null",
+        "$ExistingAttachment = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $ProvisioningMedia })",
+        "if ($ExistingAttachment.Count -ne 0) { throw 'hyper-v-guest-provisioning-media-already-attached' }",
         "try {",
-        "  Mount-VHD -Path $DiskPath -Passthru -ErrorAction Stop | Out-Null",
-        "  $Mounted = $true",
-        "  $Disk = Get-DiskImage -ImagePath $DiskPath -ErrorAction Stop | Get-Disk -ErrorAction Stop",
-        "  $WindowsVolume = @(Get-Partition -DiskNumber $Disk.Number -ErrorAction Stop | Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path -LiteralPath ($_.DriveLetter + ':\\Windows\\System32')) })",
-        "  if ($WindowsVolume.Count -ne 1) { throw 'hyper-v-guest-windows-volume-not-found' }",
-        "  $WindowsRoot = $WindowsVolume[0].DriveLetter + ':\\Windows'",
-        "  $Panther = Join-Path $WindowsRoot 'Panther'",
-        "  $CccRoot = Join-Path $WindowsVolume[0].DriveLetter ':\\ProgramData\\CCC'",
-        "  New-Item -ItemType Directory -Path $Panther,$CccRoot -Force | Out-Null",
-        "  $FirstLogonPath = Join-Path $CccRoot 'first-logon.ps1'",
-        "  Set-Content -LiteralPath $FirstLogonPath -Value $FirstLogonScript -Encoding UTF8 -Force",
         "  $PasswordXml = [Security.SecurityElement]::Escape($PlainPassword)",
         "  $UsernameXml = [Security.SecurityElement]::Escape($ExpectedUsername)",
         "  $Unattend = @\"",
@@ -1742,23 +1815,32 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "      <OOBE><HideEULAPage>true</HideEULAPage><ProtectYourPC>3</ProtectYourPC><SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>",
         "      <UserAccounts><LocalAccounts><LocalAccount wcm:action=\"add\"><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><Description>CCC disposable guest</Description><DisplayName>CCC</DisplayName><Group>Administrators</Group><Name>$UsernameXml</Name></LocalAccount></LocalAccounts></UserAccounts>",
         "      <AutoLogon><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>$UsernameXml</Username></AutoLogon>",
-        "      <FirstLogonCommands><SynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Remove CCC bootstrap secrets</Description><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\ProgramData\\CCC\\first-logon.ps1</CommandLine></SynchronousCommand></FirstLogonCommands>",
+        "      <FirstLogonCommands><SynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Remove CCC bootstrap secrets</Description><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $FirstLogonEncoded</CommandLine></SynchronousCommand></FirstLogonCommands>",
         "    </component>",
         "  </settings>",
         "</unattend>",
         "\"@",
-        "  $UnattendPath = Join-Path $Panther 'unattend.xml'",
-        "  Set-Content -LiteralPath $UnattendPath -Value $Unattend -Encoding UTF8 -Force",
+        "  Assert-NoReparsePath $ProvisioningSource",
+        "  if (Test-Path -LiteralPath $ProvisioningSource) { Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction Stop }",
+        "  New-Item -ItemType Directory -Path $ProvisioningSource -Force | Out-Null",
+        "  Set-Content -LiteralPath (Join-Path $ProvisioningSource 'Autounattend.xml') -Value $Unattend -Encoding UTF8 -Force",
+        "  Set-Content -LiteralPath (Join-Path $ProvisioningSource 'unattend.xml') -Value $Unattend -Encoding UTF8 -Force",
+        ...isoWriterLines(),
+        "  Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'",
+        "  Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia -ErrorAction Stop | Out-Null",
         "} catch {",
         "  Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue",
+        "  Assert-NoReparsePath $ProvisioningMedia",
+        "  Remove-Item -LiteralPath $ProvisioningMedia -Force -ErrorAction SilentlyContinue",
         "  throw",
         "} finally {",
         "  $PlainPassword = $null",
         "  $Provisioning = $null",
         "  $RawInput = $null",
-        "  if ($Mounted) { Dismount-VHD -Path $DiskPath -ErrorAction SilentlyContinue }",
+        "  Assert-NoReparsePath $ProvisioningSource",
+        "  if (Test-Path -LiteralPath $ProvisioningSource) { Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction SilentlyContinue }",
         "}",
-        "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; guestUsername = $ExpectedUsername; credentialPath = $CredentialPath; unattendPath = $UnattendPath }",
+        "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; guestUsername = $ExpectedUsername; credentialPath = $CredentialPath; unattendPath = $ProvisioningMedia }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ]);
     return command(options.executable, script, input);
