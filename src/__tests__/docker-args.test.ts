@@ -15,6 +15,7 @@ function makeOpts(
         containerName: "ccc-myproject-abc123",
         fullPath: "/home/user/myproject",
         projectMountPath: "/project/myproject-abc123",
+        projectMountIdentity: "project-identity-digest",
         credentialMounts: [
             { hostPath: "/home/user/.ccc/claude", containerPath: "/home/ccc/.claude" },
             { hostPath: "/home/user/.claude/ide", containerPath: "/home/ccc/.claude/ide" },
@@ -388,6 +389,11 @@ describe("buildDockerRunArgs — structure", () => {
 // 3. Volume mounts — completeness
 // ===========================================================================
 describe("buildDockerRunArgs — volume mounts", () => {
+    it("persists the project mount identity contract as a runtime label", () => {
+        const labels = extractLabels(buildDockerRunArgs(makeOpts()));
+        expect(labels["ccc.project.mount-identity"]).toBe("project-identity-digest");
+    });
+
     it("persists the device-lab mount identity contract as a runtime label", () => {
         const args = buildDockerRunArgs(makeOpts({ deviceLabMountIdentity: "identity-digest" }));
         const labels = extractLabels(args);

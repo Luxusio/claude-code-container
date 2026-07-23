@@ -55,11 +55,18 @@ const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
 const DIST_DIR = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const DEVICE_BROKER_AUTH_CONTAINER_FILE = "/run/ccc-device-broker-auth/owner.json";
 const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
+const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
 const DEVICE_LAB_MOUNT_CONTRACT_VERSION = "2";
 
 type MountSourceIdentity = {
     path: string;
     kind: "directory" | "file";
+    dev: string;
+    ino: string;
+};
+
+export type BindMountSourceIdentity = {
+    realpath: string;
     dev: string;
     ino: string;
 };
@@ -79,6 +86,7 @@ type RequiredContainerMount = {
     type?: "bind" | "tmpfs" | "volume";
     verifySource?: boolean;
     verifySourceCanonical?: boolean;
+    expectedIdentity?: BindMountSourceIdentity;
 };
 
 function normalizedHostPath(path: string): string {
@@ -88,6 +96,54 @@ function normalizedHostPath(path: string): string {
 
 function canonicalHostPath(path: string): string {
     return normalizedHostPath(realpathSync(path));
+}
+
+export function captureBindMountSourceIdentity(path: string): BindMountSourceIdentity {
+    const canonical = realpathSync(path);
+    const before = lstatSync(canonical, { bigint: true });
+    if (before.isSymbolicLink() || (!before.isDirectory() && !before.isFile())) {
+        throw new Error(`bind mount source must resolve to a real file or directory: ${path}`);
+    }
+    const after = lstatSync(canonical, { bigint: true });
+    if (after.isSymbolicLink()
+        || (!after.isDirectory() && !after.isFile())
+        || !sameFileIdentity(before, after)) {
+        throw new Error(`bind mount source changed while it was being validated: ${path}`);
+    }
+    return {
+        realpath: canonical,
+        dev: String(after.dev),
+        ino: String(after.ino),
+    };
+}
+
+function bindMountSourceIdentityMatches(
+    expected: BindMountSourceIdentity,
+    actual: BindMountSourceIdentity,
+): boolean {
+    return bindSourcePathsEquivalent(expected.realpath, actual.realpath)
+        && expected.dev === actual.dev
+        && expected.ino === actual.ino;
+}
+
+function assertBindMountSourceIdentity(
+    path: string,
+    expected: BindMountSourceIdentity,
+): void {
+    if (!bindMountSourceIdentityMatches(
+        expected,
+        captureBindMountSourceIdentity(path),
+    )) {
+        throw new Error(`bind mount source identity changed: ${path}`);
+    }
+}
+
+export function bindMountSourceIdentityDigest(
+    identity: BindMountSourceIdentity,
+): string {
+    return createHash("sha256")
+        .update(`${identity.realpath}\0${identity.dev}\0${identity.ino}`)
+        .digest("hex");
 }
 
 export function projectPathIdentityMatches(left: string, right: string): boolean {
@@ -271,7 +327,12 @@ export interface DockerRunArgsOptions {
     imageName: string;
     hostSshDir: string | null;
     sshAgentSocket: string | null;
-    extraMounts?: Array<{ hostPath: string; containerPath: string }>;
+    extraMounts?: Array<{
+        hostPath: string;
+        containerPath: string;
+        identity?: BindMountSourceIdentity;
+    }>;
+    projectMountIdentity?: string;
     clipboardPortFile?: string;
     clipboardFilesHostDir?: string;
     /**
@@ -306,8 +367,12 @@ export interface LabRunnerRunConfig {
 // Docker Compose-compatible labels for Docker Desktop grouping.
 // com.docker.compose.* labels are undocumented internals but stable since Compose V2.
 // Podman accepts arbitrary labels as opaque strings.
-function getComposeLabels(containerName: string, fullPath: string): string[] {
-    return [
+function getComposeLabels(
+    containerName: string,
+    fullPath: string,
+    projectMountIdentity?: string,
+): string[] {
+    const labels = [
         "--label", "com.docker.compose.project=ccc",
         "--label", `com.docker.compose.service=${containerName}`,
         "--label", "com.docker.compose.oneoff=False",
@@ -317,6 +382,10 @@ function getComposeLabels(containerName: string, fullPath: string): string[] {
         "--label", `ccc.project.path=${fullPath}`,
         "--label", `ccc.cli.version=${CLI_VERSION}`,
     ];
+    if (projectMountIdentity) {
+        labels.push("--label", `${PROJECT_MOUNT_IDENTITY_LABEL}=${projectMountIdentity}`);
+    }
+    return labels;
 }
 
 export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
@@ -434,7 +503,11 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         args.push(...bindMountArgs(opts.clipboardFilesHostDir, CLIPBOARD_FILES_CONTAINER_DIR));
     }
 
-    args.push(...getComposeLabels(opts.containerName, opts.fullPath));
+    args.push(...getComposeLabels(
+        opts.containerName,
+        opts.fullPath,
+        opts.projectMountIdentity,
+    ));
     if (opts.deviceLabMountIdentity) {
         args.push("--label", `${DEVICE_LAB_MOUNT_IDENTITY_LABEL}=${opts.deviceLabMountIdentity}`);
     }
@@ -650,6 +723,10 @@ export function getManagedProjectContainerIdentity(
         if (labels?.["ccc.managed"] !== "true") return null;
         const labeledPath = labels["ccc.project.path"];
         if (!labeledPath || !projectPathsEquivalent(labeledPath, projectPath)) return null;
+        const expectedMountIdentity = bindMountSourceIdentityDigest(
+            captureBindMountSourceIdentity(projectPath),
+        );
+        if (labels[PROJECT_MOUNT_IDENTITY_LABEL] !== expectedMountIdentity) return null;
         return { containerId: inspected.Id, running: inspected.State.Running };
     } catch {
         return null;
@@ -917,6 +994,46 @@ function unexpectedContainerMount(
     return null;
 }
 
+function createdContainerBindMountsMatch(
+    containerId: string,
+    required: Array<{
+        hostPath: string;
+        containerPath: string;
+        identity: BindMountSourceIdentity;
+    }>,
+    projectMountIdentity: string,
+): boolean {
+    const result = spawnSync(
+        runtimeCli(),
+        ["inspect", "-f", "{{json .}}", containerId],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) return false;
+    try {
+        const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Id?: unknown;
+            Mounts?: Array<{ Source?: unknown; Destination?: unknown; Type?: unknown }>;
+            Config?: { Labels?: Record<string, string> };
+        };
+        if (inspected.Id !== containerId
+            || inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+            return false;
+        }
+        const mounts = inspected.Mounts ?? [];
+        return required.every((expected) => {
+            assertBindMountSourceIdentity(expected.hostPath, expected.identity);
+            const actual = mounts.find((mount) => (
+                mount.Destination === expected.containerPath
+            ));
+            return actual?.Type === "bind"
+                && typeof actual.Source === "string"
+                && bindSourcePathsEquivalent(actual.Source, expected.identity.realpath);
+        });
+    } catch {
+        return false;
+    }
+}
+
 function hasKvmDevice(devices: unknown): boolean {
     return JSON.stringify(devices ?? []).includes("/dev/kvm");
 }
@@ -986,6 +1103,7 @@ function containerMatchesRunContract(
     labRunner: LabRunnerRunConfig,
     deviceLabMountIdentity: string,
     projectPath: string,
+    projectMountIdentity: string,
     reportMismatch: (reason: string) => void = () => undefined,
 ): boolean | null {
     const result = spawnSync(
@@ -1017,6 +1135,9 @@ function containerMatchesRunContract(
         if (!labeledProjectPath || !projectPathIdentityMatches(labeledProjectPath, projectPath)) {
             return failContract("project path identity changed");
         }
+        if (inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+            return failContract("project mount identity changed");
+        }
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
             return failContract("device-lab mount identity changed");
         }
@@ -1024,6 +1145,13 @@ function containerMatchesRunContract(
         const deviceRequests = hostConfig.DeviceRequests;
         const groupAdd = hostConfig.GroupAdd;
         for (const req of requiredMounts) {
+            if (req.expectedIdentity) {
+                try {
+                    assertBindMountSourceIdentity(req.hostPath, req.expectedIdentity);
+                } catch {
+                    return failContract(`bind source identity changed for ${req.containerPath}`);
+                }
+            }
             const mount = mounts.find((item) => item.Destination === req.containerPath);
             if (!mount) {
                 if (process.env.DEBUG) {
@@ -1106,6 +1234,7 @@ function containerRunContractIsSafeToDefer(
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
     projectPath: string,
+    projectMountIdentity: string,
     reportUnsafe: (reason: string) => void = () => undefined,
 ): boolean {
     const unsafe = (reason: string) => {
@@ -1130,12 +1259,24 @@ function containerRunContractIsSafeToDefer(
             || !projectPathIdentityMatches(labels["ccc.project.path"], projectPath)) {
             return unsafe("project path identity changed");
         }
+        if (labels[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+            return unsafe("project mount identity changed");
+        }
         const hostConfig = inspectedHostConfig(inspected.HostConfig);
         if (!hostConfig) return unsafe("container host configuration is malformed");
         if (hostConfig.Privileged) return unsafe("stale privileged container");
         const mounts = inspected.Mounts || [];
         const projectMount = requiredMounts.find((mount) => mount.containerPath.startsWith("/project/"));
         if (!projectMount) return unsafe("project mount contract is unavailable");
+        if (!projectMount.expectedIdentity) return unsafe("project mount identity is unavailable");
+        try {
+            assertBindMountSourceIdentity(
+                projectMount.hostPath,
+                projectMount.expectedIdentity,
+            );
+        } catch {
+            return unsafe(`bind source identity changed for ${projectMount.containerPath}`);
+        }
         const unexpectedMount = unexpectedContainerMount(mounts, requiredMounts);
         if (unexpectedMount) return unsafe(`unexpected mount ${unexpectedMount}`);
         const mountedProject = mounts.find((mount) => mount.Destination === projectMount.containerPath);
@@ -1157,6 +1298,16 @@ function containerRunContractIsSafeToDefer(
         }
         for (const required of requiredMounts) {
             if (required === projectMount) continue;
+            if (required.expectedIdentity) {
+                try {
+                    assertBindMountSourceIdentity(
+                        required.hostPath,
+                        required.expectedIdentity,
+                    );
+                } catch {
+                    return unsafe(`bind source identity changed for ${required.containerPath}`);
+                }
+            }
             const mounted = mounts.find((mount) => mount.Destination === required.containerPath);
             if (!mounted) continue;
             if (required.type !== undefined && mounted.Type !== required.type) {
@@ -1417,7 +1568,11 @@ function cleanupDevicesBestEffort(projectPath: string, profile?: string): void {
 export function startProjectContainer(
     projectPath: string,
     ensureDirs: () => void,
-    extraMounts?: Array<{ hostPath: string; containerPath: string }>,
+    extraMounts?: Array<{
+        hostPath: string;
+        containerPath: string;
+        identity?: BindMountSourceIdentity;
+    }>,
     clipboardPortFile?: string,
     profile?: string,
     /**
@@ -1441,6 +1596,19 @@ export function startProjectContainer(
     ensureImage();
 
     const fullPath = resolve(projectPath);
+    const projectMountSourceIdentity = captureBindMountSourceIdentity(fullPath);
+    const projectMountIdentity = bindMountSourceIdentityDigest(projectMountSourceIdentity);
+    const preparedExtraMounts = (extraMounts ?? []).map((mount) => {
+        const identity = mount.identity ?? captureBindMountSourceIdentity(mount.hostPath);
+        assertBindMountSourceIdentity(mount.hostPath, identity);
+        return { ...mount, identity };
+    });
+    const assertPreparedProjectMountSources = () => {
+        assertBindMountSourceIdentity(fullPath, projectMountSourceIdentity);
+        for (const mount of preparedExtraMounts) {
+            assertBindMountSourceIdentity(mount.hostPath, mount.identity);
+        }
+    };
     const containerName = getContainerName(fullPath, profile);
     const cli = runtimeCli();
     const requestedDeviceLabStateHostDir = join(homedir(), ".ccc", "devices");
@@ -1475,6 +1643,7 @@ export function startProjectContainer(
         onRecreate?.();
     };
     const finish = (containerId: string): string => {
+        assertPreparedProjectMountSources();
         if (onContainerReady) {
             const finalIdentity = getContainerIdentity(containerId);
             if (!finalIdentity?.running || finalIdentity.containerId !== containerId) {
@@ -1491,7 +1660,14 @@ export function startProjectContainer(
         const gitIdentityMounts = getHostGitIdentityMounts();
         const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: RequiredContainerMount[] = [
-            { hostPath: fullPath, containerPath: projectMountPath, readonly: false, type: "bind", verifySource: true },
+            {
+                hostPath: fullPath,
+                containerPath: projectMountPath,
+                readonly: false,
+                type: "bind",
+                verifySource: true,
+                expectedIdentity: projectMountSourceIdentity,
+            },
             { hostPath: getClaudeJsonFile(profile), containerPath: "/home/ccc/.claude.json", readonly: false, type: "bind", verifySource: true },
             ...getAllCredentialMounts().map((m) => ({
                 hostPath: resolveCredentialHostPath(m, profile),
@@ -1501,7 +1677,13 @@ export function startProjectContainer(
                 verifySource: true,
             })),
             ...gitIdentityMounts.map((mount) => ({ ...mount, readonly: true, type: "bind" as const, verifySource: true })),
-            ...(extraMounts ?? []).map((mount) => ({ ...mount, readonly: false, type: "bind" as const, verifySource: true })),
+            ...preparedExtraMounts.map((mount) => ({
+                ...mount,
+                readonly: false,
+                type: "bind" as const,
+                verifySource: true,
+                expectedIdentity: mount.identity,
+            })),
             { hostPath: deviceLabStateHostDir, containerPath: "/home/ccc/.ccc/devices", readonly: true, type: "bind", verifySource: true },
             { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/owners", readonly: false, type: "tmpfs" },
             { hostPath: currentDeviceLabOwnerRoot, containerPath: `/home/ccc/.ccc/devices/owners/${currentDeviceLabOwnerId}`, readonly: false, type: "bind", verifySource: true },
@@ -1547,6 +1729,7 @@ export function startProjectContainer(
             readonly: false,
             type: "volume",
         });
+        assertPreparedProjectMountSources();
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         let contractMismatchReason = "container contract changed";
         const contractMatches = containerMatchesRunContract(
@@ -1555,8 +1738,10 @@ export function startProjectContainer(
             labRunner,
             preparedDeviceLabSources.contractIdentity,
             fullPath,
+            projectMountIdentity,
             (reason) => { contractMismatchReason = reason; },
         );
+        assertPreparedProjectMountSources();
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         if (contractMatches === null) {
             throw new Error("Container contract inspection failed; the existing container was preserved.");
@@ -1583,6 +1768,7 @@ export function startProjectContainer(
                         requiredMounts,
                         labRunner,
                         fullPath,
+                        projectMountIdentity,
                         (reason) => { unsafeDeferReason = reason; },
                     )) {
                         throw new Error(
@@ -1667,6 +1853,7 @@ export function startProjectContainer(
 
     if (lifecycleContainerId) {
         if (debug) console.error(`[ccc:debug] Container ${containerName} exists, restarting`);
+        assertPreparedProjectMountSources();
         if (!preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) {
             const recreated = recreateContainerWithSessionGuard(
                 containerName,
@@ -1751,7 +1938,8 @@ export function startProjectContainer(
         imageName: IMAGE_NAME,
         hostSshDir,
         sshAgentSocket,
-        extraMounts,
+        extraMounts: preparedExtraMounts,
+        projectMountIdentity,
         clipboardPortFile,
         clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
         labRunner,
@@ -1765,6 +1953,7 @@ export function startProjectContainer(
         proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
     });
 
+    assertPreparedProjectMountSources();
     assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
     const result = spawnSync(cli, args, {
         encoding: "utf-8",
@@ -1777,7 +1966,22 @@ export function startProjectContainer(
     const createdContainerId = (result.stdout ?? "").trim().split(/\s+/).find((line) => /^[a-f0-9]{12,64}$/i.test(line)) ?? null;
 
     try {
+        assertPreparedProjectMountSources();
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+        if (!createdContainerId || !createdContainerBindMountsMatch(
+            createdContainerId,
+            [
+                {
+                    hostPath: fullPath,
+                    containerPath: projectMountPath,
+                    identity: projectMountSourceIdentity,
+                },
+                ...preparedExtraMounts,
+            ],
+            projectMountIdentity,
+        )) {
+            throw new Error("created container bind mount identity verification failed");
+        }
     } catch (error) {
         if (createdContainerId) {
             spawnSync(cli, ["rm", "-f", createdContainerId], { stdio: "ignore" });

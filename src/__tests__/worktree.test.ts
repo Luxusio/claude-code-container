@@ -31,6 +31,7 @@ import {
     detectBrokenWorktrees,
     fixBrokenWorktree,
     getWorktreeGitMounts,
+    containerGitSourceMountPath,
     assertWorkspaceBranch,
     detectWorktreeWorkspaceBranch,
     needsSubmoduleSetup,
@@ -2051,6 +2052,50 @@ describe("getWorktreeGitMounts", () => {
         const relativeMount = mounts.find((m) => m.containerPath === "/project/source/.git");
         expect(relativeMount).toBeDefined();
         expect(relativeMount!.hostPath).toBe(sourceGitDir);
+    });
+
+    it("maps a Windows gitdir to a valid absolute Linux container destination", () => {
+        expect(containerGitSourceMountPath(
+            "/project/repo--feature-id",
+            "../repo/.git/worktrees/repo--feature",
+            "win32",
+        )).toBe("/project/repo/.git");
+    });
+
+    it("normalizes worktree metadata for host and container portability", () => {
+        const repoPath = join(tmpDir, "portable-source");
+        initRepo(repoPath);
+        const wtPath = join(tmpDir, "portable-source--feat");
+        spawnSync("git", ["worktree", "add", "-b", "portable-feat", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const gitFile = join(wtPath, ".git");
+        expect(readFileSync(gitFile, "utf-8")).toContain(join(repoPath, ".git"));
+
+        const mounts = getWorktreeGitMounts(
+            wtPath,
+            true,
+            "/project/portable-source--feat-id",
+        );
+
+        const gitLink = readFileSync(gitFile, "utf-8").trim();
+        expect(gitLink).toMatch(/^gitdir: \.\.\/portable-source\/\.git\/worktrees\//);
+        expect(gitLink).not.toMatch(/[A-Za-z]:[\\/]/);
+        expect(mounts.some((mount) => (
+            mount.hostPath === join(repoPath, ".git")
+            && mount.containerPath === "/project/portable-source/.git"
+        ))).toBe(true);
+        expect(mounts.every((mount) => (
+            mount.containerPath.startsWith("/")
+            && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
+        ))).toBe(true);
+
+        const status = spawnSync("git", ["status", "--short"], {
+            cwd: wtPath,
+            encoding: "utf-8",
+        });
+        expect(status.status).toBe(0);
     });
 
     it("returns verified mounts for every repository in a multi-repo workspace", () => {

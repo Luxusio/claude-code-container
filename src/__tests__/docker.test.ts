@@ -6,9 +6,61 @@ import { join } from "path";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
+let latestCreatedContainer: { id: string; runArgs: string[] } | null = null;
+let autoInspectCreatedContainer = true;
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
-    return { ...actual, spawnSync: spawnSyncMock };
+    return {
+        ...actual,
+        spawnSync: (...args: unknown[]) => {
+            const argv = args[1] as string[];
+            if (autoInspectCreatedContainer
+                && latestCreatedContainer
+                && argv?.[0] === "inspect"
+                && argv.includes("{{json .}}")
+                && argv.includes(latestCreatedContainer.id)) {
+                const mounts: Array<{
+                    Source: string;
+                    Destination: string;
+                    Type: "bind";
+                }> = [];
+                const labels: Record<string, string> = {};
+                for (let index = 0; index < latestCreatedContainer.runArgs.length; index += 1) {
+                    const argument = latestCreatedContainer.runArgs[index];
+                    if (argument === "-v") {
+                        const volume = latestCreatedContainer.runArgs[index + 1] ?? "";
+                        const match = volume.match(/^(.*):(\/[^:]+)(?::ro)?$/);
+                        if (match) {
+                            mounts.push({
+                                Source: match[1],
+                                Destination: match[2],
+                                Type: "bind",
+                            });
+                        }
+                    }
+                    if (argument === "--label") {
+                        const label = latestCreatedContainer.runArgs[index + 1] ?? "";
+                        const separator = label.indexOf("=");
+                        if (separator > 0) {
+                            labels[label.slice(0, separator)] = label.slice(separator + 1);
+                        }
+                    }
+                }
+                return makeResult(0, JSON.stringify({
+                    Id: latestCreatedContainer.id,
+                    Mounts: mounts,
+                    Config: { Labels: labels },
+                }));
+            }
+            const result = spawnSyncMock(...args);
+            if (argv?.[0] === "run" && result.status === 0) {
+                const id = (result.stdout ?? "").trim().split(/\s+/)
+                    .find((line) => /^[a-f0-9]{12,64}$/i.test(line));
+                latestCreatedContainer = id ? { id, runArgs: [...argv] } : null;
+            }
+            return result;
+        },
+    };
 });
 
 // Mock fs for startProjectContainer
@@ -80,6 +132,7 @@ const {
     restoreCodexConfigHostOwnership,
     syncManagedMcpBundles,
     bindSourcePathsEquivalent,
+    bindMountSourceIdentityDigest,
     projectPathIdentityMatches,
     startProjectContainer,
     stopProjectContainer,
@@ -112,6 +165,14 @@ function defaultDeviceLabMountIdentity(): string {
     return createHash("sha256")
         .update("2|directory:1:1|directory:1:1|file:1:1")
         .digest("hex");
+}
+
+function defaultProjectMountIdentity(path = "/home/user/my-project"): string {
+    return bindMountSourceIdentityDigest({
+        realpath: path,
+        dev: "1",
+        ino: "1",
+    });
 }
 
 // docker inspect Mounts JSON containing every required mount destination the
@@ -218,6 +279,7 @@ function fullCredentialMountsJson(
             Labels: {
                 "ccc.managed": "true",
                 "ccc.project.path": "/home/user/my-project",
+                "ccc.project.mount-identity": defaultProjectMountIdentity(),
                 "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity(),
             },
         },
@@ -234,6 +296,8 @@ describe("docker.ts module exports", () => {
     beforeEach(() => {
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
+        latestCreatedContainer = null;
+        autoInspectCreatedContainer = true;
         mockCleanupOwnerDevices.mockReset();
         mockGetActiveSessionsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
@@ -447,6 +511,9 @@ describe("docker.ts module exports", () => {
                         Labels: {
                             "ccc.managed": "true",
                             "ccc.project.path": "/projects/repo--feature",
+                            "ccc.project.mount-identity": defaultProjectMountIdentity(
+                                "/projects/repo--feature",
+                            ),
                         },
                     },
                 }),
@@ -457,6 +524,33 @@ describe("docker.ts module exports", () => {
                 "ccc-worktree--p--work",
                 "/projects/repo--feature",
             )).toEqual({ containerId: "managed123456", running: true });
+        });
+
+        it("rejects a container created for a replaced project directory", () => {
+            spawnSyncMock.mockReturnValue({
+                status: 0,
+                stdout: JSON.stringify({
+                    Id: "stale123456",
+                    State: { Running: true },
+                    Config: {
+                        Labels: {
+                            "ccc.managed": "true",
+                            "ccc.project.path": "/projects/repo--feature",
+                            "ccc.project.mount-identity": bindMountSourceIdentityDigest({
+                                realpath: "/projects/repo--feature",
+                                dev: "1",
+                                ino: "999",
+                            }),
+                        },
+                    },
+                }),
+                stderr: "",
+            } as SpawnSyncReturns<string>);
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree--p--work",
+                "/projects/repo--feature",
+            )).toBeNull();
         });
 
         it.each([
@@ -2027,7 +2121,9 @@ describe("docker.ts module exports", () => {
                 isDirectory: () => !path.endsWith(".json"),
                 isSymbolicLink: () => false,
                 dev: 1,
-                ino: identityChanged ? 2 : 1,
+                ino: identityChanged && path.includes(`${join(".ccc", "devices")}`)
+                    ? 2
+                    : 1,
                 size: 1024,
             }));
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -2103,7 +2199,9 @@ describe("docker.ts module exports", () => {
                 isDirectory: () => !path.endsWith(".json"),
                 isSymbolicLink: () => false,
                 dev: 1,
-                ino: identityChanged ? 2 : 1,
+                ino: identityChanged && path.includes(`${join(".ccc", "devices")}`)
+                    ? 2
+                    : 1,
                 size: 1024,
             }));
             const guard = vi.fn(() => false);
@@ -2535,6 +2633,102 @@ describe("docker.ts module exports", () => {
             expect(runArgs).not.toContain("/dev/kvm:/dev/kvm");
             expect(runArgs).not.toContain("/dev/net/tun:/dev/net/tun");
             expect(runArgs).not.toContain("--privileged");
+        });
+
+        it("removes a newly created container whose project bind source fails inspection", () => {
+            const createdId = "c0ffee123456";
+            const ready = vi.fn();
+            autoInspectCreatedContainer = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect"
+                    && args.includes("{{json .}}")
+                    && args.includes(createdId)) {
+                    return makeResult(0, JSON.stringify({
+                        Id: createdId,
+                        Mounts: [{
+                            Source: "/foreign/project",
+                            Destination: `/project/${getProjectId(projectPath)}`,
+                            Type: "bind",
+                        }],
+                        Config: {
+                            Labels: {
+                                "ccc.project.mount-identity":
+                                    defaultProjectMountIdentity(projectPath),
+                            },
+                        },
+                    }));
+                }
+                if (args[0] === "inspect") return makeResult(1);
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                ready,
+            )).toThrow("created container bind mount identity verification failed");
+            expect(ready).not.toHaveBeenCalled();
+            expect(spawnSyncMock.mock.calls.some((call) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[1] === "-f"
+                && (call[1] as string[])[2] === createdId
+            ))).toBe(true);
+        });
+
+        it("rejects a replaced worktree mount source before container creation", () => {
+            const worktreeGit = "/projects/repo/.git";
+            const identity = {
+                realpath: worktreeGit,
+                dev: "1",
+                ino: "1",
+            };
+            let replaced = false;
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: path === worktreeGit && replaced ? 2 : 1,
+                size: 1024,
+            }));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect") return makeResult(1);
+                if (args[0] === "ps") {
+                    replaced = true;
+                    return makeResult(0, "");
+                }
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                [{
+                    hostPath: worktreeGit,
+                    containerPath: "/project/repo/.git",
+                    identity,
+                }],
+            )).toThrow(`bind mount source identity changed: ${worktreeGit}`);
+            expect(spawnSyncMock.mock.calls.some((call) => (
+                (call[1] as string[])[0] === "run"
+            ))).toBe(false);
         });
 
         it("creates an ordinary container with durable lab state and KVM when supported", () => {
@@ -3230,6 +3424,7 @@ describe("docker.ts module exports", () => {
         const managedIdentity = (containerId: string, running: boolean, labels: Record<string, string> = {
             "ccc.managed": "true",
             "ccc.project.path": projectPath,
+            "ccc.project.mount-identity": defaultProjectMountIdentity(projectPath),
         }) => JSON.stringify({
             Id: containerId,
             State: { Running: running },
@@ -3350,6 +3545,7 @@ describe("docker.ts module exports", () => {
         const managedIdentity = (containerId: string, running: boolean, labels: Record<string, string> = {
             "ccc.managed": "true",
             "ccc.project.path": projectPath,
+            "ccc.project.mount-identity": defaultProjectMountIdentity(projectPath),
         }) => JSON.stringify({
             Id: containerId,
             State: { Running: running },

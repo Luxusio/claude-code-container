@@ -1,6 +1,7 @@
 // src/worktree.ts - Git worktree workspace management for ccc
 
 import { spawnSync } from "child_process";
+import { randomUUID } from "crypto";
 import {
     chmodSync,
     existsSync,
@@ -8,6 +9,7 @@ import {
     mkdirSync,
     readdirSync,
     readFileSync,
+    writeFileSync,
     copyFileSync,
     rmSync,
     rmdirSync,
@@ -15,7 +17,7 @@ import {
     renameSync,
     realpathSync,
 } from "fs";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, join, posix, relative, resolve } from "path";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
 function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
@@ -71,7 +73,7 @@ export interface WorkspaceEntry {
     isGitRepo: boolean;
 }
 
-type DirectoryIdentity = {
+export type DirectoryIdentity = {
     realpath: string;
     dev: string;
     ino: string;
@@ -117,6 +119,49 @@ function assertPathIdentity(path: string, expected: DirectoryIdentity): void {
         || actual.ino !== expected.ino) {
         throw new Error(`Workspace entry identity changed before deletion: ${path}`);
     }
+}
+
+function normalizeWorktreeGitLink(
+    gitFile: string,
+    resolvedGitDirectory: string,
+): string {
+    const portableGitDirectory = relative(
+        dirname(gitFile),
+        resolvedGitDirectory,
+    ).replace(/\\/g, "/");
+    if (!portableGitDirectory || resolve(dirname(gitFile), portableGitDirectory)
+        !== resolvedGitDirectory) {
+        throw new Error(`Unable to create portable worktree metadata: ${gitFile}`);
+    }
+    const expectedContent = `gitdir: ${portableGitDirectory}\n`;
+    if (readFileSync(gitFile, "utf-8") === expectedContent) {
+        return portableGitDirectory;
+    }
+    const gitFileIdentity = capturePathIdentity(gitFile);
+    const parentIdentity = captureDirectoryIdentity(dirname(gitFile));
+    const temporary = join(
+        dirname(gitFile),
+        `.${basename(gitFile)}.ccc-${randomUUID()}.tmp`,
+    );
+    try {
+        writeFileSync(temporary, expectedContent, { flag: "wx", mode: 0o600 });
+        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
+        assertPathIdentity(gitFile, gitFileIdentity);
+        renameSync(temporary, gitFile);
+    } catch (error) {
+        rmSync(temporary, { force: true });
+        try {
+            if (readFileSync(gitFile, "utf-8") === expectedContent) {
+                return portableGitDirectory;
+            }
+        } catch {
+            // Preserve the normalization race as the primary diagnostic.
+        }
+        throw new Error(`Worktree metadata changed during normalization: ${gitFile}`, {
+            cause: error,
+        });
+    }
+    return portableGitDirectory;
 }
 
 function assertQuarantinedIdentity(
@@ -1650,6 +1695,23 @@ export function repairWorkspace(
 export interface WorktreeGitMount {
     hostPath: string;
     containerPath: string;
+    identity: DirectoryIdentity;
+}
+
+export function containerGitSourceMountPath(
+    containerGitFileDirectory: string,
+    rawGitDirectory: string,
+    platform = process.platform,
+): string {
+    const normalizedGitDirectory = platform === "win32"
+        ? rawGitDirectory.replace(/\\/g, "/")
+        : rawGitDirectory;
+    return posix.resolve(
+        containerGitFileDirectory,
+        normalizedGitDirectory,
+        "..",
+        "..",
+    );
 }
 
 /**
@@ -1668,16 +1730,21 @@ export interface WorktreeGitMount {
 export function getWorktreeGitMounts(
     worktreePath: string,
     required = false,
+    containerWorkspacePath?: string,
 ): WorktreeGitMount[] {
     const resolved = resolve(worktreePath);
     const mounts: WorktreeGitMount[] = [];
     const seen = new Set<string>();
 
-    function addMount(hostPath: string, containerPath: string): void {
+    function addMount(
+        hostPath: string,
+        containerPath: string,
+        identity = captureDirectoryIdentity(hostPath),
+    ): void {
         const key = `${hostPath}:${containerPath}`;
         if (!seen.has(key)) {
             seen.add(key);
-            mounts.push({ hostPath, containerPath });
+            mounts.push({ hostPath, containerPath, identity });
         }
     }
 
@@ -1719,18 +1786,32 @@ export function getWorktreeGitMounts(
         const content = readFileSync(gitFile, "utf-8").trim();
         const match = content.match(/^gitdir:\s*(.+)$/);
         if (!match) throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
-        const resolvedGitdir = resolve(dirname(gitFile), match[1].trim());
+        const rawGitDirectory = match[1].trim();
+        const resolvedGitdir = resolve(dirname(gitFile), rawGitDirectory);
         const sourceGitDir = resolve(resolvedGitdir, "..", "..");
-        captureDirectoryIdentity(sourceGitDir);
+        const sourceIdentity = captureDirectoryIdentity(sourceGitDir);
         const sourceRepoDir = dirname(sourceGitDir);
         if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
+        const portableGitDirectory = normalizeWorktreeGitLink(gitFile, resolvedGitdir);
         const sourceBasename = basename(sourceRepoDir);
-        addMount(sourceGitDir, sourceGitDir);
+        const containerGitFileDirectory = containerWorkspacePath
+            ? posix.join(
+                containerWorkspacePath,
+                relative(resolved, dirname(gitFile)).replace(/\\/g, "/"),
+            )
+            : dirname(gitFile);
+        const sourceContainerPath = containerWorkspacePath
+            ? containerGitSourceMountPath(
+                containerGitFileDirectory,
+                portableGitDirectory,
+            )
+            : sourceGitDir;
+        addMount(sourceGitDir, sourceContainerPath, sourceIdentity);
         const relMountPath = `/project/${sourceBasename}/.git`;
-        if (relMountPath !== sourceGitDir) {
-            addMount(sourceGitDir, relMountPath);
+        if (relMountPath !== sourceContainerPath) {
+            addMount(sourceGitDir, relMountPath, sourceIdentity);
         }
 
         for (const entry of scanDirectory(sourceRepoDir, { strict: required })) {
@@ -2007,7 +2088,7 @@ export function fixBrokenWorktree(
                     true,
                     dirname(wsPath),
                 );
-                rollbackCreatedBranch(sourceRepo.path, branch, c.action);
+                rollbackCreatedBranch(sourceRepo.path, branch, action);
             }
             const restored = rollbackQuarantinedPath(
                 destPath,
