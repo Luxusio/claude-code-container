@@ -6,8 +6,8 @@ const PROVIDER_RESOURCES = new Map<string, string[]>([
     ["level2-android-device-e2e.ts", ["android-device"]],
     ["level2-macos-vm-e2e.ts", ["macos-vm"]],
     ["level2-windows-sandbox.ts", ["windows-sandbox"]],
-    ["level2-hyper-v-windows-vm.ts", ["hyper-v-windows"]],
-    ["level2-hyper-v-linux-vm.ts", ["hyper-v-linux"]],
+    ["level2-hyper-v-windows-vm.ts", ["hyper-v"]],
+    ["level2-hyper-v-linux-vm.ts", ["hyper-v"]],
     ["level2-real-linux-vm.ts", ["linux-vm"]],
     ["level3-real-destructive.ts", ["android-emulator", "macos-vm"]],
 ]);
@@ -46,6 +46,7 @@ export async function runResourceAware<T>(
     const results = new Array<T>(items.length);
     const activeResources = new Set<string>();
     const active = new Set<Promise<void>>();
+    let firstError: unknown = null;
 
     const startAvailable = () => {
         let started = false;
@@ -61,6 +62,9 @@ export async function runResourceAware<T>(
             task = run(item.file)
                 .then((result) => {
                     results[item.index] = result;
+                })
+                .catch((error) => {
+                    firstError ??= error;
                 })
                 .finally(() => {
                     item.resources.forEach((resource) => activeResources.delete(resource));
@@ -82,5 +86,6 @@ export async function runResourceAware<T>(
             await Promise.race(active);
         }
     }
+    if (firstError) throw firstError;
     return results;
 }

@@ -1,8 +1,7 @@
 import { createHash } from "crypto";
-import { spawn } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { dirname, join, resolve } from "path";
+import { spawn, spawnSync } from "child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/tools.mjs";
 import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from "./device-lab-mcp-client.ts";
@@ -392,20 +391,82 @@ async function executeModule(file: string) {
     }
 }
 
-async function executeProviderModule(file: string, workDir: string) {
-    const outputFile = join(workDir, `${createHash("sha256").update(file).digest("hex")}.json`);
+const activeProviderChildren = new Set<any>();
+
+function terminateProviderChild(child, force = false) {
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    if (process.platform === "win32" && Number.isInteger(child.pid)) {
+        spawnSync("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        return;
+    }
+    try {
+        child.kill(force ? "SIGKILL" : "SIGTERM");
+    } catch {
+        // The worker may have exited between observation and termination.
+    }
+}
+
+function terminateActiveProviderChildren() {
+    for (const child of activeProviderChildren) terminateProviderChild(child);
+}
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+        const children = [...activeProviderChildren];
+        children.forEach((child) => terminateProviderChild(child));
+        const forceTimer = setTimeout(() => {
+            children.forEach((child) => terminateProviderChild(child, true));
+        }, 2000);
+        const exitTimer = setTimeout(() => {
+            process.exit(signal === "SIGINT" ? 130 : 143);
+        }, 5000);
+        Promise.all(children.map((child) => (
+            child.exitCode !== null || child.signalCode !== null
+                ? Promise.resolve()
+                : new Promise<void>((resolvePromise) => child.once("close", () => resolvePromise()))
+        ))).finally(() => {
+            clearTimeout(forceTimer);
+            clearTimeout(exitTimer);
+            process.exit(signal === "SIGINT" ? 130 : 143);
+        });
+    });
+}
+process.once("exit", terminateActiveProviderChildren);
+
+async function executeProviderModule(file: string) {
     const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
     try {
-        await new Promise<void>((resolvePromise, rejectPromise) => {
-            const child = spawn(process.execPath, [worker, file, outputFile], {
+        const output = await new Promise<string>((resolvePromise, rejectPromise) => {
+            const child = spawn(process.execPath, [worker, file], {
                 cwd: process.cwd(),
                 env: process.env,
-                stdio: ["ignore", "inherit", "inherit"],
+                stdio: ["ignore", "inherit", "inherit", "pipe"],
                 windowsHide: true,
             });
-            child.once("error", rejectPromise);
-            child.once("exit", () => resolvePromise());
+            activeProviderChildren.add(child);
+            const chunks: Buffer[] = [];
+            child.stdio[3]?.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            child.once("error", (error) => {
+                activeProviderChildren.delete(child);
+                rejectPromise(error);
+            });
+            child.once("close", () => {
+                activeProviderChildren.delete(child);
+                resolvePromise(Buffer.concat(chunks).toString("utf-8"));
+            });
         });
+        if (!output) {
+            return {
+                ok: false,
+                file,
+                name: file,
+                error: { message: "provider worker exited without a result" },
+            };
+        }
+        return JSON.parse(output);
     } catch (error) {
         return {
             ok: false,
@@ -414,15 +475,6 @@ async function executeProviderModule(file: string, workDir: string) {
             error: { message: error?.message || String(error), stack: error?.stack },
         };
     }
-    if (!existsSync(outputFile)) {
-        return {
-            ok: false,
-            file,
-            name: file,
-            error: { message: "provider worker exited without a result" },
-        };
-    }
-    return JSON.parse(readFileSync(outputFile, "utf-8"));
 }
 
 function collectExecution(execution) {
@@ -571,20 +623,15 @@ for (const file of serialFiles) {
 }
 
 if (providerFiles.length > 0) {
-    const workDir = mkdtempSync(join(tmpdir(), "ccc-level3-provider-"));
-    try {
-        if (providerConcurrency > 1) {
-            console.log(`PROVIDERS concurrency=${providerConcurrency} count=${providerFiles.length}`);
-        }
-        const executions = await runResourceAware(
-            providerFiles,
-            providerConcurrency,
-            (file) => executeProviderModule(file, workDir),
-        );
-        executions.forEach(collectExecution);
-    } finally {
-        rmSync(workDir, { recursive: true, force: true });
+    if (providerConcurrency > 1) {
+        console.log(`PROVIDERS concurrency=${providerConcurrency} count=${providerFiles.length}`);
     }
+    const executions = await runResourceAware(
+        providerFiles,
+        providerConcurrency,
+        executeProviderModule,
+    );
+    executions.forEach(collectExecution);
 }
 
 const total = counts.PASS + counts.SKIP + counts.FAIL;

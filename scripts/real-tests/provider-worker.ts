@@ -1,8 +1,13 @@
-import { writeFileSync } from "fs";
+import { closeSync, writeFileSync } from "fs";
 import { pathToFileURL } from "url";
 import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from "./device-lab-mcp-client.ts";
 
-const [, , file, outputFile] = process.argv;
+const [, , file] = process.argv;
+
+function writeResult(value: unknown) {
+    writeFileSync(3, JSON.stringify(value));
+    closeSync(3);
+}
 
 function serializeError(error: unknown) {
     const value = error as { message?: string; stack?: string };
@@ -20,27 +25,28 @@ async function main() {
         consumeDeviceLabMcpToolCalls();
         consumeDeviceLabMcpToolSessions();
         const result = await mod.run();
-        writeFileSync(outputFile, JSON.stringify({
+        writeResult({
             ok: true,
             file,
             name,
             result,
             toolCalls: consumeDeviceLabMcpToolCalls(),
             toolSessions: consumeDeviceLabMcpToolSessions(),
-        }));
+        });
+        process.exit(0);
     } catch (error) {
-        writeFileSync(outputFile, JSON.stringify({
+        writeResult({
             ok: false,
             file,
             name,
             error: serializeError(error),
-        }));
-        process.exitCode = 1;
+        });
+        process.exit(1);
     }
 }
 
-if (!file || !outputFile) {
-    process.stderr.write("Usage: node provider-worker.ts <module> <output-file>\n");
+if (!file) {
+    process.stderr.write("Usage: node provider-worker.ts <module>\n");
     process.exitCode = 1;
 } else {
     await main();

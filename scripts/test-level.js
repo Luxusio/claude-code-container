@@ -105,7 +105,7 @@ function usage() {
 function commandFor(level, options = {}) {
     const config = LEVELS[level];
     const vitest = join(root, "node_modules", "vitest", "vitest.mjs");
-    const vitestAvailable = !options.forceNodeTest && !options.compact && !options.failOnSkip && !options.failOnCoverageGap && !options.jsonSummary && !options.jsonSummaryFile && (level === 0
+    const vitestAvailable = !options.forceNodeTest && options.providerConcurrency === undefined && !options.compact && !options.failOnSkip && !options.failOnCoverageGap && !options.jsonSummary && !options.jsonSummaryFile && (level === 0
         ? existsSync(vitest)
         : existsSync(vitest) && config.files.every((file) => existsSync(join(root, file))));
     const mode = vitestAvailable ? "vitest" : "node-test";

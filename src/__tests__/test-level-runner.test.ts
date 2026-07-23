@@ -1,4 +1,4 @@
-import { spawnSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -817,12 +817,13 @@ describe("test level runner", () => {
     });
 
     it("validates and forwards the Level 3 provider concurrency override", () => {
-        const result = spawnSync(process.execPath, [runner, "3", "--dry-run", "--node-test", "--provider-concurrency", "4"], {
+        const result = spawnSync(process.execPath, [runner, "3", "--dry-run", "--provider-concurrency", "4"], {
             cwd: repoRoot,
             encoding: "utf-8",
         });
         expect(result.status).toBe(0);
-        const plan = JSON.parse(result.stdout) as { args: string[] };
+        const plan = JSON.parse(result.stdout) as { args: string[]; mode: string };
+        expect(plan.mode).toBe("node-test");
         expect(plan.args).toEqual(expect.arrayContaining(["--provider-concurrency", "4"]));
 
         const invalid = spawnSync(process.execPath, [runner, "3", "--dry-run", "--node-test", "--provider-concurrency", "0"], {
@@ -843,7 +844,7 @@ describe("test level runner", () => {
         const partitioned = partitionProviderFiles(files);
         expect(partitioned.serial).toEqual([files[0]]);
         expect(partitioned.providers).toEqual([
-            { file: files[1], resources: ["hyper-v-windows"] },
+            { file: files[1], resources: ["hyper-v"] },
             { file: files[2], resources: ["android-emulator", "macos-vm"] },
         ]);
     });
@@ -872,10 +873,25 @@ describe("test level runner", () => {
         expect(events.indexOf("start:macos-b")).toBeGreaterThan(events.indexOf("end:macos-a"));
     });
 
+    it("waits for active providers before reporting a scheduler failure", async () => {
+        const events: string[] = [];
+        await expect(runResourceAware([
+            { file: "failing", resources: ["android-device"] },
+            { file: "finishing", resources: ["windows-sandbox"] },
+        ], 2, async (file) => {
+            events.push(`start:${file}`);
+            if (file === "failing") throw new Error("provider failed");
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+            events.push(`end:${file}`);
+            return file;
+        })).rejects.toThrow("provider failed");
+        expect(events).toContain("end:finishing");
+    });
+
     it("executes provider modules in isolated child processes and keeps summary order", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-workers-"));
         const windowsFile = join(tempDir, "level2-hyper-v-windows-vm.ts");
-        const linuxFile = join(tempDir, "level2-hyper-v-linux-vm.ts");
+        const linuxFile = join(tempDir, "level2-windows-sandbox.ts");
         const windowsStarted = join(tempDir, "windows.started");
         const linuxStarted = join(tempDir, "linux.started");
         const summaryFile = join(tempDir, "summary.json");
@@ -894,7 +910,7 @@ describe("test level runner", () => {
             }
         `;
         writeFileSync(windowsFile, moduleText("windows worker", windowsStarted, linuxStarted));
-        writeFileSync(linuxFile, moduleText("linux worker", linuxStarted, windowsStarted));
+        writeFileSync(linuxFile, moduleText("sandbox worker", linuxStarted, windowsStarted));
         try {
             const result = spawnSync(process.execPath, [
                 join(repoRoot, "scripts", "real-tests", "run.ts"),
@@ -916,11 +932,104 @@ describe("test level runner", () => {
             };
             expect(summary.records).toEqual([
                 expect.objectContaining({ test: "windows worker", status: "PASS" }),
-                expect.objectContaining({ test: "linux worker", status: "PASS" }),
+                expect.objectContaining({ test: "sandbox worker", status: "PASS" }),
             ]);
             expect(readFileSync(windowsStarted, "utf-8")).not.toBe(String(process.pid));
             expect(readFileSync(linuxStarted, "utf-8")).not.toBe(String(process.pid));
         } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it("collects a provider worker exception as a failed real-test record", () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-failure-"));
+        const providerFile = join(tempDir, "level2-hyper-v-windows-vm.ts");
+        const summaryFile = join(tempDir, "summary.json");
+        writeFileSync(providerFile, `
+            export const name = "worker failure";
+            export async function run() {
+                throw new Error("intentional worker failure");
+            }
+        `);
+        try {
+            const result = spawnSync(process.execPath, [
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
+                "--compact",
+                "--provider-concurrency",
+                "2",
+                "--json-summary-file",
+                summaryFile,
+                providerFile,
+            ], {
+                cwd: repoRoot,
+                encoding: "utf-8",
+                timeout: 10_000,
+            });
+            expect(result.status).toBe(1);
+            const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
+                records: Array<{ test: string; status: string; reason?: string }>;
+            };
+            expect(summary.records).toEqual([
+                expect.objectContaining({
+                    test: "worker failure",
+                    status: "FAIL",
+                    reason: "intentional worker failure",
+                }),
+            ]);
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
+    it("terminates active provider workers when the collector is interrupted", async () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-signal-"));
+        const providerFile = join(tempDir, "level2-windows-sandbox.ts");
+        const workerPidFile = join(tempDir, "worker.pid");
+        writeFileSync(providerFile, `
+            import { writeFileSync } from "fs";
+            export const name = "interrupt worker";
+            export async function run() {
+                writeFileSync(${JSON.stringify(workerPidFile)}, String(process.pid));
+                await new Promise((resolve) => setTimeout(resolve, 30_000));
+                return { status: "PASS" };
+            }
+        `);
+        const collector = spawn(process.execPath, [
+            join(repoRoot, "scripts", "real-tests", "run.ts"),
+            "--compact",
+            "--provider-concurrency",
+            "2",
+            providerFile,
+        ], {
+            cwd: repoRoot,
+            stdio: "ignore",
+            windowsHide: true,
+        });
+        try {
+            const deadline = Date.now() + 10_000;
+            while (!existsSync(workerPidFile) && Date.now() < deadline) {
+                await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+            }
+            expect(existsSync(workerPidFile)).toBe(true);
+            const workerPid = Number(readFileSync(workerPidFile, "utf-8"));
+            expect(Number.isInteger(workerPid)).toBe(true);
+            collector.kill("SIGTERM");
+            const exitCode = await new Promise<number | null>((resolvePromise) => collector.once("close", resolvePromise));
+            expect(exitCode).toBe(143);
+
+            const workerDeadline = Date.now() + 5000;
+            let workerAlive = true;
+            while (workerAlive && Date.now() < workerDeadline) {
+                try {
+                    process.kill(workerPid, 0);
+                    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+                } catch {
+                    workerAlive = false;
+                }
+            }
+            expect(workerAlive).toBe(false);
+        } finally {
+            if (collector.exitCode === null) collector.kill("SIGKILL");
             rmSync(tempDir, { recursive: true, force: true });
         }
     });
