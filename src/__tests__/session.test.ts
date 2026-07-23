@@ -87,6 +87,7 @@ const {
     removeSessionLock,
     getActiveSessionsForProject,
     getActiveSessionsForContainer,
+    getActiveSessionsForProjectFamily,
     hasOtherActiveSessions,
     recreateContainerWithoutInterruptingSessions,
     cleanupSession,
@@ -752,6 +753,35 @@ describe("session.ts", () => {
 
             expect(result).toEqual([]);
             expect(mockReaddirSync).toHaveBeenCalledOnce();
+        });
+    });
+
+    describe("getActiveSessionsForProjectFamily", () => {
+        it("includes base and every profile session but excludes base and sibling lookalikes", () => {
+            mockReaddirSync.mockReturnValue([
+                "worktree-a1b2c3--base-session.lock",
+                "worktree-a1b2c3--p--work--profile-session.lock",
+                "worktree-a1b2c3--p--ci--profile-session.lock",
+                "worktree-a1b2c30--other-session.lock",
+                "base-repo-a1b2c3--base-session.lock",
+            ]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+
+            expect(getActiveSessionsForProjectFamily("worktree-a1b2c3")).toEqual([
+                "worktree-a1b2c3--base-session.lock",
+                "worktree-a1b2c3--p--work--profile-session.lock",
+                "worktree-a1b2c3--p--ci--profile-session.lock",
+            ]);
+        });
+
+        it("fails closed when project-family lock enumeration fails", () => {
+            const error = Object.assign(new Error("sharing violation"), { code: "EACCES" });
+            mockReaddirSync.mockImplementation(() => {
+                throw error;
+            });
+
+            expect(() => getActiveSessionsForProjectFamily("worktree-a1b2c3")).toThrow(error);
         });
     });
 

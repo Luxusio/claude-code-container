@@ -15,6 +15,10 @@ function containerLifecycleLock(containerPrefix: string): string {
     return join(locksDir, `${containerPrefix}.container-lifecycle.guard`);
 }
 
+function projectFamilyLifecycleLock(projectId: string): string {
+    return join(locksDir, `${projectId}.project-family-lifecycle.guard`);
+}
+
 function ensureLocksDirectory(): void {
     mkdirSync(locksDir, { recursive: true, mode: 0o700 });
     const observed = lstatSync(locksDir);
@@ -27,6 +31,11 @@ function ensureLocksDirectory(): void {
 export function withContainerLifecycleLock<T>(containerPrefix: string, operation: () => T): T {
     ensureLocksDirectory();
     return withSharedMutationLock(containerLifecycleLock(containerPrefix), operation, { waitMs: 180_000 });
+}
+
+export function withProjectFamilyLifecycleLock<T>(projectId: string, operation: () => T): T {
+    ensureLocksDirectory();
+    return withSharedMutationLock(projectFamilyLifecycleLock(projectId), operation, { waitMs: 180_000 });
 }
 
 export async function withContainerLifecycleLockAsync<T>(containerPrefix: string, operation: () => Promise<T> | T): Promise<T> {
@@ -136,6 +145,10 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
 
         return false;
     });
+    return filterLiveSessionLocks(locks);
+}
+
+function filterLiveSessionLocks(locks: string[]): string[] {
     return locks.filter((f) => {
         const lockPath = join(locksDir, f);
         try {
@@ -154,6 +167,19 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
             return true;
         }
     });
+}
+
+/**
+ * Return every live session for one project path, including all profile
+ * containers. This broader query is reserved for removing the project path.
+ */
+export function getActiveSessionsForProjectFamily(projectId: string): string[] {
+    ensureLocksDirectory();
+    const entries = readdirSync(locksDir);
+    const locks = entries.filter((entry) =>
+        entry.endsWith(".lock") && entry.startsWith(`${projectId}--`),
+    );
+    return filterLiveSessionLocks(locks);
 }
 
 /**

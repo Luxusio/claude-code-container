@@ -49,6 +49,7 @@ import {
     fixBrokenWorktree,
     getWorkspacePath,
     getWorktreeGitMounts,
+    assertWorkspaceBranch,
     workspaceExists,
     needsSubmoduleSetup,
     initWithSubmodules,
@@ -85,10 +86,11 @@ import {
 } from "./container-setup.js";
 import {
     createSessionLock,
-    getActiveSessionsForContainer,
+    getActiveSessionsForProjectFamily,
     hasOtherActiveSessions,
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
+    withProjectFamilyLifecycleLock,
     cleanupSession,
     setupSignalHandlers,
     setSession,
@@ -113,6 +115,21 @@ import { resolveTool, getDefaultToolPreference, setDefaultToolPreference } from 
 import { formatRuntimeSummary, runtimeCli, setRuntimeOverride } from "./container-runtime.js";
 import { devicesCliAsync } from "./device-lab-admin.js";
 import { labsCli } from "./lab-runner-admin.js";
+
+export function createWorktreeSessionLock(
+    projectId: string,
+    workspacePath: string,
+    expectedBranch: string,
+    profile?: string,
+    familyLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
+    branchGuard: typeof assertWorkspaceBranch = assertWorkspaceBranch,
+    lockCreator: typeof createSessionLock = createSessionLock,
+): string {
+    return familyLock(projectId, () => {
+        branchGuard(workspacePath, expectedBranch);
+        return lockCreator(projectId, profile);
+    });
+}
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -392,7 +409,12 @@ async function ensureMiseConfig(projectPath: string): Promise<void> {
 async function exec(
     projectPath: string,
     cmd: string[],
-    options: { interactive?: boolean; env?: Record<string, string>; tool?: ToolDefinition } = {},
+    options: {
+        interactive?: boolean;
+        env?: Record<string, string>;
+        tool?: ToolDefinition;
+        expectedWorktreeBranch?: string;
+    } = {},
     profile?: string,
 ): Promise<void> {
     // Check Docker is running first
@@ -422,7 +444,9 @@ async function exec(
     }
     const { setupTool, commandTool } = resolveExecTools(cmd, options.tool);
     const shouldEnsureTool = commandTool !== undefined || options.tool !== undefined;
-    const sessionLockFile = createSessionLock(projectId, profile);
+    const sessionLockFile = options.expectedWorktreeBranch
+        ? createWorktreeSessionLock(projectId, fullPath, options.expectedWorktreeBranch, profile)
+        : createSessionLock(projectId, profile);
     setSession(sessionLockFile, fullPath, profile, (commandTool ?? options.tool)?.name ?? "command");
     setupSignalHandlers();
 
@@ -996,8 +1020,8 @@ export function withWorkspaceRemovalLifecycleLock<T>(
     projectId: string,
     force: boolean,
     operation: () => T,
-    lifecycleLock: typeof withContainerLifecycleLock = withContainerLifecycleLock,
-    activeSessions: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
+    lifecycleLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
+    activeSessions: typeof getActiveSessionsForProjectFamily = getActiveSessionsForProjectFamily,
 ): T {
     return lifecycleLock(projectId, () => {
         const sessions = activeSessions(projectId);
@@ -1006,6 +1030,26 @@ export function withWorkspaceRemovalLifecycleLock<T>(
         }
         return operation();
     });
+}
+
+export function listWorkspaceContainerNames(
+    workspacePath: string,
+    runner: typeof spawnSync = spawnSync,
+    cli = runtimeCli(),
+): string[] {
+    const baseName = getContainerName(workspacePath);
+    const result = runner(
+        cli,
+        ["ps", "-a", "--format", "{{.Names}}"],
+        { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) {
+        throw new Error("Unable to list workspace containers.");
+    }
+    return (result.stdout ?? "")
+        .split(/\r?\n/)
+        .map((name) => name.trim())
+        .filter((name) => name === baseName || name.startsWith(`${baseName}--p--`));
 }
 
 export function removeWorkspaceContainerByIdentity(
@@ -1031,6 +1075,19 @@ export function removeWorkspaceContainerByIdentity(
     return true;
 }
 
+export function removeWorkspaceContainers(
+    workspacePath: string,
+    listContainers: (workspacePath: string) => string[] = listWorkspaceContainerNames,
+    removeContainer: (containerName: string) => boolean = removeWorkspaceContainerByIdentity,
+): string[] {
+    const removed: string[] = [];
+    for (const containerName of listContainers(workspacePath)) {
+        if (!removeContainer(containerName)) continue;
+        removed.push(containerName);
+    }
+    return removed;
+}
+
 function handleWorktreeRemove(
     cwd: string,
     branch: string,
@@ -1040,16 +1097,16 @@ function handleWorktreeRemove(
 
     const wsProjectId = getProjectId(wsPath);
     let removalResult: ReturnType<typeof removeWorkspace> | null = null;
-    withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
-        ensureDockerRunning();
-        const containerName = getContainerName(wsPath);
-        if (removeWorkspaceContainerByIdentity(containerName)) {
-            console.log(`Removed associated container ${containerName}.`);
-        }
-        console.log(`Removing workspace @${branch}...`);
-        removalResult = removeWorkspace(cwd, branch, { force });
-    });
     try {
+        withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
+            assertWorkspaceBranch(wsPath, branch);
+            ensureDockerRunning();
+            for (const containerName of removeWorkspaceContainers(wsPath)) {
+                console.log(`Removed associated container ${containerName}.`);
+            }
+            console.log(`Removing workspace @${branch}...`);
+            removalResult = removeWorkspace(cwd, branch, { force });
+        });
         const result = removalResult!;
 
         for (const name of result.removed) {
@@ -1290,6 +1347,7 @@ async function main(): Promise<void> {
 
     let command = cmdArgs[0];
     let cwd = process.cwd();
+    let expectedWorktreeBranch: string | undefined;
 
     // @ prefix → worktree workspace
     if (worktreeArg) {
@@ -1312,6 +1370,7 @@ async function main(): Promise<void> {
                 console.error(`[ccc:debug] worktree: originalCwd=${cwd} branch=${parsed.branch}`);
             }
             cwd = await prepareWorktree(cwd, parsed.branch);
+            expectedWorktreeBranch = parsed.branch;
             // command stays as filteredArgs[0] (parseArgs already separated @branch)
         }
     }
@@ -1365,7 +1424,7 @@ async function main(): Promise<void> {
             const subcommand = cmdArgs[1] || "status";
             if (subcommand === "shell") {
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, ["bash"], { ...envOpt }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             if (subcommand === "run") {
@@ -1375,7 +1434,7 @@ async function main(): Promise<void> {
                     process.exit(1);
                 }
                 ensureProfile(LAB_RUNNER_PROFILE_NAME);
-                await exec(cwd, labCommand, { ...envOpt }, LAB_RUNNER_PROFILE_NAME);
+                await exec(cwd, labCommand, { ...envOpt, expectedWorktreeBranch }, LAB_RUNNER_PROFILE_NAME);
                 break;
             }
             const status = labsCli(cmdArgs.slice(1), cwd);
@@ -1470,18 +1529,18 @@ async function main(): Promise<void> {
         }
 
         case "shell":
-            await exec(cwd, ["bash"], { ...envOpt }, profile);
+            await exec(cwd, ["bash"], { ...envOpt, expectedWorktreeBranch }, profile);
             break;
 
         case "update": {
             const tool = resolveTool(process.env);
-            await exec(cwd, tool.updateCommand, { tool, ...envOpt }, profile);
+            await exec(cwd, tool.updateCommand, { tool, ...envOpt, expectedWorktreeBranch }, profile);
             break;
         }
 
         case undefined: {
             const tool = resolveTool(process.env);
-            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt }, profile);
+            await exec(cwd, buildToolInvocation(tool, []), { tool, ...envOpt, expectedWorktreeBranch }, profile);
             break;
         }
 
@@ -1489,12 +1548,12 @@ async function main(): Promise<void> {
             const tool = getToolByName(command);
             if (tool) {
                 const toolArgs = cmdArgs.slice(1);
-                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt }, profile);
+                await exec(cwd, buildToolInvocation(tool, toolArgs), { tool, ...envOpt, expectedWorktreeBranch }, profile);
             } else if (command.startsWith("-")) {
                 const defTool = resolveTool(process.env);
-                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt }, profile);
+                await exec(cwd, buildToolInvocation(defTool, cmdArgs), { tool: defTool, ...envOpt, expectedWorktreeBranch }, profile);
             } else {
-                await exec(cwd, cmdArgs, { ...envOpt }, profile);
+                await exec(cwd, cmdArgs, { ...envOpt, expectedWorktreeBranch }, profile);
             }
             break;
     }

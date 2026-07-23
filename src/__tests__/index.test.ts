@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -73,6 +73,14 @@ describe('getContainerName', () => {
     const n2 = getContainerName('/home/user/project')
     expect(n1).toBe(n2)
   })
+
+  it('isolates the base repository, worktree, and sibling worktree', () => {
+    const base = getContainerName('/projects/repo')
+    const feature = getContainerName('/projects/repo--feature')
+    const sibling = getContainerName('/projects/repo--other')
+
+    expect(new Set([base, feature, sibling]).size).toBe(3)
+  })
 })
 
 describe('workspace removal lifecycle lock', () => {
@@ -105,6 +113,123 @@ describe('workspace removal lifecycle lock', () => {
     expect(() => withWorkspaceRemovalLifecycleLock('project-id', false, removal, lifecycleLock, activeSessions))
       .toThrow('Workspace has 1 active session(s)')
     expect(removal).not.toHaveBeenCalled()
+  })
+
+  it('uses the project-family session query before removal', () => {
+    const lifecycleLock = (_projectId: string, operation: () => unknown) => operation()
+    const activeSessions = vi.fn(() => [
+      'project-id--base.lock',
+      'project-id--p--work--profile.lock',
+    ])
+    const removal = vi.fn()
+
+    expect(() => withWorkspaceRemovalLifecycleLock(
+      'project-id',
+      false,
+      removal,
+      lifecycleLock,
+      activeSessions,
+    )).toThrow('Workspace has 2 active session(s)')
+    expect(activeSessions).toHaveBeenCalledWith('project-id')
+    expect(removal).not.toHaveBeenCalled()
+  })
+})
+
+describe('worktree session registration', () => {
+  it('validates the exact branch and creates the lock inside one family critical section', () => {
+    let insideLock = false
+    const familyLock = vi.fn((_projectId: string, operation: () => string) => {
+      insideLock = true
+      try { return operation() } finally { insideLock = false }
+    })
+    const branchGuard = vi.fn(() => expect(insideLock).toBe(true))
+    const lockCreator = vi.fn(() => {
+      expect(insideLock).toBe(true)
+      return '/locks/worktree.lock'
+    })
+
+    expect(createWorktreeSessionLock(
+      'worktree-id',
+      '/projects/repo--feature',
+      'feature',
+      'work',
+      familyLock,
+      branchGuard,
+      lockCreator,
+    )).toBe('/locks/worktree.lock')
+    expect(branchGuard).toHaveBeenCalledWith('/projects/repo--feature', 'feature')
+    expect(lockCreator).toHaveBeenCalledWith('worktree-id', 'work')
+  })
+
+  it('does not create a session after removal wins and the workspace disappears', () => {
+    const familyLock = (_projectId: string, operation: () => string) => operation()
+    const lockCreator = vi.fn(() => '/locks/worktree.lock')
+    const branchGuard = () => {
+      throw new Error('Workspace for branch feature no longer exists')
+    }
+
+    expect(() => createWorktreeSessionLock(
+      'worktree-id',
+      '/projects/repo--feature',
+      'feature',
+      undefined,
+      familyLock,
+      branchGuard,
+      lockCreator,
+    )).toThrow('no longer exists')
+    expect(lockCreator).not.toHaveBeenCalled()
+  })
+})
+
+describe('workspace profile container discovery', () => {
+  it('returns only the default and profile containers for the exact worktree identity', () => {
+    const workspace = '/projects/repo--feature'
+    const base = getContainerName(workspace)
+    const sibling = getContainerName('/projects/repo--other')
+    const runner = vi.fn(() => ({
+      status: 0,
+      stdout: `${base}\n${base}--p--work\n${base}--p--ci\n${sibling}\nccc-unrelated\n`,
+      stderr: '',
+    })) as any
+
+    expect(listWorkspaceContainerNames(workspace, runner, 'docker')).toEqual([
+      base,
+      `${base}--p--work`,
+      `${base}--p--ci`,
+    ])
+  })
+
+  it('fails closed when the runtime container inventory cannot be read', () => {
+    const runner = vi.fn(() => ({ status: 1, stdout: '', stderr: 'denied' })) as any
+
+    expect(() => listWorkspaceContainerNames('/projects/repo--feature', runner, 'docker'))
+      .toThrow('Unable to list workspace containers')
+  })
+
+  it('removes every discovered profile container and no base or sibling container', () => {
+    const workspace = '/projects/repo--feature'
+    const base = getContainerName(workspace)
+    const discovered = [base, `${base}--p--work`, `${base}--p--ci`]
+    const listContainers = vi.fn(() => discovered)
+    const removeContainer = vi.fn(() => true)
+
+    expect(removeWorkspaceContainers(workspace, listContainers, removeContainer)).toEqual(discovered)
+    expect(removeContainer.mock.calls.map(([name]) => name)).toEqual(discovered)
+    expect(removeContainer.mock.calls.flat()).not.toContain(getContainerName('/projects/repo'))
+    expect(removeContainer.mock.calls.flat()).not.toContain(getContainerName('/projects/repo--other'))
+  })
+
+  it('aborts the batch immediately when exact container identity removal fails', () => {
+    const listContainers = () => ['ccc-worktree', 'ccc-worktree--p--work']
+    const removeContainer = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockImplementationOnce(() => {
+        throw new Error('identity inspection failed')
+      })
+
+    expect(() => removeWorkspaceContainers('/projects/repo--feature', listContainers, removeContainer))
+      .toThrow('identity inspection failed')
+    expect(removeContainer).toHaveBeenCalledTimes(2)
   })
 })
 

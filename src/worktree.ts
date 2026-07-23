@@ -175,6 +175,30 @@ export function getWorkspacePath(sourcePath: string, branch: string): string {
     return join(parent, `${dirName}${WORKTREE_SEPARATOR}${safeBranch}`);
 }
 
+export function assertWorkspaceBranch(
+    workspacePath: string,
+    expectedBranch: string,
+    runner: typeof spawnSync = spawnSync,
+): void {
+    if (!existsSync(workspacePath)) {
+        throw new Error(`Workspace for branch '${expectedBranch}' no longer exists.`);
+    }
+    const result = runner(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        { cwd: workspacePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const actualBranch = (result.stdout ?? "").trim();
+    if (result.error || result.status !== 0 || !actualBranch) {
+        throw new Error(`Unable to verify workspace branch '${expectedBranch}'.`);
+    }
+    if (actualBranch !== expectedBranch) {
+        throw new Error(
+            `Workspace path belongs to branch '${actualBranch}', not '${expectedBranch}'.`,
+        );
+    }
+}
+
 // === Read-only Functions ===
 
 /**

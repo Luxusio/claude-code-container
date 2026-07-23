@@ -29,6 +29,7 @@ import {
     detectBrokenWorktrees,
     fixBrokenWorktree,
     getWorktreeGitMounts,
+    assertWorkspaceBranch,
     needsSubmoduleSetup,
     initWithSubmodules,
 } from "../worktree.js";
@@ -717,6 +718,51 @@ describe("createWorkspace", () => {
         expect(() => createWorkspace(sourceDir, "pre-exist")).toThrow(
             /already exists/,
         );
+    });
+});
+
+describe("assertWorkspaceBranch", () => {
+    let repoPath: string;
+
+    beforeEach(() => {
+        repoPath = join(tmpdir(), `wt-branch-guard-${randomUUID()}`);
+        initRepo(repoPath);
+    });
+
+    afterEach(() => {
+        rmSync(getWorkspacePath(repoPath, "feature-login"), { recursive: true, force: true });
+        rmSync(repoPath, { recursive: true, force: true });
+    });
+
+    it("accepts only the exact checked-out branch", () => {
+        const current = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+            cwd: repoPath,
+            encoding: "utf-8",
+        }).stdout.trim();
+        expect(() => assertWorkspaceBranch(repoPath, current)).not.toThrow();
+        expect(() => assertWorkspaceBranch(repoPath, "feature/login"))
+            .toThrow("not 'feature/login'");
+    });
+
+    it("rejects a missing workspace before session registration or removal", () => {
+        const missing = join(repoPath, "missing");
+        expect(() => assertWorkspaceBranch(missing, "feature"))
+            .toThrow("no longer exists");
+    });
+
+    it("rejects branch names that collide to the same workspace directory", () => {
+        const slashBranch = getWorkspacePath(repoPath, "feature/login");
+        const dashBranch = getWorkspacePath(repoPath, "feature-login");
+        expect(slashBranch).toBe(dashBranch);
+
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", dashBranch, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+
+        expect(() => assertWorkspaceBranch(slashBranch, "feature/login"))
+            .toThrow("belongs to branch 'feature-login'");
     });
 });
 
