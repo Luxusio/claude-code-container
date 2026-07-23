@@ -77,13 +77,14 @@ describe('remote stop identity fencing', () => {
   it('loads the start-time container ID before removing its reservation', () => {
     const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32))
     const readAt = shell.indexOf('read -r _ccc_own_expiry _ccc_container_id')
-    const removeMarkerAt = shell.indexOf('rm -f "$_ccc_sessions/')
+    const removeMarkerAt = shell.indexOf('rm -f "$_ccc_marker"')
 
     expect(readAt).toBeGreaterThan(-1)
     expect(readAt).toBeLessThan(removeMarkerAt)
     expect(shell).toContain('docker stop "$_ccc_container_id"')
     expect(shell).not.toContain('docker stop ccc-project-safe')
-    expect(shell).not.toContain('docker inspect')
+    expect(shell).toContain('docker inspect --format')
+    expect(shell).toContain('"$_ccc_actual_name" = "$_ccc_expected_name"')
     expect(shell).toContain("*[!a-fA-F0-9]*")
   })
 
@@ -983,7 +984,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer: ssh docker run
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir: ssh docker exec mkdir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
@@ -1053,6 +1054,17 @@ describe('remoteExec', () => {
 
     const logs = (console.log as any).mock.calls.map((c: any[]) => c.join(' '))
     expect(logs.some((l: string) => l.includes('saved-host'))).toBe(true)
+    const remoteMkdir = mockSpawnSync.mock.calls.find((call) => call[0] === 'ssh'
+      && (call[1] as string[]).some((arg) => arg.includes('docker exec abcdef1234567890 mkdir -p')))
+    expect(remoteMkdir).toBeTruthy()
+    const mutagenCreate = mockSpawnSync.mock.calls.find((call) => call[0] === 'mutagen'
+      && (call[1] as string[])[1] === 'create')
+    expect(mutagenCreate?.[1]).toEqual(expect.arrayContaining([
+      expect.stringContaining('saveduser@saved-host:docker://abcdef1234567890/project/'),
+    ]))
+    const remoteExecCall = mockSpawn.mock.calls.find((call) => call[0] === 'ssh')
+    expect((remoteExecCall?.[1] as string[])[2]).toContain('abcdef1234567890')
+    expect((remoteExecCall?.[1] as string[])[2]).not.toContain('docker exec  -it ccc-')
   })
 
   it('saves new config when host is provided and host is reachable', async () => {
@@ -1075,7 +1087,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
@@ -1205,7 +1217,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
@@ -1248,7 +1260,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
@@ -1424,7 +1436,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null
@@ -1461,7 +1473,7 @@ describe('remoteExec', () => {
         status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // startRemoteContainer
-        status: 0, stdout: 'container-id\n', stderr: '', pid: 0, output: [], signal: null
+        status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null
       })
       .mockReturnValueOnce({ // createContainerProjectDir
         status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null

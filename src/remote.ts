@@ -147,18 +147,34 @@ export function remoteSessionReservationShell(
         "_ccc_sessions_identity=$(_ccc_identity \"$_ccc_sessions\") || exit 74",
         "_ccc_assert_sessions() { _ccc_assert_runtime && _ccc_assert_private \"$_ccc_sessions\" && [ \"$(_ccc_identity \"$_ccc_sessions\")\" = \"$_ccc_sessions_identity\" ]; }",
         `_ccc_marker=$_ccc_sessions/${token}`,
+        `_ccc_marker_candidate=$_ccc_sessions/.${token}.$$.${"${_ccc_token}"}`,
+        `[ ! -e "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] || exit 74`,
         "_ccc_now=$(date +%s)",
         `_ccc_assert_sessions || exit 74`,
-        `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
+        `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker_candidate"`,
+        `ln "$_ccc_marker_candidate" "$_ccc_marker" || { rm -f "$_ccc_marker_candidate"; exit 74; }`,
+        `rm -f "$_ccc_marker_candidate"`,
+        `[ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] || exit 74`,
+        `_ccc_marker_identity=$(_ccc_identity "$_ccc_marker") || exit 74`,
+        `_ccc_assert_marker() { [ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] && [ "$(_ccc_identity "$_ccc_marker")" = "$_ccc_marker_identity" ]; }`,
+        `_ccc_assert_marker || exit 74`,
         `_ccc_assert_sessions || exit 74`,
         command,
         `_ccc_assert_sessions || exit 74`,
+        `_ccc_assert_marker || exit 74`,
         ...(pinContainerIdentity ? [
-            `_ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)}) || exit 44`,
+            `_ccc_container_id=\${_ccc_container_id:-}`,
+            `[ -n "$_ccc_container_id" ] || _ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)}) || exit 44`,
             `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
             '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
-            `printf '%s %s\\n' "$((_ccc_now + ${leaseSeconds}))" "$_ccc_container_id" > "$_ccc_marker"`,
+            `_ccc_marker_next=$_ccc_sessions/.${token}.next.$$.${"${_ccc_token}"}`,
+            `printf '%s %s\\n' "$((_ccc_now + ${leaseSeconds}))" "$_ccc_container_id" > "$_ccc_marker_next"`,
+            `_ccc_assert_marker || exit 74`,
             `_ccc_assert_sessions || exit 74`,
+            `mv -f "$_ccc_marker_next" "$_ccc_marker"`,
+            `_ccc_marker_identity=$(_ccc_identity "$_ccc_marker") || exit 74`,
+            `_ccc_assert_marker || exit 74`,
+            `printf 'ccc-container-id=%s\\n' "$_ccc_container_id"`,
         ] : []),
     ].join("; "));
 }
@@ -172,18 +188,27 @@ export function remoteRefreshSessionShell(containerName: string, token: string, 
         `_ccc_sessions_identity=$(_ccc_identity "$_ccc_sessions") || exit 74`,
         `_ccc_assert_sessions() { _ccc_assert_runtime && _ccc_assert_private "$_ccc_sessions" && [ "$(_ccc_identity "$_ccc_sessions")" = "$_ccc_sessions_identity" ]; }`,
         `_ccc_marker=$_ccc_sessions/${token}`,
-        `[ -f "$_ccc_marker" ] || exit 44`,
+        `[ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] || exit 44`,
+        `_ccc_marker_identity=$(_ccc_identity "$_ccc_marker") || exit 74`,
+        `_ccc_assert_marker() { [ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] && [ "$(_ccc_identity "$_ccc_marker")" = "$_ccc_marker_identity" ]; }`,
+        `_ccc_assert_marker || exit 74`,
         ...(requireContainerIdentity ? [
             `read -r _ccc_expiry _ccc_container_id < "$_ccc_marker" || exit 74`,
+            `_ccc_assert_marker || exit 74`,
+            `case "$_ccc_expiry" in ''|*[!0-9]*) exit 74 ;; esac`,
             `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
             '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
         ] : []),
         "_ccc_now=$(date +%s)",
         `_ccc_assert_sessions || exit 74`,
         requireContainerIdentity
-            ? `printf '%s %s\\n' "$((_ccc_now + ${leaseSeconds}))" "$_ccc_container_id" > "$_ccc_marker"`
-            : `printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker"`,
+            ? `_ccc_marker_next=$_ccc_sessions/.${token}.next.$$.${"${_ccc_token}"}; printf '%s %s\\n' "$((_ccc_now + ${leaseSeconds}))" "$_ccc_container_id" > "$_ccc_marker_next"`
+            : `_ccc_marker_next=$_ccc_sessions/.${token}.next.$$.${"${_ccc_token}"}; printf '%s\\n' "$((_ccc_now + ${leaseSeconds}))" > "$_ccc_marker_next"`,
+        `_ccc_assert_marker || exit 74`,
         `_ccc_assert_sessions || exit 74`,
+        `mv -f "$_ccc_marker_next" "$_ccc_marker"`,
+        `_ccc_marker_identity=$(_ccc_identity "$_ccc_marker") || exit 74`,
+        `_ccc_assert_marker || exit 74`,
     ].join("; "));
 }
 
@@ -198,12 +223,21 @@ export function remoteStopShell(containerName: string, ownToken: string): string
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_assert_private "$_ccc_sessions" || exit 74; fi`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_sessions_identity=$(_ccc_identity "$_ccc_sessions") || exit 74; _ccc_assert_sessions() { _ccc_assert_runtime && _ccc_assert_private "$_ccc_sessions" && [ "$(_ccc_identity "$_ccc_sessions")" = "$_ccc_sessions_identity" ]; }; _ccc_assert_sessions || exit 74; fi`,
-        `[ -f "$_ccc_sessions/${ownToken}" ] || exit 44`,
-        `read -r _ccc_own_expiry _ccc_container_id < "$_ccc_sessions/${ownToken}" || exit 74`,
+        `_ccc_marker=$_ccc_sessions/${ownToken}`,
+        `[ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] || exit 44`,
+        `_ccc_marker_identity=$(_ccc_identity "$_ccc_marker") || exit 74`,
+        `_ccc_assert_marker() { [ -f "$_ccc_marker" ] && [ ! -L "$_ccc_marker" ] && [ -O "$_ccc_marker" ] && [ "$(_ccc_identity "$_ccc_marker")" = "$_ccc_marker_identity" ]; }`,
+        `_ccc_assert_marker || exit 74`,
+        `read -r _ccc_own_expiry _ccc_container_id < "$_ccc_marker" || exit 74`,
+        `_ccc_assert_marker || exit 74`,
         `case "$_ccc_own_expiry" in ''|*[!0-9]*) exit 74 ;; esac`,
         `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
         '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
-        `rm -f "$_ccc_sessions/${ownToken}"`,
+        `_ccc_expected_name=${shellEscapeArg(`/${containerName}`)}`,
+        `_ccc_actual_name=$(docker inspect --format ${shellEscapeArg("{{.Name}}")} "$_ccc_container_id") || exit 44`,
+        `[ "$_ccc_actual_name" = "$_ccc_expected_name" ] || exit 74`,
+        `_ccc_assert_marker || exit 74`,
+        `rm -f "$_ccc_marker"`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_assert_sessions || exit 74; fi`,
         "_ccc_now=$(date +%s)",
         "_ccc_active=0",
@@ -234,22 +268,22 @@ async function ensureRemoteImage(config: RemoteConfig): Promise<void> {
 
 /**
  * Start container on remote host without project volume mount.
- * Returns container name.
+ * Returns the stable container name and ID captured under the lifecycle lock.
  */
-async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationLeaseSeconds: number, profile?: string): Promise<string> {
+async function startRemoteContainer(config: RemoteConfig, projectPath: string, reservationToken: string, reservationLeaseSeconds: number, profile?: string): Promise<{ name: string; id: string }> {
     const projectId = getProjectId(projectPath);
     const containerName = getContainerName(projectPath, profile);
     const claudeDir = getClaudeDir(profile);
 
     // Build docker run command (no project volume, just credentials and mise cache)
-    const dockerCmd = `docker run -d --name ${containerName} \
+    const dockerCmd = `_ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)} 2>/dev/null || true); if [ -n "$_ccc_container_id" ]; then docker start "$_ccc_container_id" >/dev/null; else _ccc_container_id=$(docker run -d --name ${containerName} \
         --network host \
         -v ${shellEscapeArg(`${claudeDir}:/home/ccc/.claude`)} \
         -v ${MISE_VOLUME_NAME}:/home/ccc/.local/share/mise \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -w /project/${projectId} \
         --pids-limit ${CONTAINER_PID_LIMIT} \
-        ${IMAGE_NAME} sleep infinity 2>/dev/null || docker start ${containerName}`;
+        ${IMAGE_NAME} sleep infinity); fi`;
 
     const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
@@ -260,7 +294,11 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, r
         throw new Error(`Failed to start remote container: ${result.stderr}`);
     }
 
-    return containerName;
+    const match = (result.stdout ?? "").match(/^ccc-container-id=([a-fA-F0-9]{12,64})$/m);
+    if (!match) {
+        throw new Error("Failed to start remote container: stable container ID was not returned");
+    }
+    return { name: containerName, id: match[1] };
 }
 
 /**
@@ -318,7 +356,7 @@ function saveRemoteConfig(projectPath: string, config: RemoteConfig): void {
  * Syncs directly to the remote container via SSH.
  * Returns the session name.
  */
-async function ensureSync(projectPath: string, config: RemoteConfig, containerName: string): Promise<string> {
+async function ensureSync(projectPath: string, config: RemoteConfig, containerTarget: string, containerDisplayName = containerTarget): Promise<string> {
     const fullPath = resolve(projectPath);
     const sessionName = getMutagenSessionName(fullPath);
     const projectId = getProjectId(fullPath);
@@ -343,14 +381,14 @@ async function ensureSync(projectPath: string, config: RemoteConfig, containerNa
     // Create new sync session - sync to container via SSH
     console.log("Creating sync session...");
     console.log(`  Local:  ${fullPath}`);
-    console.log(`  Remote: docker://${containerName}/project/${projectId} (via ${config.host})`);
+    console.log(`  Remote: docker://${containerDisplayName}/project/${projectId} (via ${config.host})`);
 
     // Mutagen sync to remote docker container
     // Format: user@host:docker://container/path
     const mutagenArgs = [
         "sync", "create",
         fullPath,
-        `${config.user}@${config.host}:docker://${containerName}/project/${projectId}`,
+        `${config.user}@${config.host}:docker://${containerTarget}/project/${projectId}`,
         "--name", sessionName,
         "--ignore-vcs",
         ...COMMON_IGNORE_DIRS.map(dir => `--ignore=${dir}`)
@@ -517,7 +555,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         // 2. Start container on remote (without project volume mount)
         console.log("Starting remote container...");
         remoteReservationActive = true;
-        const containerName = await withContainerLifecycleLockAsync(
+        const remoteContainer = await withContainerLifecycleLockAsync(
             remoteContainerPrefix,
             () => startRemoteContainer(resolvedConfig, fullPath, remoteReservationToken, remoteReservationLeaseSeconds),
         );
@@ -525,17 +563,17 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
             if (!remoteReservationActive) return;
             const refreshed = spawnSync("ssh", [
                 `${resolvedConfig.user}@${resolvedConfig.host}`,
-                remoteRefreshSessionShell(containerName, remoteReservationToken, remoteReservationLeaseSeconds, true),
+                remoteRefreshSessionShell(remoteContainer.name, remoteReservationToken, remoteReservationLeaseSeconds, true),
             ], { encoding: "utf-8", timeout: 10000 });
             if (refreshed.status !== 0) console.error("Remote session lease refresh failed; container stop protection may expire.");
         }, 30_000);
         remoteReservationHeartbeat.unref();
 
         // 3. Create project directory in container
-        await createContainerProjectDir(resolvedConfig, containerName, projectId);
+        await createContainerProjectDir(resolvedConfig, remoteContainer.id, projectId);
 
         // 4. Ensure mutagen sync to container is running
-        const sessionName = await ensureSync(fullPath, resolvedConfig, containerName);
+        const sessionName = await ensureSync(fullPath, resolvedConfig, remoteContainer.id, remoteContainer.name);
 
         // 5. Wait for initial sync
         await waitForSync(sessionName);
@@ -563,7 +601,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
         const containerProgram = `cd ${shellEscapeArg(`/project/${projectId}`)} && mise trust . 2>/dev/null; mise install -y || true; exec claude ${claudeArgs}`;
         const encodedProgram = Buffer.from(containerProgram, "utf8").toString("base64");
         const decoder = `printf %s ${shellEscapeArg(encodedProgram)} | base64 -d | sh`;
-        const execCmd = `docker exec ${envString} -it ${containerName} sh -c ${shellEscapeArg(decoder)}`;
+        const execCmd = `docker exec ${envString} -it ${remoteContainer.id} sh -c ${shellEscapeArg(decoder)}`;
 
         const sshProcess = spawn("ssh", ["-t", `${resolvedConfig.user}@${resolvedConfig.host}`, execCmd], {
             stdio: "inherit"
@@ -591,7 +629,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
                     console.log("Stopping container...");
                     const stopped = spawnSync(
                         "ssh",
-                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(containerName, remoteReservationToken)],
+                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(remoteContainer.name, remoteReservationToken)],
                         { encoding: "utf-8", timeout: 60000 },
                     );
                     if (stopped.status === 42 || stopped.stdout?.includes("ccc-remote-sessions-active")) {

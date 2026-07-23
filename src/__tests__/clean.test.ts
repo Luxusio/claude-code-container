@@ -167,6 +167,20 @@ describe("cleanContainers", () => {
         expect(spawnSyncMock.mock.calls.some((call) => (call[1] as string[])[0] === "rm")).toBe(false);
     });
 
+    it("reports failure when removal of a pinned container ID fails", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") return makeResult(0, "222222222222\tccc-stopped-eeff33445566\tExited (0) 1 day ago");
+            if (argsArr[0] === "images") return makeResult(0, "");
+            if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
+            if (argsArr[0] === "rm") return makeResult(1, "");
+            return makeResult(0, "");
+        });
+
+        await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("cleanup aborted");
+        expect(spawnSyncMock).toHaveBeenCalledWith(expect.any(String), ["rm", "222222222222"], { stdio: "inherit" });
+    });
+
     it("never stops or removes a container with an active CCC session", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];

@@ -131,7 +131,15 @@ describe('workspace container cleanup identity fencing', () => {
   it('preserves the container when identity inspection fails', () => {
     const runner = vi.fn() as any
 
-    expect(removeWorkspaceContainerByIdentity('ccc-worktree', () => null, runner, 'docker')).toBe(false)
+    expect(removeWorkspaceContainerByIdentity('ccc-worktree', () => null, runner, 'docker', () => false)).toBe(false)
+    expect(runner).not.toHaveBeenCalled()
+  })
+
+  it('aborts workspace removal when a named container exists but identity inspection fails', () => {
+    const runner = vi.fn() as any
+
+    expect(() => removeWorkspaceContainerByIdentity('ccc-worktree', () => null, runner, 'docker', () => true))
+      .toThrow('identity inspection failed')
     expect(runner).not.toHaveBeenCalled()
   })
 

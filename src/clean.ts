@@ -178,7 +178,10 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
             }
             console.log(`Removing container ${c.name}...`);
             const r = spawnSync(cli, ["rm", c.id], { stdio: "inherit" });
-            if (r.status === 0) removed++;
+            if (r.error || r.status !== 0) {
+                throw new Error(`Failed to remove container ${c.name}; cleanup aborted.`);
+            }
+            removed++;
         });
     }
 

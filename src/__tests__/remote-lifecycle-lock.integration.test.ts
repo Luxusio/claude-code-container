@@ -162,10 +162,10 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         roots.push(home);
         const containerName = "ccc-runtime-race";
         const holder = runShell(remoteLifecycleShell(containerName, "sleep 0.5"), home);
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        const runtime = join(home, ".ccc", "remote-runtime");
+        await waitForFile(join(runtime, `lifecycle-${hashPath(containerName)}.lock`));
         const waiter = runShell(remoteLifecycleShell(containerName, "exit 99"), home);
         await new Promise((resolve) => setTimeout(resolve, 80));
-        const runtime = join(home, ".ccc", "remote-runtime");
         renameSync(runtime, join(home, ".ccc", "displaced-runtime"));
         mkdirSync(runtime, { mode: 0o700 });
 
@@ -247,16 +247,17 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         roots.push(home, bin);
         const originalId = "a".repeat(64);
         const stoppedFile = join(home, "stopped.txt");
+        const containerName = "ccc-pinned-remote";
         const docker = join(bin, "docker");
         writeFileSync(docker, [
             "#!/bin/sh",
+            "if [ \"$1\" = inspect ] && [ \"$2\" = --format ] && [ \"$3\" = '{{.Name}}' ]; then printf '%s\\n' " + shellEscapeArg(`/${containerName}`) + "; exit 0; fi",
             "if [ \"$1\" = inspect ]; then printf '%s\\n' " + shellEscapeArg(originalId) + "; exit 0; fi",
             "if [ \"$1\" = stop ]; then printf '%s\\n' \"$2\" > " + shellEscapeArg(stoppedFile) + "; exit 0; fi",
             "exit 99",
         ].join("\n"));
         chmodSync(docker, 0o755);
         const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
-        const containerName = "ccc-pinned-remote";
         const token = "e".repeat(32);
 
         await expect(runShell(
@@ -282,5 +283,92 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(0);
 
         await expect(runShell(remoteStopShell(containerName, token), home)).resolves.toBe(74);
+    });
+
+    it("rejects a symlink that preclaims a reservation marker", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-marker-preclaim-home-"));
+        const external = join(home, "external-marker");
+        roots.push(home);
+        const containerName = "ccc-marker-preclaim";
+        const token = "1".repeat(32);
+        const sessions = join(home, ".ccc", "remote-runtime", `sessions-${hashPath(containerName)}`);
+        mkdirSync(sessions, { recursive: true, mode: 0o700 });
+        writeFileSync(external, "unchanged\n");
+        symlinkSync(external, join(sessions, token), "file");
+
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(74);
+        expect(readFileSync(external, "utf8")).toBe("unchanged\n");
+    });
+
+    it("rejects a marker replaced before refresh", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-marker-refresh-home-"));
+        roots.push(home);
+        const containerName = "ccc-marker-refresh";
+        const token = "2".repeat(32);
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(0);
+        const marker = join(home, ".ccc", "remote-runtime", `sessions-${hashPath(containerName)}`, token);
+        const displaced = `${marker}.displaced`;
+        renameSync(marker, displaced);
+        symlinkSync(displaced, marker, "file");
+
+        await expect(runShell(remoteRefreshSessionShell(containerName, token, 60), home)).resolves.toBe(44);
+    });
+
+    it("rejects a marker replaced while the reservation command runs", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-marker-command-home-"));
+        roots.push(home);
+        const containerName = "ccc-marker-command";
+        const token = "4".repeat(32);
+        const external = join(home, "external-command-marker");
+        writeFileSync(external, "unchanged\n");
+        const command = `mv "$_ccc_marker" "$_ccc_marker.displaced"; ln -s ${shellEscapeArg(external)} "$_ccc_marker"`;
+
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, command), home)).resolves.toBe(74);
+        expect(readFileSync(external, "utf8")).toBe("unchanged\n");
+    });
+
+    it("rejects a marker symlink substituted before stop without invoking docker", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-marker-stop-home-"));
+        const bin = mkdtempSync(join(tmpdir(), "ccc-remote-marker-stop-bin-"));
+        roots.push(home, bin);
+        const containerName = "ccc-marker-stop";
+        const token = "5".repeat(32);
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(0);
+        const marker = join(home, ".ccc", "remote-runtime", `sessions-${hashPath(containerName)}`, token);
+        const displaced = `${marker}.displaced`;
+        renameSync(marker, displaced);
+        symlinkSync(displaced, marker, "file");
+        const dockerCalled = join(home, "docker-called");
+        const docker = join(bin, "docker");
+        writeFileSync(docker, `#!/bin/sh\ntouch ${shellEscapeArg(dockerCalled)}\nexit 0\n`);
+        chmodSync(docker, 0o755);
+        const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
+
+        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(44);
+        expect(existsSync(dockerCalled)).toBe(false);
+    });
+
+    it("refuses to stop when the pinned ID no longer has the expected name", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-name-fence-home-"));
+        const bin = mkdtempSync(join(tmpdir(), "ccc-remote-name-fence-bin-"));
+        roots.push(home, bin);
+        const containerName = "ccc-expected-name";
+        const token = "3".repeat(32);
+        const pinnedId = "b".repeat(64);
+        const stoppedFile = join(home, "stopped.txt");
+        const docker = join(bin, "docker");
+        writeFileSync(docker, [
+            "#!/bin/sh",
+            "if [ \"$1\" = inspect ] && [ \"$3\" = '{{.Name}}' ]; then printf '/ccc-replacement\\n'; exit 0; fi",
+            "if [ \"$1\" = inspect ]; then printf '%s\\n' " + shellEscapeArg(pinnedId) + "; exit 0; fi",
+            "if [ \"$1\" = stop ]; then touch " + shellEscapeArg(stoppedFile) + "; exit 0; fi",
+            "exit 99",
+        ].join("\n"));
+        chmodSync(docker, 0o755);
+        const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":", true), home, env)).resolves.toBe(0);
+
+        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(74);
+        expect(existsSync(stoppedFile)).toBe(false);
     });
 });

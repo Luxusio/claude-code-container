@@ -503,18 +503,28 @@ async function exec(
         portFile: string | undefined = clipboardPortFile,
         onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
     ) => {
-        return withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
-            fullPath,
-            () => ensureDirs(profile),
-            mounts,
-            portFile,
-            profile,
-            onRecreate,
-            recreateInsideLifecycleLock,
-            setSessionContainerId,
-        ));
+        return withContainerLifecycleLock(sessionContainerPrefix, () => {
+            let readyContainerId: string | null = null;
+            startProjectContainer(
+                fullPath,
+                () => ensureDirs(profile),
+                mounts,
+                portFile,
+                profile,
+                onRecreate,
+                recreateInsideLifecycleLock,
+                (containerId) => {
+                    readyContainerId = containerId;
+                    setSessionContainerId(containerId);
+                },
+            );
+            if (!readyContainerId) {
+                throw new Error("Container became unavailable before the session handoff.");
+            }
+            return readyContainerId;
+        });
     };
-    const containerName = startContainer();
+    let containerName = startContainer();
     restoreCodexConfigHostOwnership(containerName);
 
     // Skip heavy setup if container was already running (another session set it up)
@@ -526,7 +536,7 @@ async function exec(
             for (let attempt = 0; attempt < 2; attempt++) {
                 if (!isContainerRunning(containerName)) {
                     console.log("Container stopped during setup (concurrent session), restarting...");
-                    startContainer(undefined, undefined, undefined);
+                    containerName = startContainer(undefined, undefined, undefined);
                 }
                 try {
                     ensureTools(containerName, setupTool);
@@ -562,7 +572,7 @@ async function exec(
         // Verify container is still running before exec.
         if (!isContainerRunning(containerName)) {
             console.log("Container was stopped during setup, restarting...");
-            startContainer(undefined, undefined, undefined);
+            containerName = startContainer(undefined, undefined, undefined);
         }
     } else {
         // Container already running — only rebuild MCP config (lightweight, may have changed)
@@ -1001,9 +1011,15 @@ export function removeWorkspaceContainerByIdentity(
     identityProbe: typeof getContainerIdentity = getContainerIdentity,
     runner: typeof spawnSync = spawnSync,
     cli = runtimeCli(),
+    existsProbe: typeof isContainerExists = isContainerExists,
 ): boolean {
     const identity = identityProbe(containerName);
-    if (!identity) return false;
+    if (!identity) {
+        if (existsProbe(containerName)) {
+            throw new Error("Workspace container identity inspection failed; workspace removal was aborted.");
+        }
+        return false;
+    }
     if (identity.running) {
         const stopped = runner(cli, ["stop", identity.containerId], { stdio: "ignore" });
         if (stopped.error || stopped.status !== 0) throw new Error("Failed to stop workspace container.");

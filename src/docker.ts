@@ -1379,7 +1379,7 @@ export function startProjectContainer(
                 );
                 if (!recreated) {
                     if (!containerRunContractIsSafeToDefer(
-                        containerName,
+                        listedContainer.containerId,
                         requiredMounts,
                         labRunner,
                         preparedDeviceLabSources.contractIdentity,
