@@ -3,6 +3,7 @@ import { spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { runSupervisedProcess } from "./real-tests/supervised-process.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -214,11 +215,9 @@ if (args.includes("--dry-run")) {
 }
 
 console.log(`Running ${planned.name}: ${planned.description}`);
-const result = spawnSync(planned.command, planned.args, {
+const result = await runSupervisedProcess(planned.command, planned.args, {
     cwd: root,
     env: { ...process.env, ...planned.env },
-    stdio: "inherit",
-    windowsHide: true,
 });
 
 process.exit(result.status ?? 1);

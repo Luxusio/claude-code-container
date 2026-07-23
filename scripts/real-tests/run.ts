@@ -392,6 +392,7 @@ async function executeModule(file: string) {
 }
 
 const activeProviderChildren = new Set<any>();
+const MAX_PROVIDER_WORKER_RESULT_BYTES = 16 * 1024 * 1024;
 
 function terminateProviderChild(child, force = false) {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -413,31 +414,48 @@ function terminateActiveProviderChildren() {
     for (const child of activeProviderChildren) terminateProviderChild(child);
 }
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-    process.once(signal, () => {
-        const children = [...activeProviderChildren];
-        children.forEach((child) => terminateProviderChild(child));
-        const forceTimer = setTimeout(() => {
-            children.forEach((child) => terminateProviderChild(child, true));
-        }, 2000);
-        const exitTimer = setTimeout(() => {
-            process.exit(signal === "SIGINT" ? 130 : 143);
-        }, 5000);
-        Promise.all(children.map((child) => (
-            child.exitCode !== null || child.signalCode !== null
-                ? Promise.resolve()
-                : new Promise<void>((resolvePromise) => child.once("close", () => resolvePromise()))
-        ))).finally(() => {
-            clearTimeout(forceTimer);
-            clearTimeout(exitTimer);
-            process.exit(signal === "SIGINT" ? 130 : 143);
-        });
+const providerSignalHandlers = new Map<NodeJS.Signals, () => void>();
+
+function interruptProviderChildren(signal: "SIGINT" | "SIGTERM") {
+    const children = [...activeProviderChildren];
+    children.forEach((child) => terminateProviderChild(child));
+    const forceTimer = setTimeout(() => {
+        children.forEach((child) => terminateProviderChild(child, true));
+    }, 2000);
+    const exitTimer = setTimeout(() => {
+        process.exit(signal === "SIGINT" ? 130 : 143);
+    }, 5000);
+    Promise.all(children.map((child) => (
+        child.exitCode !== null || child.signalCode !== null
+            ? Promise.resolve()
+            : new Promise<void>((resolvePromise) => child.once("close", () => resolvePromise()))
+    ))).finally(() => {
+        clearTimeout(forceTimer);
+        clearTimeout(exitTimer);
+        process.exit(signal === "SIGINT" ? 130 : 143);
     });
 }
-process.once("exit", terminateActiveProviderChildren);
+
+function installProviderChildCleanup() {
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+        const handler = () => interruptProviderChildren(signal);
+        providerSignalHandlers.set(signal, handler);
+        process.once(signal, handler);
+    }
+    process.once("exit", terminateActiveProviderChildren);
+}
+
+function uninstallProviderChildCleanup() {
+    for (const [signal, handler] of providerSignalHandlers) {
+        process.removeListener(signal, handler);
+    }
+    providerSignalHandlers.clear();
+    process.removeListener("exit", terminateActiveProviderChildren);
+}
 
 async function executeProviderModule(file: string) {
     const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
+    const watchdogScript = resolve(dirname(fileURLToPath(import.meta.url)), "process-tree-watchdog.ts");
     try {
         const output = await new Promise<string>((resolvePromise, rejectPromise) => {
             const child = spawn(process.execPath, [worker, file], {
@@ -445,16 +463,45 @@ async function executeProviderModule(file: string) {
                 env: process.env,
                 stdio: ["ignore", "inherit", "inherit", "pipe"],
                 windowsHide: true,
+                detached: process.platform !== "win32",
             });
             activeProviderChildren.add(child);
+            const watchdog = Number.isInteger(child.pid)
+                ? spawn(process.execPath, [watchdogScript, String(child.pid), String(process.pid)], {
+                    cwd: process.cwd(),
+                    env: process.env,
+                    stdio: ["pipe", "ignore", "ignore"],
+                    windowsHide: true,
+                    detached: true,
+                })
+                : null;
+            watchdog?.unref();
+            (watchdog?.stdin as any)?.unref?.();
             const chunks: Buffer[] = [];
-            child.stdio[3]?.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            let outputBytes = 0;
+            let outputLimitExceeded = false;
+            child.stdio[3]?.on("data", (chunk) => {
+                const buffer = Buffer.from(chunk);
+                outputBytes += buffer.length;
+                if (outputBytes > MAX_PROVIDER_WORKER_RESULT_BYTES) {
+                    outputLimitExceeded = true;
+                    terminateProviderChild(child, true);
+                    return;
+                }
+                chunks.push(buffer);
+            });
             child.once("error", (error) => {
                 activeProviderChildren.delete(child);
+                watchdog?.stdin?.end("complete");
                 rejectPromise(error);
             });
             child.once("close", () => {
                 activeProviderChildren.delete(child);
+                watchdog?.stdin?.end("complete");
+                if (outputLimitExceeded) {
+                    rejectPromise(new Error(`provider worker result exceeded ${MAX_PROVIDER_WORKER_RESULT_BYTES} bytes`));
+                    return;
+                }
                 resolvePromise(Buffer.concat(chunks).toString("utf-8"));
             });
         });
@@ -466,7 +513,11 @@ async function executeProviderModule(file: string) {
                 error: { message: "provider worker exited without a result" },
             };
         }
-        return JSON.parse(output);
+        const parsed = JSON.parse(output);
+        if (!parsed || typeof parsed !== "object" || parsed.file !== file || typeof parsed.ok !== "boolean") {
+            throw new Error("provider worker returned an invalid result envelope");
+        }
+        return parsed;
     } catch (error) {
         return {
             ok: false,
@@ -626,12 +677,17 @@ if (providerFiles.length > 0) {
     if (providerConcurrency > 1) {
         console.log(`PROVIDERS concurrency=${providerConcurrency} count=${providerFiles.length}`);
     }
-    const executions = await runResourceAware(
-        providerFiles,
-        providerConcurrency,
-        executeProviderModule,
-    );
-    executions.forEach(collectExecution);
+    installProviderChildCleanup();
+    try {
+        const executions = await runResourceAware(
+            providerFiles,
+            providerConcurrency,
+            executeProviderModule,
+        );
+        executions.forEach(collectExecution);
+    } finally {
+        uninstallProviderChildCleanup();
+    }
 }
 
 const total = counts.PASS + counts.SKIP + counts.FAIL;

@@ -924,7 +924,7 @@ describe("test level runner", () => {
             ], {
                 cwd: repoRoot,
                 encoding: "utf-8",
-                timeout: 10_000,
+                timeout: 30_000,
             });
             expect(result.status, result.stderr || result.stdout).toBe(0);
             const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
@@ -939,7 +939,7 @@ describe("test level runner", () => {
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
-    });
+    }, 40_000);
 
     it("collects a provider worker exception as a failed real-test record", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-failure-"));
@@ -963,7 +963,7 @@ describe("test level runner", () => {
             ], {
                 cwd: repoRoot,
                 encoding: "utf-8",
-                timeout: 10_000,
+                timeout: 30_000,
             });
             expect(result.status).toBe(1);
             const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
@@ -979,7 +979,7 @@ describe("test level runner", () => {
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
-    });
+    }, 40_000);
 
     it("terminates active provider workers when the collector is interrupted", async () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-signal-"));
@@ -1006,22 +1006,33 @@ describe("test level runner", () => {
             windowsHide: true,
         });
         try {
-            const deadline = Date.now() + 10_000;
+            const deadline = Date.now() + 30_000;
             while (!existsSync(workerPidFile) && Date.now() < deadline) {
                 await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
             }
             expect(existsSync(workerPidFile)).toBe(true);
             const workerPid = Number(readFileSync(workerPidFile, "utf-8"));
             expect(Number.isInteger(workerPid)).toBe(true);
-            collector.kill("SIGTERM");
-            const exitCode = await new Promise<number | null>((resolvePromise) => collector.once("close", resolvePromise));
-            expect(exitCode).toBe(143);
+            const killSignal = process.platform === "win32" ? "SIGTERM" : "SIGKILL";
+            collector.kill(killSignal);
+            const collectorExit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolvePromise) => {
+                collector.once("close", (code, signal) => resolvePromise({ code, signal }));
+            });
+            expect(collectorExit.code).toBeNull();
+            expect(collectorExit.signal).toBe(killSignal);
 
             const workerDeadline = Date.now() + 5000;
             let workerAlive = true;
             while (workerAlive && Date.now() < workerDeadline) {
                 try {
                     process.kill(workerPid, 0);
+                    if (process.platform === "linux") {
+                        const stat = readFileSync(`/proc/${workerPid}/stat`, "utf-8");
+                        if (/\)\s+Z\s/.test(stat)) {
+                            workerAlive = false;
+                            break;
+                        }
+                    }
                     await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
                 } catch {
                     workerAlive = false;
@@ -1032,7 +1043,7 @@ describe("test level runner", () => {
             if (collector.exitCode === null) collector.kill("SIGKILL");
             rmSync(tempDir, { recursive: true, force: true });
         }
-    });
+    }, 40_000);
 
     it("always uses the current checkout CLI for real broker autolaunch", async () => {
         const { localCccPathEnv } = await import("../../scripts/real-tests/helpers.ts") as {

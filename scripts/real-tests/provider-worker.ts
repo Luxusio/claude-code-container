@@ -3,8 +3,18 @@ import { pathToFileURL } from "url";
 import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from "./device-lab-mcp-client.ts";
 
 const [, , file] = process.argv;
+const parentPid = process.ppid;
+
+const parentWatchdog = setInterval(() => {
+    try {
+        process.kill(parentPid, 0);
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code === "ESRCH") process.exit(143);
+    }
+}, 250);
 
 function writeResult(value: unknown) {
+    clearInterval(parentWatchdog);
     writeFileSync(3, JSON.stringify(value));
     closeSync(3);
 }

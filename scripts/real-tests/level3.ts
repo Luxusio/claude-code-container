@@ -1,7 +1,7 @@
-import { spawnSync } from "child_process";
 import { join, resolve } from "path";
 import { repoRoot } from "./helpers.ts";
-import { withExclusiveRealProviderRunSync } from "./exclusive-real-provider-run.ts";
+import { withExclusiveRealProviderRun } from "./exclusive-real-provider-run.ts";
+import { runSupervisedProcess } from "./supervised-process.ts";
 import { buildLevel3Artifacts, ensureHostBrokerReady } from "./support/level3-host.ts";
 
 const args = process.argv.slice(2);
@@ -25,17 +25,15 @@ function hiddenChildProcessEnv() {
     return { ...baseEnv, NODE_OPTIONS: nodeOptions };
 }
 
-function run(command, args) {
-    const result = spawnSync(command, args, {
+async function run(command, args) {
+    const result = await runSupervisedProcess(command, args, {
         cwd: repoRoot,
         env: hiddenChildProcessEnv(),
-        stdio: "inherit",
-        windowsHide: true,
     });
     return result.status ?? 1;
 }
 
-function runLevel3() {
+async function runLevel3() {
     const env = hiddenChildProcessEnv();
     const buildStatus = buildLevel3Artifacts(repoRoot, { env });
     if (buildStatus !== 0) return buildStatus;
@@ -44,13 +42,13 @@ function runLevel3() {
 
     const vitest = join(repoRoot, "node_modules", "vitest", "vitest.mjs");
     const config = join(repoRoot, "scripts", "real-tests", "vitest.level3.config.ts");
-    return run(process.execPath, [vitest, "run", "--config", config]);
+    return await run(process.execPath, [vitest, "run", "--config", config]);
 }
 
 try {
     process.exitCode = resultFiles.length > 0
-        ? run(process.execPath, [assertMatrix, ...resultFiles.map((file) => resolve(file))])
-        : withExclusiveRealProviderRunSync("test:level3", runLevel3);
+        ? await run(process.execPath, [assertMatrix, ...resultFiles.map((file) => resolve(file))])
+        : await withExclusiveRealProviderRun("test:level3", runLevel3);
 } catch (error) {
     process.stderr.write(`FAIL ${error?.message || String(error)}\n`);
     process.exitCode = 1;

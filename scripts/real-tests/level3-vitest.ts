@@ -1,8 +1,8 @@
-import { spawnSync } from "child_process";
 import { mkdirSync, readFileSync, rmSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { describe, expect, it } from "vitest";
 import { repoRoot } from "./helpers.ts";
+import { runSupervisedProcess } from "./supervised-process.ts";
 
 const outputFile = resolve(join(repoRoot, "results", `device-lab-level3-${process.platform}.json`));
 const runner = join(repoRoot, "scripts", "test-level.js");
@@ -13,12 +13,11 @@ function realTestEnv() {
     return Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "VITEST" && !key.startsWith("VITEST_")));
 }
 
-function run(args) {
-    return spawnSync(process.execPath, args, {
+async function run(args) {
+    return await runSupervisedProcess(process.execPath, args, {
         cwd: repoRoot,
         env: realTestEnv(),
-        encoding: "utf-8",
-        windowsHide: true,
+        capture: true,
         timeout: LEVEL3_REAL_PROVIDER_TIMEOUT_MS,
     });
 }
@@ -44,7 +43,7 @@ function resultFailure(result) {
 
 mkdirSync(dirname(outputFile), { recursive: true });
 rmSync(outputFile, { force: true });
-const collected = run([
+const collected = await run([
     runner,
     "3",
     "--node-test",
@@ -96,9 +95,9 @@ describe("device-lab Level 3", () => {
     if (failedRecords.length > 0) {
         it.skip("validates provider coverage matrix - blocked by failed provider cases", () => undefined);
     } else {
-        it("validates provider coverage matrix", () => {
+        it("validates provider coverage matrix", async () => {
             expect(collected.status, resultFailure(collected)).toBe(0);
-            const validated = run([runner, "--assert-json", outputFile, "--quiet", "--platform-result"]);
+            const validated = await run([runner, "--assert-json", outputFile, "--quiet", "--platform-result"]);
             expect(validated.status, resultFailure(validated)).toBe(0);
         });
     }
