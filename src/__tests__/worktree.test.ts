@@ -648,11 +648,13 @@ describe("createWorkspace", () => {
 
     it.skipIf(process.platform === "win32")("fails and rolls back when a source entry cannot be copied safely", () => {
         initRepo(join(sourceDir, "repo-a"));
-        writeFileSync(join(sourceDir, "target.txt"), "target");
-        symlinkSync("target.txt", join(sourceDir, "linked.txt"));
+        const configDir = join(sourceDir, "config");
+        mkdirSync(configDir);
+        writeFileSync(join(configDir, "target.txt"), "target");
+        symlinkSync("target.txt", join(configDir, "linked.txt"));
 
         expect(() => createWorkspace(sourceDir, "unsafe-copy"))
-            .toThrow("could not be copied safely");
+            .toThrow("symbolic link that cannot be copied safely");
         expect(existsSync(getWorkspacePath(sourceDir, "unsafe-copy"))).toBe(false);
     });
 
@@ -909,6 +911,30 @@ describe("assertWorkspaceBranch", () => {
 
         expect(() => detectWorktreeWorkspaceBranch(workspace))
             .toThrow("Invalid worktree metadata");
+    });
+
+    it("fails closed when a registered root worktree loses its .git metadata", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        rmSync(join(workspace, ".git"));
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace))
+            .toThrow("Workspace Git metadata is missing or damaged");
+    });
+
+    it("rejects a regular root repository mixed with child worktrees", () => {
+        const source = join(repoPath, "mixed-source");
+        mkdirSync(source);
+        initRepo(join(source, "frontend"));
+        const result = createWorkspace(source, "feature");
+        spawnSync("git", ["init"], { cwd: result.workspacePath, stdio: "pipe" });
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("mixture of a root repository and child worktrees");
     });
 });
 

@@ -1152,6 +1152,12 @@ export function removeWorkspaceContainers(
     return removed;
 }
 
+export function workspaceRemovalCompleted(
+    result: { errors: string[] },
+): boolean {
+    return result.errors.length === 0;
+}
+
 function handleWorktreeRemove(
     cwd: string,
     branch: string,
@@ -1180,8 +1186,12 @@ function handleWorktreeRemove(
             console.error(`  error: ${err}`);
         }
 
-        if (result.errors.length > 0 && !force) {
-            console.error(`\nSome items could not be removed. Use -f to force.`);
+        if (!workspaceRemovalCompleted(result)) {
+            if (!force) {
+                console.error(`\nSome items could not be removed. Use -f to force.`);
+            } else {
+                console.error("\nWorkspace removal did not complete.");
+            }
             process.exit(1);
         } else {
             console.log("Workspace removed.");

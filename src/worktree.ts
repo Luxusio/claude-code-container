@@ -19,9 +19,11 @@ import { basename, dirname, join, resolve } from "path";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
 function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
-    if (depth > 20) return;
+    if (depth > 20) throw new Error(`Source entry nesting is too deep to copy safely: ${src}`);
     const stat = lstatSync(src);
-    if (stat.isSymbolicLink()) return;
+    if (stat.isSymbolicLink()) {
+        throw new Error(`Source entry contains a symbolic link that cannot be copied safely: ${src}`);
+    }
     if (stat.isDirectory()) {
         mkdirSync(dest, { recursive: true });
         for (const entry of readdirSync(src)) {
@@ -286,6 +288,7 @@ function removeDirectoryByQuarantine(
     path: string,
     expectedIdentity: DirectoryIdentity,
     quarantineBase = dirname(path),
+    emptyOnly = false,
 ): void {
     const parentIdentity = captureDirectoryIdentity(dirname(path));
     assertDirectoryIdentity(path, expectedIdentity);
@@ -297,7 +300,11 @@ function removeDirectoryByQuarantine(
         renameSync(path, quarantine.path);
         assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
         assertQuarantinedIdentity(quarantine.path, expectedIdentity, "directory");
-        rmSync(quarantine.path, { recursive: true, force: true });
+        if (emptyOnly) {
+            rmdirSync(quarantine.path);
+        } else {
+            rmSync(quarantine.path, { recursive: true, force: true });
+        }
         if (pathExistsStrict(quarantine.path)) {
             throw new Error(`Quarantined workspace directory was not removed: ${quarantine.path}`);
         }
@@ -618,6 +625,67 @@ function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
         .some((line) => line.startsWith("160000 "));
 }
 
+function sameObservedPath(left: string, right: string): boolean {
+    try {
+        return realpathSync(left) === realpathSync(right);
+    } catch {
+        const resolvedLeft = resolve(left);
+        const resolvedRight = resolve(right);
+        return process.platform === "win32"
+            ? resolvedLeft.toLowerCase() === resolvedRight.toLowerCase()
+            : resolvedLeft === resolvedRight;
+    }
+}
+
+function registryContainsWorktree(repositoryPath: string, expectedPath: string): boolean {
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) {
+        throw new Error(`Unable to inspect Git worktree registry '${repositoryPath}'.`);
+    }
+    return (listed.stdout ?? "")
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("worktree "))
+        .some((line) => sameObservedPath(
+            line.slice("worktree ".length).trim(),
+            expectedPath,
+        ));
+}
+
+function siblingSourceRegistersWorkspace(workspacePath: string): boolean {
+    const workspaceName = basename(workspacePath);
+    let separatorIndex = workspaceName.indexOf(WORKTREE_SEPARATOR);
+    while (separatorIndex > 0) {
+        const sourcePath = join(
+            dirname(workspacePath),
+            workspaceName.slice(0, separatorIndex),
+        );
+        if (pathExistsStrict(sourcePath)) {
+            if (hasGitMetadata(sourcePath)
+                && registryContainsWorktree(sourcePath, workspacePath)) {
+                return true;
+            }
+            for (const entry of scanDirectory(sourcePath, { strict: true })) {
+                if (entry.isGitRepo
+                    && registryContainsWorktree(
+                        entry.path,
+                        join(workspacePath, entry.name),
+                    )) {
+                    return true;
+                }
+            }
+        }
+        separatorIndex = workspaceName.indexOf(
+            WORKTREE_SEPARATOR,
+            separatorIndex + WORKTREE_SEPARATOR.length,
+        );
+    }
+    return false;
+}
+
 function branchRepositories(
     workspacePath: string,
     expectedTopology?: "root" | "children",
@@ -721,7 +789,15 @@ export function detectWorktreeWorkspaceBranch(
     const rootGit = join(workspacePath, ".git");
     let repositories: Array<{ name: string; path: string }>;
     if (pathExistsStrict(rootGit)) {
-        if (gitLinkKind(rootGit) !== "worktree") return null;
+        if (gitLinkKind(rootGit) !== "worktree") {
+            const nestedKinds = scanDirectory(workspacePath, { strict: true })
+                .filter((entry) => entry.isGitRepo)
+                .map((entry) => gitLinkKind(join(entry.path, ".git")));
+            if (nestedKinds.some((kind) => kind === "worktree")) {
+                throw new Error("Workspace contains a mixture of a root repository and child worktrees.");
+            }
+            return null;
+        }
         repositories = branchRepositories(workspacePath, "root");
     } else {
         const candidates = scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo);
@@ -730,7 +806,12 @@ export function detectWorktreeWorkspaceBranch(
             kind: gitLinkKind(join(entry.path, ".git")),
         }));
         const worktrees = kinds.filter(({ kind }) => kind === "worktree");
-        if (worktrees.length === 0) return null;
+        if (worktrees.length === 0) {
+            if (siblingSourceRegistersWorkspace(workspacePath)) {
+                throw new Error("Workspace Git metadata is missing or damaged.");
+            }
+            return null;
+        }
         if (worktrees.length !== kinds.length) {
             throw new Error("Workspace contains a mixture of worktrees and regular repositories.");
         }
@@ -1398,7 +1479,7 @@ export function repairWorkspace(
                 // Non-empty invalid entries require the explicit repair prompt.
                 continue;
             }
-            removeDirectoryByQuarantine(destPath, destIdentity, dirname(wsPath));
+            removeDirectoryByQuarantine(destPath, destIdentity, dirname(wsPath), true);
         }
 
         const nestedExistence = branchExistsInRepo(entry.path, branch);
