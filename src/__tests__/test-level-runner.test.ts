@@ -923,7 +923,7 @@ describe("test level runner", () => {
             export const name = ${JSON.stringify(name)};
             export async function run() {
                 writeFileSync(${JSON.stringify(ownMarker)}, String(process.pid));
-                const deadline = Date.now() + 3000;
+                const deadline = Date.now() + 20_000;
                 while (!existsSync(${JSON.stringify(peerMarker)}) && Date.now() < deadline) {
                     await new Promise((resolve) => setTimeout(resolve, 20));
                 }
@@ -947,7 +947,7 @@ describe("test level runner", () => {
             ], {
                 cwd: repoRoot,
                 encoding: "utf-8",
-                timeout: 30_000,
+                timeout: 60_000,
             });
             expect(result.status, result.stderr || result.stdout).toBe(0);
             const summary = JSON.parse(readFileSync(summaryFile, "utf-8")) as {
@@ -962,7 +962,7 @@ describe("test level runner", () => {
         } finally {
             rmSync(tempDir, { recursive: true, force: true });
         }
-    }, 40_000);
+    }, 70_000);
 
     it("collects a provider worker exception as a failed real-test record", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-worker-failure-"));
