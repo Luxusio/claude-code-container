@@ -453,11 +453,15 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("Write-CccIso $SeedSource $SeedDisk 'cidata'");
         expect(seedScript).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(seedScript).toContain("for (long block = 0; block < totalBlocks; block++)");
+        expect(seedScript).toContain("while (blockBytes < blockSize)");
         expect(seedScript).toContain("output.Length != checked((long)blockSize * totalBlocks)");
+        expect(seedScript).not.toContain("input.Seek(");
         expect(seedScript).not.toContain("byte[] buffer = new byte[65536]");
         expect(seedScript).not.toContain("while (true)");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
+        expect(seedScript).toContain("-N '\"\"'");
+        expect(seedScript).not.toContain("-N ''");
         expect(seedScript).toContain("ssh_host_ed25519_key");
         expect(seedScript).toContain("ssh_deletekeys: true");
         expect(seedScript).toContain("sshHostKeyFingerprint");
@@ -931,6 +935,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(script).toContain("hyper-v-provisioning-media-read-incomplete");
         expect(script).toContain("hyper-v-provisioning-media-length-mismatch");
+        expect(script).toContain("while (blockBytes < blockSize)");
+        expect(script).not.toContain("input.Seek(");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).toContain("Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction Stop");
         expect(script).not.toContain("Mount-VHD");
