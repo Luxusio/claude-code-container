@@ -178,13 +178,16 @@ export function remoteStopShell(containerName: string, ownToken: string): string
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_assert_private "$_ccc_sessions" || exit 74; fi`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_sessions_identity=$(_ccc_identity "$_ccc_sessions") || exit 74; _ccc_assert_sessions() { _ccc_assert_runtime && _ccc_assert_private "$_ccc_sessions" && [ "$(_ccc_identity "$_ccc_sessions")" = "$_ccc_sessions_identity" ]; }; _ccc_assert_sessions || exit 74; fi`,
+        `_ccc_container_id=$(docker inspect --format ${shellEscapeArg("{{.Id}}")} ${shellEscapeArg(containerName)}) || exit 44`,
+        `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
+        '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
         `rm -f "$_ccc_sessions/${ownToken}"`,
         `if [ -e "$_ccc_sessions" ]; then _ccc_assert_sessions || exit 74; fi`,
         "_ccc_now=$(date +%s)",
         "_ccc_active=0",
         "if [ -d \"$_ccc_sessions\" ]; then for _ccc_marker in \"$_ccc_sessions\"/*; do _ccc_assert_sessions || exit 74; [ -f \"$_ccc_marker\" ] || continue; _ccc_expiry=$(cat \"$_ccc_marker\" 2>/dev/null || true); case \"$_ccc_expiry\" in ''|*[!0-9]*) rm -f \"$_ccc_marker\" ;; *) if [ \"$_ccc_expiry\" -ge \"$_ccc_now\" ]; then _ccc_active=1; else rm -f \"$_ccc_marker\"; fi ;; esac; done; _ccc_assert_sessions || exit 74; fi",
         "if [ \"$_ccc_active\" -ne 0 ]; then echo ccc-remote-sessions-active; exit 42; fi",
-        `docker stop ${containerName}`,
+        `docker stop "$_ccc_container_id"`,
     ].join("; "));
 }
 

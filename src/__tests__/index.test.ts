@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -105,6 +105,34 @@ describe('workspace removal lifecycle lock', () => {
     expect(() => withWorkspaceRemovalLifecycleLock('project-id', false, removal, lifecycleLock, activeSessions))
       .toThrow('Workspace has 1 active session(s)')
     expect(removal).not.toHaveBeenCalled()
+  })
+})
+
+describe('workspace container cleanup identity fencing', () => {
+  it('stops and removes only the captured running container ID', () => {
+    const runner = vi.fn(() => ({ status: 0 })) as any
+    const probe = vi.fn(() => ({ containerId: 'pinned123456', running: true }))
+
+    expect(removeWorkspaceContainerByIdentity('ccc-worktree', probe, runner, 'docker')).toBe(true)
+    expect(runner).toHaveBeenNthCalledWith(1, 'docker', ['stop', 'pinned123456'], { stdio: 'ignore' })
+    expect(runner).toHaveBeenNthCalledWith(2, 'docker', ['rm', 'pinned123456'], { stdio: 'ignore' })
+    expect(runner.mock.calls.flat()).not.toContain('ccc-worktree')
+  })
+
+  it('removes a captured stopped ID without issuing stop', () => {
+    const runner = vi.fn(() => ({ status: 0 })) as any
+    const probe = vi.fn(() => ({ containerId: 'stopped12345', running: false }))
+
+    expect(removeWorkspaceContainerByIdentity('ccc-worktree', probe, runner, 'docker')).toBe(true)
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner).toHaveBeenCalledWith('docker', ['rm', 'stopped12345'], { stdio: 'ignore' })
+  })
+
+  it('preserves the container when identity inspection fails', () => {
+    const runner = vi.fn() as any
+
+    expect(removeWorkspaceContainerByIdentity('ccc-worktree', () => null, runner, 'docker')).toBe(false)
+    expect(runner).not.toHaveBeenCalled()
   })
 })
 

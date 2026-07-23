@@ -60,6 +60,8 @@ import {
     isContainerRunning,
     isContainerConfirmedStopped,
     isContainerExists,
+    getContainerIdentity,
+    getConfirmedRunningContainerId,
     isImageExists,
     getImageLabel,
     startProjectContainer,
@@ -91,6 +93,7 @@ import {
     cleanupSession,
     setupSignalHandlers,
     setSession,
+    setSessionContainerId,
 } from "./session.js";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
@@ -500,15 +503,19 @@ async function exec(
         mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
         portFile: string | undefined = clipboardPortFile,
         onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
-    ) => withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
-        fullPath,
-        () => ensureDirs(profile),
-        mounts,
-        portFile,
-        profile,
-        onRecreate,
-        recreateInsideLifecycleLock,
-    ));
+    ) => {
+        const startedName = withContainerLifecycleLock(sessionContainerPrefix, () => startProjectContainer(
+            fullPath,
+            () => ensureDirs(profile),
+            mounts,
+            portFile,
+            profile,
+            onRecreate,
+            recreateInsideLifecycleLock,
+        ));
+        setSessionContainerId(getConfirmedRunningContainerId(startedName));
+        return startedName;
+    };
     const containerName = startContainer();
     restoreCodexConfigHostOwnership(containerName);
 
@@ -991,6 +998,19 @@ export function withWorkspaceRemovalLifecycleLock<T>(
     });
 }
 
+export function removeWorkspaceContainerByIdentity(
+    containerName: string,
+    identityProbe: typeof getContainerIdentity = getContainerIdentity,
+    runner: typeof spawnSync = spawnSync,
+    cli = runtimeCli(),
+): boolean {
+    const identity = identityProbe(containerName);
+    if (!identity) return false;
+    if (identity.running) runner(cli, ["stop", identity.containerId], { stdio: "ignore" });
+    runner(cli, ["rm", identity.containerId], { stdio: "ignore" });
+    return true;
+}
+
 function handleWorktreeRemove(
     cwd: string,
     branch: string,
@@ -1004,10 +1024,8 @@ function handleWorktreeRemove(
         try {
             ensureDockerRunning();
             const containerName = getContainerName(wsPath);
-            if (isContainerExists(containerName)) {
-                console.log(`Stopping container ${containerName}...`);
-                spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
-                spawnSync(runtimeCli(), ["rm", containerName], { stdio: "ignore" });
+            if (removeWorkspaceContainerByIdentity(containerName)) {
+                console.log(`Removed associated container ${containerName}.`);
             }
         } catch {
             // Docker not running, skip container cleanup.

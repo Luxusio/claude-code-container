@@ -584,8 +584,13 @@ export function isContainerRunning(containerName: string): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
-/** Destructive lifecycle operations require a successful, explicit stopped result. */
-export function getConfirmedStoppedContainerId(containerName: string): string | null {
+export interface ContainerIdentity {
+    containerId: string;
+    running: boolean;
+}
+
+/** Destructive lifecycle operations require a successful, explicit identity result. */
+export function getContainerIdentity(containerName: string): ContainerIdentity | null {
     const result = spawnSync(
         runtimeCli(),
         ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
@@ -593,8 +598,14 @@ export function getConfirmedStoppedContainerId(containerName: string): string | 
     );
     if (result.error || result.status !== 0) return null;
     const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
-    if (!containerId || running !== "false" || extra.length > 0) return null;
-    return containerId;
+    if (!containerId || (running !== "true" && running !== "false") || extra.length > 0) return null;
+    return { containerId, running: running === "true" };
+}
+
+/** Destructive lifecycle operations require a successful, explicit stopped result. */
+export function getConfirmedStoppedContainerId(containerName: string): string | null {
+    const identity = getContainerIdentity(containerName);
+    return identity && !identity.running ? identity.containerId : null;
 }
 
 export function isContainerConfirmedStopped(containerName: string): boolean {
@@ -603,15 +614,8 @@ export function isContainerConfirmedStopped(containerName: string): boolean {
 
 /** Return the exact running container ID, or null for stopped/unknown/error states. */
 export function getConfirmedRunningContainerId(containerName: string): string | null {
-    const result = spawnSync(
-        runtimeCli(),
-        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
-        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (result.error || result.status !== 0) return null;
-    const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
-    if (!containerId || running !== "true" || extra.length > 0) return null;
-    return containerId;
+    const identity = getContainerIdentity(containerName);
+    return identity?.running ? identity.containerId : null;
 }
 
 export function canExecContainer(containerName: string, timeoutMs = 5000): boolean {
@@ -647,6 +651,19 @@ export function isContainerExists(containerName: string): boolean {
     // inspect/confirmed-stopped probes to establish the exact state.
     if (result.error || result.status !== 0) return true;
     return (result.stdout ?? "").trim().length > 0;
+}
+
+function getListedContainerId(containerName: string): { known: boolean; containerId: string | null } {
+    const result = spawnSync(
+        runtimeCli(),
+        ["ps", "-aq", "-f", `name=^${containerName}$`],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) return { known: false, containerId: null };
+    const ids = (result.stdout ?? "").trim().split(/\s+/).filter(Boolean);
+    if (ids.length === 0) return { known: true, containerId: null };
+    if (ids.length !== 1 || !/^[a-f0-9]{1,64}$/i.test(ids[0])) return { known: false, containerId: null };
+    return { known: true, containerId: ids[0] };
 }
 
 export function isImageExists(): boolean {
@@ -870,13 +887,13 @@ function containerMatchesRunContract(
     deviceLabMountIdentity: string,
     projectPath: string,
     reportMismatch: (reason: string) => void = () => undefined,
-): boolean {
+): boolean | null {
     const result = spawnSync(
         runtimeCli(),
         ["inspect", "-f", "{{json .}}", containerName],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    if (result.status !== 0) return false;
+    if (result.error || result.status !== 0) return null;
 
     try {
         const failContract = (reason: string) => {
@@ -955,7 +972,7 @@ function containerMatchesRunContract(
         return true;
     } catch {
         reportMismatch("container contract inspection failed");
-        return false;
+        return null;
     }
 }
 
@@ -1204,14 +1221,21 @@ function recreateContainerWithSessionGuard(
     reason: string,
     onRecreate: (() => void) | undefined,
     guard: ((recreate: () => void) => boolean) | undefined,
+    expectedContainerId?: string,
 ): boolean {
     if (!guard) {
         throw new Error("Container replacement requires a lifecycle/session guard.");
     }
-    const stoppedContainerId = getConfirmedStoppedContainerId(containerName);
-    if (!stoppedContainerId) return false;
-    const recreate = () => recreateContainer(stoppedContainerId, reason, onRecreate);
-    return guard(recreate);
+    const initialIdentity = getContainerIdentity(containerName);
+    if (!initialIdentity || initialIdentity.running) return false;
+    const pinnedContainerId = expectedContainerId ?? initialIdentity.containerId;
+    if (initialIdentity.containerId !== pinnedContainerId) return false;
+    let replacementConfirmed = false;
+    const guarded = guard(() => {
+        recreateContainer(pinnedContainerId, reason, onRecreate);
+        replacementConfirmed = true;
+    });
+    return guarded && replacementConfirmed;
 }
 
 // === Container Lifecycle ===
@@ -1267,7 +1291,11 @@ export function startProjectContainer(
     // codex, opencode) + any worktree git mounts the caller passed in.
     // Otherwise an old container created before a tool was added to the
     // registry would silently miss that tool's auth dir on subsequent runs.
-    if (isContainerExists(containerName)) {
+    const listedContainer = getListedContainerId(containerName);
+    if (!listedContainer.known) {
+        throw new Error("Container identity inspection failed; the existing container was preserved.");
+    }
+    if (listedContainer.containerId) {
         const gitIdentityMounts = getHostGitIdentityMounts();
         const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: RequiredContainerMount[] = [
@@ -1306,7 +1334,7 @@ export function startProjectContainer(
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         let contractMismatchReason = "container contract changed";
         const contractMatches = containerMatchesRunContract(
-            containerName,
+            listedContainer.containerId,
             requiredMounts,
             labRunner,
             preparedDeviceLabSources.contractIdentity,
@@ -1314,6 +1342,9 @@ export function startProjectContainer(
             (reason) => { contractMismatchReason = reason; },
         );
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+        if (contractMatches === null) {
+            throw new Error("Container contract inspection failed; the existing container was preserved.");
+        }
         if (!contractMatches) {
             if (debug) {
                 console.error(`[ccc:debug] Container ${containerName} missing required mounts or VM run contract:`);
@@ -1327,6 +1358,7 @@ export function startProjectContainer(
                     contractMismatchReason,
                     onRecreate,
                     recreateRunningContainer,
+                    listedContainer.containerId,
                 );
                 if (!recreated) {
                     if (!containerRunContractIsSafeToDefer(
@@ -1549,14 +1581,17 @@ function stopProjectContainerUnlocked(projectPath: string, profile?: string): vo
     const fullPath = resolve(projectPath);
     const containerName = getContainerName(fullPath, profile);
 
-    if (!isContainerExists(containerName)) {
+    const identity = getContainerIdentity(containerName);
+    if (!identity) {
         console.log("Container not found");
         return;
     }
 
     cleanupDevicesBestEffort(fullPath, profile);
-    console.log("Stopping container...");
-    spawnSync(runtimeCli(), ["stop", containerName], { stdio: "inherit" });
+    if (identity.running) {
+        console.log("Stopping container...");
+        spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+    }
     console.log("Container stopped");
 }
 
@@ -1586,14 +1621,20 @@ export function removeProjectContainer(projectPath: string, profile?: string, op
         ensureDockerRunning();
         const containerName = getContainerName(resolve(projectPath), profile);
 
-        if (!isContainerExists(containerName)) {
+        const identity = getContainerIdentity(containerName);
+        if (!identity) {
             console.log("Container not found");
             return;
         }
 
-        stopProjectContainerUnlocked(projectPath, profile);
+        cleanupDevicesBestEffort(resolve(projectPath), profile);
+        if (identity.running) {
+            console.log("Stopping container...");
+            spawnSync(runtimeCli(), ["stop", identity.containerId], { stdio: "inherit" });
+            console.log("Container stopped");
+        }
         console.log("Removing container...");
-        spawnSync(runtimeCli(), ["rm", containerName], { stdio: "inherit" });
+        spawnSync(runtimeCli(), ["rm", identity.containerId], { stdio: "inherit" });
         console.log("Container removed");
     });
 }

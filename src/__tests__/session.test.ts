@@ -86,6 +86,7 @@ vi.mock("../device-lab-shared-state.js", () => ({
 // Import AFTER all mocks are declared
 const {
     setSession,
+    setSessionContainerId,
     getCurrentSession,
     clearSession,
     createSessionLock,
@@ -852,13 +853,14 @@ describe("session.ts", () => {
             mockSpawnSync.mockReturnValue({ status: 0 });
 
             setSession(lockFile, projectPath);
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
-                ["stop", containerName],
+                ["stop", "pinned-container-id"],
                 expect.any(Object),
             );
         });
@@ -877,6 +879,7 @@ describe("session.ts", () => {
             mockSpawnSync.mockReturnValue({ status: 0 });
 
             setSession(lockFile, projectPath);
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(mockSpawnSync).toHaveBeenCalledWith(
@@ -910,15 +913,14 @@ describe("session.ts", () => {
             mockSpawnSync.mockReturnValue({ status: 0 });
 
             setSession(lockFile, projectPath, "work");
+            setSessionContainerId("profile-container-id");
             cleanupSession();
 
-            // getContainerName called with profile
-            expect(mockGetContainerName).toHaveBeenCalledWith(projectPath, "work");
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, "work");
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
-                ["stop", containerName],
+                ["stop", "profile-container-id"],
                 expect.any(Object),
             );
         });
@@ -999,12 +1001,13 @@ describe("session.ts", () => {
             mockSpawnSync.mockReturnValue({ status: 0 });
 
             setSession(`/locks/${current}`, "/home/user/my-project");
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(stale));
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
-                ["stop", "ccc-my-project-abc123"],
+                ["stop", "pinned-container-id"],
                 expect.any(Object),
             );
         });
@@ -1062,6 +1065,7 @@ describe("session.ts", () => {
             });
 
             setSession(`/locks/${current}`, "/home/user/my-project");
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(order).toEqual(["critical-start", "session-check", "unlink", "stop", "critical-end"]);
@@ -1146,8 +1150,6 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            // Container stop check should happen (no other BASE sessions)
-            expect(mockIsContainerRunning).toHaveBeenCalledWith(containerName);
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
         });
 
@@ -1203,7 +1205,6 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            expect(mockIsContainerRunning).toHaveBeenCalledWith(containerName);
             expect(mockSaveClaudeBinaryToVolume).not.toHaveBeenCalled();
             expect(mockSpawnSync).not.toHaveBeenCalled();
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
@@ -1238,13 +1239,14 @@ describe("session.ts", () => {
             });
 
             setSession(lockFile, projectPath);
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(callOrder).toEqual(["cleanupDevices", "saveClaudeBinary", "dockerStop"]);
-            expect(mockSaveClaudeBinaryToVolume).toHaveBeenCalledWith(containerName);
+            expect(mockSaveClaudeBinaryToVolume).toHaveBeenCalledWith("pinned-container-id");
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
-                ["stop", containerName],
+                ["stop", "pinned-container-id"],
                 expect.any(Object),
             );
         });
@@ -1270,12 +1272,13 @@ describe("session.ts", () => {
             mockSpawnSync.mockReturnValue({ status: 0 });
 
             setSession(lockFile, projectPath);
+            setSessionContainerId("pinned-container-id");
             cleanupSession();
 
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
-                ["stop", containerName],
+                ["stop", "pinned-container-id"],
                 expect.any(Object),
             );
         });

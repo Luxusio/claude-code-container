@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { hashPath } from '../utils.js'
-import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser, remoteSetup, remoteCheck, remoteTerminate, remoteExec } from '../remote.js'
+import { getProjectHash, getMutagenSessionName, checkTailscale, checkMutagen, isHostReachable, getMutagenSyncStatus, isValidEnvKey, shellEscapeArg, isValidHostOrUser, remoteSetup, remoteCheck, remoteTerminate, remoteExec, remoteStopShell } from '../remote.js'
 import * as childProcess from 'child_process'
 import * as fs from 'fs'
 import * as utils from '../utils.js'
@@ -70,6 +70,26 @@ describe('getProjectHash', () => {
   it('returns hash for project path', () => {
     const result = getProjectHash('/home/user/project')
     expect(result).toHaveLength(12)
+  })
+})
+
+describe('remote stop identity fencing', () => {
+  it('captures an exact container ID before session mutation and stops only that ID', () => {
+    const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32))
+    const inspectAt = shell.indexOf('docker inspect')
+    const removeMarkerAt = shell.indexOf('rm -f "$_ccc_sessions/')
+
+    expect(inspectAt).toBeGreaterThan(-1)
+    expect(inspectAt).toBeLessThan(removeMarkerAt)
+    expect(shell).toContain('docker stop "$_ccc_container_id"')
+    expect(shell).not.toContain('docker stop ccc-project-safe')
+    expect(shell).toContain("*[!a-fA-F0-9]*")
+  })
+
+  it('shell-quotes the inspected container name', () => {
+    const shell = remoteStopShell("ccc-name'; touch /tmp/unsafe; '", 'b'.repeat(32))
+    expect(shell).toContain(shellEscapeArg("ccc-name'; touch /tmp/unsafe; '"))
+    expect(shell).toContain('docker stop "$_ccc_container_id"')
   })
 })
 

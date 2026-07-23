@@ -80,7 +80,7 @@ describe("cleanContainers", () => {
             if (argsArr[0] === "ps") {
                 return makeResult(
                     0,
-                    "ccc-myproj-aabbcc112233\tExited (0) 2 days ago\nccc-other-ddeeff445566\tUp 5 minutes",
+                    "111111111111\tccc-myproj-aabbcc112233\tExited (0) 2 days ago\n222222222222\tccc-other-ddeeff445566\tUp 5 minutes",
                 );
             }
             if (argsArr[0] === "images") {
@@ -94,7 +94,7 @@ describe("cleanContainers", () => {
 
         const calls = spawnSyncMock.mock.calls.map((c) => (c[1] as string[]).join(" "));
         // Should remove the stopped container
-        expect(calls.some((c) => c.startsWith("rm ccc-myproj"))).toBe(true);
+        expect(calls).toContain("rm 111111111111");
         // Should NOT stop/remove the running container
         expect(calls.some((c) => c.startsWith("stop ccc-other"))).toBe(false);
         expect(calls.some((c) => c.startsWith("rm ccc-other"))).toBe(false);
@@ -105,7 +105,7 @@ describe("cleanContainers", () => {
     it("--volumes: also removes ccc-* volumes", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-proj-aabbcc112233\tExited (0) 1 hour ago");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-proj-aabbcc112233\tExited (0) 1 hour ago");
             if (argsArr[0] === "images") return makeResult(0, "");
             if (argsArr[0] === "volume") {
                 if (argsArr[1] === "ls") return makeResult(0, "ccc-mise-cache");
@@ -126,7 +126,7 @@ describe("cleanContainers", () => {
             if (argsArr[0] === "ps") {
                 return makeResult(
                     0,
-                    "ccc-running-aabb1122ccdd\tUp 10 minutes\nccc-stopped-eeff33445566\tExited (0) 3 days ago",
+                    "111111111111\tccc-running-aabb1122ccdd\tUp 10 minutes\n222222222222\tccc-stopped-eeff33445566\tExited (0) 3 days ago",
                 );
             }
             if (argsArr[0] === "images") return makeResult(0, "");
@@ -138,10 +138,10 @@ describe("cleanContainers", () => {
 
         const calls = spawnSyncMock.mock.calls.map((c) => (c[1] as string[]).join(" "));
         // Should stop the running container
-        expect(calls.some((c) => c.startsWith("stop ccc-running"))).toBe(true);
+        expect(calls).toContain("stop 111111111111");
         // Should remove both containers
-        expect(calls.some((c) => c.startsWith("rm ccc-running"))).toBe(true);
-        expect(calls.some((c) => c.startsWith("rm ccc-stopped"))).toBe(true);
+        expect(calls).toContain("rm 111111111111");
+        expect(calls).toContain("rm 222222222222");
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("running-aabb1122ccdd", expect.any(Function));
         expect(withContainerLifecycleLockMock).toHaveBeenCalledWith("stopped-eeff33445566", expect.any(Function));
     });
@@ -149,7 +149,7 @@ describe("cleanContainers", () => {
     it("never stops or removes a container with an active CCC session", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-live-aabbcc112233\tUp 10 minutes");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-live-aabbcc112233\tUp 10 minutes");
             if (argsArr[0] === "images") return makeResult(0, "");
             if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
             return makeResult(0, "");
@@ -167,7 +167,7 @@ describe("cleanContainers", () => {
     it("--dry-run: prints plan but does not execute docker rm/rmi/volume rm", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-proj-aabbcc112233\tExited (0) 1 day ago");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-proj-aabbcc112233\tExited (0) 1 day ago");
             if (argsArr[0] === "images") return makeResult(0, "ccc\tsha256xyz\t200MB");
             return makeResult(0, "");
         });
@@ -185,7 +185,7 @@ describe("cleanContainers", () => {
     it("--yes: skips confirmation prompt", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-proj-aabbcc112233\tExited (0) 1 day ago");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-proj-aabbcc112233\tExited (0) 1 day ago");
             if (argsArr[0] === "images") return makeResult(0, "");
             return makeResult(0, "");
         });
@@ -199,7 +199,7 @@ describe("cleanContainers", () => {
     it("prompts for confirmation when --yes is not set and aborts on 'n'", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-proj-aabbcc112233\tExited (0) 1 day ago");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-proj-aabbcc112233\tExited (0) 1 day ago");
             if (argsArr[0] === "images") return makeResult(0, "");
             return makeResult(0, "");
         });
@@ -243,12 +243,27 @@ describe("cleanContainers", () => {
     it("exits with 0 after successful clean", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
-            if (argsArr[0] === "ps") return makeResult(0, "ccc-proj-aabbcc112233\tExited (0) 1 day ago");
+            if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-proj-aabbcc112233\tExited (0) 1 day ago");
             if (argsArr[0] === "images") return makeResult(0, "");
             return makeResult(0, "");
         });
 
         await expect(cleanContainers({ yes: true })).rejects.toThrow("process.exit called");
         expect(process.exit).toHaveBeenCalledWith(0);
+    });
+
+    it("ignores malformed or unmanaged container inventory rows", async () => {
+        spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
+            const argsArr = args as string[];
+            if (argsArr[0] === "ps") {
+                return makeResult(0, "not-an-id\tccc-bad\tExited\n111111111111\tnot-ccc\tExited");
+            }
+            return makeResult(0, "");
+        });
+
+        await cleanContainers({ all: true, yes: true });
+
+        expect(console.log).toHaveBeenCalledWith("Nothing to clean.");
+        expect(spawnSyncMock.mock.calls.some((call) => ["stop", "rm"].includes((call[1] as string[])[0]))).toBe(false);
     });
 });

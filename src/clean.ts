@@ -14,6 +14,7 @@ export interface CleanOptions {
 }
 
 interface ContainerInfo {
+    id: string;
     name: string;
     status: string;
 }
@@ -27,14 +28,17 @@ interface ImageInfo {
 function listContainers(): ContainerInfo[] {
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.Names}}\t{{.Status}}"],
+        ["ps", "-a", "--filter", "name=^ccc-", "--format", "{{.ID}}\t{{.Names}}\t{{.Status}}"],
         { encoding: "utf-8" },
     );
     const out = (result.stdout ?? "").trim();
     if (!out) return [];
-    return out.split("\n").map((line) => {
-        const [name, ...rest] = line.split("\t");
-        return { name: name.trim(), status: rest.join("\t").trim() };
+    return out.split("\n").flatMap((line) => {
+        const [id, name, ...rest] = line.split("\t");
+        const normalizedId = (id ?? "").trim();
+        const normalizedName = (name ?? "").trim();
+        if (!/^[a-f0-9]{12,64}$/i.test(normalizedId) || !normalizedName.startsWith("ccc-")) return [];
+        return [{ id: normalizedId, name: normalizedName, status: rest.join("\t").trim() }];
     });
 }
 
@@ -167,10 +171,10 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
             }
             if (stopNames.has(c.name)) {
                 console.log(`Stopping ${c.name}...`);
-                spawnSync(cli, ["stop", c.name], { stdio: "inherit" });
+                spawnSync(cli, ["stop", c.id], { stdio: "inherit" });
             }
             console.log(`Removing container ${c.name}...`);
-            const r = spawnSync(cli, ["rm", c.name], { stdio: "inherit" });
+            const r = spawnSync(cli, ["rm", c.id], { stdio: "inherit" });
             if (r.status === 0) removed++;
         });
     }

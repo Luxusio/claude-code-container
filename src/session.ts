@@ -3,7 +3,6 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
-import { getContainerName, getConfirmedRunningContainerId } from "./docker.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
@@ -41,12 +40,18 @@ let currentSessionLockFile: string | null = null;
 let currentProjectPath: string | null = null;
 let currentProfile: string | undefined = undefined;
 let currentToolName: string | null = null;
+let currentContainerId: string | null = null;
 
 export function setSession(lockFile: string, projectPath: string, profile?: string, toolName?: string): void {
     currentSessionLockFile = lockFile;
     currentProjectPath = projectPath;
     currentProfile = profile;
     currentToolName = toolName ?? "claude";
+    currentContainerId = null;
+}
+
+export function setSessionContainerId(containerId: string | null): void {
+    currentContainerId = containerId;
 }
 
 export function getCurrentSession(): { lockFile: string | null; projectPath: string | null; profile?: string; toolName: string | null } {
@@ -58,6 +63,7 @@ export function clearSession(): void {
     currentProjectPath = null;
     currentProfile = undefined;
     currentToolName = null;
+    currentContainerId = null;
     cleanedUp = false;
 }
 
@@ -276,7 +282,6 @@ export function cleanupSession(): void {
     const projectId = getProjectId(currentProjectPath);
     const containerPrefix = currentProfile ? `${projectId}--p--${currentProfile}` : projectId;
     // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
-    const containerName = getContainerName(currentProjectPath, currentProfile);
     withContainerLifecycleLock(containerPrefix, () => {
         // Stop clipboard server if this is the last CCC session (check BEFORE removing lock).
         stopClipboardServerIfLast(currentSessionLockFile!);
@@ -284,12 +289,11 @@ export function cleanupSession(): void {
         removeSessionLock(currentSessionLockFile!);
         if (!hasOthers) {
             cleanupDevicesBestEffort(currentProjectPath!, currentProfile);
-            const runningContainerId = getConfirmedRunningContainerId(containerName);
-            if (runningContainerId) {
+            if (currentContainerId) {
                 if (currentToolName === "claude") {
-                    saveClaudeBinaryToVolume(runningContainerId);
+                    saveClaudeBinaryToVolume(currentContainerId);
                 }
-                spawnSync(runtimeCli(), ["stop", runningContainerId], { stdio: "ignore" });
+                spawnSync(runtimeCli(), ["stop", currentContainerId], { stdio: "ignore" });
             }
         }
     });
