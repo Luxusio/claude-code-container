@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
     mkdirSync,
+    readdirSync,
     writeFileSync,
     rmSync,
     existsSync,
@@ -884,6 +885,21 @@ describe("assertWorkspaceBranch", () => {
         expect(() => detectWorktreeWorkspaceBranch(workspace))
             .toThrow("Unable to inspect worktree common directory");
     });
+
+    it.skipIf(process.platform === "win32")("fails closed when root .git metadata is a symlink loop", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const rootGit = join(workspace, ".git");
+        rmSync(rootGit);
+        symlinkSync(".git", rootGit);
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace))
+            .toThrow("Invalid worktree metadata");
+    });
 });
 
 describe("removeWorkspace", () => {
@@ -949,6 +965,8 @@ describe("removeWorkspace", () => {
         expect(removeResult.removed).toContain("repo-a");
         expect(removeResult.removed).toContain("readme.txt");
         expect(existsSync(wsResult.workspacePath)).toBe(false);
+        expect(readdirSync(tmpDir).some((name) => name.startsWith(".ccc-worktree-quarantine-")))
+            .toBe(false);
     });
 
     it("reports errors for dirty worktree and removes with force", () => {
@@ -963,6 +981,12 @@ describe("removeWorkspace", () => {
         // Without force: should report error
         const result = removeWorkspace(sourceDir, "dirty-test");
         expect(result.errors.length).toBeGreaterThan(0);
+        expect(readFileSync(
+            join(wsResult.workspacePath, "repo-a", "dirty.txt"),
+            "utf-8",
+        )).toBe("uncommitted");
+        expect(readdirSync(tmpDir).some((name) => name.startsWith(".ccc-worktree-quarantine-")))
+            .toBe(false);
 
         // With force: should succeed
         const forceResult = removeWorkspace(sourceDir, "dirty-test", {
@@ -1733,7 +1757,7 @@ describe("fixBrokenWorktree", () => {
 
         // Put non-worktree content back (simulating submodule re-init)
         mkdirSync(wsFrontend);
-        writeFileSync(join(wsFrontend, "app.ts"), "submodule version");
+        writeFileSync(join(wsFrontend, "app.ts"), "original");
         writeFileSync(join(wsFrontend, ".git"), "gitdir: /some/fake/modules/path\n");
 
         // Without prune, git worktree add would fail because "stale-wt" is
@@ -1748,6 +1772,64 @@ describe("fixBrokenWorktree", () => {
 
         // Content should be preserved
         expect(existsSync(join(wsFrontend, "app.ts"))).toBe(true);
+    });
+
+    it("restores the original directory when checked-out content conflicts", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        writeFileSync(join(tmpDir, "frontend", "app.ts"), "tracked-base");
+        spawnSync("git", ["add", "."], { cwd: join(tmpDir, "frontend"), stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add app"], {
+            cwd: join(tmpDir, "frontend"),
+            stdio: "pipe",
+        });
+
+        const wsResult = createWorkspace(tmpDir, "conflict");
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        spawnSync("git", ["worktree", "remove", "--force", wsFrontend], {
+            cwd: join(tmpDir, "frontend"),
+            stdio: "pipe",
+        });
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "app.ts"), "uncommitted-user-work");
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "conflict",
+            true,
+        )).toThrow("Workspace content conflicts");
+        expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8"))
+            .toBe("uncommitted-user-work");
+        expect(existsSync(join(wsFrontend, ".git"))).toBe(false);
+    });
+
+    it("does not remove a pre-existing legacy backup path", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "frontend"));
+        const wsResult = createWorkspace(tmpDir, "legacy-backup");
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        spawnSync("git", ["worktree", "remove", "--force", wsFrontend], {
+            cwd: join(tmpDir, "frontend"),
+            stdio: "pipe",
+        });
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "wip.ts"), "preserve");
+        const legacyBackup = `${wsFrontend}.ccc-backup`;
+        mkdirSync(legacyBackup);
+        writeFileSync(join(legacyBackup, "foreign.txt"), "foreign");
+
+        const result = fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "legacy-backup",
+            true,
+        );
+
+        expect(result).not.toBeNull();
+        expect(readFileSync(join(legacyBackup, "foreign.txt"), "utf-8")).toBe("foreign");
     });
 });
 
