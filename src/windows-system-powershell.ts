@@ -25,7 +25,11 @@ export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string 
         ? join(resolve(testSystemRoot), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
         : WINDOWS_SYSTEM_POWERSHELL_PATH;
     try {
-        assertPlainDirectoryPath(dirname(candidate));
+        // path.resolve() cannot preserve the GLOBALROOT device alias while
+        // walking its parents. Resolve that trusted alias to its ordinary
+        // drive-qualified path first; injected roots still get checked before
+        // resolution so a symlink cannot be hidden by realpath.
+        if (testSystemRoot) assertPlainDirectoryPath(dirname(candidate));
         const source = lstatSync(candidate);
         if (!source.isFile() || source.isSymbolicLink()) return null;
         const resolved = realpathSync.native(candidate);

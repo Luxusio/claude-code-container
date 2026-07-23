@@ -16,6 +16,12 @@ describe("canonical Windows PowerShell", () => {
         expect(spawnableWindowsExecutablePath("\\\\server\\share\\powershell.exe")).toBeNull();
     });
 
+    it.runIf(process.platform === "win32")("resolves the trusted GLOBALROOT executable on Windows", () => {
+        expect(canonicalWindowsPowerShellPath()).toMatch(
+            /^[A-Za-z]:\\Windows\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i,
+        );
+    });
+
     it("resolves a plain test system root and rejects a linked executable", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-system-powershell-"));
         roots.push(root);
