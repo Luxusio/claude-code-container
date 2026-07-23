@@ -936,6 +936,18 @@ describe("assertWorkspaceBranch", () => {
         expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
             .toThrow("mixture of a root repository and child worktrees");
     });
+
+    it("rejects a regular root repository when registered child metadata is missing", () => {
+        const source = join(repoPath, "damaged-mixed-source");
+        mkdirSync(source);
+        initRepo(join(source, "frontend"));
+        const result = createWorkspace(source, "feature");
+        rmSync(join(result.workspacePath, "frontend", ".git"));
+        spawnSync("git", ["init"], { cwd: result.workspacePath, stdio: "pipe" });
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("mixture of a root repository and child worktrees");
+    });
 });
 
 describe("removeWorkspace", () => {
@@ -1933,6 +1945,22 @@ describe("getWorktreeGitMounts", () => {
     it("returns empty for non-existent directory", () => {
         const mounts = getWorktreeGitMounts(join(tmpDir, "nonexistent"));
         expect(mounts).toEqual([]);
+    });
+
+    it("fails closed when required worktree metadata disappears", () => {
+        const missing = join(tmpDir, "missing-worktree");
+        mkdirSync(missing);
+
+        expect(() => getWorktreeGitMounts(missing, true))
+            .toThrow("Required worktree metadata is missing");
+    });
+
+    it("fails closed when required worktree metadata is a regular repository directory", () => {
+        const repoPath = join(tmpDir, "regular");
+        initRepo(repoPath);
+
+        expect(() => getWorktreeGitMounts(repoPath, true))
+            .toThrow("Required worktree metadata is invalid");
     });
 
     it("returns empty for non-git directory", () => {

@@ -489,7 +489,7 @@ async function exec(
     const clipboardPortFile = join(DATA_DIR, "clipboard.port");
 
     // Detect worktree mounts (source .git directories needed for git operations)
-    const worktreeMounts = getWorktreeGitMounts(fullPath);
+    const worktreeMounts = getWorktreeGitMounts(fullPath, worktreeBranch !== null);
     if (process.env.DEBUG && worktreeMounts.length > 0) {
         console.error(`[ccc:debug] worktreeGitMounts (${worktreeMounts.length}):`);
         for (const m of worktreeMounts) {

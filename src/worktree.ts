@@ -793,7 +793,8 @@ export function detectWorktreeWorkspaceBranch(
             const nestedKinds = scanDirectory(workspacePath, { strict: true })
                 .filter((entry) => entry.isGitRepo)
                 .map((entry) => gitLinkKind(join(entry.path, ".git")));
-            if (nestedKinds.some((kind) => kind === "worktree")) {
+            if (nestedKinds.some((kind) => kind === "worktree")
+                || siblingSourceRegistersWorkspace(workspacePath)) {
                 throw new Error("Workspace contains a mixture of a root repository and child worktrees.");
             }
             return null;
@@ -1279,7 +1280,7 @@ function createMultiRepoWorkspace(
     wsPath: string,
     branch: string,
 ): WorktreeResult {
-    const entries = scanDirectory(resolved);
+    const entries = scanDirectory(resolved, { strict: true });
     const gitRepos = entries.filter((e) => e.isGitRepo);
 
     if (gitRepos.length === 0) {
@@ -1535,28 +1536,39 @@ export interface WorktreeGitMount {
  * - Source repo's .git at /project/<basename>/.git (for relative refs from submodules)
  * - Each nested git repo's .git directories similarly
  */
-export function getWorktreeGitMounts(worktreePath: string): WorktreeGitMount[] {
+export function getWorktreeGitMounts(
+    worktreePath: string,
+    required = false,
+): WorktreeGitMount[] {
     const resolved = resolve(worktreePath);
     const gitFile = join(resolved, ".git");
 
-    // Not a worktree if .git doesn't exist or is a directory (regular repo)
-    if (!existsSync(gitFile)) return [];
-    try {
-        if (!lstatSync(gitFile).isFile()) return [];
-    } catch {
+    if (!pathExistsStrict(gitFile)) {
+        if (required) throw new Error(`Required worktree metadata is missing: ${gitFile}`);
+        return [];
+    }
+    if (!lstatSync(gitFile).isFile()) {
+        if (required) throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
         return [];
     }
 
     const content = readFileSync(gitFile, "utf-8").trim();
     const match = content.match(/^gitdir:\s*(.+)$/);
-    if (!match) return [];
+    if (!match) {
+        if (required) throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
+        return [];
+    }
 
     const gitdirPath = match[1].trim();
     const resolvedGitdir = resolve(resolved, gitdirPath);
 
     // Navigate from .git/worktrees/<name> up to .git/
     const sourceGitDir = resolve(resolvedGitdir, "..", "..");
-    if (!existsSync(sourceGitDir)) return [];
+    if (!pathExistsStrict(sourceGitDir)) {
+        if (required) throw new Error(`Required source Git directory is missing: ${sourceGitDir}`);
+        return [];
+    }
+    captureDirectoryIdentity(sourceGitDir);
 
     const sourceRepoDir = dirname(sourceGitDir);
     const sourceBasename = basename(sourceRepoDir);
@@ -1583,22 +1595,19 @@ export function getWorktreeGitMounts(worktreePath: string): WorktreeGitMount[] {
     }
 
     // Scan source for nested git repos and mount their .git directories too
-    try {
-        const entries = scanDirectory(sourceRepoDir);
-        for (const entry of entries) {
-            if (!entry.isGitRepo) continue;
-            const nestedGitPath = join(entry.path, ".git");
-            try {
-                if (lstatSync(nestedGitPath).isDirectory()) {
-                    addMount(nestedGitPath, nestedGitPath);
-                    const nestedRelPath = `/project/${sourceBasename}/${entry.name}/.git`;
-                    if (nestedRelPath !== nestedGitPath) {
-                        addMount(nestedGitPath, nestedRelPath);
-                    }
-                }
-            } catch { /* skip inaccessible entries */ }
+    const entries = scanDirectory(sourceRepoDir, { strict: required });
+    for (const entry of entries) {
+        if (!entry.isGitRepo) continue;
+        const nestedGitPath = join(entry.path, ".git");
+        const nestedGit = lstatSync(nestedGitPath);
+        if (nestedGit.isDirectory() && !nestedGit.isSymbolicLink()) {
+            addMount(nestedGitPath, nestedGitPath);
+            const nestedRelPath = `/project/${sourceBasename}/${entry.name}/.git`;
+            if (nestedRelPath !== nestedGitPath) {
+                addMount(nestedGitPath, nestedRelPath);
+            }
         }
-    } catch { /* skip if source scan fails */ }
+    }
 
     return mounts;
 }
