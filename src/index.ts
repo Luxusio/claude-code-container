@@ -50,6 +50,7 @@ import {
     getWorkspacePath,
     getWorktreeGitMounts,
     assertWorkspaceBranch,
+    assertWorkspaceRootOwnership,
     detectWorktreeWorkspaceBranch,
     workspaceExists,
     needsSubmoduleSetup,
@@ -952,6 +953,11 @@ async function prepareWorktreeUnlocked(
     const wsPath = getWorkspacePath(cwd, branch);
 
     if (workspaceExists(cwd, branch)) {
+        if (existsSync(join(cwd, ".git"))) {
+            assertWorkspaceRootOwnership(wsPath, cwd);
+        } else {
+            assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
+        }
         // Check for branch collision (C2 fix): different branch names can map
         // to the same workspace path (e.g., feature/login → feature-login)
         const gitResult = spawnSync(

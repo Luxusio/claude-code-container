@@ -80,6 +80,7 @@ const {
     restoreCodexConfigHostOwnership,
     syncManagedMcpBundles,
     bindSourcePathsEquivalent,
+    projectPathIdentityMatches,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -1581,6 +1582,22 @@ describe("docker.ts module exports", () => {
                 expect(name).toBe(getContainerName(projectPath));
                 expect(guard).not.toHaveBeenCalled();
                 expectNoContainerReplacement();
+            } finally {
+                Object.defineProperty(process, "platform", { value: originalPlatform });
+            }
+        });
+
+        it("matches running Windows container identity through an equivalent junction path", () => {
+            const junctionPath = "/junction/my-project";
+            const physicalPath = "/physical/my-project";
+            mockRealpathSync.mockImplementation((path: string) => {
+                if (path === junctionPath || path === projectPath) return physicalPath;
+                return path;
+            });
+            const originalPlatform = process.platform;
+            try {
+                Object.defineProperty(process, "platform", { value: "win32" });
+                expect(projectPathIdentityMatches(junctionPath, projectPath)).toBe(true);
             } finally {
                 Object.defineProperty(process, "platform", { value: originalPlatform });
             }

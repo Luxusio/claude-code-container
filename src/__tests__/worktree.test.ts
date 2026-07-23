@@ -7,6 +7,7 @@ import {
     symlinkSync,
     readFileSync,
     lstatSync,
+    renameSync,
     statSync,
 } from "fs";
 import { join, dirname, basename } from "path";
@@ -1425,6 +1426,22 @@ describe("repairWorkspace", () => {
         const repaired = repairWorkspace(tmpDir, wsResult.workspacePath, "no-nested");
         expect(repaired).toEqual([]);
     });
+
+    it("refuses to repair a same-branch workspace not owned by the source", () => {
+        initRepo(tmpDir);
+        const foreignWorkspace = getWorkspacePath(tmpDir, "foreign");
+        initRepo(foreignWorkspace);
+        spawnSync("git", ["switch", "-c", "foreign"], {
+            cwd: foreignWorkspace,
+            stdio: "pipe",
+        });
+        const marker = join(foreignWorkspace, "foreign-content.txt");
+        writeFileSync(marker, "preserve");
+
+        expect(() => repairWorkspace(tmpDir, foreignWorkspace, "foreign"))
+            .toThrow("is not owned by source repository");
+        expect(readFileSync(marker, "utf-8")).toBe("preserve");
+    });
 });
 
 describe("isValidWorktree", () => {
@@ -1480,6 +1497,23 @@ describe("isValidWorktree", () => {
 
         expect(isValidWorktree(realWorktree, sourceRepo)).toBe(true);
         expect(isValidWorktree(forgedWorktree, sourceRepo)).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("rejects symlinked worktree management metadata", () => {
+        const sourceRepo = join(tmpDir, "source-symlinked");
+        const realWorktree = join(tmpDir, "symlinked-worktree");
+        initRepo(sourceRepo);
+        spawnSync("git", ["worktree", "add", "-b", "symlinked-test", realWorktree], {
+            cwd: sourceRepo,
+            stdio: "pipe",
+        });
+        const gitFile = readFileSync(join(realWorktree, ".git"), "utf-8");
+        const gitDir = gitFile.trim().replace(/^gitdir:\s*/, "");
+        const movedGitDir = `${gitDir}.real`;
+        renameSync(gitDir, movedGitDir);
+        symlinkSync(movedGitDir, gitDir, "dir");
+
+        expect(isValidWorktree(realWorktree, sourceRepo)).toBe(false);
     });
 
     it("returns false for non-existent directory", () => {

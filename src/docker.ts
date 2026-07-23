@@ -90,6 +90,15 @@ function canonicalHostPath(path: string): string {
     return normalizedHostPath(realpathSync(path));
 }
 
+export function projectPathIdentityMatches(left: string, right: string): boolean {
+    if (normalizedHostPath(left) === normalizedHostPath(right)) return true;
+    try {
+        return projectPathsEquivalent(left, right);
+    } catch {
+        return false;
+    }
+}
+
 function windowsBindSourceIdentity(path: string): string | null {
     const slashed = path.replace(/\\/g, "/").replace(/^\/\/\?\//, "");
     const desktop = /^\/(?:run\/desktop\/mnt\/host|host_mnt)\/([a-z])\/(.+)$/i.exec(slashed);
@@ -1005,8 +1014,7 @@ function containerMatchesRunContract(
             return failContract("container is not CCC-managed");
         }
         const labeledProjectPath = inspected.Config?.Labels?.["ccc.project.path"];
-        if (!labeledProjectPath
-            || normalizedHostPath(labeledProjectPath) !== normalizedHostPath(projectPath)) {
+        if (!labeledProjectPath || !projectPathIdentityMatches(labeledProjectPath, projectPath)) {
             return failContract("project path identity changed");
         }
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
@@ -1119,7 +1127,7 @@ function containerRunContractIsSafeToDefer(
         const labels = inspected.Config?.Labels;
         if (labels?.["ccc.managed"] !== "true") return unsafe("container is not CCC-managed");
         if (!labels?.["ccc.project.path"]
-            || normalizedHostPath(labels["ccc.project.path"]) !== normalizedHostPath(projectPath)) {
+            || !projectPathIdentityMatches(labels["ccc.project.path"], projectPath)) {
             return unsafe("project path identity changed");
         }
         const hostConfig = inspectedHostConfig(inspected.HostConfig);

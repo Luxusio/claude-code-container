@@ -39,6 +39,33 @@ export interface WorkspaceEntry {
     isGitRepo: boolean;
 }
 
+type DirectoryIdentity = {
+    realpath: string;
+    dev: string;
+    ino: string;
+};
+
+function captureDirectoryIdentity(path: string): DirectoryIdentity {
+    const observed = lstatSync(path, { bigint: true });
+    if (!observed.isDirectory() || observed.isSymbolicLink()) {
+        throw new Error(`Workspace path '${path}' must be a real directory.`);
+    }
+    return {
+        realpath: realpathSync(path),
+        dev: observed.dev.toString(),
+        ino: observed.ino.toString(),
+    };
+}
+
+function assertDirectoryIdentity(path: string, expected: DirectoryIdentity): void {
+    const actual = captureDirectoryIdentity(path);
+    if (actual.realpath !== expected.realpath
+        || actual.dev !== expected.dev
+        || actual.ino !== expected.ino) {
+        throw new Error(`Workspace path identity changed before deletion: ${path}`);
+    }
+}
+
 export interface WorkspaceInfo {
     branch: string;
     path: string;
@@ -265,7 +292,7 @@ function branchRepositories(workspacePath: string): Array<{ name: string; path: 
     const rootGit = join(workspacePath, ".git");
     if (existsSync(rootGit)) {
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
-        for (const entry of scanDirectory(workspacePath)) {
+        for (const entry of scanDirectory(workspacePath, { strict: true })) {
             if (!entry.isGitRepo) continue;
             const kind = gitLinkKind(join(entry.path, ".git"));
             if (kind === "worktree") {
@@ -279,7 +306,7 @@ function branchRepositories(workspacePath: string): Array<{ name: string; path: 
         }
         return repositories;
     }
-    return scanDirectory(workspacePath)
+    return scanDirectory(workspacePath, { strict: true })
         .filter((entry) => entry.isGitRepo)
         .map(({ name, path }) => ({ name, path }));
 }
@@ -287,15 +314,13 @@ function branchRepositories(workspacePath: string): Array<{ name: string; path: 
 function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): void {
     const resolvedSource = resolve(sourcePath);
     if (existsSync(join(resolvedSource, ".git"))) {
-        if (!isValidWorktree(workspacePath, resolvedSource)) {
-            throw new Error(`Workspace is not owned by source repository '${resolvedSource}'.`);
-        }
+        assertWorkspaceRootOwnership(workspacePath, resolvedSource);
         const sourceRepositories = new Map(
-            scanDirectory(resolvedSource)
+            scanDirectory(resolvedSource, { strict: true })
                 .filter((entry) => entry.isGitRepo)
                 .map((entry) => [entry.name, entry]),
         );
-        for (const destination of scanDirectory(workspacePath).filter((entry) => entry.isGitRepo)) {
+        for (const destination of scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo)) {
             const source = sourceRepositories.get(destination.name);
             if (!source) {
                 throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
@@ -309,7 +334,7 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         return;
     }
 
-    const sourceRepositories = scanDirectory(resolvedSource).filter((entry) => entry.isGitRepo);
+    const sourceRepositories = scanDirectory(resolvedSource, { strict: true }).filter((entry) => entry.isGitRepo);
     if (sourceRepositories.length === 0) {
         throw new Error(`Unable to verify workspace ownership: no source repositories found.`);
     }
@@ -320,10 +345,20 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         }
     }
     const sourceNames = new Set(sourceRepositories.map(({ name }) => name));
-    for (const destination of scanDirectory(workspacePath).filter((entry) => entry.isGitRepo)) {
+    for (const destination of scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo)) {
         if (!sourceNames.has(destination.name)) {
             throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
         }
+    }
+}
+
+export function assertWorkspaceRootOwnership(
+    workspacePath: string,
+    sourcePath: string,
+): void {
+    const resolvedSource = resolve(sourcePath);
+    if (!isValidWorktree(workspacePath, resolvedSource)) {
+        throw new Error(`Workspace is not owned by source repository '${resolvedSource}'.`);
     }
 }
 
@@ -338,7 +373,7 @@ export function detectWorktreeWorkspaceBranch(
         if (gitLinkKind(rootGit) !== "worktree") return null;
         repositories = branchRepositories(workspacePath);
     } else {
-        const candidates = scanDirectory(workspacePath).filter((entry) => entry.isGitRepo);
+        const candidates = scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo);
         const kinds = candidates.map((entry) => ({
             entry,
             kind: gitLinkKind(join(entry.path, ".git")),
@@ -379,9 +414,18 @@ export function detectWorktreeWorkspaceBranch(
  * Skips hidden files/directories (starting with .)
  * Uses lstatSync to avoid following symlinks (prevents symlink loops).
  */
-export function scanDirectory(dirPath: string): WorkspaceEntry[] {
-    if (!existsSync(dirPath)) {
-        return [];
+export function scanDirectory(
+    dirPath: string,
+    options: { strict?: boolean } = {},
+): WorkspaceEntry[] {
+    if (!options.strict && !existsSync(dirPath)) return [];
+    if (options.strict) {
+        try {
+            if (!lstatSync(dirPath).isDirectory()) return [];
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+            throw new Error(`Unable to inspect workspace directory '${dirPath}'.`, { cause: error });
+        }
     }
 
     const entries: WorkspaceEntry[] = [];
@@ -396,7 +440,10 @@ export function scanDirectory(dirPath: string): WorkspaceEntry[] {
         let lstat;
         try {
             lstat = lstatSync(fullPath);
-        } catch {
+        } catch (error) {
+            if (options.strict) {
+                throw new Error(`Unable to inspect workspace entry '${fullPath}'.`, { cause: error });
+            }
             continue;
         }
 
@@ -412,7 +459,21 @@ export function scanDirectory(dirPath: string): WorkspaceEntry[] {
         }
 
         // Check for .git (directory or file — file means gitlink/worktree/submodule)
-        const isGitRepo = existsSync(join(fullPath, ".git"));
+        const gitPath = join(fullPath, ".git");
+        let isGitRepo: boolean;
+        if (options.strict) {
+            try {
+                lstatSync(gitPath);
+                isGitRepo = true;
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+                    throw new Error(`Unable to inspect Git metadata '${gitPath}'.`, { cause: error });
+                }
+                isGitRepo = false;
+            }
+        } else {
+            isGitRepo = existsSync(gitPath);
+        }
         entries.push({ name, path: fullPath, isGitRepo });
     }
 
@@ -916,6 +977,7 @@ export function repairWorkspace(
     if (!existsSync(join(resolved, ".git"))) {
         return [];
     }
+    assertWorkspaceRootOwnership(wsPath, resolved);
 
     // Try to init submodules that may not be initialized yet
     const submoduleCheck = spawnSync(
@@ -936,7 +998,7 @@ export function repairWorkspace(
     // Nested git repos (gitignored or gitlink entries without submodule config)
     // end up as empty or missing directories in the worktree.
     const created: WorktreeRepoResult[] = [];
-    const sourceEntries = scanDirectory(resolved);
+    const sourceEntries = scanDirectory(resolved, { strict: true });
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
@@ -1128,6 +1190,8 @@ export function isValidWorktree(
 
         const gitdirPath = match[1].trim();
         const resolvedGitdir = resolve(dirPath, gitdirPath);
+        const gitdirObserved = lstatSync(resolvedGitdir);
+        if (!gitdirObserved.isDirectory() || gitdirObserved.isSymbolicLink()) return false;
         const registeredGitFile = readFileSync(
             join(resolvedGitdir, "gitdir"),
             "utf-8",
@@ -1165,7 +1229,30 @@ export function isValidWorktree(
         // Compare with realpathSync to handle symlinks (common on macOS).
         // Observation failure cannot establish destructive ownership.
         try {
-            return realpathSync(commonGitDir) === realpathSync(actualSourceGitDir);
+            const sourceGitRealpath = realpathSync(actualSourceGitDir);
+            if (realpathSync(commonGitDir) !== sourceGitRealpath) return false;
+            const managementRoot = realpathSync(join(sourceGitRealpath, "worktrees"));
+            const managementEntry = realpathSync(resolvedGitdir);
+            if (dirname(managementEntry) !== managementRoot) return false;
+            const listed = spawnSync(
+                "git",
+                ["worktree", "list", "--porcelain"],
+                { cwd: sourceRepoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            if (listed.error || listed.status !== 0) return false;
+            const expectedPath = realpathSync(dirPath);
+            return (listed.stdout ?? "")
+                .split(/\r?\n/)
+                .filter((line) => line.startsWith("worktree "))
+                .some((line) => {
+                    const registeredPath = line.slice("worktree ".length).trim();
+                    if (!registeredPath) return false;
+                    try {
+                        return realpathSync(registeredPath) === expectedPath;
+                    } catch {
+                        return false;
+                    }
+                });
         } catch {
             return false;
         }
@@ -1192,7 +1279,7 @@ export function detectBrokenWorktrees(
     }
 
     const broken: BrokenWorktreeEntry[] = [];
-    const sourceEntries = scanDirectory(resolved);
+    const sourceEntries = scanDirectory(resolved, { strict: true });
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
@@ -1240,9 +1327,10 @@ export function fixBrokenWorktree(
     const resolved = resolve(sourcePath);
     const destPath = join(wsPath, repoName);
     const backupPath = destPath + ".ccc-backup";
+    assertWorkspaceRootOwnership(wsPath, resolved);
 
     // Find the source repo
-    const sourceEntries = scanDirectory(resolved);
+    const sourceEntries = scanDirectory(resolved, { strict: true });
     const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
     if (!sourceRepo) return null;
 
@@ -1340,19 +1428,22 @@ export function removeWorkspace(
     }
 
     assertWorkspaceBranch(wsPath, branch, spawnSync, resolved);
+    const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     // Unified mode: top-level is a git repo → remove single worktree
     if (existsSync(join(resolved, ".git"))) {
-        return removeUnifiedWorkspace(resolved, wsPath, opts);
+        return removeUnifiedWorkspace(resolved, wsPath, branch, workspaceIdentity, opts);
     }
 
     // Multi-repo mode
-    return removeMultiRepoWorkspace(resolved, wsPath, opts);
+    return removeMultiRepoWorkspace(resolved, wsPath, workspaceIdentity, opts);
 }
 
 function removeUnifiedWorkspace(
     resolved: string,
     wsPath: string,
+    branch: string,
+    workspaceIdentity: DirectoryIdentity,
     opts?: { force?: boolean },
 ): RemoveResult {
     const removed: string[] = [];
@@ -1360,20 +1451,21 @@ function removeUnifiedWorkspace(
 
     // Remove nested worktrees before removing the parent.
     // These are worktrees created for nested git repos (non-submodule).
-    const sourceEntries = scanDirectory(resolved);
+    const sourceEntries = scanDirectory(resolved, { strict: true });
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
 
         const nestedPath = join(wsPath, entry.name);
         if (!existsSync(nestedPath)) continue;
-
-        // Check if it's a worktree (has .git file, not directory)
-        const gitPath = join(nestedPath, ".git");
-        if (!existsSync(gitPath)) continue;
-        try {
-            const stat = lstatSync(gitPath);
-            if (!stat.isFile()) continue;
-        } catch {
+        assertDirectoryIdentity(wsPath, workspaceIdentity);
+        const nestedGitPath = join(nestedPath, ".git");
+        if (existsSync(nestedGitPath)
+            && gitLinkKind(nestedGitPath) === "gitlink"
+            && isTrackedGitlink(wsPath, entry.name)) {
+            continue;
+        }
+        if (!isValidWorktree(nestedPath, entry.path)) {
+            errors.push(`${entry.name}: worktree ownership changed before deletion`);
             continue;
         }
 
@@ -1387,6 +1479,8 @@ function removeUnifiedWorkspace(
         });
         if (nestedResult.status === 0) {
             removed.push(entry.name);
+        } else {
+            errors.push(`${entry.name}: ${(nestedResult.stderr ?? "").trim() || "git worktree remove failed"}`);
         }
     }
 
@@ -1395,6 +1489,9 @@ function removeUnifiedWorkspace(
         args.push("--force");
     }
 
+    if (errors.length > 0) return { removed, errors };
+    assertDirectoryIdentity(wsPath, workspaceIdentity);
+    assertWorkspaceBranch(wsPath, branch, spawnSync, resolved);
     const result = spawnSync("git", args, {
         cwd: resolved,
         encoding: "utf-8",
@@ -1414,12 +1511,13 @@ function removeUnifiedWorkspace(
 function removeMultiRepoWorkspace(
     resolved: string,
     wsPath: string,
+    workspaceIdentity: DirectoryIdentity,
     opts?: { force?: boolean },
 ): RemoveResult {
     const removed: string[] = [];
     const errors: string[] = [];
 
-    const sourceEntries = scanDirectory(resolved);
+    const sourceEntries = scanDirectory(resolved, { strict: true });
 
     for (const entry of sourceEntries) {
         const wsEntryPath = join(wsPath, entry.name);
@@ -1428,6 +1526,11 @@ function removeMultiRepoWorkspace(
         }
 
         if (entry.isGitRepo) {
+            assertDirectoryIdentity(wsPath, workspaceIdentity);
+            if (!isValidWorktree(wsEntryPath, entry.path)) {
+                errors.push(`${entry.name}: worktree ownership changed before deletion`);
+                continue;
+            }
             const args = ["worktree", "remove", wsEntryPath];
             if (opts?.force) {
                 args.push("--force");
@@ -1447,10 +1550,17 @@ function removeMultiRepoWorkspace(
             }
         } else {
             try {
+                assertDirectoryIdentity(wsPath, workspaceIdentity);
+                const current = scanDirectory(wsPath, { strict: true })
+                    .find((candidate) => candidate.name === entry.name);
+                if (current?.isGitRepo) {
+                    errors.push(`${entry.name}: became a Git repository before deletion`);
+                    continue;
+                }
                 rmSync(wsEntryPath, { recursive: true, force: true });
                 removed.push(entry.name);
-            } catch {
-                // ignore
+            } catch (error) {
+                errors.push(`${entry.name}: ${(error as Error).message}`);
             }
         }
     }
@@ -1458,10 +1568,20 @@ function removeMultiRepoWorkspace(
     // Try to remove the workspace directory itself
     try {
         if (existsSync(wsPath)) {
+            assertDirectoryIdentity(wsPath, workspaceIdentity);
+            if (errors.length > 0) return { removed, errors };
             const remaining = readdirSync(wsPath);
             if (remaining.length === 0) {
                 rmSync(wsPath, { recursive: true });
             } else if (opts?.force) {
+                const remainingRepositories = scanDirectory(wsPath, { strict: true })
+                    .filter((entry) => entry.isGitRepo);
+                if (remainingRepositories.length > 0) {
+                    errors.push(
+                        `Workspace ownership changed before deletion (${remainingRepositories.map(({ name }) => name).join(", ")}).`,
+                    );
+                    return { removed, errors };
+                }
                 rmSync(wsPath, { recursive: true, force: true });
             } else {
                 errors.push(
