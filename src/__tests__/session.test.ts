@@ -53,7 +53,11 @@ vi.mock("../clipboard-server.js", () => ({
 const mockIsContainerRunning = vi.fn();
 const mockGetContainerName = vi.fn();
 vi.mock("../docker.js", () => ({
-    isContainerRunning: (...args: unknown[]) => mockIsContainerRunning(...args),
+    getConfirmedRunningContainerId: (...args: unknown[]) => {
+        const result = mockIsContainerRunning(...args);
+        if (typeof result === "string") return result;
+        return result ? String(args[0]) : null;
+    },
     getContainerName: (...args: unknown[]) => mockGetContainerName(...args),
 }));
 
@@ -855,6 +859,34 @@ describe("session.ts", () => {
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
                 ["stop", containerName],
+                expect.any(Object),
+            );
+        });
+
+        it("stops the exact running container ID captured under the lifecycle lock", () => {
+            const projectId = "my-project-abc123";
+            const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
+            const lockFile = `/locks/${lockFileName}`;
+            const projectPath = "/home/user/my-project";
+
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([lockFileName]);
+            mockGetContainerName.mockReturnValue("ccc-my-project-abc123");
+            mockIsContainerRunning.mockReturnValue("pinned-container-id");
+            mockSpawnSync.mockReturnValue({ status: 0 });
+
+            setSession(lockFile, projectPath);
+            cleanupSession();
+
+            expect(mockSpawnSync).toHaveBeenCalledWith(
+                "docker",
+                ["stop", "pinned-container-id"],
+                expect.any(Object),
+            );
+            expect(mockSpawnSync).not.toHaveBeenCalledWith(
+                "docker",
+                ["stop", "ccc-my-project-abc123"],
                 expect.any(Object),
             );
         });

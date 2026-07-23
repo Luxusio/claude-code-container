@@ -601,6 +601,19 @@ export function isContainerConfirmedStopped(containerName: string): boolean {
     return getConfirmedStoppedContainerId(containerName) !== null;
 }
 
+/** Return the exact running container ID, or null for stopped/unknown/error states. */
+export function getConfirmedRunningContainerId(containerName: string): string | null {
+    const result = spawnSync(
+        runtimeCli(),
+        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.error || result.status !== 0) return null;
+    const [containerId, running, ...extra] = (result.stdout ?? "").trim().split("|");
+    if (!containerId || running !== "true" || extra.length > 0) return null;
+    return containerId;
+}
+
 export function canExecContainer(containerName: string, timeoutMs = 5000): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -1259,6 +1272,7 @@ export function startProjectContainer(
         const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: RequiredContainerMount[] = [
             { hostPath: fullPath, containerPath: projectMountPath, readonly: false, type: "bind", verifySource: true },
+            { hostPath: getClaudeJsonFile(profile), containerPath: "/home/ccc/.claude.json", readonly: false, type: "bind", verifySource: true },
             ...getAllCredentialMounts().map((m) => ({
                 hostPath: resolveCredentialHostPath(m, profile),
                 containerPath: m.containerDir,
@@ -1266,13 +1280,13 @@ export function startProjectContainer(
                 type: "bind" as const,
                 verifySource: true,
             })),
-            ...gitIdentityMounts,
-            ...(extraMounts ?? []),
+            ...gitIdentityMounts.map((mount) => ({ ...mount, readonly: true, type: "bind" as const, verifySource: true })),
+            ...(extraMounts ?? []).map((mount) => ({ ...mount, readonly: false, type: "bind" as const, verifySource: true })),
             { hostPath: deviceLabStateHostDir, containerPath: "/home/ccc/.ccc/devices", readonly: true, type: "bind", verifySource: true },
             { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/owners", readonly: false, type: "tmpfs" },
             { hostPath: currentDeviceLabOwnerRoot, containerPath: `/home/ccc/.ccc/devices/owners/${currentDeviceLabOwnerId}`, readonly: false, type: "bind", verifySource: true },
             { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/broker/auth", readonly: false, type: "tmpfs" },
-            { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR },
+            { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR, readonly: false, type: "bind", verifySource: true },
         ];
         if (currentDeviceLabOwnerAuthFile) {
             requiredMounts.push({
@@ -1286,6 +1300,8 @@ export function startProjectContainer(
         requiredMounts.push({
             hostPath: labRunner.stateVolumeName,
             containerPath: labRunner.stateContainerDir,
+            readonly: false,
+            type: "volume",
         });
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         let contractMismatchReason = "container contract changed";
@@ -1500,16 +1516,22 @@ export function startProjectContainer(
     });
 
     assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
-    const result = spawnSync(cli, args, { stdio: "inherit" });
+    const result = spawnSync(cli, args, {
+        encoding: "utf-8",
+        stdio: ["inherit", "pipe", "inherit"],
+    });
     if (result.status !== 0) {
         console.error("Failed to create container");
         process.exit(1);
     }
+    const createdContainerId = (result.stdout ?? "").trim().split(/\s+/).find((line) => /^[a-f0-9]{12,64}$/i.test(line)) ?? null;
 
     try {
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
     } catch (error) {
-        spawnSync(cli, ["rm", "-f", containerName], { stdio: "ignore" });
+        if (createdContainerId) {
+            spawnSync(cli, ["rm", "-f", createdContainerId], { stdio: "ignore" });
+        }
         throw error;
     }
 

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
-import { getContainerName, isContainerRunning } from "./docker.js";
+import { getContainerName, getConfirmedRunningContainerId } from "./docker.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
@@ -284,11 +284,12 @@ export function cleanupSession(): void {
         removeSessionLock(currentSessionLockFile!);
         if (!hasOthers) {
             cleanupDevicesBestEffort(currentProjectPath!, currentProfile);
-            if (isContainerRunning(containerName)) {
+            const runningContainerId = getConfirmedRunningContainerId(containerName);
+            if (runningContainerId) {
                 if (currentToolName === "claude") {
-                    saveClaudeBinaryToVolume(containerName);
+                    saveClaudeBinaryToVolume(runningContainerId);
                 }
-                spawnSync(runtimeCli(), ["stop", containerName], { stdio: "ignore" });
+                spawnSync(runtimeCli(), ["stop", runningContainerId], { stdio: "ignore" });
             }
         }
     });
