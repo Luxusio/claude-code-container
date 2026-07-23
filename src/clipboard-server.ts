@@ -22,6 +22,7 @@ import { join, dirname, basename } from "path";
 import { homedir, platform } from "os";
 import { fileURLToPath } from "url";
 import { CLIPBOARD_FILES_CONTAINER_DIR, CLIPBOARD_FILES_DIR } from "./utils.js";
+import { sessionLockLiveness } from "./session-lock-liveness.js";
 
 // === Version (for auto-restart on upgrade) ===
 // Uses content hash of the compiled server file so ANY code change triggers restart
@@ -1390,40 +1391,36 @@ export async function ensureClipboardServer(): Promise<number> {
  * Check if there are any active CCC sessions besides the given lock file.
  */
 export function hasAnyActiveSessionsExcept(currentLockFile: string | null): boolean {
-    if (!existsSync(LOCKS_DIR)) return false;
     const currentLockName = currentLockFile ? basename(currentLockFile) : "";
-    const locks = readdirSync(LOCKS_DIR).filter((f) => f.endsWith(".lock"));
+    let locks: string[];
+    try {
+        locks = readdirSync(LOCKS_DIR).filter((f) => f.endsWith(".lock"));
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        // Failure to enumerate locks is not proof that no sessions exist.
+        return true;
+    }
     return locks.some((f) => {
         if (f === currentLockName) return false;
-        // Validate PID liveness — delete stale lock files from crashed sessions
+        // Use the same conservative lock identity rules as container cleanup.
         const lockPath = join(LOCKS_DIR, f);
         try {
             const content = readFileSync(lockPath, "utf-8").trim();
-            const pid = parseInt(content, 10);
-            if (isNaN(pid)) {
-                try { unlinkSync(lockPath); } catch { /* ignore */ }
-                return false;
-            }
-            try {
-                process.kill(pid, 0);
-                return true; // PID is alive
-            } catch {
-                try { unlinkSync(lockPath); } catch { /* ignore */ }
-                return false; // PID is dead — stale lock
-            }
+            const liveness = sessionLockLiveness(content);
+            return liveness !== "stale";
         } catch {
-            try { unlinkSync(lockPath); } catch { /* ignore */ }
-            return false;
+            // A read failure is not proof that the owning session exited.
+            return true;
         }
     });
 }
 
 /**
- * Stop the clipboard server if this is the last active CCC session.
- * Call BEFORE removing the current session's lock file.
+ * Stop the clipboard server when the session module has atomically established
+ * that no other session owns the shared container.
  */
-export function stopClipboardServerIfLast(currentLockFile: string | null): void {
-    if (hasAnyActiveSessionsExcept(currentLockFile)) return;
+export function stopClipboardServerIfLast(hasOtherActiveSessions: boolean): void {
+    if (hasOtherActiveSessions) return;
 
     const info = readPortFile();
     if (!info) return;

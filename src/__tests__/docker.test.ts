@@ -78,12 +78,20 @@ const {
     prepareCodexConfigForContainer,
     restoreCodexConfigHostOwnership,
     syncManagedMcpBundles,
+    bindSourcePathsEquivalent,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
 } = await import("../docker.js");
 
-const { CLI_VERSION, CLIPBOARD_FILES_DIR, CLIPBOARD_FILES_CONTAINER_DIR, getClaudeJsonFile, getProjectId } = await import("../utils.js");
+const {
+    CLI_VERSION,
+    CLIPBOARD_FILES_DIR,
+    CLIPBOARD_FILES_CONTAINER_DIR,
+    MISE_VOLUME_NAME,
+    getClaudeJsonFile,
+    getProjectId,
+} = await import("../utils.js");
 const { getAllCredentialMounts } = await import("../tool-registry.js");
 const { deviceLabOwnerId } = await import("../device-lab-owner.js");
 const {
@@ -117,6 +125,7 @@ function fullCredentialMountsJson(
         kvmDevice?: boolean;
         groupAdd?: string[];
         devices?: Array<Record<string, string>>;
+        deviceRequests?: Array<Record<string, unknown>>;
         privileged?: boolean;
     } = {},
 ): string {
@@ -147,6 +156,14 @@ function fullCredentialMountsJson(
     };
     const clipboardMounts = [
         { Source: CLIPBOARD_FILES_DIR, Destination: CLIPBOARD_FILES_CONTAINER_DIR, Type: "bind", RW: true },
+    ];
+    const hostSshPath = join(homedir(), ".ssh");
+    const coreMounts = [
+        { Source: MISE_VOLUME_NAME, Destination: "/home/ccc/.local/share/mise", Type: "volume", RW: true },
+        { Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock", Type: "bind", RW: true },
+        ...(mockExistsSync(hostSshPath)
+            ? [{ Source: hostSshPath, Destination: "/home/ccc/.ssh", Type: "bind", RW: false }]
+            : []),
     ];
     const deviceLabMounts = options.deviceLabState === false
         ? []
@@ -183,15 +200,31 @@ function fullCredentialMountsJson(
     const groupAdd = options.groupAdd ?? (status === "ready" && options.kvmDevice !== false ? ["108"] : []);
     return JSON.stringify({
         Id: "abc123",
-        Mounts: [claudeJsonMount, ...projectMounts, ...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...deviceLabMounts, ...labStateMounts, ...extra],
+        Mounts: [
+            claudeJsonMount,
+            ...projectMounts,
+            ...credMounts,
+            ...gitIdentityMounts,
+            ...clipboardMounts,
+            ...coreMounts,
+            ...deviceLabMounts,
+            ...labStateMounts,
+            ...extra.map((mount) => ({ Type: "bind", RW: true, ...mount })),
+        ],
         Config: {
             Env: env,
             Labels: {
+                "ccc.managed": "true",
                 "ccc.project.path": "/home/user/my-project",
                 "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity(),
             },
         },
-        HostConfig: { Devices: devices, GroupAdd: groupAdd, Privileged: options.privileged === true },
+        HostConfig: {
+            Devices: devices,
+            DeviceRequests: options.deviceRequests ?? [],
+            GroupAdd: groupAdd,
+            Privileged: options.privileged === true,
+        },
     });
 }
 
@@ -261,6 +294,26 @@ describe("docker.ts module exports", () => {
             const base = getContainerName("/home/user/my-project");
             const profiled = getContainerName("/home/user/my-project", "work");
             expect(profiled).toBe(`${base}--p--work`);
+        });
+    });
+
+    describe("bindSourcePathsEquivalent", () => {
+        it("recognizes Docker Desktop and Windows drive path representations as the same source", () => {
+            expect(bindSourcePathsEquivalent(
+                "/run/desktop/mnt/host/c/Users/Luxus/Project/catchy",
+                "C:\\Users\\Luxus\\Project\\catchy",
+            )).toBe(true);
+            expect(bindSourcePathsEquivalent(
+                "/host_mnt/C/Users/Luxus/Project/catchy",
+                "c:/users/luxus/project/catchy",
+            )).toBe(true);
+        });
+
+        it("rejects a different Windows bind source", () => {
+            expect(bindSourcePathsEquivalent(
+                "/run/desktop/mnt/host/c/Users/Luxus/Project/other",
+                "C:\\Users\\Luxus\\Project\\catchy",
+            )).toBe(false);
         });
     });
 
@@ -1379,7 +1432,8 @@ describe("docker.ts module exports", () => {
 
             expect(name).toBe(getContainerName(projectPath));
             expect(guard).not.toHaveBeenCalled();
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("container is still running"));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("existing container is running"));
+            expect(warnSpy).toHaveBeenCalledWith(expect.not.stringContaining("active CCC sessions"));
             const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args?.[0] === "exec" && args?.at(-1) === "true";
@@ -1392,7 +1446,7 @@ describe("docker.ts module exports", () => {
             })).toBe(false);
         });
 
-        it("fails closed without replacing a running Windows container when its device-lab file identity label changed", () => {
+        it("joins a running Windows container when only its device-lab file identity label changed", () => {
             const inspected = JSON.parse(fullCredentialMountsJson()) as {
                 Config: { Labels: Record<string, string> };
             };
@@ -1409,13 +1463,46 @@ describe("docker.ts module exports", () => {
             const guard = vi.fn(() => true);
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-            expect(() => startProjectContainer(
+            const name = startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            )).toThrow("contract failed safety validation");
+            );
 
+            expect(name).toBe(getContainerName(projectPath));
             expect(guard).not.toHaveBeenCalled();
-            expect(warnSpy).not.toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("device-lab mount identity changed"));
             expectNoContainerReplacement();
+        });
+
+        it("matches running Windows project paths case-insensitively", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            inspected.Config.Labels["ccc.project.path"] = "/HOME/USER/MY-PROJECT";
+            const projectMount = inspected.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
+            projectMount.Source = "/HOME/USER/MY-PROJECT";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const originalPlatform = process.platform;
+            const guard = vi.fn(() => true);
+            try {
+                Object.defineProperty(process, "platform", { value: "win32" });
+                const name = startProjectContainer(
+                    projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+                );
+                expect(name).toBe(getContainerName(projectPath));
+                expect(guard).not.toHaveBeenCalled();
+                expectNoContainerReplacement();
+            } finally {
+                Object.defineProperty(process, "platform", { value: originalPlatform });
+            }
         });
 
         it("fails closed without replacing an unsafe privileged container owned by another session", () => {
@@ -1445,51 +1532,129 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
-            ["project source substitution", (value: ReturnType<typeof JSON.parse>) => {
-                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
-                mount.Source = "/foreign/project";
+            ["missing project mount", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts = value.Mounts.filter((item: { Destination: string }) => !item.Destination.startsWith("/project/"));
+            }],
+            ["unmanaged container identity", (value: ReturnType<typeof JSON.parse>) => {
+                value.Config.Labels["ccc.managed"] = "false";
             }],
             ["project identity label substitution", (value: ReturnType<typeof JSON.parse>) => {
                 value.Config.Labels["ccc.project.path"] = "/foreign/project";
             }],
-            ["missing credential mount", (value: ReturnType<typeof JSON.parse>) => {
-                value.Mounts = value.Mounts.filter((item: { Destination: string }) => item.Destination !== "/home/ccc/.claude");
+            ["read-only project mount", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
+                mount.RW = false;
+            }],
+            ["non-bind project mount", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
+                mount.Type = "volume";
+            }],
+            ["unexpected host bind", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({
+                    Source: "/host/private",
+                    Destination: "/host/private",
+                    Type: "bind",
+                    RW: false,
+                });
+            }],
+            ["unexpected volume", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({
+                    Source: "foreign-volume",
+                    Destination: "/foreign/data",
+                    Type: "volume",
+                    RW: true,
+                });
+            }],
+            ["unexpected tmpfs", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({
+                    Source: "",
+                    Destination: "/foreign/tmp",
+                    Type: "tmpfs",
+                    RW: true,
+                });
+            }],
+            ["missing mount destination", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({ Source: "foreign-volume", Type: "volume", RW: true });
+            }],
+            ["empty mount destination", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({ Source: "foreign-volume", Destination: "", Type: "volume", RW: true });
+            }],
+            ["null mount entry", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push(null);
+            }],
+            ["duplicate project mount destination", (value: ReturnType<typeof JSON.parse>) => {
+                const projectMount = value.Mounts.find((item: { Destination?: string }) => item?.Destination?.startsWith("/project/"));
+                value.Mounts.push({ ...projectMount, Source: "/foreign/project" });
+            }],
+            ["malformed mount type", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({ Source: "foreign-volume", Destination: "/foreign/data", Type: null, RW: true });
+            }],
+            ["malformed mount access", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts.push({ Source: "foreign-volume", Destination: "/foreign/data", Type: "volume", RW: "true" });
+            }],
+            ["unexpected host device", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.Devices.push({ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" });
+            }],
+            ["unexpected host device request", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.DeviceRequests.push({ Driver: "nvidia", Count: -1, Capabilities: [["gpu"]] });
+            }],
+            ["unexpected supplemental group", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.GroupAdd.push("999");
+            }],
+            ["missing host configuration", (value: ReturnType<typeof JSON.parse>) => {
+                delete value.HostConfig;
+            }],
+            ["malformed devices", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.Devices = {};
+            }],
+            ["malformed device requests", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.DeviceRequests = {};
+            }],
+            ["malformed supplemental groups", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.GroupAdd = "108";
+            }],
+            ["malformed privileged flag", (value: ReturnType<typeof JSON.parse>) => {
+                value.HostConfig.Privileged = "false";
+            }],
+            ["project source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
+                mount.Source = "/foreign/project";
             }],
             ["credential source substitution", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
                 mount.Source = "/foreign/.claude";
             }],
-            ["credential made read-only", (value: ReturnType<typeof JSON.parse>) => {
+            ["credential access drift", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
                 mount.RW = false;
             }],
-            ["credential changed from bind to volume", (value: ReturnType<typeof JSON.parse>) => {
+            ["credential mount type drift", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
                 mount.Type = "volume";
-            }],
-            ["missing claude.json mount", (value: ReturnType<typeof JSON.parse>) => {
-                value.Mounts = value.Mounts.filter((item: { Destination: string }) => item.Destination !== "/home/ccc/.claude.json");
             }],
             ["claude.json source substitution", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude.json");
                 mount.Source = "/foreign/.claude.json";
             }],
-            ["claude.json made read-only", (value: ReturnType<typeof JSON.parse>) => {
+            ["claude.json access drift", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude.json");
                 mount.RW = false;
             }],
-            ["owner auth source substitution", (value: ReturnType<typeof JSON.parse>) => {
+            ["device broker auth source substitution", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/run/ccc-device-broker-auth/owner.json");
                 mount.Source = "/foreign/owner.json";
             }],
-            ["owner auth environment drift", (value: ReturnType<typeof JSON.parse>) => {
-                value.Config.Env = value.Config.Env.filter((item: string) => !item.startsWith("CCC_DEVICE_BROKER_AUTH_FILE="));
+            ["container socket source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/var/run/docker.sock");
+                mount.Source = "/foreign/docker.sock";
             }],
-            ["unexpected host device", (value: ReturnType<typeof JSON.parse>) => {
-                value.HostConfig.Devices.push({ PathOnHost: "/dev/net/tun", PathInContainer: "/dev/net/tun" });
+            ["mise volume source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.local/share/mise");
+                mount.Source = "foreign-mise-cache";
             }],
-            ["unexpected supplemental group", (value: ReturnType<typeof JSON.parse>) => {
-                value.HostConfig.GroupAdd.push("999");
+            ["SSH credential source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.ssh");
+                mount.Source = "/foreign/.ssh";
             }],
         ])("fails closed on %s while the container is running", (_name, mutate) => {
             const inspected = JSON.parse(fullCredentialMountsJson());
@@ -1512,11 +1677,86 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
+            ["missing credential mount", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts = value.Mounts.filter((item: { Destination: string }) => item.Destination !== "/home/ccc/.claude");
+            }],
+            ["missing claude.json mount", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts = value.Mounts.filter((item: { Destination: string }) => item.Destination !== "/home/ccc/.claude.json");
+            }],
+            ["device broker auth environment drift", (value: ReturnType<typeof JSON.parse>) => {
+                value.Config.Env = value.Config.Env.filter((item: string) => !item.startsWith("CCC_DEVICE_BROKER_AUTH_FILE="));
+            }],
+            ["missing device broker mounts", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts = value.Mounts.filter((item: { Destination: string }) => (
+                    item.Destination !== "/run/ccc-device-broker-auth/owner.json"
+                    && item.Destination !== "/home/ccc/.ccc/devices"
+                    && !item.Destination.startsWith("/home/ccc/.ccc/devices/")
+                ));
+            }],
+        ])("joins a running managed container with deferred %s", (_name, mutate) => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            mutate(inspected);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => true);
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            const name = startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            );
+
+            expect(name).toBe(getContainerName(projectPath));
+            expect(guard).not.toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            expectNoContainerReplacement();
+        });
+
+        it.each([
+            ["Git identity", "/home/ccc/.config/git"],
+            ["device broker auth", "/run/ccc-device-broker-auth/owner.json"],
+        ])("fails closed when a legacy %s bind is no longer required", (_name, destination) => {
+            mockExistsSync.mockReturnValue(true);
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            mockExistsSync.mockImplementation((path: string) => (
+                !path.endsWith("/.config/git")
+                && !path.endsWith(".json")
+            ));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toThrow("contract failed safety validation");
+
+            expect(inspected.Mounts).toEqual(expect.arrayContaining([
+                expect.objectContaining({ Destination: destination, Type: "bind" }),
+            ]));
+            expectNoContainerReplacement();
+        });
+
+        it.each([
             ["source substitution", (mount: { Source: string; RW: boolean }) => { mount.Source = "/foreign/.gitconfig"; }],
             ["writable access", (mount: { Source: string; RW: boolean }) => { mount.RW = true; }],
         ])("fails closed on Git identity %s while the container is running", (_name, mutate) => {
             mockExistsSync.mockImplementation((path: string) => path.endsWith("/.config/git"));
-            const inspected = JSON.parse(fullCredentialMountsJson());
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
             const gitMount = inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.config/git");
             mutate(gitMount);
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -1609,7 +1849,7 @@ describe("docker.ts module exports", () => {
 
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            )).toThrow("preserving the active session without joining it");
+            )).toThrow("preserving the existing running container without joining it");
             expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
@@ -2810,7 +3050,8 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))     // isContainerExists -> exists
                 .mockReturnValueOnce(makeResult(0, mountsJson))     // contract inspect -> substituted source
                 .mockReturnValueOnce(makeResult(0, "abc123|true\n")) // confirmed stopped probe -> running
-                .mockReturnValueOnce(makeResult(0, mountsJson));    // fail-closed safety inspect
+                .mockReturnValueOnce(makeResult(0, mountsJson))     // deferred safety inspect
+                .mockReturnValueOnce(makeResult(0, "abc123\n"));    // isContainerRunning -> true
 
             expect(() => startProjectContainer(
                 projectPath,

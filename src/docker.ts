@@ -77,6 +77,7 @@ type RequiredContainerMount = {
     readonly?: boolean;
     type?: "bind" | "tmpfs" | "volume";
     verifySource?: boolean;
+    verifySourceCanonical?: boolean;
 };
 
 function normalizedHostPath(path: string): string {
@@ -86,6 +87,21 @@ function normalizedHostPath(path: string): string {
 
 function canonicalHostPath(path: string): string {
     return normalizedHostPath(realpathSync(path));
+}
+
+function windowsBindSourceIdentity(path: string): string | null {
+    const slashed = path.replace(/\\/g, "/").replace(/^\/\/\?\//, "");
+    const desktop = /^\/(?:run\/desktop\/mnt\/host|host_mnt)\/([a-z])\/(.+)$/i.exec(slashed);
+    if (desktop) return `${desktop[1].toLowerCase()}:/${desktop[2]}`.toLowerCase();
+    const drive = /^([a-z]):\/(.+)$/i.exec(slashed);
+    return drive ? `${drive[1].toLowerCase()}:/${drive[2]}`.toLowerCase() : null;
+}
+
+export function bindSourcePathsEquivalent(actual: string, expected: string): boolean {
+    const actualWindows = windowsBindSourceIdentity(actual);
+    const expectedWindows = windowsBindSourceIdentity(expected);
+    if (actualWindows || expectedWindows) return actualWindows === expectedWindows;
+    return normalizedHostPath(actual) === normalizedHostPath(expected);
 }
 
 function sameFileIdentity(
@@ -840,6 +856,29 @@ function envMap(values: unknown): Map<string, string> {
     return map;
 }
 
+function unexpectedContainerMount(
+    mounts: Array<{ Source?: unknown; Destination?: unknown; RW?: unknown; Type?: unknown }>,
+    requiredMounts: RequiredContainerMount[],
+): string | null {
+    const allowedDestinations = new Set(requiredMounts.map((mount) => mount.containerPath));
+    const destinations = new Set<string>();
+    for (const mount of mounts) {
+        if (!mount || typeof mount !== "object"
+            || typeof mount.Destination !== "string" || mount.Destination.length === 0) {
+            return "<malformed-destination>";
+        }
+        if (typeof mount.Source !== "string"
+            || typeof mount.Type !== "string" || mount.Type.length === 0
+            || typeof mount.RW !== "boolean") {
+            return `<malformed:${mount.Destination}>`;
+        }
+        if (destinations.has(mount.Destination)) return `<duplicate:${mount.Destination}>`;
+        destinations.add(mount.Destination);
+        if (!allowedDestinations.has(mount.Destination)) return mount.Destination;
+    }
+    return null;
+}
+
 function hasKvmDevice(devices: unknown): boolean {
     return JSON.stringify(devices ?? []).includes("/dev/kvm");
 }
@@ -854,6 +893,29 @@ function deviceEntries(devices: unknown): Array<{ hostPath: string; containerPat
             containerPath: String(entry.PathInContainer || ""),
         };
     }).filter((entry): entry is { hostPath: string; containerPath: string } => Boolean(entry));
+}
+
+function hasDeviceRequests(deviceRequests: unknown): boolean {
+    return Array.isArray(deviceRequests) && deviceRequests.length > 0;
+}
+
+type InspectedHostConfig = {
+    Devices: unknown[] | null;
+    DeviceRequests: unknown[] | null;
+    GroupAdd: unknown[] | null;
+    Privileged: boolean;
+};
+
+function inspectedHostConfig(value: unknown): InspectedHostConfig | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const config = value as Record<string, unknown>;
+    if (typeof config.Privileged !== "boolean") return null;
+    for (const key of ["Devices", "DeviceRequests", "GroupAdd"] as const) {
+        if (!Object.hasOwn(config, key) || (config[key] !== null && !Array.isArray(config[key]))) {
+            return null;
+        }
+    }
+    return config as InspectedHostConfig;
 }
 
 function devicesMatchExpectedKvmOnly(devices: unknown, kvmDevicePath: string | undefined): boolean {
@@ -904,18 +966,26 @@ function containerMatchesRunContract(
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
             Config?: { Env?: string[]; Labels?: Record<string, string> };
-            HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
+            HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
         const mounts = inspected.Mounts || [];
         const env = envMap(inspected.Config?.Env);
-        if (inspected.Config?.Labels?.["ccc.project.path"] !== projectPath) {
+        const hostConfig = inspectedHostConfig(inspected.HostConfig);
+        if (!hostConfig) return failContract("container host configuration is malformed");
+        if (inspected.Config?.Labels?.["ccc.managed"] !== "true") {
+            return failContract("container is not CCC-managed");
+        }
+        const labeledProjectPath = inspected.Config?.Labels?.["ccc.project.path"];
+        if (!labeledProjectPath
+            || normalizedHostPath(labeledProjectPath) !== normalizedHostPath(projectPath)) {
             return failContract("project path identity changed");
         }
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
             return failContract("device-lab mount identity changed");
         }
-        const devices = inspected.HostConfig?.Devices;
-        const groupAdd = inspected.HostConfig?.GroupAdd;
+        const devices = hostConfig.Devices;
+        const deviceRequests = hostConfig.DeviceRequests;
+        const groupAdd = hostConfig.GroupAdd;
         for (const req of requiredMounts) {
             const mount = mounts.find((item) => item.Destination === req.containerPath);
             if (!mount) {
@@ -927,6 +997,9 @@ function containerMatchesRunContract(
             }
             if (req.readonly !== undefined && mount.RW !== !req.readonly) return failContract(`mount access changed for ${req.containerPath}`);
             if (req.type !== undefined && mount.Type !== req.type) return failContract(`mount type changed for ${req.containerPath}`);
+            if (req.type === "volume" && mount.Source !== req.hostPath) {
+                return failContract(`volume source changed for ${req.containerPath}`);
+            }
             if (req.verifySource) {
                 if (mount.Type !== "bind" || !mount.Source) return failContract(`bind source missing for ${req.containerPath}`);
                 let actualSource: string;
@@ -936,14 +1009,20 @@ function containerMatchesRunContract(
                     // its Source path is not necessarily readable in this process.
                     // The expected source was already resolved and identity-checked
                     // before it entered the contract.
-                    actualSource = normalizedHostPath(mount.Source);
-                    expectedSource = canonicalHostPath(req.hostPath);
+                    actualSource = mount.Source;
+                    expectedSource = req.verifySourceCanonical === false
+                        ? req.hostPath
+                        : canonicalHostPath(req.hostPath);
                 } catch {
                     return failContract(`bind source unreadable for ${req.containerPath}`);
                 }
-                if (actualSource !== expectedSource) return failContract(`bind source changed for ${req.containerPath}`);
+                if (!bindSourcePathsEquivalent(actualSource, expectedSource)) {
+                    return failContract(`bind source changed for ${req.containerPath}`);
+                }
             }
         }
+        const unexpectedMount = unexpectedContainerMount(mounts, requiredMounts);
+        if (unexpectedMount) return failContract(`unexpected mount ${unexpectedMount}`);
         const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
         const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
         if (authRequired !== authMounted) return failContract("stale isolated device broker auth mount");
@@ -953,7 +1032,8 @@ function containerMatchesRunContract(
         if (!authRequired && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) {
             return failContract("stale isolated device broker auth file environment");
         }
-        if (inspected.HostConfig?.Privileged === true) return failContract("stale privileged container");
+        if (hostConfig.Privileged) return failContract("stale privileged container");
+        if (hasDeviceRequests(deviceRequests)) return failContract("unexpected host device requests");
         if (env.get("CCC_LAB_RUNNER") !== "1") return failContract("missing CCC_LAB_RUNNER=1");
         if (env.get("CCC_LAB_RUNNER_STATUS") !== labRunner.status) return failContract(`CCC_LAB_RUNNER_STATUS is ${env.get("CCC_LAB_RUNNER_STATUS") || "unset"}, expected ${labRunner.status}`);
         if (env.get("CCC_LAB_STATE_DIR") !== labRunner.stateContainerDir) return failContract(`CCC_LAB_STATE_DIR is ${env.get("CCC_LAB_STATE_DIR") || "unset"}, expected ${labRunner.stateContainerDir}`);
@@ -977,72 +1057,121 @@ function containerMatchesRunContract(
 }
 
 /**
- * A non-security immutable metadata change can be deferred while a container
- * remains running. Permission expansion, identity/auth drift, a missing mount,
- * source substitution, or an unreadable contract must fail closed instead.
+ * A running managed container remains joinable while additive mount and
+ * device-broker contract updates wait for the next stopped-container rebuild.
+ * Core project identity, the writable project bind destination, and host
+ * privilege expansion still fail closed. The host source is deferred because
+ * Docker Desktop may report a different representation of the same Windows
+ * path than the current CLI process.
  */
 function containerRunContractIsSafeToDefer(
     containerName: string,
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
-    deviceLabMountIdentity: string,
     projectPath: string,
+    reportUnsafe: (reason: string) => void = () => undefined,
 ): boolean {
+    const unsafe = (reason: string) => {
+        reportUnsafe(reason);
+        return false;
+    };
     const result = spawnSync(
         runtimeCli(),
         ["inspect", "-f", "{{json .}}", containerName],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    if (result.status !== 0) return false;
+    if (result.error || result.status !== 0) return unsafe("container contract inspection failed");
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
             Config?: { Env?: string[]; Labels?: Record<string, string> };
-            HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
+            HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
-        if (inspected.Config?.Labels?.["ccc.project.path"] !== projectPath) return false;
-        if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) return false;
-        if (inspected.HostConfig?.Privileged === true) return false;
+        const labels = inspected.Config?.Labels;
+        if (labels?.["ccc.managed"] !== "true") return unsafe("container is not CCC-managed");
+        if (!labels?.["ccc.project.path"]
+            || normalizedHostPath(labels["ccc.project.path"]) !== normalizedHostPath(projectPath)) {
+            return unsafe("project path identity changed");
+        }
+        const hostConfig = inspectedHostConfig(inspected.HostConfig);
+        if (!hostConfig) return unsafe("container host configuration is malformed");
+        if (hostConfig.Privileged) return unsafe("stale privileged container");
         const mounts = inspected.Mounts || [];
-        for (const req of requiredMounts) {
-            const mount = mounts.find((item) => item.Destination === req.containerPath);
-            if (!mount) return false;
-            if (req.readonly !== undefined && mount.RW !== !req.readonly) return false;
-            if (req.type !== undefined && mount.Type !== req.type) return false;
-            if (req.verifySource) {
-                if (mount.Type !== "bind" || !mount.Source) return false;
+        const projectMount = requiredMounts.find((mount) => mount.containerPath.startsWith("/project/"));
+        if (!projectMount) return unsafe("project mount contract is unavailable");
+        const unexpectedMount = unexpectedContainerMount(mounts, requiredMounts);
+        if (unexpectedMount) return unsafe(`unexpected mount ${unexpectedMount}`);
+        const mountedProject = mounts.find((mount) => mount.Destination === projectMount.containerPath);
+        if (!mountedProject) return unsafe(`missing mount ${projectMount.containerPath}`);
+        if (mountedProject.Type !== "bind" || !mountedProject.Source) {
+            return unsafe(`bind source missing for ${projectMount.containerPath}`);
+        }
+        let expectedProjectSource: string;
+        try {
+            expectedProjectSource = canonicalHostPath(projectMount.hostPath);
+        } catch {
+            return unsafe(`bind source unreadable for ${projectMount.containerPath}`);
+        }
+        if (!bindSourcePathsEquivalent(mountedProject.Source, expectedProjectSource)) {
+            return unsafe(`bind source changed for ${projectMount.containerPath}`);
+        }
+        if (projectMount.readonly !== undefined && mountedProject.RW !== !projectMount.readonly) {
+            return unsafe(`mount access changed for ${projectMount.containerPath}`);
+        }
+        for (const required of requiredMounts) {
+            if (required === projectMount) continue;
+            const mounted = mounts.find((mount) => mount.Destination === required.containerPath);
+            if (!mounted) continue;
+            if (required.type !== undefined && mounted.Type !== required.type) {
+                return unsafe(`mount type changed for ${required.containerPath}`);
+            }
+            if (required.readonly !== undefined && mounted.RW !== !required.readonly) {
+                return unsafe(`mount access changed for ${required.containerPath}`);
+            }
+            if (required.type === "volume" && mounted.Source !== required.hostPath) {
+                return unsafe(`volume source changed for ${required.containerPath}`);
+            }
+            if (required.verifySource) {
+                if (mounted.Type !== "bind" || !mounted.Source) {
+                    return unsafe(`bind source missing for ${required.containerPath}`);
+                }
+                let actualSource: string;
+                let expectedSource: string;
                 try {
-                    if (normalizedHostPath(mount.Source) !== canonicalHostPath(req.hostPath)) return false;
+                    actualSource = mounted.Source;
+                    expectedSource = required.verifySourceCanonical === false
+                        ? required.hostPath
+                        : canonicalHostPath(required.hostPath);
                 } catch {
-                    return false;
+                    return unsafe(`bind source unreadable for ${required.containerPath}`);
+                }
+                if (!bindSourcePathsEquivalent(actualSource, expectedSource)) {
+                    return unsafe(`bind source changed for ${required.containerPath}`);
                 }
             }
         }
-        const env = envMap(inspected.Config?.Env);
-        const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
-        const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
-        // Missing, stale, or incorrectly selected auth mounts can expose
-        // writable-layer credentials or another owner and must fail closed.
-        if (authRequired && !authMounted) return false;
-        if (!authRequired && authMounted) return false;
-        if (authMounted && env.get("CCC_DEVICE_BROKER_AUTH_FILE") !== DEVICE_BROKER_AUTH_CONTAINER_FILE) return false;
-        if (!authMounted && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) return false;
-
-        const devices = deviceEntries(inspected.HostConfig?.Devices);
-        const groupAdd = Array.isArray(inspected.HostConfig?.GroupAdd)
-            ? inspected.HostConfig.GroupAdd.map(String)
+        const devices = deviceEntries(hostConfig.Devices);
+        if (hasDeviceRequests(hostConfig.DeviceRequests)) {
+            return unsafe("unexpected host device requests");
+        }
+        const groupAdd = Array.isArray(hostConfig.GroupAdd)
+            ? hostConfig.GroupAdd.map(String)
             : [];
         if (labRunner.status === "ready") {
             const expectedDevices = labRunner.kvmDevicePath ? [labRunner.kvmDevicePath] : [];
-            if (devices.some((device) => !expectedDevices.includes(device.hostPath) || device.hostPath !== device.containerPath)) return false;
+            if (devices.some((device) => !expectedDevices.includes(device.hostPath) || device.hostPath !== device.containerPath)) {
+                return unsafe("unexpected VM device set");
+            }
             const expectedGroups = labRunner.kvmGroupId === undefined ? [] : [String(labRunner.kvmGroupId)];
-            if (groupAdd.some((group) => !expectedGroups.includes(group))) return false;
+            if (groupAdd.some((group) => !expectedGroups.includes(group))) {
+                return unsafe("unexpected extra VM group-add");
+            }
         } else if (devices.length > 0 || groupAdd.length > 0) {
-            return false;
+            return unsafe("stale VM device or group on unsupported config");
         }
         return true;
     } catch {
-        return false;
+        return unsafe("container contract inspection failed");
     }
 }
 
@@ -1285,6 +1414,15 @@ export function startProjectContainer(
     const currentDeviceLabOwnerAuthFile = preparedDeviceLabSources.ownerAuthFile?.path;
     const projectId = getProjectId(fullPath);
     const projectMountPath = `/project/${projectId}`;
+    const hostSshPath = join(homedir(), ".ssh");
+    const hostSshDir = existsSync(hostSshPath) ? hostSshPath : null;
+    let sshAgentSocket: string | null = null;
+    if (process.platform === "darwin") {
+        sshAgentSocket = "/run/host-services/ssh-auth.sock";
+    } else {
+        const hostSock = process.env.SSH_AUTH_SOCK;
+        if (hostSock && existsSync(hostSock)) sshAgentSocket = hostSock;
+    }
 
     const debug = !!process.env.DEBUG;
 
@@ -1332,6 +1470,30 @@ export function startProjectContainer(
             { hostPath: currentDeviceLabOwnerRoot, containerPath: `/home/ccc/.ccc/devices/owners/${currentDeviceLabOwnerId}`, readonly: false, type: "bind", verifySource: true },
             { hostPath: "tmpfs", containerPath: "/home/ccc/.ccc/devices/broker/auth", readonly: false, type: "tmpfs" },
             { hostPath: CLIPBOARD_FILES_DIR, containerPath: CLIPBOARD_FILES_CONTAINER_DIR, readonly: false, type: "bind", verifySource: true },
+            { hostPath: MISE_VOLUME_NAME, containerPath: "/home/ccc/.local/share/mise", readonly: false, type: "volume" },
+            {
+                hostPath: resolveHostSocketPath(),
+                containerPath: "/var/run/docker.sock",
+                readonly: false,
+                type: "bind",
+                verifySource: true,
+                verifySourceCanonical: false,
+            },
+            ...(hostSshDir
+                ? [{ hostPath: hostSshDir, containerPath: "/home/ccc/.ssh", readonly: true, type: "bind" as const, verifySource: true }]
+                : []),
+            ...(sshAgentSocket
+                ? [{ hostPath: sshAgentSocket, containerPath: "/tmp/ssh-agent.sock", readonly: false, type: "bind" as const, verifySource: true }]
+                : []),
+            ...(clipboardPortFile && existsSync(clipboardPortFile)
+                ? [{
+                    hostPath: clipboardPortFile,
+                    containerPath: "/run/ccc/clipboard.port",
+                    readonly: true,
+                    type: "bind" as const,
+                    verifySource: true,
+                }]
+                : []),
         ];
         if (currentDeviceLabOwnerAuthFile) {
             requiredMounts.push({
@@ -1378,14 +1540,18 @@ export function startProjectContainer(
                     listedContainer.containerId,
                 );
                 if (!recreated) {
+                    let unsafeDeferReason = "unknown safety mismatch";
                     if (!containerRunContractIsSafeToDefer(
                         listedContainer.containerId,
                         requiredMounts,
                         labRunner,
-                        preparedDeviceLabSources.contractIdentity,
                         fullPath,
+                        (reason) => { unsafeDeferReason = reason; },
                     )) {
-                        throw new Error("Running container contract failed safety validation; preserving the active session without joining it.");
+                        throw new Error(
+                            `Running container contract failed safety validation (${unsafeDeferReason}); `
+                            + "preserving the existing running container without joining it.",
+                        );
                     }
                     if (!isContainerRunning(containerName)) {
                         throw new Error("Container contract update is required, but automatic replacement was not authorized.");
@@ -1393,7 +1559,7 @@ export function startProjectContainer(
                     if (!canExecContainerAfterBriefRetry(listedContainer.containerId)) {
                         throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
                     }
-                    console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the container is still running. Exit active CCC sessions, run 'ccc stop', then retry.`);
+                    console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the existing container is running. It will be applied after the container stops.`);
                     return finish(listedContainer.containerId);
                 }
             } else {
@@ -1420,7 +1586,7 @@ export function startProjectContainer(
                         lifecycleContainerId,
                     );
                     if (!recreated) {
-                        throw new Error("Device-lab mount source changed during validation; preserving the active session without joining it.");
+                        throw new Error("Device-lab mount source changed during validation; preserving the existing running container without joining it.");
                     }
                 } else {
                     recreateContainerWithSessionGuard(containerName, "device-lab mount source identity changed", onRecreate, undefined);
@@ -1438,7 +1604,7 @@ export function startProjectContainer(
                         lifecycleContainerId,
                     );
                     if (!recreated) {
-                        throw new Error("Device-lab mount source changed during synchronization; preserving the active session without joining it.");
+                        throw new Error("Device-lab mount source changed during synchronization; preserving the existing running container without joining it.");
                     }
                 } else {
                     recreateContainerWithSessionGuard(containerName, "device-lab mount source identity changed", onRecreate, undefined);
@@ -1530,18 +1696,6 @@ export function startProjectContainer(
     });
     const gitIdentityMounts = getHostGitIdentityMounts();
 
-    const hostSshDir = join(homedir(), ".ssh");
-
-    let sshAgentSocket: string | null = null;
-    if (process.platform === "darwin") {
-        sshAgentSocket = "/run/host-services/ssh-auth.sock";
-    } else {
-        const hostSock = process.env.SSH_AUTH_SOCK;
-        if (hostSock && existsSync(hostSock)) {
-            sshAgentSocket = hostSock;
-        }
-    }
-
     const labRunner = buildContainerVmRunConfig(containerName);
     if (isLabRunnerProfile(profile) && labRunner.status === "unsupported") {
         console.warn(`[ccc] lab-runner profile requested but nested VM support is unavailable: ${labRunner.unsupportedReason}`);
@@ -1558,7 +1712,7 @@ export function startProjectContainer(
         miseVolumeName: MISE_VOLUME_NAME,
         pidsLimit: CONTAINER_PID_LIMIT,
         imageName: IMAGE_NAME,
-        hostSshDir: existsSync(hostSshDir) ? hostSshDir : null,
+        hostSshDir,
         sshAgentSocket,
         extraMounts,
         clipboardPortFile,

@@ -94,6 +94,8 @@ import {
     setSession,
     setSessionContainerId,
 } from "./session.js";
+
+export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 import {
@@ -481,7 +483,7 @@ async function exec(
                 }
             });
             if (!recreated) {
-                console.log("Update available, but the container is still running. Exit active CCC sessions, run 'ccc stop', then retry.");
+                console.log(RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE);
             }
         }
     }

@@ -4,11 +4,10 @@ import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
 import { saveClaudeBinaryToVolume } from "./container-setup.js";
-import { stopClipboardServerIfLast } from "./clipboard-server.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "./device-lab-shared-state.js";
-import { canonicalWindowsPowerShellPath } from "./windows-system-powershell.js";
+import { processStartToken, sessionLockLiveness } from "./session-lock-liveness.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -74,14 +73,10 @@ export function createSessionLock(projectId: string, profile?: string): string {
     const lockFile = join(locksDir, `${prefix}--${sessionId}.lock`);
     withContainerLifecycleLock(prefix, () => {
         const startToken = processStartToken(process.pid);
-        if (!startToken) {
-            throw new Error("Unable to establish process identity for CCC session lock");
-        }
-        writeFileSync(lockFile, JSON.stringify({
-            version: 2,
-            pid: process.pid,
-            startToken,
-        }), { mode: 0o600, flag: "wx" });
+        const record = startToken
+            ? JSON.stringify({ version: 2, pid: process.pid, startToken })
+            : String(process.pid);
+        writeFileSync(lockFile, record, { mode: 0o600, flag: "wx" });
     });
     return lockFile;
 }
@@ -94,68 +89,6 @@ export function removeSessionLock(lockFile: string): void {
     } catch {
         // Ignore errors during cleanup
     }
-}
-
-function isPidAlive(pid: number): boolean {
-    try {
-        process.kill(pid, 0);
-        return true;
-    } catch (error) {
-        // Windows can deny observation of a live process. EPERM is positive
-        // liveness evidence for lock ownership, not a stale-session signal.
-        return (error as NodeJS.ErrnoException).code === "EPERM";
-    }
-}
-
-function processStartToken(pid: number): string | null {
-    try {
-        if (process.platform === "linux") {
-            const stat = readFileSync(`/proc/${pid}/stat`, "utf-8");
-            const close = stat.lastIndexOf(")");
-            if (close < 0) return null;
-            const fields = stat.slice(close + 1).trim().split(/\s+/);
-            return fields[19] ? `linux:${fields[19]}` : null;
-        }
-        if (process.platform === "win32") {
-            const powershell = canonicalWindowsPowerShellPath();
-            if (!powershell) return null;
-            const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { $P.StartTime.ToUniversalTime().Ticks }`;
-            const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
-                encoding: "utf-8",
-                timeout: 1000,
-                windowsHide: true,
-            });
-            const value = result.status === 0 ? result.stdout?.trim() : "";
-            return value ? `windows:${value}` : null;
-        }
-        const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-            encoding: "utf-8",
-            timeout: 1000,
-            windowsHide: true,
-        });
-        const value = result.status === 0 ? result.stdout?.trim() : "";
-        return value ? `ps:${value}` : null;
-    } catch {
-        return null;
-    }
-}
-
-function sessionLockRecord(content: string): { pid: number; startToken?: string } | null {
-    try {
-        const parsed = JSON.parse(content) as unknown;
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            const record = parsed as { version?: unknown; pid?: unknown; startToken?: unknown };
-            if (record.version !== 2 || !Number.isSafeInteger(record.pid) || Number(record.pid) <= 0
-                || typeof record.startToken !== "string" || record.startToken.length === 0 || record.startToken.length > 256) return null;
-            return { pid: Number(record.pid), startToken: record.startToken };
-        }
-    } catch {
-        // Legacy lock files contain only the decimal PID.
-    }
-    const legacy = content.trim();
-    if (!/^[1-9]\d*$/.test(legacy)) return null;
-    const pid = Number(legacy);
-    return Number.isSafeInteger(pid) ? { pid } : null;
 }
 
 /**
@@ -172,7 +105,8 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
         ensureLocksDirectory();
         entries = readdirSync(locksDir);
     } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+        // The directory was just established above. Any observation failure,
+        // including a concurrent ENOENT, must not authorize container cleanup.
         throw error;
     }
     const isProfilePrefix = containerPrefix.includes("--p--");
@@ -206,19 +140,12 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
         const lockPath = join(locksDir, f);
         try {
             const content = readFileSync(lockPath, "utf-8").trim();
-            const record = sessionLockRecord(content);
-            // An unreadable or malformed ownership record is not proof that
-            // its owner is dead. Preserve it until an operator can inspect it.
-            if (!record) return true;
-            if (!isPidAlive(record.pid)) {
+            const liveness = sessionLockLiveness(content);
+            if (liveness === "stale") {
                 try { unlinkSync(lockPath); } catch { /* ignore */ }
                 return false;
             }
-            const currentStartToken = record.startToken ? processStartToken(record.pid) : null;
-            if (record.startToken && currentStartToken && record.startToken !== currentStartToken) {
-                try { unlinkSync(lockPath); } catch { /* ignore */ }
-                return false;
-            }
+            // Unknown observation is not proof that the owner exited.
             return true;
         } catch {
             // Failure to read a candidate lock is not proof that its owner is
@@ -283,8 +210,6 @@ export function cleanupSession(): void {
     const containerPrefix = currentProfile ? `${projectId}--p--${currentProfile}` : projectId;
     // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
     withContainerLifecycleLock(containerPrefix, () => {
-        // Stop clipboard server if this is the last CCC session (check BEFORE removing lock).
-        stopClipboardServerIfLast(currentSessionLockFile!);
         const hasOthers = hasOtherActiveSessions(containerPrefix, currentSessionLockFile!);
         removeSessionLock(currentSessionLockFile!);
         if (!hasOthers) {

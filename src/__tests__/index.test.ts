@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -264,10 +264,11 @@ describe('auto container version-up', () => {
     // The if (oldImageId) guard prevents docker rmi from running
   })
 
-  it('deferred upgrade message requires an explicit container stop', () => {
-    const message = "Update available, but the container is still running. Exit active CCC sessions, run 'ccc stop', then retry."
-    expect(message).toContain("container is still running")
-    expect(message).toContain("ccc stop")
+  it('deferred upgrade message does not claim active sessions from container liveness', () => {
+    const message = RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE
+    expect(message).toContain("existing container is running")
+    expect(message).toContain("after the container stops")
+    expect(message).not.toContain("active CCC sessions")
   })
 
   it('does not invoke automatic replacement unless the container is confirmed stopped', () => {

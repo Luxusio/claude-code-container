@@ -3156,7 +3156,11 @@ describe("clipboard-server", () => {
         });
 
         it("returns false when locks dir does not exist", async () => {
-            mockExistsSync.mockImplementation(() => false);
+            mockReaddirSync.mockImplementation(() => {
+                const error = new Error("missing") as NodeJS.ErrnoException;
+                error.code = "ENOENT";
+                throw error;
+            });
             const result = mod.hasAnyActiveSessionsExcept(null);
             expect(result).toBe(false);
         });
@@ -3169,6 +3173,16 @@ describe("clipboard-server", () => {
             mockReaddirSync.mockReturnValue([]);
             const result = mod.hasAnyActiveSessionsExcept(null);
             expect(result).toBe(false);
+        });
+
+        it("fails closed when the lock directory cannot be enumerated", async () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockImplementation(() => {
+                throw new Error("sharing violation");
+            });
+
+            expect(mod.hasAnyActiveSessionsExcept(null)).toBe(true);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
         it("returns false when only non-.lock files exist", async () => {
@@ -3189,7 +3203,7 @@ describe("clipboard-server", () => {
             expect(result).toBe(false);
         });
 
-        it("returns false when other lock has invalid (NaN) PID", async () => {
+        it("preserves another malformed lock as potentially active", async () => {
             mockExistsSync.mockImplementation(() => true);
             mockReaddirSync.mockReturnValue(["other.lock"]);
             mockReadFileSync.mockImplementation((p: string) => {
@@ -3199,7 +3213,8 @@ describe("clipboard-server", () => {
             });
             mockUnlinkSync.mockImplementation(() => {});
             const result = mod.hasAnyActiveSessionsExcept(null);
-            expect(result).toBe(false);
+            expect(result).toBe(true);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
         it("returns true when other lock has alive PID", async () => {
@@ -3215,6 +3230,32 @@ describe("clipboard-server", () => {
             expect(result).toBe(true);
         });
 
+        it("preserves a live v2 JSON lock and never parses it as a legacy PID", async () => {
+            mockExistsSync.mockImplementation(() => true);
+            mockReaddirSync.mockReturnValue(["other.lock"]);
+            mockReadFileSync.mockImplementation((p: string) => {
+                if (typeof p === "string" && p.endsWith("other.lock")) {
+                    return JSON.stringify({
+                        version: 2,
+                        pid: 4242,
+                        startToken: "linux:live-start",
+                    });
+                }
+                if (p === "/proc/4242/stat") {
+                    const fields = Array.from(
+                        { length: 20 },
+                        (_, index) => index === 19 ? "live-start" : "0",
+                    );
+                    return `4242 (node) ${fields.join(" ")}`;
+                }
+                if (p === "/fake/clipboard-server.js") return "content";
+                throw new Error(`unexpected: ${p}`);
+            });
+
+            expect(mod.hasAnyActiveSessionsExcept(null)).toBe(true);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
         it("returns false when other lock has dead PID (stale)", async () => {
             // PID 999999999 is virtually guaranteed to be dead
             const deadPid = 999999999;
@@ -3228,9 +3269,10 @@ describe("clipboard-server", () => {
             mockUnlinkSync.mockImplementation(() => {});
             const result = mod.hasAnyActiveSessionsExcept(null);
             expect(result).toBe(false);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
-        it("returns false when readFileSync throws on lock file", async () => {
+        it("preserves another unreadable lock as potentially active", async () => {
             mockExistsSync.mockImplementation(() => true);
             mockReaddirSync.mockReturnValue(["bad.lock"]);
             mockReadFileSync.mockImplementation((p: string) => {
@@ -3240,7 +3282,8 @@ describe("clipboard-server", () => {
             });
             mockUnlinkSync.mockImplementation(() => {});
             const result = mod.hasAnyActiveSessionsExcept(null);
-            expect(result).toBe(false);
+            expect(result).toBe(true);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
         it("handles null currentLockFile (uses empty string as name)", async () => {
@@ -3269,19 +3312,13 @@ describe("clipboard-server", () => {
         });
 
         it("returns early without shutdown when other sessions exist", async () => {
-            const alivePid = process.pid;
-            // Set up two locks (one other = hasAnyActiveSessionsExcept returns true)
-            mockExistsSync.mockImplementation(() => true);
-            mockReaddirSync.mockReturnValue(["other.lock"]);
-            mockReadFileSync.mockImplementation((p: string) => {
-                if (typeof p === "string" && p.endsWith("other.lock")) return String(alivePid);
-                if (p === "/fake/clipboard-server.js") return "content";
-                throw new Error(`unexpected: ${p}`);
+            mockReaddirSync.mockImplementation(() => {
+                throw new Error("clipboard shutdown must not rescan session locks");
             });
-            const ownLock = join(LOCKS_DIR, "my.lock");
-            mod.stopClipboardServerIfLast(ownLock);
+            mod.stopClipboardServerIfLast(true);
             // No unlink of PORT_FILE because we returned early
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
+            expect(mockReaddirSync).not.toHaveBeenCalled();
         });
 
         it("returns early when no port file exists", async () => {
@@ -3297,7 +3334,7 @@ describe("clipboard-server", () => {
                 throw new Error(`unexpected: ${p}`);
             });
             // Should not throw
-            mod.stopClipboardServerIfLast(null);
+            mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
@@ -3318,7 +3355,7 @@ describe("clipboard-server", () => {
             // shutdownServer makes a real HTTP request to port 54321, which will fail (connection refused)
             // but it silently ignores errors. We just need to ensure no throw.
             await new Promise<void>((resolve) => {
-                mod.stopClipboardServerIfLast(null);
+                mod.stopClipboardServerIfLast(false);
                 // Give async HTTP request a moment to fire and fail
                 setTimeout(resolve, 100);
             });
@@ -3638,7 +3675,7 @@ describe("clipboard-server", () => {
 
             // stopClipboardServerIfLast calls readPortFile internally
             await new Promise<void>((resolve) => {
-                mod.stopClipboardServerIfLast(null);
+                mod.stopClipboardServerIfLast(false);
                 setTimeout(resolve, 150);
             });
 
@@ -3660,7 +3697,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (no colon) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(null);
+            mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3679,7 +3716,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (NaN port) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(null);
+            mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3698,7 +3735,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile returns null (empty token) → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(null);
+            mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalledWith(PORT_FILE);
         });
 
@@ -3717,7 +3754,7 @@ describe("clipboard-server", () => {
             });
 
             // readPortFile catches exception, returns null → stopClipboardServerIfLast returns early
-            mod.stopClipboardServerIfLast(null);
+            mod.stopClipboardServerIfLast(false);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
     });
