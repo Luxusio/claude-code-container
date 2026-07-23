@@ -1166,7 +1166,7 @@ export function syncManagedMcpBundles(containerName: string): void {
     }
 }
 
-function recreateContainer(containerName: string, containerId: string, reason: string, onRecreate?: () => void): void {
+function recreateContainer(containerId: string, reason: string, onRecreate?: () => void): void {
     console.log(`Recreating container (${reason})...`);
     const cli = runtimeCli();
     // Do not stop here. The caller confirmed the container was stopped under
@@ -1193,7 +1193,7 @@ function recreateContainerWithSessionGuard(
     }
     const stoppedContainerId = getConfirmedStoppedContainerId(containerName);
     if (!stoppedContainerId) return false;
-    const recreate = () => recreateContainer(containerName, stoppedContainerId, reason, onRecreate);
+    const recreate = () => recreateContainer(stoppedContainerId, reason, onRecreate);
     return guard(recreate);
 }
 

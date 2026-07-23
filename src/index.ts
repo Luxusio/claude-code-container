@@ -58,6 +58,7 @@ import {
     isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
+    isContainerConfirmedStopped,
     getConfirmedStoppedContainerId,
     isContainerExists,
     isImageExists,
