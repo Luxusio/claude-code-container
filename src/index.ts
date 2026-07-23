@@ -59,7 +59,6 @@ import {
     ensureDockerRunning,
     isContainerRunning,
     isContainerConfirmedStopped,
-    getConfirmedStoppedContainerId,
     isContainerExists,
     isImageExists,
     getImageLabel,
@@ -147,9 +146,11 @@ export function replaceStoppedContainerWithoutInterruptingSessions(
     containerName: string,
     containerPrefix: string,
     currentLockFile: string,
+    expectedContainerId: string,
+    expectedImageId: string,
     replace: (containerId: string) => void,
     replacementGuard: typeof recreateContainerWithoutInterruptingSessions = recreateContainerWithoutInterruptingSessions,
-    confirmedStoppedContainerId: typeof getConfirmedStoppedContainerId = getConfirmedStoppedContainerId,
+    statusProbe: typeof getContainerStatus = getContainerStatus,
 ): boolean {
     let stoppedContainerId: string | null = null;
     return replacementGuard(
@@ -157,8 +158,15 @@ export function replaceStoppedContainerWithoutInterruptingSessions(
         currentLockFile,
         () => replace(stoppedContainerId!),
         () => {
-            stoppedContainerId = confirmedStoppedContainerId(containerName);
-            return stoppedContainerId !== null;
+            const status = statusProbe(containerName);
+            if (
+                !status.exists
+                || status.running
+                || status.containerId !== expectedContainerId
+                || status.imageId !== expectedImageId
+            ) return false;
+            stoppedContainerId = status.containerId;
+            return true;
         },
     );
 }
@@ -440,6 +448,8 @@ async function exec(
             targetContainer,
             sessionContainerPrefix,
             sessionLockFile,
+            containerStatus.containerId!,
+            containerStatus.imageId!,
             recreate,
         )
     );
@@ -447,7 +457,12 @@ async function exec(
     // Auto-upgrade container if image has been rebuilt
     if (containerStatus.exists) {
         const currentImageId = getCurrentImageId();
-        if (currentImageId && containerStatus.imageId && containerStatus.imageId !== currentImageId) {
+        if (
+            currentImageId
+            && containerStatus.containerId
+            && containerStatus.imageId
+            && containerStatus.imageId !== currentImageId
+        ) {
             const recreated = recreateStoppedContainer((stoppedContainerId) => {
                 const oldImageId = containerStatus.imageId;
 

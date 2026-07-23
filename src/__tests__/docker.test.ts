@@ -59,6 +59,7 @@ const {
     isContainerConfirmedStopped,
     isContainerExists,
     isContainerImageOutdated,
+    getContainerStatus,
     isImageExists,
     getImageLabel,
     pullImage,
@@ -328,6 +329,32 @@ describe("docker.ts module exports", () => {
         ])("fails closed on %s", (_name, result) => {
             spawnSyncMock.mockReturnValue(result as SpawnSyncReturns<string>);
             expect(isContainerConfirmedStopped("my-container")).toBe(false);
+        });
+    });
+
+    describe("getContainerStatus", () => {
+        it("returns the pinned identity, running state, and image from one inspect", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, "abc123|false|sha256:old\n"));
+            expect(getContainerStatus("my-container")).toEqual({
+                exists: true,
+                running: false,
+                containerId: "abc123",
+                imageId: "sha256:old",
+            });
+        });
+
+        it.each([
+            ["Windows EINVAL", { ...makeResult(null), error: Object.assign(new Error("EINVAL"), { code: "EINVAL" }) }],
+            ["nonzero inspect", makeResult(1)],
+            ["malformed output", makeResult(0, "false|sha256:old\n")],
+        ])("returns an unknown/nonexistent status for %s", (_name, result) => {
+            spawnSyncMock.mockReturnValue(result as SpawnSyncReturns<string>);
+            expect(getContainerStatus("my-container")).toEqual({
+                exists: false,
+                running: false,
+                containerId: null,
+                imageId: null,
+            });
         });
     });
 

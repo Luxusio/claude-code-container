@@ -679,24 +679,28 @@ export function isContainerImageOutdated(containerName: string): boolean {
 export interface ContainerStatus {
     exists: boolean;
     running: boolean;
+    containerId: string | null;
     imageId: string | null;
 }
 
 export function getContainerStatus(containerName: string): ContainerStatus {
     const result = spawnSync(
         runtimeCli(),
-        ["inspect", containerName, "--format", "{{.State.Running}}|{{.Image}}"],
+        ["inspect", containerName, "--format", "{{.Id}}|{{.State.Running}}|{{.Image}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    if (result.status !== 0) {
-        return { exists: false, running: false, imageId: null };
+    if (result.error || result.status !== 0) {
+        return { exists: false, running: false, containerId: null, imageId: null };
     }
-    const output = (result.stdout ?? "").trim();
-    const sep = output.indexOf("|");
+    const [containerId, running, imageId, ...extra] = (result.stdout ?? "").trim().split("|");
+    if (!containerId || (running !== "true" && running !== "false") || !imageId || extra.length > 0) {
+        return { exists: false, running: false, containerId: null, imageId: null };
+    }
     return {
         exists: true,
-        running: output.substring(0, sep) === "true",
-        imageId: sep >= 0 ? output.substring(sep + 1) : null,
+        running: running === "true",
+        containerId,
+        imageId,
     };
 }
 

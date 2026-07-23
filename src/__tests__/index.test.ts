@@ -223,13 +223,18 @@ describe('auto container version-up', () => {
       operation()
       return true
     })
-    const confirmedStopped = vi.fn(() => null)
+    const statusProbe = vi.fn(() => ({
+      exists: true,
+      running: true,
+      containerId: 'container-id',
+      imageId: 'sha256:old',
+    }))
 
     expect(replaceStoppedContainerWithoutInterruptingSessions(
-      'ccc-project', 'project', '/locks/current.lock', replace,
-      replacementGuard, confirmedStopped,
+      'ccc-project', 'project', '/locks/current.lock', 'container-id', 'sha256:old', replace,
+      replacementGuard, statusProbe,
     )).toBe(false)
-    expect(confirmedStopped).toHaveBeenCalledWith('ccc-project')
+    expect(statusProbe).toHaveBeenCalledWith('ccc-project')
     expect(replace).not.toHaveBeenCalled()
   })
 
@@ -242,10 +247,35 @@ describe('auto container version-up', () => {
     })
 
     expect(replaceStoppedContainerWithoutInterruptingSessions(
-      'ccc-project', 'project', '/locks/current.lock', replace,
-      replacementGuard, () => 'container-id',
+      'ccc-project', 'project', '/locks/current.lock', 'container-id', 'sha256:old', replace,
+      replacementGuard, () => ({
+        exists: true,
+        running: false,
+        containerId: 'container-id',
+        imageId: 'sha256:old',
+      }),
     )).toBe(true)
     expect(replace).toHaveBeenCalledWith('container-id')
+  })
+
+  it.each([
+    ['same-name replacement', { exists: true, running: false, containerId: 'replacement-id', imageId: 'sha256:old' }],
+    ['changed image', { exists: true, running: false, containerId: 'container-id', imageId: 'sha256:new' }],
+    ['restarted container', { exists: true, running: true, containerId: 'container-id', imageId: 'sha256:old' }],
+    ['failed status probe', { exists: false, running: false, containerId: null, imageId: null }],
+  ])('does not remove a stale auto-upgrade target after %s', (_name, lockedStatus) => {
+    const replace = vi.fn()
+    const replacementGuard = vi.fn((_prefix, _lock, operation, allowed) => {
+      if (!allowed()) return false
+      operation()
+      return true
+    })
+
+    expect(replaceStoppedContainerWithoutInterruptingSessions(
+      'ccc-project', 'project', '/locks/current.lock', 'container-id', 'sha256:old', replace,
+      replacementGuard, () => lockedStatus,
+    )).toBe(false)
+    expect(replace).not.toHaveBeenCalled()
   })
 })
 
