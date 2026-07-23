@@ -8,6 +8,10 @@ import { join } from "path";
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
 let latestCreatedContainer: { id: string; runArgs: string[] } | null = null;
 let autoInspectCreatedContainer = true;
+let autoReadMountMarkers = true;
+const mountMarkers = new Map<string, string>();
+const mountChallengeContainerIds = new Set<string>();
+const mountChallengePaths = new Set<string>();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
@@ -52,6 +56,15 @@ vi.mock("child_process", async (importOriginal) => {
                     Config: { Labels: labels },
                 }));
             }
+            if (autoReadMountMarkers
+                && argv?.[0] === "exec"
+                && argv[2] === "cat"
+                && argv[3]?.includes("/.ccc-mount-identity-")) {
+                const markerName = argv[3].slice(argv[3].lastIndexOf("/") + 1);
+                mountChallengeContainerIds.add(argv[1]);
+                mountChallengePaths.add(argv[3]);
+                return makeResult(0, mountMarkers.get(markerName) ?? "");
+            }
             const result = spawnSyncMock(...args);
             if (argv?.[0] === "run" && result.status === 0) {
                 const id = (result.stdout ?? "").trim().split(/\s+/)
@@ -73,6 +86,12 @@ const mockOpenSync = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockRealpathSync = vi.fn();
 const mockStatSync = vi.fn();
+const mockRmSync = vi.fn();
+const recordMountMarker = (path: string, content: string) => {
+    const markerName = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+    mountMarkers.set(markerName, content);
+};
+const mockWriteFileSync = vi.fn(recordMountMarker);
 vi.mock("fs", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
@@ -85,7 +104,9 @@ vi.mock("fs", async (importOriginal) => {
         openSync: (...args: unknown[]) => mockOpenSync(...args),
         readFileSync: (...args: unknown[]) => mockReadFileSync(...args),
         realpathSync: (...args: unknown[]) => mockRealpathSync(...args),
+        rmSync: (...args: unknown[]) => mockRmSync(...args),
         statSync: (...args: unknown[]) => mockStatSync(...args),
+        writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
     };
 });
 
@@ -298,12 +319,18 @@ describe("docker.ts module exports", () => {
         spawnSyncMock.mockReturnValue(makeResult(0));
         latestCreatedContainer = null;
         autoInspectCreatedContainer = true;
+        autoReadMountMarkers = true;
+        mountMarkers.clear();
+        mountChallengeContainerIds.clear();
+        mountChallengePaths.clear();
         mockCleanupOwnerDevices.mockReset();
         mockGetActiveSessionsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
         mockExistsSync.mockReset().mockReturnValue(true);
         mockCloseSync.mockReset();
         mockOpenSync.mockReset().mockReturnValue(17);
+        mockRmSync.mockReset();
+        mockWriteFileSync.mockReset().mockImplementation(recordMountMarker);
         mockLstatSync.mockReset().mockReturnValue({
             isFile: () => true,
             isDirectory: () => true,
@@ -551,6 +578,74 @@ describe("docker.ts module exports", () => {
                 "ccc-worktree--p--work",
                 "/projects/repo--feature",
             )).toBeNull();
+        });
+
+        it("accepts a legacy managed container only when its live project bind matches", () => {
+            const projectPath = "/projects/repo--feature";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "inspect") {
+                    return makeResult(0, JSON.stringify({
+                        Id: "legacy123456",
+                        State: { Running: true },
+                        Mounts: [{
+                            Source: projectPath,
+                            Destination: `/project/${getProjectId(projectPath)}`,
+                            Type: "bind",
+                        }],
+                        Config: {
+                            Labels: {
+                                "ccc.managed": "true",
+                                "ccc.project.path": projectPath,
+                            },
+                        },
+                    }));
+                }
+                return makeResult(0);
+            });
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree--p--work",
+                projectPath,
+            )).toEqual({ containerId: "legacy123456", running: true });
+            expect(mountChallengeContainerIds.has("legacy123456")).toBe(true);
+        });
+
+        it("rejects a legacy managed container when the live bind challenge disagrees", () => {
+            const projectPath = "/projects/repo--feature";
+            mockWriteFileSync.mockImplementation((path: string) => {
+                const markerName = path.slice(
+                    Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1,
+                );
+                mountMarkers.set(markerName, "wrong-mounted-directory");
+            });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "inspect") {
+                    return makeResult(0, JSON.stringify({
+                        Id: "legacy123456",
+                        State: { Running: true },
+                        Mounts: [{
+                            Source: projectPath,
+                            Destination: `/project/${getProjectId(projectPath)}`,
+                            Type: "bind",
+                        }],
+                        Config: {
+                            Labels: {
+                                "ccc.managed": "true",
+                                "ccc.project.path": projectPath,
+                            },
+                        },
+                    }));
+                }
+                return makeResult(0);
+            });
+
+            expect(getManagedProjectContainerIdentity(
+                "ccc-worktree--p--work",
+                projectPath,
+            )).toBeNull();
+            expect(mountChallengeContainerIds.has("legacy123456")).toBe(true);
         });
 
         it.each([
@@ -1422,6 +1517,90 @@ describe("docker.ts module exports", () => {
                 const args = call[1] as string[];
                 return args[0] === "cp" && args[2]?.startsWith("abc123:/tmp/ccc-managed-");
             })).toHaveLength(2);
+        });
+
+        it("joins a pre-identity-label container after a live bind challenge", () => {
+            const extraMount = {
+                hostPath: "/home/user/repo/.git",
+                containerPath: "/project/repo/.git",
+            };
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Mounts: Array<Record<string, unknown>>;
+                Config: { Labels: Record<string, string> };
+            };
+            inspected.Mounts.push({
+                Source: extraMount.hostPath,
+                Destination: extraMount.containerPath,
+                Type: "bind",
+                RW: true,
+            });
+            delete inspected.Config.Labels["ccc.project.mount-identity"];
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") {
+                    return makeResult(0, JSON.stringify(inspected));
+                }
+                return makeResult(0);
+            });
+
+            expect(startProjectContainer(
+                projectPath,
+                ensureDirs,
+                [extraMount],
+            )).toMatch(/^ccc-/);
+            expectNoContainerReplacement();
+            expect(mountChallengeContainerIds.has("abc123")).toBe(true);
+            expect([...mountChallengePaths].some((path) => (
+                path.startsWith(`${extraMount.containerPath}/.ccc-mount-identity-`)
+            ))).toBe(true);
+        });
+
+        it("preserves a running pre-identity-label container when the live bind challenge fails", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Config: { Labels: Record<string, string> };
+            };
+            delete inspected.Config.Labels["ccc.project.mount-identity"];
+            mockWriteFileSync.mockImplementation((path: string) => {
+                const markerName = path.slice(
+                    Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1,
+                );
+                mountMarkers.set(markerName, "wrong-mounted-directory");
+            });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") {
+                    return makeResult(0, JSON.stringify(inspected));
+                }
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                () => false,
+            ))
+                .toThrow("contract failed safety validation");
+            expect(mountChallengeContainerIds.has("abc123")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call) => {
+                const args = call[1] as string[];
+                return ["stop", "rm", "run"].includes(args[0]);
+            })).toBe(false);
         });
 
         it("hands off the exact validated running ID and never targets its name", () => {
@@ -2685,6 +2864,89 @@ describe("docker.ts module exports", () => {
                 && (call[1] as string[])[1] === "-f"
                 && (call[1] as string[])[2] === createdId
             ))).toBe(true);
+        });
+
+        it("rejects a mount swapped only during container creation", () => {
+            const createdId = "c0ffee123456";
+            autoReadMountMarkers = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) {
+                    return makeResult(1);
+                }
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(projectPath, ensureDirs))
+                .toThrow("created container bind mount identity verification failed");
+            expect(spawnSyncMock.mock.calls.some((call) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[2] === createdId
+            ))).toBe(true);
+        });
+
+        it("reports when a rejected created container cannot be removed", () => {
+            const createdId = "c0ffee123456";
+            autoInspectCreatedContainer = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect" && args.includes("{{json .}}")) {
+                    return makeResult(1);
+                }
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) {
+                    return makeResult(0, `${createdId}\n`);
+                }
+                if (args[0] === "rm") return makeResult(1);
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(projectPath, ensureDirs))
+                .toThrow(`failed to remove rejected container ${createdId}`);
+        });
+
+        it("accepts rejected-container cleanup when removal reports failure but inspect proves absence", () => {
+            const createdId = "c0ffee123456";
+            autoInspectCreatedContainer = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect" && args.includes("{{json .}}")) {
+                    return makeResult(1);
+                }
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) {
+                    return makeResult(1);
+                }
+                if (args[0] === "rm") return makeResult(1);
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                return makeResult(0);
+            });
+
+            let thrown: Error | null = null;
+            try {
+                startProjectContainer(projectPath, ensureDirs);
+            } catch (error) {
+                thrown = error as Error;
+            }
+            expect(thrown?.message)
+                .toContain("created container bind mount identity verification failed");
+            expect(thrown?.message)
+                .not.toContain(`failed to remove rejected container ${createdId}`);
         });
 
         it("rejects a replaced worktree mount source before container creation", () => {

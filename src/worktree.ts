@@ -14,10 +14,11 @@ import {
     rmSync,
     rmdirSync,
     lstatSync,
+    linkSync,
     renameSync,
     realpathSync,
 } from "fs";
-import { basename, dirname, join, posix, relative, resolve } from "path";
+import { basename, dirname, join, posix, relative, resolve, win32 } from "path";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
 function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
@@ -121,18 +122,36 @@ function assertPathIdentity(path: string, expected: DirectoryIdentity): void {
     }
 }
 
+export function portableWorktreeGitDirectory(
+    gitFileDirectory: string,
+    resolvedGitDirectory: string,
+    platform = process.platform,
+): string {
+    const paths = platform === "win32" ? win32 : posix;
+    const portableGitDirectory = paths.relative(
+        gitFileDirectory,
+        resolvedGitDirectory,
+    ).replace(/\\/g, "/");
+    if (!portableGitDirectory
+        || paths.isAbsolute(portableGitDirectory)
+        || /^[A-Za-z]:/.test(portableGitDirectory)
+        || paths.resolve(gitFileDirectory, portableGitDirectory)
+            !== paths.resolve(resolvedGitDirectory)) {
+        throw new Error(
+            `Worktree metadata crosses incompatible filesystem roots: ${gitFileDirectory}`,
+        );
+    }
+    return portableGitDirectory;
+}
+
 function normalizeWorktreeGitLink(
     gitFile: string,
     resolvedGitDirectory: string,
 ): string {
-    const portableGitDirectory = relative(
+    const portableGitDirectory = portableWorktreeGitDirectory(
         dirname(gitFile),
         resolvedGitDirectory,
-    ).replace(/\\/g, "/");
-    if (!portableGitDirectory || resolve(dirname(gitFile), portableGitDirectory)
-        !== resolvedGitDirectory) {
-        throw new Error(`Unable to create portable worktree metadata: ${gitFile}`);
-    }
+    );
     const expectedContent = `gitdir: ${portableGitDirectory}\n`;
     if (readFileSync(gitFile, "utf-8") === expectedContent) {
         return portableGitDirectory;
@@ -143,21 +162,56 @@ function normalizeWorktreeGitLink(
         dirname(gitFile),
         `.${basename(gitFile)}.ccc-${randomUUID()}.tmp`,
     );
+    const backup = join(
+        dirname(gitFile),
+        `.${basename(gitFile)}.ccc-${randomUUID()}.backup`,
+    );
     try {
         writeFileSync(temporary, expectedContent, { flag: "wx", mode: 0o600 });
         assertDirectoryIdentity(dirname(gitFile), parentIdentity);
         assertPathIdentity(gitFile, gitFileIdentity);
-        renameSync(temporary, gitFile);
+        renameSync(gitFile, backup);
+        assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
+        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
+        linkSync(temporary, gitFile);
+        rmSync(temporary, { force: true });
+        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
+        if (readFileSync(gitFile, "utf-8") !== expectedContent) {
+            throw new Error("normalized worktree metadata changed after installation");
+        }
+        assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
+        rmSync(backup);
     } catch (error) {
         rmSync(temporary, { force: true });
+        let preservedBackup = false;
         try {
-            if (readFileSync(gitFile, "utf-8") === expectedContent) {
+            if (pathExistsStrict(backup)) {
+                assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
+                if (!pathExistsStrict(gitFile)) {
+                    linkSync(backup, gitFile);
+                }
+                if (readFileSync(gitFile, "utf-8") === expectedContent) {
+                    rmSync(backup);
+                    return portableGitDirectory;
+                }
+                const restoredIdentity = capturePathIdentity(gitFile);
+                if (restoredIdentity.dev === gitFileIdentity.dev
+                    && restoredIdentity.ino === gitFileIdentity.ino) {
+                    rmSync(backup);
+                } else {
+                    preservedBackup = true;
+                }
+            } else if (readFileSync(gitFile, "utf-8") === expectedContent) {
                 return portableGitDirectory;
             }
         } catch {
             // Preserve the normalization race as the primary diagnostic.
+            preservedBackup = pathExistsStrict(backup);
         }
-        throw new Error(`Worktree metadata changed during normalization: ${gitFile}`, {
+        const preservation = preservedBackup
+            ? `; original preserved at ${backup}`
+            : "";
+        throw new Error(`Worktree metadata changed during normalization: ${gitFile}${preservation}`, {
             cause: error,
         });
     }
@@ -1031,6 +1085,60 @@ function rollbackCreatedBranch(
     }
 }
 
+function registeredWorktreePath(
+    repositoryPath: string,
+    worktreePath: string,
+): boolean {
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) {
+        throw new Error(`Unable to inspect worktree registry for rollback: ${repositoryPath}`);
+    }
+    return (listed.stdout ?? "")
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("worktree "))
+        .some((line) => sameObservedPath(
+            line.slice("worktree ".length).trim(),
+            worktreePath,
+        ));
+}
+
+function rollbackFailedWorktreeAdd(
+    repositoryPath: string,
+    worktreePath: string,
+    branch: string,
+    action: WorktreeRepoResult["action"],
+): void {
+    if (pathExistsStrict(worktreePath)) {
+        if (!isValidWorktree(worktreePath, repositoryPath)) {
+            throw new Error(
+                `Failed worktree creation left unverified content at '${worktreePath}'.`,
+            );
+        }
+        removeRegisteredWorktree(
+            repositoryPath,
+            worktreePath,
+            captureDirectoryIdentity(worktreePath),
+            true,
+            dirname(worktreePath),
+        );
+    } else if (registeredWorktreePath(repositoryPath, worktreePath)) {
+        const pruned = spawnSync(
+            "git",
+            ["worktree", "prune", "--expire", "now"],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (pruned.error || pruned.status !== 0
+            || registeredWorktreePath(repositoryPath, worktreePath)) {
+            throw new Error(`Failed to remove partial worktree registration: ${worktreePath}`);
+        }
+    }
+    rollbackCreatedBranch(repositoryPath, branch, action);
+}
+
 /**
  * Check if a workspace already exists for the given source path and branch.
  */
@@ -1334,6 +1442,14 @@ function createUnifiedWorkspace(
 
     if (result.status !== 0) {
         const stderr = (result.stderr ?? "").trim();
+        try {
+            rollbackFailedWorktreeAdd(resolved, wsPath, branch, action);
+        } catch (rollbackError) {
+            throw new Error(
+                `Failed to create worktree: ${stderr}; rollback failed: ${(rollbackError as Error).message}`,
+                { cause: rollbackError },
+            );
+        }
         throw new Error(`Failed to create worktree: ${stderr}`);
     }
 
@@ -1459,6 +1575,19 @@ function createMultiRepoWorkspace(
 
             if (result.status !== 0) {
                 const stderr = (result.stderr ?? "").trim();
+                try {
+                    rollbackFailedWorktreeAdd(
+                        repo.path,
+                        destPath,
+                        branch,
+                        action,
+                    );
+                } catch (rollbackError) {
+                    throw new Error(
+                        `Failed to create worktree for ${repo.name}: ${stderr}; rollback failed: ${(rollbackError as Error).message}`,
+                        { cause: rollbackError },
+                    );
+                }
                 throw new Error(
                     `Failed to create worktree for ${repo.name}: ${stderr}`,
                 );
@@ -1680,6 +1809,19 @@ export function repairWorkspace(
             const detail = (nestedResult.stderr ?? "").trim()
                 || nestedResult.error?.message
                 || `git exited with status ${String(nestedResult.status)}`;
+            try {
+                rollbackFailedWorktreeAdd(
+                    entry.path,
+                    destPath,
+                    branch,
+                    nestedAction,
+                );
+            } catch (rollbackError) {
+                rollbackNestedCreation(new Error(
+                    `Failed to create nested worktree for ${entry.name}: ${detail}; rollback failed: ${(rollbackError as Error).message}`,
+                    { cause: rollbackError },
+                ));
+            }
             rollbackNestedCreation(
                 new Error(`Failed to create nested worktree for ${entry.name}: ${detail}`),
             );
@@ -1756,11 +1898,12 @@ export function getWorktreeGitMounts(
         } else if (required) {
             throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
         }
-    } else {
-        for (const entry of scanDirectory(resolved, { strict: required })) {
-            if (!entry.isGitRepo) continue;
-            const nestedGit = join(entry.path, ".git");
-            if (lstatSync(nestedGit).isFile()) gitFiles.push(nestedGit);
+    }
+    for (const entry of scanDirectory(resolved, { strict: required })) {
+        if (!entry.isGitRepo) continue;
+        const nestedGit = join(entry.path, ".git");
+        if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
+            gitFiles.push(nestedGit);
         }
     }
     if (required && gitFiles.length === 0) {
@@ -1814,18 +1957,6 @@ export function getWorktreeGitMounts(
             addMount(sourceGitDir, relMountPath, sourceIdentity);
         }
 
-        for (const entry of scanDirectory(sourceRepoDir, { strict: required })) {
-            if (!entry.isGitRepo) continue;
-            const nestedGitPath = join(entry.path, ".git");
-            const nestedGit = lstatSync(nestedGitPath);
-            if (nestedGit.isDirectory() && !nestedGit.isSymbolicLink()) {
-                addMount(nestedGitPath, nestedGitPath);
-                const nestedRelPath = `/project/${sourceBasename}/${entry.name}/.git`;
-                if (nestedRelPath !== nestedGitPath) {
-                    addMount(nestedGitPath, nestedRelPath);
-                }
-            }
-        }
     }
 
     return mounts;

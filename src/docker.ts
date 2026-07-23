@@ -6,7 +6,7 @@
 // `bindMountArgs()` / `runtimeExtraRunArgs()`.
 
 import { spawnSync } from "child_process";
-import { createHash } from "crypto";
+import { createHash, randomBytes } from "crypto";
 import {
     closeSync,
     constants as fsConstants,
@@ -17,10 +17,12 @@ import {
     openSync,
     readFileSync,
     realpathSync,
+    rmSync,
     statSync,
+    writeFileSync,
 } from "fs";
 import { homedir } from "os";
-import { dirname, join, normalize, resolve } from "path";
+import { dirname, join, normalize, posix, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     getProjectId,
@@ -136,6 +138,43 @@ function assertBindMountSourceIdentity(
     )) {
         throw new Error(`bind mount source identity changed: ${path}`);
     }
+}
+
+function containerSeesCurrentBindDirectory(
+    containerId: string,
+    hostPath: string,
+    containerPath: string,
+    expected: BindMountSourceIdentity,
+): boolean {
+    const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
+    const markerPath = join(expected.realpath, markerName);
+    const markerContent = randomBytes(32).toString("hex");
+    let verified = false;
+    try {
+        assertBindMountSourceIdentity(hostPath, expected);
+        const observed = lstatSync(expected.realpath);
+        if (!observed.isDirectory() || observed.isSymbolicLink()) return false;
+        writeFileSync(markerPath, markerContent, { flag: "wx", mode: 0o600 });
+        assertBindMountSourceIdentity(hostPath, expected);
+        const result = spawnSync(
+            runtimeCli(),
+            ["exec", containerId, "cat", posix.join(containerPath, markerName)],
+            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        verified = !result.error
+            && result.status === 0
+            && (result.stdout ?? "") === markerContent;
+    } catch {
+        verified = false;
+    } finally {
+        rmSync(markerPath, { force: true });
+        try {
+            assertBindMountSourceIdentity(hostPath, expected);
+        } catch {
+            verified = false;
+        }
+    }
+    return verified;
 }
 
 export function bindMountSourceIdentityDigest(
@@ -716,6 +755,7 @@ export function getManagedProjectContainerIdentity(
             Id?: unknown;
             State?: { Running?: unknown };
             Config?: { Labels?: Record<string, string> };
+            Mounts?: Array<{ Source?: unknown; Destination?: unknown; Type?: unknown }>;
         };
         if (typeof inspected.Id !== "string" || inspected.Id.length === 0) return null;
         if (typeof inspected.State?.Running !== "boolean") return null;
@@ -726,7 +766,26 @@ export function getManagedProjectContainerIdentity(
         const expectedMountIdentity = bindMountSourceIdentityDigest(
             captureBindMountSourceIdentity(projectPath),
         );
-        if (labels[PROJECT_MOUNT_IDENTITY_LABEL] !== expectedMountIdentity) return null;
+        const labeledIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
+        if (labeledIdentity !== expectedMountIdentity) {
+            if (labeledIdentity) return null;
+            const projectMountPath = `/project/${getProjectId(projectPath)}`;
+            const projectMount = inspected.Mounts?.find((mount) => (
+                mount.Destination === projectMountPath
+            ));
+            const currentIdentity = captureBindMountSourceIdentity(projectPath);
+            if (projectMount?.Type !== "bind"
+                || typeof projectMount.Source !== "string"
+                || !bindSourcePathsEquivalent(projectMount.Source, currentIdentity.realpath)
+                || !containerSeesCurrentBindDirectory(
+                    inspected.Id,
+                    projectPath,
+                    projectMountPath,
+                    currentIdentity,
+                )) {
+                return null;
+            }
+        }
         return { containerId: inspected.Id, running: inspected.State.Running };
     } catch {
         return null;
@@ -1027,7 +1086,13 @@ function createdContainerBindMountsMatch(
             ));
             return actual?.Type === "bind"
                 && typeof actual.Source === "string"
-                && bindSourcePathsEquivalent(actual.Source, expected.identity.realpath);
+                && bindSourcePathsEquivalent(actual.Source, expected.identity.realpath)
+                && containerSeesCurrentBindDirectory(
+                    containerId,
+                    expected.hostPath,
+                    expected.containerPath,
+                    expected.identity,
+                );
         });
     } catch {
         return false;
@@ -1120,6 +1185,7 @@ function containerMatchesRunContract(
             return false;
         };
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Id?: unknown;
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
@@ -1135,7 +1201,9 @@ function containerMatchesRunContract(
         if (!labeledProjectPath || !projectPathIdentityMatches(labeledProjectPath, projectPath)) {
             return failContract("project path identity changed");
         }
-        if (inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+        const labeledProjectIdentity =
+            inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL];
+        if (labeledProjectIdentity && labeledProjectIdentity !== projectMountIdentity) {
             return failContract("project mount identity changed");
         }
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
@@ -1184,6 +1252,24 @@ function containerMatchesRunContract(
                 if (!bindSourcePathsEquivalent(actualSource, expectedSource)) {
                     return failContract(`bind source changed for ${req.containerPath}`);
                 }
+            }
+        }
+        if (!labeledProjectIdentity) {
+            const identityMounts = requiredMounts.filter((mount) => (
+                mount.type === "bind" && mount.expectedIdentity
+            ));
+            if (typeof inspected.Id !== "string"
+                || identityMounts.length === 0
+                || !identityMounts.every((mount) => (
+                    mount.expectedIdentity
+                    && containerSeesCurrentBindDirectory(
+                        inspected.Id as string,
+                        mount.hostPath,
+                        mount.containerPath,
+                        mount.expectedIdentity,
+                    )
+                ))) {
+                return failContract("legacy bind mount identities could not be verified");
             }
         }
         const unexpectedMount = unexpectedContainerMount(mounts, requiredMounts);
@@ -1249,6 +1335,7 @@ function containerRunContractIsSafeToDefer(
     if (result.error || result.status !== 0) return unsafe("container contract inspection failed");
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
+            Id?: unknown;
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
@@ -1259,7 +1346,8 @@ function containerRunContractIsSafeToDefer(
             || !projectPathIdentityMatches(labels["ccc.project.path"], projectPath)) {
             return unsafe("project path identity changed");
         }
-        if (labels[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+        const labeledProjectIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
+        if (labeledProjectIdentity && labeledProjectIdentity !== projectMountIdentity) {
             return unsafe("project mount identity changed");
         }
         const hostConfig = inspectedHostConfig(inspected.HostConfig);
@@ -1292,6 +1380,24 @@ function containerRunContractIsSafeToDefer(
         }
         if (!bindSourcePathsEquivalent(mountedProject.Source, expectedProjectSource)) {
             return unsafe(`bind source changed for ${projectMount.containerPath}`);
+        }
+        if (!labeledProjectIdentity) {
+            const identityMounts = requiredMounts.filter((mount) => (
+                mount.type === "bind" && mount.expectedIdentity
+            ));
+            if (typeof inspected.Id !== "string"
+                || identityMounts.length === 0
+                || !identityMounts.every((mount) => (
+                    mount.expectedIdentity
+                    && containerSeesCurrentBindDirectory(
+                        inspected.Id as string,
+                        mount.hostPath,
+                        mount.containerPath,
+                        mount.expectedIdentity,
+                    )
+                ))) {
+                return unsafe("legacy bind mount identities could not be verified");
+            }
         }
         if (projectMount.readonly !== undefined && mountedProject.RW !== !projectMount.readonly) {
             return unsafe(`mount access changed for ${projectMount.containerPath}`);
@@ -1984,7 +2090,22 @@ export function startProjectContainer(
         }
     } catch (error) {
         if (createdContainerId) {
-            spawnSync(cli, ["rm", "-f", createdContainerId], { stdio: "ignore" });
+            spawnSync(
+                cli,
+                ["rm", "-f", createdContainerId],
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            const remaining = spawnSync(
+                cli,
+                ["inspect", "-f", "{{.Id}}", createdContainerId],
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            if (remaining.error || remaining.status === null || remaining.status === 0) {
+                throw new Error(
+                    `${(error as Error).message}; failed to remove rejected container ${createdContainerId}`,
+                    { cause: error },
+                );
+            }
         }
         throw error;
     }

@@ -10,6 +10,7 @@ import {
     lstatSync,
     renameSync,
     statSync,
+    chmodSync,
 } from "fs";
 import { join, dirname, basename } from "path";
 import { tmpdir } from "os";
@@ -32,6 +33,7 @@ import {
     fixBrokenWorktree,
     getWorktreeGitMounts,
     containerGitSourceMountPath,
+    portableWorktreeGitDirectory,
     assertWorkspaceBranch,
     detectWorktreeWorkspaceBranch,
     needsSubmoduleSetup,
@@ -60,6 +62,12 @@ function initRepo(repoPath: string): void {
         cwd: repoPath,
         stdio: "pipe",
     });
+}
+
+function installFailingCheckoutHook(repoPath: string): void {
+    const hook = join(repoPath, ".git", "hooks", "post-checkout");
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n");
+    chmodSync(hook, 0o755);
 }
 
 // === Pure Function Tests (no I/O) ===
@@ -662,6 +670,24 @@ describe("createWorkspace", () => {
             .toThrow("Failed to create nested worktree for nested");
         expect(existsSync(getWorkspacePath(sourceDir, "nested-conflict"))).toBe(false);
         expect(branchExistsInRepo(sourceDir, "nested-conflict")).toBe("none");
+    });
+
+    it("rolls back a side-effecting failed multi-repo worktree add", () => {
+        const repoPath = join(sourceDir, "repo-a");
+        initRepo(repoPath);
+        installFailingCheckoutHook(repoPath);
+
+        expect(() => createWorkspace(sourceDir, "hook-failure"))
+            .toThrow("Failed to create worktree for repo-a");
+
+        const wsPath = getWorkspacePath(sourceDir, "hook-failure");
+        expect(existsSync(wsPath)).toBe(false);
+        expect(branchExistsInRepo(repoPath, "hook-failure")).toBe("none");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: repoPath,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).not.toContain(wsPath);
     });
 
     it.skipIf(process.platform === "win32")("fails and rolls back when a source entry cannot be copied safely", () => {
@@ -1452,6 +1478,51 @@ describe("repairWorkspace", () => {
             .toBe("none");
     });
 
+    it("rolls back a side-effecting failed unified worktree add", () => {
+        initRepo(tmpDir);
+        installFailingCheckoutHook(tmpDir);
+
+        expect(() => createWorkspace(tmpDir, "hook-failure"))
+            .toThrow("Failed to create worktree");
+
+        const wsPath = getWorkspacePath(tmpDir, "hook-failure");
+        expect(existsSync(wsPath)).toBe(false);
+        expect(branchExistsInRepo(tmpDir, "hook-failure")).toBe("none");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).not.toContain(wsPath);
+    });
+
+    it("rolls back a side-effecting failed nested repair add", () => {
+        initRepo(tmpDir);
+        const failingRepo = join(tmpDir, "nested-hook");
+        initRepo(failingRepo);
+        installFailingCheckoutHook(failingRepo);
+        const branch = "repair-hook-failure";
+        const wsPath = getWorkspacePath(tmpDir, branch);
+        const rootResult = spawnSync(
+            "git",
+            ["worktree", "add", "-b", branch, wsPath],
+            { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        expect(rootResult.status).toBe(0);
+
+        expect(() => repairWorkspace(tmpDir, wsPath, branch))
+            .toThrow("Failed to create nested worktree for nested-hook");
+
+        const nestedPath = join(wsPath, "nested-hook");
+        expect(existsSync(nestedPath)).toBe(false);
+        expect(branchExistsInRepo(failingRepo, branch)).toBe("none");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: failingRepo,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).not.toContain(nestedPath);
+        expect(isValidWorktree(wsPath, tmpDir)).toBe(true);
+    });
+
     it("skips nested repos that are already valid worktrees", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
@@ -2062,6 +2133,14 @@ describe("getWorktreeGitMounts", () => {
         )).toBe("/project/repo/.git");
     });
 
+    it("rejects cross-volume Windows worktree metadata", () => {
+        expect(() => portableWorktreeGitDirectory(
+            "D:\\work\\repo--feature",
+            "C:\\source\\repo\\.git\\worktrees\\repo--feature",
+            "win32",
+        )).toThrow("crosses incompatible filesystem roots");
+    });
+
     it("normalizes worktree metadata for host and container portability", () => {
         const repoPath = join(tmpDir, "portable-source");
         initRepo(repoPath);
@@ -2090,6 +2169,16 @@ describe("getWorktreeGitMounts", () => {
             mount.containerPath.startsWith("/")
             && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
         ))).toBe(true);
+
+        expect(() => getWorktreeGitMounts(
+            wtPath,
+            true,
+            "/project/portable-source--feat-id",
+        )).not.toThrow();
+        expect(readdirSync(wtPath).filter((entry) => (
+            entry.includes(".git.ccc-")
+            && (entry.endsWith(".tmp") || entry.endsWith(".backup"))
+        ))).toEqual([]);
 
         const status = spawnSync("git", ["status", "--short"], {
             cwd: wtPath,
@@ -2146,14 +2235,13 @@ describe("getWorktreeGitMounts", () => {
         spawnSync("git", ["add", ".gitignore"], { cwd: repoPath, stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "ignore nested"], { cwd: repoPath, stdio: "pipe" });
 
-        // Create worktree of parent
-        const wtPath = join(tmpDir, "parent--feat");
-        spawnSync("git", ["worktree", "add", "-b", "feat", wtPath], {
-            cwd: repoPath,
-            stdio: "pipe",
-        });
+        const wtPath = createWorkspace(repoPath, "feat").workspacePath;
 
-        const mounts = getWorktreeGitMounts(wtPath);
+        const mounts = getWorktreeGitMounts(
+            wtPath,
+            true,
+            "/project/parent--feat-id",
+        );
 
         // Should have mounts for parent .git
         const parentGitDir = join(repoPath, ".git");
@@ -2165,6 +2253,10 @@ describe("getWorktreeGitMounts", () => {
 
         // Should have relative mount for nested repo
         expect(mounts.some((m) => m.containerPath === "/project/parent/nested-repo/.git")).toBe(true);
+        expect(mounts.every((mount) => (
+            mount.containerPath.startsWith("/")
+            && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
+        ))).toBe(true);
     });
 
     it("deduplicates identical mounts", () => {
