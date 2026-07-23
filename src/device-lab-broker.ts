@@ -10802,15 +10802,26 @@ function providerFailureDetail(result: ProviderCommandResult): string {
     return truncateOutput(parts.join("\n") || `provider exited with status ${String(result.status)}`, 8192);
 }
 
+const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
+    "hyper-v-provisioning-source-missing",
+    "hyper-v-provisioning-media-create-failed",
+    "hyper-v-provisioning-media-invalid",
+    "hyper-v-guest-provisioning-media-already-attached",
+    "hyper-v-guest-provisioning-media-attach-failed",
+]);
+
 function redactProviderCommandInput(
     result: ProviderCommandResult,
     redactOutput = false,
     fallbackDiagnosticCode?: string,
 ): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
     const { input, ...publicResult } = result;
+    const outputDiagnosticCode = `${publicResult.error || ""}\n${publicResult.stderr || ""}\n${publicResult.stdout || ""}`
+        .match(/\bhyper-v-[a-z0-9-]{3,128}\b/gi)
+        ?.map((candidate) => candidate.toLowerCase())
+        .find((candidate) => REDACTED_PROVIDER_DIAGNOSTIC_CODES.has(candidate));
     const diagnosticCode = redactOutput
-        ? `${publicResult.error || ""}\n${publicResult.stderr || ""}\n${publicResult.stdout || ""}`.match(/\bhyper-v-[a-z0-9-]{3,128}\b/i)?.[0]?.toLowerCase()
-            || fallbackDiagnosticCode
+        ? outputDiagnosticCode || fallbackDiagnosticCode
         : undefined;
     return {
         ...publicResult,

@@ -779,7 +779,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let createIndex = 0;
         let recoveryCalls = 0;
         let activeVariant: typeof variants[number] | null = null;
-        const provisioningSecretEcho = "Ccc!provider-echoed-secret-payload";
+        const provisioningSecretEcho = "hyper-v-secret-provider-echo";
         const createdVmNames = new Map<string, string>();
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);

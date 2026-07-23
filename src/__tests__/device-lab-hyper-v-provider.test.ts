@@ -457,6 +457,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("ssh_deletekeys: true");
         expect(seedScript).toContain("sshHostKeyFingerprint");
         expect(seedScript).toContain("Add-VMDvdDrive -VM $Vm -Path $SeedDisk");
+        expect(seedScript).toContain("Remove-Item -LiteralPath $SeedSource -Recurse -Force -ErrorAction Stop");
         expect(seedScript).not.toContain("Mount-VHD");
         expect(seedScript).not.toContain("Initialize-Disk");
         expect(seedScript).toContain("Get-VM -Id $ExpectedId");
@@ -923,6 +924,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(script).toContain("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
+        expect(script).toContain("Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction Stop");
         expect(script).not.toContain("Mount-VHD");
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");
