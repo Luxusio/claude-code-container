@@ -10802,14 +10802,18 @@ function providerFailureDetail(result: ProviderCommandResult): string {
     return truncateOutput(parts.join("\n") || `provider exited with status ${String(result.status)}`, 8192);
 }
 
-function redactProviderCommandInput(result: ProviderCommandResult, redactOutput = false): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean } {
+function redactProviderCommandInput(result: ProviderCommandResult, redactOutput = false): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
     const { input, ...publicResult } = result;
+    const diagnosticCode = redactOutput
+        ? `${publicResult.error || ""}\n${publicResult.stderr || ""}\n${publicResult.stdout || ""}`.match(/\bhyper-v-[a-z0-9-]{3,128}\b/i)?.[0]?.toLowerCase()
+        : undefined;
     return {
         ...publicResult,
         ...(redactOutput ? {
             stdout: publicResult.stdout ? "[redacted]" : "",
             stderr: publicResult.stderr ? "[redacted]" : "",
             outputRedacted: true,
+            ...(diagnosticCode ? { diagnosticCode } : {}),
         } : {}),
         ...(input !== undefined ? { inputConfigured: true } : {}),
     };

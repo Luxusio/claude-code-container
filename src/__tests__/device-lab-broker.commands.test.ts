@@ -807,7 +807,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 mkdirSync(dirname(credentialPath), { recursive: true });
                 writeFileSync(credentialPath, "fake-dpapi-credential");
                 if (activeVariant === "provision-failure") {
-                    return { mode: command.mode, provider: command.provider, status: 1, stdout: provisioningSecretEcho, stderr: `offline provisioning failed: ${provisioningSecretEcho}` };
+                    return { mode: command.mode, provider: command.provider, status: 1, stdout: provisioningSecretEcho, stderr: `hyper-v-provisioning-media-create-failed: ${provisioningSecretEcho}` };
                 }
                 const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
                 mkdirSync(dirname(stateFile), { recursive: true });
@@ -885,7 +885,12 @@ describe("device-lab host broker lifecycle commands", () => {
                     }));
                     if (variant === "provision-failure") {
                         expect(JSON.stringify(body)).not.toContain(provisioningSecretEcho);
-                        expect(body.provisioning).toEqual(expect.objectContaining({ stdout: "[redacted]", stderr: "[redacted]", outputRedacted: true }));
+                        expect(body.provisioning).toEqual(expect.objectContaining({
+                            stdout: "[redacted]",
+                            stderr: "[redacted]",
+                            outputRedacted: true,
+                            diagnosticCode: "hyper-v-provisioning-media-create-failed",
+                        }));
                     }
                     expect(existsSync(privateRoot)).toBe(false);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];

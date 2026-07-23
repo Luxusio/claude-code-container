@@ -616,6 +616,57 @@ describe("device-lab MCP", () => {
         }
     });
 
+    it("rejects a current Hyper-V lifecycle broker with the previous network capability", { timeout: TIMEOUT }, async () => {
+        const server = createServer((req, res) => {
+            res.setHeader("content-type", "application/json");
+            if (req.url === "/health") {
+                res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }));
+                return;
+            }
+            if (req.url === "/status") {
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        implemented: [
+                            ...REQUIRED_CCC_HOST_BROKER_CAPABILITIES.filter((capability) => capability !== "hyper-v-setup-network-v3"),
+                            "hyper-v-setup-network-v2",
+                        ],
+                    },
+                }));
+                return;
+            }
+            if (sendTestOwnerResolve(req, res)) return;
+            res.statusCode = 404;
+            res.end(JSON.stringify({ ok: false, error: "not-found" }));
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+
+        try {
+            const result = await brokerRpc({
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port: address.port,
+                timeoutMs: 3000,
+                autolaunch: true,
+            });
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "host-broker-incompatible",
+                launch: expect.objectContaining({
+                    ok: false,
+                    reused: false,
+                    error: "host-broker-incompatible",
+                    compatibility: expect.objectContaining({
+                        missingCapabilities: ["hyper-v-setup-network-v3"],
+                    }),
+                }),
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
     it("does not signal a PID claimed by incompatible MCP runtime metadata", { timeout: TIMEOUT }, async () => {
         const initial = await client.callTool({ name: "device_broker_status", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {

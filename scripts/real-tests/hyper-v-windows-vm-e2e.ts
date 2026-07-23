@@ -31,6 +31,7 @@ function payload(result: any) {
                 status: execution.status,
                 signal: execution.signal,
                 error: execution.error,
+                diagnosticCode: execution.diagnosticCode,
                 stdout: String(execution.stdout || "").slice(-1024),
                 stderr: String(execution.stderr || "").slice(-2048),
             })
