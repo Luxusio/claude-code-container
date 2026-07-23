@@ -844,7 +844,7 @@ describe("test level runner", () => {
         const partitioned = partitionProviderFiles(files);
         expect(partitioned.serial).toEqual([files[0]]);
         expect(partitioned.providers).toEqual([
-            { file: files[1], resources: ["hyper-v"] },
+            { file: files[1], resources: ["hyper-v", "*"] },
             { file: files[2], resources: ["android-emulator", "macos-vm"] },
         ]);
     });
@@ -873,6 +873,29 @@ describe("test level runner", () => {
         expect(events.indexOf("start:macos-b")).toBeGreaterThan(events.indexOf("end:macos-a"));
     });
 
+    it("runs an exclusive Hyper-V provider without overlapping other providers", async () => {
+        const events: string[] = [];
+        let active = 0;
+        let maxActive = 0;
+        await runResourceAware([
+            { file: "hyper-v", resources: ["hyper-v", "*"] },
+            { file: "android", resources: ["android-device"] },
+            { file: "windows", resources: ["windows-sandbox"] },
+        ], 2, async (file) => {
+            events.push(`start:${file}`);
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+            active -= 1;
+            events.push(`end:${file}`);
+            return file;
+        });
+
+        expect(events.indexOf("start:android")).toBeGreaterThan(events.indexOf("end:hyper-v"));
+        expect(events.indexOf("start:windows")).toBeGreaterThan(events.indexOf("end:hyper-v"));
+        expect(maxActive).toBe(2);
+    });
+
     it("waits for active providers before reporting a scheduler failure", async () => {
         const events: string[] = [];
         await expect(runResourceAware([
@@ -890,7 +913,7 @@ describe("test level runner", () => {
 
     it("executes provider modules in isolated child processes and keeps summary order", () => {
         const tempDir = mkdtempSync(join(tmpdir(), "ccc-provider-workers-"));
-        const windowsFile = join(tempDir, "level2-hyper-v-windows-vm.ts");
+        const windowsFile = join(tempDir, "level2-android-device-e2e.ts");
         const linuxFile = join(tempDir, "level2-windows-sandbox.ts");
         const windowsStarted = join(tempDir, "windows.started");
         const linuxStarted = join(tempDir, "linux.started");

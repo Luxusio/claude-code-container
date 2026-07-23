@@ -6,8 +6,8 @@ const PROVIDER_RESOURCES = new Map<string, string[]>([
     ["level2-android-device-e2e.ts", ["android-device"]],
     ["level2-macos-vm-e2e.ts", ["macos-vm"]],
     ["level2-windows-sandbox.ts", ["windows-sandbox"]],
-    ["level2-hyper-v-windows-vm.ts", ["hyper-v"]],
-    ["level2-hyper-v-linux-vm.ts", ["hyper-v"]],
+    ["level2-hyper-v-windows-vm.ts", ["hyper-v", "*"]],
+    ["level2-hyper-v-linux-vm.ts", ["hyper-v", "*"]],
     ["level2-real-linux-vm.ts", ["linux-vm"]],
     ["level3-real-destructive.ts", ["android-emulator", "macos-vm"]],
 ]);
@@ -52,7 +52,12 @@ export async function runResourceAware<T>(
         let started = false;
         for (let index = 0; index < pending.length && active.size < limit;) {
             const item = pending[index];
-            if (item.resources.some((resource) => activeResources.has(resource))) {
+            const exclusive = item.resources.includes("*");
+            if (
+                activeResources.has("*")
+                || (exclusive && activeResources.size > 0)
+                || item.resources.some((resource) => activeResources.has(resource))
+            ) {
                 index += 1;
                 continue;
             }
