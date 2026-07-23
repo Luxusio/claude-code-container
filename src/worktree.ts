@@ -3457,6 +3457,9 @@ export function fixBrokenWorktree(
     repoName: string,
     branch: string,
     confirmed = false,
+    cleanupOperations: {
+        removeMergedBackup?: (path: string) => void;
+    } = {},
 ): WorktreeRepoResult | null {
     if (!confirmed) {
         throw new Error("Explicit confirmation is required to replace broken worktree content.");
@@ -3623,17 +3626,6 @@ export function fixBrokenWorktree(
                     join(destPath, name),
                 );
             }
-            if (quarantinedStaleRegistration) {
-                commitQuarantinedMissingWorktreeRegistration(
-                    quarantinedStaleRegistration,
-                );
-                quarantinedStaleRegistration = null;
-            }
-            rmSync(backup.path, { recursive: true, force: true });
-            if (pathExistsStrict(backup.path)) {
-                throw new Error(`Broken-worktree backup was not removed: ${backup.path}`);
-            }
-            removePrivateQuarantine(backup);
         } catch (error) {
             if (pathExistsStrict(destPath)) {
                 if (!isValidWorktree(destPath, sourceRepo.path)) {
@@ -3667,6 +3659,22 @@ export function fixBrokenWorktree(
             restoreStaleRegistration();
             throw error;
         }
+
+        // The replacement is now the authoritative worktree. Cleanup failures
+        // must not roll it back after either quarantine has been committed.
+        if (quarantinedStaleRegistration) {
+            commitQuarantinedMissingWorktreeRegistration(
+                quarantinedStaleRegistration,
+            );
+            quarantinedStaleRegistration = null;
+        }
+        const removeMergedBackup = cleanupOperations.removeMergedBackup
+            ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
+        removeMergedBackup(backup.path);
+        if (pathExistsStrict(backup.path)) {
+            throw new Error(`Broken-worktree backup was not removed: ${backup.path}`);
+        }
+        removePrivateQuarantine(backup);
     }
 
     if (quarantinedStaleRegistration) {

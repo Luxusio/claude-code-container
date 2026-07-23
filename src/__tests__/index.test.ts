@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -322,6 +322,78 @@ describe('workspace profile container discovery', () => {
 
     expect(removeContainers).not.toHaveBeenCalled()
     expect(completed.removedContainers).toEqual([])
+  })
+
+  it('captures managed container IDs before deleting the workspace path', () => {
+    let workspaceExists = true
+    const sequence: string[] = []
+    const identityProbe = vi.fn(() => {
+      sequence.push('identity')
+      expect(workspaceExists).toBe(true)
+      return { containerId: 'captured123456', running: true }
+    })
+    const plan = prepareWorkspaceContainerRemovalPlan(
+      '/projects/repo--feature',
+      () => ['ccc-worktree'],
+      identityProbe,
+      () => true,
+    )
+    const runner = vi.fn(() => ({ status: 0 })) as any
+
+    const completed = removeWorkspaceThenContainers(
+      () => {
+        sequence.push('workspace')
+        workspaceExists = false
+        return { errors: [] }
+      },
+      () => {
+        sequence.push('containers')
+        expect(workspaceExists).toBe(false)
+        return removePreparedWorkspaceContainers(plan, runner, 'docker')
+      },
+    )
+
+    expect(sequence).toEqual(['identity', 'workspace', 'containers'])
+    expect(completed.removedContainers).toEqual(['ccc-worktree'])
+    expect(runner).toHaveBeenNthCalledWith(
+      1,
+      'docker',
+      ['stop', 'captured123456'],
+      { stdio: 'ignore' },
+    )
+    expect(runner).toHaveBeenNthCalledWith(
+      2,
+      'docker',
+      ['rm', 'captured123456'],
+      { stdio: 'ignore' },
+    )
+  })
+
+  it('aborts before workspace deletion when a listed container cannot be identified', () => {
+    const removeWorkspaceOperation = vi.fn(() => ({ errors: [] }))
+
+    expect(() => {
+      const plan = prepareWorkspaceContainerRemovalPlan(
+        '/projects/repo--feature',
+        () => ['ccc-worktree'],
+        () => null,
+        () => true,
+      )
+      removeWorkspaceThenContainers(
+        removeWorkspaceOperation,
+        () => removePreparedWorkspaceContainers(plan),
+      )
+    }).toThrow('identity inspection failed')
+    expect(removeWorkspaceOperation).not.toHaveBeenCalled()
+  })
+
+  it('rejects duplicate captured container identities', () => {
+    expect(() => prepareWorkspaceContainerRemovalPlan(
+      '/projects/repo--feature',
+      () => ['ccc-worktree', 'ccc-worktree--p--work'],
+      () => ({ containerId: 'same123456', running: false }),
+      () => true,
+    )).toThrow('duplicate identity')
   })
 
   it('returns only the default and profile containers for the exact worktree identity', () => {

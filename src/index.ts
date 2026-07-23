@@ -66,6 +66,7 @@ import {
     isContainerExists,
     getContainerIdentity,
     getManagedProjectContainerIdentity,
+    type ContainerIdentity,
     isImageExists,
     getImageLabel,
     startProjectContainer,
@@ -1156,6 +1157,61 @@ export function removeWorkspaceContainers(
     return removed;
 }
 
+export type WorkspaceContainerRemoval = {
+    containerName: string;
+    identity: ContainerIdentity;
+};
+
+export function prepareWorkspaceContainerRemovalPlan(
+    workspacePath: string,
+    listContainers: (workspacePath: string) => string[] = listWorkspaceContainerNames,
+    identityProbe: (
+        containerName: string,
+        workspacePath: string,
+    ) => ContainerIdentity | null = getManagedProjectContainerIdentity,
+    existsProbe: typeof isContainerExists = isContainerExists,
+): WorkspaceContainerRemoval[] {
+    const plan: WorkspaceContainerRemoval[] = [];
+    const seenIds = new Set<string>();
+    for (const containerName of listContainers(workspacePath)) {
+        const identity = identityProbe(containerName, workspacePath);
+        if (!identity) {
+            if (existsProbe(containerName)) {
+                throw new Error(
+                    "Workspace container identity inspection failed; workspace removal was aborted.",
+                );
+            }
+            continue;
+        }
+        if (seenIds.has(identity.containerId)) {
+            throw new Error("Workspace container inventory contains a duplicate identity.");
+        }
+        seenIds.add(identity.containerId);
+        plan.push({ containerName, identity });
+    }
+    return plan;
+}
+
+export function removePreparedWorkspaceContainers(
+    plan: readonly WorkspaceContainerRemoval[],
+    runner: typeof spawnSync = spawnSync,
+    cli = runtimeCli(),
+): string[] {
+    const removed: string[] = [];
+    for (const entry of plan) {
+        if (!removeWorkspaceContainerByIdentity(
+            entry.containerName,
+            () => entry.identity,
+            runner,
+            cli,
+        )) {
+            continue;
+        }
+        removed.push(entry.containerName);
+    }
+    return removed;
+}
+
 export function workspaceRemovalCompleted(
     result: { errors: string[] },
 ): boolean {
@@ -1189,9 +1245,10 @@ function handleWorktreeRemove(
             assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
             ensureDockerRunning();
             console.log(`Removing workspace @${branch}...`);
+            const containerRemovalPlan = prepareWorkspaceContainerRemovalPlan(wsPath);
             const completed = removeWorkspaceThenContainers(
                 () => removeWorkspace(cwd, branch, { force }),
-                () => removeWorkspaceContainers(wsPath),
+                () => removePreparedWorkspaceContainers(containerRemovalPlan),
             );
             removalResult = completed.result;
             for (const containerName of completed.removedContainers) {

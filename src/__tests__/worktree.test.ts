@@ -2464,6 +2464,48 @@ describe("fixBrokenWorktree", () => {
         expect(listed.stdout).toContain("branch refs/heads/stale-atomic");
     });
 
+    it("keeps the committed replacement when backup cleanup fails", () => {
+        initRepo(tmpDir);
+        const nestedRepo = join(tmpDir, "frontend");
+        initRepo(nestedRepo);
+        const wsResult = createWorkspace(tmpDir, "stale-cleanup");
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        rmSync(wsFrontend, { recursive: true, force: true });
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "user.txt"), "preserve");
+        writeFileSync(join(wsFrontend, ".git"), "gitdir: /broken/metadata\n");
+        let failedBackupPath = "";
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "stale-cleanup",
+            true,
+            {
+                removeMergedBackup: (path) => {
+                    failedBackupPath = path;
+                    throw new Error("injected backup cleanup failure");
+                },
+            },
+        )).toThrow("injected backup cleanup failure");
+
+        expect(isValidWorktree(wsFrontend, nestedRepo)).toBe(true);
+        expect(readFileSync(join(wsFrontend, "user.txt"), "utf-8")).toBe("preserve");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout.match(new RegExp(`worktree ${wsFrontend}`, "g")))
+            .toHaveLength(1);
+        expect(listed.stdout).toContain("branch refs/heads/stale-cleanup");
+
+        removeWorkspace(tmpDir, "stale-cleanup", { force: true });
+        expect(basename(dirname(failedBackupPath)))
+            .toMatch(/^\.ccc-worktree-quarantine-/);
+        rmSync(dirname(failedBackupPath), { recursive: true, force: true });
+    });
+
     it("restores the original directory when checked-out content conflicts", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
