@@ -1144,7 +1144,7 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
-        it("preserves a running container with contract drift while another CCC session is active", () => {
+        it("preserves a running container with contract drift even when the current CCC session is alone", () => {
             mockExistsSync.mockReturnValue(false);
             const driftMountsJson = JSON.stringify([
                 { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
@@ -1155,11 +1155,13 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, "<no value>\n"))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, driftMountsJson))
+                .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0, driftMountsJson))
                 .mockReturnValueOnce(makeResult(0, "abc123\n"))
                 .mockReturnValueOnce(makeResult(0));
 
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+            const guard = vi.fn(() => true);
             const name = startProjectContainer(
                 projectPath,
                 ensureDirs,
@@ -1167,11 +1169,12 @@ describe("docker.ts module exports", () => {
                 undefined,
                 undefined,
                 undefined,
-                () => false,
+                guard,
             );
 
             expect(name).toBe(getContainerName(projectPath));
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("another session is active"));
+            expect(guard).not.toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("container is still running"));
             const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return args?.[0] === "exec" && args?.at(-1) === "true";
@@ -1182,6 +1185,33 @@ describe("docker.ts module exports", () => {
                 const args = call[1] as string[];
                 return args?.[0] === "stop" || args?.[0] === "rm" || args?.[0] === "run";
             })).toBe(false);
+        });
+
+        it("preserves a running Windows container when its device-lab file identity label changed", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson()) as {
+                Config: { Labels: Record<string, string> };
+            };
+            inspected.Config.Labels["ccc.device-lab.mount-identity"] = "stale-windows-file-identity";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => true);
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            const name = startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            );
+
+            expect(name).toBe(getContainerName(projectPath));
+            expect(guard).not.toHaveBeenCalled();
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("device-lab mount identity changed"));
+            expectNoContainerReplacement();
         });
 
         it("fails closed without replacing an unsafe privileged container owned by another session", () => {
@@ -1236,7 +1266,7 @@ describe("docker.ts module exports", () => {
             ["unexpected supplemental group", (value: ReturnType<typeof JSON.parse>) => {
                 value.HostConfig.GroupAdd.push("999");
             }],
-        ])("fails closed on %s while an active session owns the container", (_name, mutate) => {
+        ])("fails closed on %s while the container is running", (_name, mutate) => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             mutate(inspected);
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -1252,11 +1282,11 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("contract failed safety validation");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
-        it("fails closed when contract inspection is malformed while another session owns the container", () => {
+        it("fails closed when contract inspection is malformed while the container is running", () => {
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
@@ -1270,11 +1300,11 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("contract failed safety validation");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
-        it("executes contract-drift replacement only inside an approving session guard", () => {
+        it("executes stopped-container contract replacement only inside an approving session guard", () => {
             let removed = false;
             const driftMountsJson = JSON.stringify([
                 { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
@@ -1284,7 +1314,8 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
                 if (args[0] === "inspect") return makeResult(0, driftMountsJson);
-                if (args[0] === "ps") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
                 if (args[0] === "rm") removed = true;
                 return makeResult(0);
             });
@@ -1367,7 +1398,7 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("mount source changed during validation");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
@@ -1396,7 +1427,7 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("mount source changed during synchronization");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
@@ -1451,7 +1482,7 @@ describe("docker.ts module exports", () => {
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
             )).toThrow("Restarted container is unavailable");
-            expect(guard).toHaveBeenCalledOnce();
+            expect(guard).not.toHaveBeenCalled();
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "start")).toBe(true);
             expectNoContainerReplacement();
         });
@@ -1488,34 +1519,24 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
-        it("allows destructive recovery only through the session guard callback", () => {
-            let removed = false;
+        it("preserves an unresponsive running container even when the session guard would approve replacement", () => {
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
                 if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
                 if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
-                if (args[0] === "ps") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
                 if (args[0] === "exec" && args.at(-1) === "true") return makeResult(1);
-                if (args[0] === "rm") removed = true;
                 return makeResult(0);
             });
-            const guard = vi.fn((replace: () => void) => {
-                expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
-                    ["stop", "rm"].includes((call[1] as string[])?.[0])
-                ))).toBe(false);
-                replace();
-                return true;
-            });
+            const guard = vi.fn(() => true);
 
-            startProjectContainer(
+            expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            );
+            )).toThrow("Running container is unavailable");
 
-            expect(guard).toHaveBeenCalledOnce();
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
+            expect(guard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
         });
 
         it("recreates a legacy container with writable shared device-lab state", () => {

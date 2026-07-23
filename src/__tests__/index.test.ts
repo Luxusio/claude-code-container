@@ -209,9 +209,10 @@ describe('auto container version-up', () => {
     // The if (oldImageId) guard prevents docker rmi from running
   })
 
-  it('deferred upgrade message includes session info', () => {
-    const message = "Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade."
-    expect(message).toContain("other sessions")
+  it('deferred upgrade message requires an explicit container stop', () => {
+    const message = "Update available, but the container is still running. Stop it before restarting CCC to upgrade."
+    expect(message).toContain("container is still running")
+    expect(message).toContain("Stop it")
     expect(message).toContain("upgrade")
   })
 })

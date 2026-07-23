@@ -249,9 +249,11 @@ export function recreateContainerWithoutInterruptingSessions(
     containerPrefix: string,
     currentLockFile: string,
     recreate: () => void,
+    replacementAllowed: () => boolean = () => true,
 ): boolean {
     return withContainerLifecycleLock(containerPrefix, () => {
         if (hasOtherActiveSessions(containerPrefix, currentLockFile)) return false;
+        if (!replacementAllowed()) return false;
         recreate();
         return true;
     });

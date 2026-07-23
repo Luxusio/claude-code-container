@@ -418,6 +418,7 @@ async function exec(
             sessionContainerPrefix,
             sessionLockFile,
             recreate,
+            () => !isContainerRunning(targetContainer),
         )
     );
 
@@ -439,7 +440,7 @@ async function exec(
                 }
             });
             if (!recreated) {
-                console.log("Update available, but other sessions are active. Restart ccc after closing other sessions to upgrade.");
+                console.log("Update available, but the container is still running. Stop it before restarting CCC to upgrade.");
             }
         }
     }
@@ -451,6 +452,7 @@ async function exec(
         console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
+        if (isContainerRunning(targetContainer)) return false;
         if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
         recreate();
         return true;

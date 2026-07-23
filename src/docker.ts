@@ -830,6 +830,7 @@ function containerMatchesRunContract(
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
     deviceLabMountIdentity: string,
+    reportMismatch: (reason: string) => void = () => undefined,
 ): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -839,6 +840,11 @@ function containerMatchesRunContract(
     if (result.status !== 0) return false;
 
     try {
+        const failContract = (reason: string) => {
+            reportMismatch(reason);
+            if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
+            return false;
+        };
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
             Config?: { Env?: string[]; Labels?: Record<string, string> };
@@ -847,7 +853,7 @@ function containerMatchesRunContract(
         const mounts = inspected.Mounts || [];
         const env = envMap(inspected.Config?.Env);
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
-            return false;
+            return failContract("device-lab mount identity changed");
         }
         const devices = inspected.HostConfig?.Devices;
         const groupAdd = inspected.HostConfig?.GroupAdd;
@@ -858,12 +864,12 @@ function containerMatchesRunContract(
                     console.error(`[ccc:debug] containerMatchesRunContract: missing ${req.containerPath}`);
                     console.error(`[ccc:debug] containerMatchesRunContract: container destinations: ${mounts.map((item) => item.Destination).join(", ")}`);
                 }
-                return false;
+                return failContract(`missing mount ${req.containerPath}`);
             }
-            if (req.readonly !== undefined && mount.RW !== !req.readonly) return false;
-            if (req.type !== undefined && mount.Type !== req.type) return false;
+            if (req.readonly !== undefined && mount.RW !== !req.readonly) return failContract(`mount access changed for ${req.containerPath}`);
+            if (req.type !== undefined && mount.Type !== req.type) return failContract(`mount type changed for ${req.containerPath}`);
             if (req.verifySource) {
-                if (mount.Type !== "bind" || !mount.Source) return false;
+                if (mount.Type !== "bind" || !mount.Source) return failContract(`bind source missing for ${req.containerPath}`);
                 let actualSource: string;
                 let expectedSource: string;
                 try {
@@ -874,15 +880,11 @@ function containerMatchesRunContract(
                     actualSource = normalizedHostPath(mount.Source);
                     expectedSource = canonicalHostPath(req.hostPath);
                 } catch {
-                    return false;
+                    return failContract(`bind source unreadable for ${req.containerPath}`);
                 }
-                if (actualSource !== expectedSource) return false;
+                if (actualSource !== expectedSource) return failContract(`bind source changed for ${req.containerPath}`);
             }
         }
-        const failContract = (reason: string) => {
-            if (process.env.DEBUG) console.error(`[ccc:debug] containerMatchesRunContract: ${reason}`);
-            return false;
-        };
         const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
         const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
         if (authRequired !== authMounted) return failContract("stale isolated device broker auth mount");
@@ -910,6 +912,7 @@ function containerMatchesRunContract(
         }
         return true;
     } catch {
+        reportMismatch("container contract inspection failed");
         return false;
     }
 }
@@ -1152,6 +1155,9 @@ function recreateContainerWithSessionGuard(
     if (!guard) {
         throw new Error("Container replacement requires a lifecycle/session guard.");
     }
+    // A running project container is itself live ownership evidence. Mount or
+    // image drift is applied after it stops; it never authorizes stop/rm.
+    if (isContainerRunning(containerName)) return false;
     return guard(recreate);
 }
 
@@ -1179,10 +1185,9 @@ export function startProjectContainer(
      */
     onRecreate?: () => void,
     /**
-     * Re-evaluated immediately before replacing a running container. Callers
-     * use this to protect containers that are still owned by another live CCC
-     * session. A stale immutable contract is safe to defer; interrupting the
-     * other session is not.
+     * Re-evaluated immediately before replacing a stopped container. Running
+     * containers are always preserved; callers additionally protect stopped
+     * containers whose lifecycle is still owned by another live CCC session.
      */
     recreateRunningContainer?: (recreate: () => void) => boolean,
 ): string {
@@ -1240,11 +1245,13 @@ export function startProjectContainer(
             containerPath: labRunner.stateContainerDir,
         });
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+        let contractMismatchReason = "container contract changed";
         const contractMatches = containerMatchesRunContract(
             containerName,
             requiredMounts,
             labRunner,
             preparedDeviceLabSources.contractIdentity,
+            (reason) => { contractMismatchReason = reason; },
         );
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         if (!contractMatches) {
@@ -1257,7 +1264,7 @@ export function startProjectContainer(
             if (recreateRunningContainer) {
                 const recreated = recreateContainerWithSessionGuard(
                     containerName,
-                    "missing tool credential / git mounts",
+                    contractMismatchReason,
                     onRecreate,
                     recreateRunningContainer,
                 );
@@ -1271,11 +1278,11 @@ export function startProjectContainer(
                     if (!canExecContainerAfterBriefRetry(containerName)) {
                         throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
                     }
-                    console.warn("[ccc] Container update deferred because another session is active. Reusing the running container.");
+                    console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the container is still running. Stop it before restarting CCC to apply the update.`);
                     return containerName;
                 }
             } else {
-                recreateContainerWithSessionGuard(containerName, "missing tool credential / git mounts", onRecreate, undefined);
+                recreateContainerWithSessionGuard(containerName, contractMismatchReason, onRecreate, undefined);
             }
         } else if (debug) {
             console.error(`[ccc:debug] Container ${containerName} has all required mounts`);

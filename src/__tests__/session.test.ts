@@ -622,6 +622,46 @@ describe("session.ts", () => {
             );
         });
 
+        it("refuses replacement when the locked final state says the container is still running", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--current.lock"]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            const recreate = vi.fn();
+            const replacementAllowed = vi.fn(() => false);
+
+            const result = recreateContainerWithoutInterruptingSessions(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+                recreate,
+                replacementAllowed,
+            );
+
+            expect(result).toBe(false);
+            expect(replacementAllowed).toHaveBeenCalledOnce();
+            expect(recreate).not.toHaveBeenCalled();
+            expect(mockWithSharedMutationLock).toHaveBeenCalledOnce();
+        });
+
+        it("checks other sessions before evaluating the final replacement predicate", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--current.lock", "proj-abc--other.lock"]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+            const recreate = vi.fn();
+            const replacementAllowed = vi.fn(() => true);
+
+            const result = recreateContainerWithoutInterruptingSessions(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+                recreate,
+                replacementAllowed,
+            );
+
+            expect(result).toBe(false);
+            expect(replacementAllowed).not.toHaveBeenCalled();
+            expect(recreate).not.toHaveBeenCalled();
+        });
+
         it("refuses replacement when another session exists even if the current lock disappeared", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--other.lock"]);
