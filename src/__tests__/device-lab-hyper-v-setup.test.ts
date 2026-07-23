@@ -12,6 +12,18 @@ import {
 
 describe("Hyper-V host setup CLI", () => {
     const roots: string[] = [];
+    const setupNetwork = {
+        ok: true,
+        switchName: "CCC Device Lab",
+        switchId: "11111111-2222-4333-8444-555555555555",
+        natName: "CCCDeviceLab",
+        natInstanceId: "ccc-network-instance-1",
+        prefix: "172.29.0.0/24",
+        gateway: "172.29.0.1",
+        interfaceIndex: 42,
+        createdSwitch: true,
+        createdNat: true,
+    };
 
     afterEach(() => {
         vi.restoreAllMocks();
@@ -70,20 +82,26 @@ describe("Hyper-V host setup CLI", () => {
     it("records explicit Windows evaluation license acceptance and reports it later", () => {
         const root = join(tmpdir(), `ccc-hyper-v-license-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);
-        const runner = vi.fn(() => ({
-            command: "powershell.exe",
-            status: 0,
-            stdout: JSON.stringify({
-                ok: true,
-                featureName: "Microsoft-Hyper-V-All",
-                beforeState: "Enabled",
-                afterState: "Enabled",
-                changed: false,
-                elevated: true,
-                rebootRequired: false,
-            }),
-            stderr: "",
-        }));
+        const mutationLockFile = join(root, "host-locks", "hyper-v.mutation.lock");
+        const runner = vi.fn(() => {
+            expect(existsSync(mutationLockFile)).toBe(true);
+            expect(existsSync(join(root, "network", "hyper-v.json"))).toBe(false);
+            return {
+                command: "powershell.exe",
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    featureName: "Microsoft-Hyper-V-All",
+                    beforeState: "Enabled",
+                    afterState: "Enabled",
+                    changed: false,
+                    elevated: true,
+                    rebootRequired: false,
+                    network: setupNetwork,
+                }),
+                stderr: "",
+            };
+        });
 
         const accepted = setupHyperVHost(true, {
             platform: "win32",
@@ -96,6 +114,14 @@ describe("Hyper-V host setup CLI", () => {
         expect(accepted.ok).toBe(true);
         expect(accepted.text).toContain("windowsEvaluationLicenseAccepted: true");
         expect(accepted.text).toContain("windowsEvaluationImageSourceTrust: microsoft-evaluation-https-tofu-v1");
+        expect(accepted.text).toContain("networkPrepared: true");
+        expect(existsSync(mutationLockFile)).toBe(false);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            switchId: setupNetwork.switchId,
+            natInstanceId: setupNetwork.natInstanceId,
+            managedNat: false,
+            allocations: [],
+        });
         const receiptPath = join(root, "hyper-v-windows-evaluation-license.json");
         expect(existsSync(receiptPath)).toBe(true);
         expect(JSON.parse(readFileSync(receiptPath, "utf8"))).toMatchObject({
@@ -123,6 +149,115 @@ describe("Hyper-V host setup CLI", () => {
             sourceTrustId: "microsoft-evaluation-https-tofu-v1",
             acceptedAt: "2026-07-01T00:00:00.000Z",
         }));
+    });
+
+    it("does not overwrite a matching network identity with malformed allocations", () => {
+        const root = join(tmpdir(), `ccc-hyper-v-network-state-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const networkRoot = join(root, "network");
+        const stateFile = join(networkRoot, "hyper-v.json");
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(stateFile, JSON.stringify({
+            version: 1,
+            switchName: setupNetwork.switchName,
+            switchId: setupNetwork.switchId,
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: setupNetwork.natName,
+            natInstanceId: setupNetwork.natInstanceId,
+            prefix: setupNetwork.prefix,
+            gateway: setupNetwork.gateway,
+            outboundPolicy: "nat",
+            managedNat: false,
+            allocations: [{ ownerId: "../outside" }],
+        }));
+        const original = readFileSync(stateFile, "utf8");
+        const runner = vi.fn(() => ({
+            command: "powershell.exe",
+            status: 0,
+            stdout: JSON.stringify({
+                ok: true,
+                featureName: "Microsoft-Hyper-V-All",
+                beforeState: "Enabled",
+                afterState: "Enabled",
+                changed: false,
+                elevated: true,
+                rebootRequired: false,
+                network: setupNetwork,
+            }),
+            stderr: "",
+        }));
+
+        const result = setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: runner,
+        });
+
+        expect(result).toEqual({
+            ok: false,
+            text: "CCC Hyper-V setup failed: hyper-v-network-state-identity-conflict",
+        });
+        expect(readFileSync(stateFile, "utf8")).toBe(original);
+    });
+
+    it("preserves valid existing network allocations while refreshing setup identity", () => {
+        const root = join(tmpdir(), `ccc-hyper-v-network-preserve-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const networkRoot = join(root, "network");
+        const stateFile = join(networkRoot, "hyper-v.json");
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(stateFile, JSON.stringify({
+            version: 1,
+            switchName: setupNetwork.switchName,
+            switchId: setupNetwork.switchId,
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: setupNetwork.natName,
+            natInstanceId: setupNetwork.natInstanceId,
+            prefix: setupNetwork.prefix,
+            gateway: setupNetwork.gateway,
+            outboundPolicy: "nat",
+            managedNat: false,
+            allocations: [{
+                ownerId: "0123456789abcdef",
+                deviceId: "windows-vm-1",
+                incarnationId: "0123456789abcdef0123456789abcdef",
+                address: "172.29.0.10",
+                allocatedAt: "2026-07-23T00:00:00.000Z",
+            }],
+        }));
+        const runner = vi.fn(() => ({
+            command: "powershell.exe",
+            status: 0,
+            stdout: JSON.stringify({
+                ok: true,
+                featureName: "Microsoft-Hyper-V-All",
+                beforeState: "Enabled",
+                afterState: "Enabled",
+                changed: false,
+                elevated: true,
+                rebootRequired: false,
+                network: setupNetwork,
+            }),
+            stderr: "",
+        }));
+
+        const result = setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: runner,
+        });
+
+        expect(result.ok).toBe(true);
+        expect(JSON.parse(readFileSync(stateFile, "utf8")).allocations).toEqual([
+            expect.objectContaining({
+                ownerId: "0123456789abcdef",
+                deviceId: "windows-vm-1",
+                address: "172.29.0.10",
+                macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/),
+            }),
+        ]);
     });
 
     it.each([
@@ -193,6 +328,7 @@ describe("Hyper-V host setup CLI", () => {
                 changed: true,
                 elevated: true,
                 rebootRequired: true,
+                network: setupNetwork,
             }),
             stderr: "",
         }));
@@ -353,6 +489,7 @@ describe("Hyper-V host setup CLI", () => {
                 membershipChanged: false,
                 managementAccess: true,
                 sessionRefreshRequired: false,
+                network: setupNetwork,
             }),
             stderr: "",
         }));

@@ -38,7 +38,15 @@ export type HyperVSetupObservation = {
     membershipChanged?: boolean;
     managementAccess?: boolean;
     sessionRefreshRequired?: boolean;
+    network?: HyperVNetworkObservation;
 };
+
+export const HYPER_V_NETWORK_SWITCH = "CCC Device Lab";
+export const HYPER_V_NETWORK_NAT = "CCCDeviceLab";
+export const HYPER_V_NETWORK_MARKER = "ccc-device-lab:hyper-v-network:v1";
+export const HYPER_V_NETWORK_PREFIX = "172.29.0.0/24";
+export const HYPER_V_NETWORK_GATEWAY = "172.29.0.1";
+export const HYPER_V_NETWORK_PREFIX_LENGTH = 24;
 
 export type HyperVVmObservation = {
     ok: boolean;
@@ -252,7 +260,7 @@ type HyperVLinuxSshOptions = {
     timeoutMs?: number;
 };
 
-type HyperVNetworkOptions = {
+export type HyperVNetworkOptions = {
     executable: string;
     switchName: string;
     natName: string;
@@ -644,7 +652,10 @@ export function hyperVRebootCommand(options: HyperVRebootOptions): HyperVProvide
     ]));
 }
 
-export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
+export function hyperVSetupCommand(executable: string, networkOptions?: Omit<HyperVNetworkOptions, "executable" | "elevated" | "elevatedDeadlineUnixMs">): HyperVProviderCommand {
+    const networkProgramEncoded = networkOptions
+        ? Buffer.from(hyperVEnsureNetworkScript({ ...networkOptions, executable }), "utf8").toString("base64")
+        : "";
     const trustedModulePrelude = [
         "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
         "$env:PSModulePath = $TrustedModuleRoot",
@@ -669,9 +680,10 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "$ParentPid = [int]'__CCC_HYPER_V_SETUP_PARENT_PID__'",
         "$ParentStartTicks = [int64]'__CCC_HYPER_V_SETUP_PARENT_START_TICKS__'",
         "if ($PipeName -notmatch '^ccc-hyper-v-setup-[a-f0-9]{32}$') { throw 'hyper-v-setup-pipe-name-invalid' }",
-        "$Pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::Out)",
+        "$Pipe = [IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [IO.Pipes.PipeDirection]::InOut)",
         "$Pipe.Connect(5000)",
-        "$Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false))",
+        "$Reader = [IO.StreamReader]::new($Pipe, [Text.UTF8Encoding]::new($false), $false, 4096, $true)",
+        "$Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false), 4096, $true)",
         "try {",
         "  $SelfStartTicks = (Get-Process -Id $PID -ErrorAction Stop).StartTime.ToUniversalTime().Ticks",
         "  $WatchdogSource = \"`$Deadline = (Get-Date).AddSeconds(780); while ((Get-Date) -lt `$Deadline) { Start-Sleep -Seconds 1; `$Parent = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue; if (-not `$Parent -or `$Parent.StartTime.ToUniversalTime().Ticks -ne $ParentStartTicks) { `$Target = Get-Process -Id $PID -ErrorAction SilentlyContinue; if (`$Target -and `$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks) { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }; exit } }; `$Target = Get-Process -Id $PID -ErrorAction SilentlyContinue; if (`$Target -and `$Target.StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks) { Stop-Process -Id $PID -Force -ErrorAction SilentlyContinue }\"",
@@ -692,7 +704,20 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "  $AfterState = 'Enabled'",
         "  $AdministratorsMember = [bool]@(Microsoft.PowerShell.LocalAccounts\\Get-LocalGroupMember -SID $HyperVGroupSid -ErrorAction Stop | Where-Object { $_.SID.Value -eq $SetupUserSid }).Count",
         "  $Pending = (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
+        "  $Network = $null",
+        "  $NetworkProgramEncoded = $Reader.ReadLine()",
+        "  if ($NetworkProgramEncoded) {",
+        "    if ($NetworkProgramEncoded.Length -gt 16777216 -or $NetworkProgramEncoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'hyper-v-setup-network-program-invalid' }",
+        "    $NetworkProgram = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($NetworkProgramEncoded))",
+        "    if (-not $NetworkProgram -or $NetworkProgram.Length -gt 12582912) { throw 'hyper-v-setup-network-program-invalid' }",
+        "    $NetworkOutput = @(& ([ScriptBlock]::Create($NetworkProgram)))",
+        "    $NetworkText = ($NetworkOutput | Out-String -Width 4096).Trim()",
+        "    if (-not $NetworkText -or $NetworkText.Length -gt 65536) { throw 'hyper-v-setup-network-result-invalid' }",
+        "    $Network = $NetworkText | ConvertFrom-Json -ErrorAction Stop",
+        "    if (-not $Network.ok) { throw 'hyper-v-setup-network-failed' }",
+        "  }",
         "  $Observation = [ordered]@{ ok = ($AfterState -eq 'Enabled' -and $AdministratorsMember); featureName = $FeatureName; beforeState = $BeforeState; afterState = $AfterState; changed = ($BeforeState -ne $AfterState); rebootRequired = [bool]$Pending; hyperVAdministratorsMember = [bool]$AdministratorsMember; membershipChanged = [bool](-not $WasMember -and $AdministratorsMember) }",
+        "  if ($Network) { $Observation.network = $Network }",
         "  $Envelope = [ordered]@{ ok = $true; observation = $Observation }",
         "} catch {",
         "  $Candidate = [string]$_.Exception.Message",
@@ -700,7 +725,9 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "  $Envelope = [ordered]@{ ok = $false; error = $ErrorCode }",
         "} finally {",
         "  try {",
-        "    $Writer.Write(($Envelope | ConvertTo-Json -Compress -Depth 6))",
+        "    $Writer.Write(($Envelope | ConvertTo-Json -Compress -Depth 8))",
+        "    $Writer.Flush()",
+        "    $Reader.Dispose()",
         "    $Writer.Dispose()",
         "    $Pipe.Dispose()",
         "  } catch {}",
@@ -714,6 +741,7 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "$ProgressPreference = 'SilentlyContinue'",
         `$Executable = ${psQuote(executable)}`,
         `$InnerEncoded = ${psQuote(innerEncoded)}`,
+        `$NetworkProgramEncoded = ${psQuote(networkProgramEncoded)}`,
         "$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
         "$SetupUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
         "$HyperVGroupSid = [Security.Principal.SecurityIdentifier]'S-1-5-32-578'",
@@ -732,7 +760,7 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "$ElevatedAdministratorsSid = [Security.Principal.SecurityIdentifier]'S-1-5-32-544'",
         "$PipeRule = [IO.Pipes.PipeAccessRule]::new($ElevatedAdministratorsSid, [IO.Pipes.PipeAccessRights]::ReadWrite, [Security.AccessControl.AccessControlType]::Allow)",
         "$PipeSecurity.SetAccessRule($PipeRule)",
-        "$Pipe = [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::In, 1, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous, 4096, 4096, $PipeSecurity)",
+        "$Pipe = [IO.Pipes.NamedPipeServerStream]::new($PipeName, [IO.Pipes.PipeDirection]::InOut, 1, [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous, 4096, 4096, $PipeSecurity)",
         "$Wait = $null",
         "$Child = $null",
         "$ChildStartTicks = $null",
@@ -755,6 +783,10 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "  $Pipe.EndWaitForConnection($Wait)",
         "  [uint32]$ClientProcessId = 0",
         "  if (-not [CccHyperVSetupPipeNative]::GetNamedPipeClientProcessId($Pipe.SafePipeHandle.DangerousGetHandle(), [ref]$ClientProcessId) -or $ClientProcessId -ne [uint32]$Child.Id) { throw 'hyper-v-setup-pipe-client-mismatch' }",
+        "  $Writer = [IO.StreamWriter]::new($Pipe, [Text.UTF8Encoding]::new($false), 4096, $true)",
+        "  $Writer.WriteLine($NetworkProgramEncoded)",
+        "  $Writer.Flush()",
+        "  $Writer.Dispose()",
         "  $Reader = [IO.StreamReader]::new($Pipe, [Text.UTF8Encoding]::new($false), $false, 4096, $true)",
         "  $EnvelopeJson = $Reader.ReadToEnd()",
         "  $Reader.Dispose()",
@@ -766,6 +798,7 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
         "  $ManagementAccess = $IsAdmin -or $TokenHasHyperVGroup",
         "  $SessionRefreshRequired = [bool]$Observation.hyperVAdministratorsMember -and -not $ManagementAccess",
         "  $Result = [ordered]@{ ok = [bool]$Observation.ok; featureName = [string]$Observation.featureName; beforeState = [string]$Observation.beforeState; afterState = [string]$Observation.afterState; changed = [bool]$Observation.changed; elevated = $IsAdmin; rebootRequired = [bool]$Observation.rebootRequired; hyperVAdministratorsMember = [bool]$Observation.hyperVAdministratorsMember; membershipChanged = [bool]$Observation.membershipChanged; managementAccess = [bool]$ManagementAccess; sessionRefreshRequired = [bool]$SessionRefreshRequired }",
+        "  if ($Observation.network) { $Result.network = $Observation.network }",
         "  $OperationCompleted = $true",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "} finally {",
@@ -778,7 +811,7 @@ export function hyperVSetupCommand(executable: string): HyperVProviderCommand {
     return command(executable, outerScript);
 }
 
-export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): HyperVProviderCommand {
+function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
     const switchName = String(options.switchName || "");
     const natName = String(options.natName || "");
     const prefix = String(options.prefix || "");
@@ -795,7 +828,7 @@ export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): Hyper
     const expectedNatInstanceId = String(options.expectedNatInstanceId || "");
     if (expectedSwitchId && !VM_ID_PATTERN.test(expectedSwitchId)) throw new Error("hyper-v-network-switch-id-invalid");
     if (expectedNatInstanceId && (expectedNatInstanceId.length > 256 || /[\u0000-\u001f]/.test(expectedNatInstanceId))) throw new Error("hyper-v-network-nat-instance-id-invalid");
-    const script = jsonScript([
+    return jsonScript([
         `$SwitchName = ${psQuote(switchName)}`,
         `$NatName = ${psQuote(natName)}`,
         `$Prefix = ${psQuote(prefix)}`,
@@ -855,6 +888,10 @@ export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): Hyper
         "  throw",
         "}",
     ]);
+}
+
+export function hyperVEnsureNetworkCommand(options: HyperVNetworkOptions): HyperVProviderCommand {
+    const script = hyperVEnsureNetworkScript(options);
     return options.elevated
         ? elevatedNetworkCommand(options.executable, script, Number(options.elevatedDeadlineUnixMs))
         : command(options.executable, script);
@@ -1833,6 +1870,8 @@ export function parseHyperVSetupObservation(stdout: string): HyperVSetupObservat
         || (parsed.membershipChanged !== undefined && typeof parsed.membershipChanged !== "boolean")
         || (parsed.managementAccess !== undefined && typeof parsed.managementAccess !== "boolean")
         || (parsed.sessionRefreshRequired !== undefined && typeof parsed.sessionRefreshRequired !== "boolean")) return null;
+    const network = parsed.network === undefined ? undefined : parseHyperVNetworkObservation(JSON.stringify(parsed.network));
+    if (parsed.network !== undefined && !network) return null;
     return {
         ok: parsed.ok,
         featureName: parsed.featureName,
@@ -1845,6 +1884,7 @@ export function parseHyperVSetupObservation(stdout: string): HyperVSetupObservat
         ...(typeof parsed.membershipChanged === "boolean" ? { membershipChanged: parsed.membershipChanged } : {}),
         ...(typeof parsed.managementAccess === "boolean" ? { managementAccess: parsed.managementAccess } : {}),
         ...(typeof parsed.sessionRefreshRequired === "boolean" ? { sessionRefreshRequired: parsed.sessionRefreshRequired } : {}),
+        ...(network ? { network } : {}),
     };
 }
 

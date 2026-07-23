@@ -168,6 +168,55 @@ describe("Hyper-V provider adapter", () => {
             rebootRequired: false,
             sessionRefreshRequired: "false",
         }))).toBeNull();
+
+        const networkSetup = hyperVSetupCommand("powershell.exe", {
+            switchName: "CCC Device Lab",
+            natName: "CCCDeviceLab",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            prefixLength: 24,
+            allowExistingNat: true,
+        });
+        const networkOuter = scriptOf(networkSetup);
+        expect(networkOuter).toContain("[IO.Pipes.PipeDirection]::InOut");
+        expect(networkOuter).toContain("$Writer.WriteLine($NetworkProgramEncoded)");
+        expect(networkOuter.indexOf("$ClientProcessId -ne [uint32]$Child.Id"))
+            .toBeLessThan(networkOuter.indexOf("$Writer.WriteLine($NetworkProgramEncoded)"));
+        const networkInnerEncoded = networkOuter.match(/\$InnerEncoded = '([^']+)'/)?.[1];
+        expect(networkInnerEncoded).toBeTruthy();
+        const networkInner = Buffer.from(networkInnerEncoded!, "base64").toString("utf16le");
+        expect(networkInner).toContain("$NetworkProgramEncoded = $Reader.ReadLine()");
+        expect(networkInner).toContain("hyper-v-setup-network-program-invalid");
+        expect(networkInner).not.toContain("New-NetIPAddress");
+        expect(networkOuter).not.toContain("New-NetIPAddress");
+        expect(networkSetup.args.join(" ").length).toBeLessThan(2048);
+
+        const parsedNetwork = parseHyperVSetupObservation(JSON.stringify({
+            ok: true,
+            featureName: "Microsoft-Hyper-V-All",
+            beforeState: "Enabled",
+            afterState: "Enabled",
+            changed: false,
+            elevated: true,
+            rebootRequired: false,
+            network: {
+                ok: true,
+                switchName: "CCC Device Lab",
+                switchId: vmId,
+                natName: "CCCDeviceLab",
+                natInstanceId: "ccc-network-instance-1",
+                prefix: "172.29.0.0/24",
+                gateway: "172.29.0.1",
+                interfaceIndex: 42,
+                createdSwitch: false,
+                createdNat: false,
+            },
+        }));
+        expect(parsedNetwork?.network).toEqual(expect.objectContaining({
+            switchId: vmId,
+            natInstanceId: "ccc-network-instance-1",
+        }));
     });
 
     it("imports immutable base VHDX files with hash and format verification", () => {

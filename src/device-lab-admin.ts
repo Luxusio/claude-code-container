@@ -24,6 +24,12 @@ import {
     readHyperVWindowsEvaluationReceipt,
 } from "./device-lab/hyper-v-images.js";
 import {
+    HYPER_V_NETWORK_GATEWAY,
+    HYPER_V_NETWORK_MARKER,
+    HYPER_V_NETWORK_NAT,
+    HYPER_V_NETWORK_PREFIX,
+    HYPER_V_NETWORK_PREFIX_LENGTH,
+    HYPER_V_NETWORK_SWITCH,
     hyperVReadinessCommand,
     hyperVSetupCommand,
     parseHyperVReadiness,
@@ -75,6 +81,8 @@ type HyperVSetupHostOptions = {
     powershell?: string | null;
     systemRoot?: string;
     stateRoot?: string;
+    networkStateRoot?: string;
+    mutationLockFile?: string;
     commandRunner?: (command: string, args: string[], timeoutMs: number, input?: string) => CommandResult | null;
     acceptWindowsEvaluationLicense?: boolean;
 };
@@ -105,6 +113,78 @@ function canonicalWindowsPowerShellPath(testSystemRoot?: string): string | null 
     } catch {
         return null;
     }
+}
+
+function persistHyperVSetupNetworkState(
+    setupRoot: string,
+    networkStateRoot: string | undefined,
+    network: NonNullable<ReturnType<typeof parseHyperVSetupObservation>>["network"],
+): void {
+    if (!network) throw new Error("hyper-v-setup-network-result-invalid");
+    const root = resolve(networkStateRoot || join(setupRoot, "network"));
+    mkdirSync(root, { recursive: true });
+    assertPlainDirectoryPath(root, "hyper-v-network-state-root");
+    const file = join(root, "hyper-v.json");
+    let allocations: unknown[] = [];
+    if (existsSync(file)) {
+        const current = readDeviceLabStateFile(file, (parsed) => parsed as Record<string, unknown>, "hyper-v-network-state", 256 * 1024);
+        if (!current || current.version !== 1
+            || current.switchName !== network.switchName
+            || String(current.switchId || "").toLowerCase() !== network.switchId.toLowerCase()
+            || current.natName !== network.natName
+            || current.natInstanceId !== network.natInstanceId
+            || current.prefix !== network.prefix
+            || current.gateway !== network.gateway
+            || !Array.isArray(current.allocations)) {
+            throw new Error("hyper-v-network-state-identity-conflict");
+        }
+        const identities = new Set<string>();
+        const addresses = new Set<string>();
+        const macAddresses = new Set<string>();
+        allocations = current.allocations.map((candidate) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+                throw new Error("hyper-v-network-state-identity-conflict");
+            }
+            const allocation = candidate as Record<string, unknown>;
+            if (typeof allocation.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(allocation.ownerId)
+                || typeof allocation.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(allocation.deviceId)
+                || (allocation.incarnationId !== undefined
+                    && (typeof allocation.incarnationId !== "string" || !/^[a-f0-9]{32}$/.test(allocation.incarnationId)))
+                || typeof allocation.address !== "string" || !/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(allocation.address)
+                || (allocation.macAddress !== undefined
+                    && (typeof allocation.macAddress !== "string" || !/^02(?::[a-f0-9]{2}){5}$/.test(allocation.macAddress)))
+                || typeof allocation.allocatedAt !== "string" || Number.isNaN(Date.parse(allocation.allocatedAt))) {
+                throw new Error("hyper-v-network-state-identity-conflict");
+            }
+            const identity = `${allocation.ownerId}:${allocation.deviceId}`;
+            const digest = createHash("sha256").update(`${allocation.ownerId}\0${allocation.deviceId}\0${0}`).digest();
+            const macAddress = typeof allocation.macAddress === "string"
+                ? allocation.macAddress
+                : [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]]
+                    .map((byte) => byte.toString(16).padStart(2, "0"))
+                    .join(":");
+            if (identities.has(identity) || addresses.has(allocation.address) || macAddresses.has(macAddress)) {
+                throw new Error("hyper-v-network-state-identity-conflict");
+            }
+            identities.add(identity);
+            addresses.add(allocation.address);
+            macAddresses.add(macAddress);
+            return { ...allocation, macAddress };
+        });
+    }
+    writeJsonFileAtomically(file, {
+        version: 1,
+        switchName: network.switchName,
+        switchId: network.switchId.toLowerCase(),
+        marker: HYPER_V_NETWORK_MARKER,
+        natName: network.natName,
+        natInstanceId: network.natInstanceId,
+        prefix: network.prefix,
+        gateway: network.gateway,
+        outboundPolicy: "nat",
+        managedNat: false,
+        allocations,
+    });
 }
 
 function assertPlainDirectoryPath(path: string, label: string): void {
@@ -693,12 +773,49 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
     } catch (error) {
         return { ok: false, text: `CCC Hyper-V setup failed: ${error instanceof Error ? error.message : String(error)}` };
     }
-    const setupCommand = hyperVSetupCommand(powershell);
-    const execution = runner(setupCommand.executable, setupCommand.args, 15 * 60_000, setupCommand.input);
-    const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
+    const setupCommand = hyperVSetupCommand(powershell, {
+        switchName: HYPER_V_NETWORK_SWITCH,
+        natName: HYPER_V_NETWORK_NAT,
+        marker: HYPER_V_NETWORK_MARKER,
+        prefix: HYPER_V_NETWORK_PREFIX,
+        gateway: HYPER_V_NETWORK_GATEWAY,
+        prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
+        allowExistingNat: true,
+    });
+    const mutationLockFile = resolve(options.mutationLockFile
+        || (options.stateRoot
+            ? join(setupRoot, "host-locks", "hyper-v.mutation.lock")
+            : join(homedir(), ".ccc/devices/host-locks/hyper-v.mutation.lock")));
+    let prepared: {
+        execution: CommandResult | null;
+        observation: ReturnType<typeof parseHyperVSetupObservation>;
+    };
+    try {
+        mkdirSync(dirname(mutationLockFile), { recursive: true });
+        assertPlainDirectoryPath(dirname(mutationLockFile), "hyper-v-setup-mutation-lock-root");
+        prepared = withSharedMutationLock(mutationLockFile, () => {
+            const execution = runner(setupCommand.executable, setupCommand.args, 15 * 60_000, setupCommand.input);
+            const observation = execution?.status === 0 ? parseHyperVSetupObservation(execution.stdout || "") : null;
+            if (!observation?.ok || !observation.network) return { execution, observation };
+            const networkStateRoot = options.networkStateRoot
+                || (options.stateRoot ? join(setupRoot, "network") : join(dirname(setupRoot), "network"));
+            persistHyperVSetupNetworkState(setupRoot, networkStateRoot, observation.network);
+            return { execution, observation };
+        }, { waitMs: 10 * 60_000, staleMs: 20 * 60_000 });
+    } catch (error) {
+        const code = (error as Error & { code?: string }).code;
+        const detail = code === "shared-mutation-lock-timeout"
+            ? "hyper-v-setup-lock-timeout"
+            : error instanceof Error ? error.message : String(error);
+        return { ok: false, text: `CCC Hyper-V setup failed: ${detail}` };
+    }
+    const { execution, observation } = prepared;
     if (!observation?.ok) {
         const detail = hyperVSetupFailureDetail(execution);
         return { ok: false, text: `CCC Hyper-V setup failed: ${detail}` };
+    }
+    if (!observation.network) {
+        return { ok: false, text: "CCC Hyper-V setup failed: hyper-v-setup-network-result-invalid" };
     }
     const receipt = options.acceptWindowsEvaluationLicense
         ? acceptHyperVWindowsEvaluationLicense(setupRoot)
@@ -718,9 +835,12 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
             `managementAccess: ${observation.managementAccess ?? "unknown"}`,
             `sessionRefreshRequired: ${observation.sessionRefreshRequired ?? false}`,
             `rebootRequired: ${observation.rebootRequired}`,
-                `windowsEvaluationLicenseAccepted: ${Boolean(receipt)}`,
-                ...(receipt ? [`windowsEvaluationLicense: ${HYPER_V_WINDOWS_EVALUATION_LICENSE_URL}`] : []),
-                ...(receipt ? [`windowsEvaluationImageSourceTrust: ${receipt.sourceTrustId}`] : []),
+            "networkPrepared: true",
+            `networkSwitch: ${observation.network.switchName}`,
+            `networkNat: ${observation.network.natName}`,
+            `windowsEvaluationLicenseAccepted: ${Boolean(receipt)}`,
+            ...(receipt ? [`windowsEvaluationLicense: ${HYPER_V_WINDOWS_EVALUATION_LICENSE_URL}`] : []),
+            ...(receipt ? [`windowsEvaluationImageSourceTrust: ${receipt.sourceTrustId}`] : []),
             ...(observation.rebootRequired
                 ? ["action: reboot Windows manually, then run 'ccc devices smoke --real-provider'"]
                 : observation.sessionRefreshRequired
