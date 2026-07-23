@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -294,6 +294,34 @@ describe('workspace profile container discovery', () => {
   it('treats any filesystem removal error as incomplete', () => {
     expect(workspaceRemovalCompleted({ errors: [] })).toBe(true)
     expect(workspaceRemovalCompleted({ errors: ['quarantine cleanup failed'] })).toBe(false)
+  })
+
+  it('removes containers only after workspace removal succeeds', () => {
+    const sequence: string[] = []
+    const completed = removeWorkspaceThenContainers(
+      () => {
+        sequence.push('workspace')
+        return { errors: [] }
+      },
+      () => {
+        sequence.push('containers')
+        return ['ccc-worktree']
+      },
+    )
+
+    expect(sequence).toEqual(['workspace', 'containers'])
+    expect(completed.removedContainers).toEqual(['ccc-worktree'])
+  })
+
+  it('preserves containers when workspace removal is incomplete', () => {
+    const removeContainers = vi.fn(() => ['ccc-worktree'])
+    const completed = removeWorkspaceThenContainers(
+      () => ({ errors: ['dirty worktree'] }),
+      removeContainers,
+    )
+
+    expect(removeContainers).not.toHaveBeenCalled()
+    expect(completed.removedContainers).toEqual([])
   })
 
   it('returns only the default and profile containers for the exact worktree identity', () => {

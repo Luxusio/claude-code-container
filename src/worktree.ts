@@ -388,6 +388,12 @@ function removeRegisteredWorktree(
         renameSync(worktreePath, quarantine.path);
         assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
         assertQuarantinedIdentity(quarantine.path, expectedIdentity, "directory");
+        if (registrationFence) {
+            assertWorktreeRegistrationFenceFileIdentities(
+                quarantine.path,
+                registrationFence,
+            );
+        }
         const repaired = spawnSync(
             "git",
             ["worktree", "repair", quarantine.path],
@@ -447,6 +453,12 @@ function removeRegisteredWorktree(
                 parentIdentity,
                 "directory",
             )) {
+                if (registrationFence) {
+                    assertWorktreeRegistrationFenceFileIdentities(
+                        worktreePath,
+                        registrationFence,
+                    );
+                }
                 const repaired = spawnSync(
                     "git",
                     ["worktree", "repair", worktreePath],
@@ -1390,14 +1402,20 @@ function registeredWorktreePath(
 type WorktreeRegistrationFence = {
     destinationIdentity: DirectoryIdentity;
     managementIdentity: DirectoryIdentity;
+    worktreeGitFileIdentity: FileIdentity;
+    managementGitdirIdentity: FileIdentity;
+    managementHeadIdentity: FileIdentity;
     expectedOid: string;
     expectedRef: string;
 };
 
-type MissingWorktreeRegistrationFence = Omit<
-    WorktreeRegistrationFence,
-    "destinationIdentity"
->;
+type MissingWorktreeRegistrationFence = {
+    managementIdentity: DirectoryIdentity;
+    managementGitdirIdentity: FileIdentity;
+    managementHeadIdentity: FileIdentity;
+    expectedOid: string;
+    expectedRef: string;
+};
 
 type QuarantinedMissingWorktreeRegistration = {
     fence: MissingWorktreeRegistrationFence;
@@ -1428,35 +1446,119 @@ function captureWorktreeManagementIdentity(
 
 function worktreeManagementBackpointersMatch(
     worktreePath: string,
-    managementIdentity: DirectoryIdentity,
-    expectedRef: string,
+    fence: WorktreeRegistrationFence,
 ): boolean {
     try {
-        assertDirectoryIdentity(managementIdentity.realpath, managementIdentity);
+        assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
         const gitFile = join(worktreePath, ".git");
+        assertFileIdentity(gitFile, fence.worktreeGitFileIdentity);
         const content = readFileSync(gitFile, "utf-8").trim();
         const match = content.match(/^gitdir:\s*(.+)$/);
         if (!match) return false;
         const resolvedManagement = resolve(worktreePath, match[1].trim());
-        assertDirectoryIdentity(resolvedManagement, managementIdentity);
+        assertDirectoryIdentity(resolvedManagement, fence.managementIdentity);
+        const managementGitdir = join(fence.managementIdentity.realpath, "gitdir");
+        const managementHead = join(fence.managementIdentity.realpath, "HEAD");
+        assertFileIdentity(managementGitdir, fence.managementGitdirIdentity);
+        assertFileIdentity(managementHead, fence.managementHeadIdentity);
         const registeredGitFile = readFileSync(
-            join(managementIdentity.realpath, "gitdir"),
+            managementGitdir,
             "utf-8",
         ).trim();
         const managedHead = readFileSync(
-            join(managementIdentity.realpath, "HEAD"),
+            managementHead,
             "utf-8",
         ).trim();
         if (!sameObservedPath(registeredGitFile, gitFile)
-            || managedHead !== `ref: ${expectedRef}`) {
+            || managedHead !== `ref: ${fence.expectedRef}`) {
             return false;
         }
-        assertDirectoryIdentity(managementIdentity.realpath, managementIdentity);
-        assertDirectoryIdentity(resolvedManagement, managementIdentity);
+        assertFileIdentity(gitFile, fence.worktreeGitFileIdentity);
+        assertFileIdentity(managementGitdir, fence.managementGitdirIdentity);
+        assertFileIdentity(managementHead, fence.managementHeadIdentity);
+        assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+        assertDirectoryIdentity(resolvedManagement, fence.managementIdentity);
         return true;
     } catch {
         return false;
     }
+}
+
+function assertWorktreeRegistrationFenceFileIdentities(
+    worktreePath: string,
+    fence: WorktreeRegistrationFence,
+): void {
+    assertFileIdentity(join(worktreePath, ".git"), fence.worktreeGitFileIdentity);
+    assertFileIdentity(
+        join(fence.managementIdentity.realpath, "gitdir"),
+        fence.managementGitdirIdentity,
+    );
+    assertFileIdentity(
+        join(fence.managementIdentity.realpath, "HEAD"),
+        fence.managementHeadIdentity,
+    );
+    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+}
+
+function refreshWorktreeRegistrationFenceFileIdentities(
+    worktreePath: string,
+    fence: WorktreeRegistrationFence,
+): WorktreeRegistrationFence {
+    assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
+    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+    const gitFile = join(worktreePath, ".git");
+    const content = readFileSync(gitFile, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) {
+        throw new Error(`Worktree registration metadata is invalid: ${worktreePath}`);
+    }
+    assertDirectoryIdentity(
+        resolve(worktreePath, match[1].trim()),
+        fence.managementIdentity,
+    );
+    const managementGitdir = join(fence.managementIdentity.realpath, "gitdir");
+    const managementHead = join(fence.managementIdentity.realpath, "HEAD");
+    if (!sameObservedPath(
+        readFileSync(managementGitdir, "utf-8").trim(),
+        gitFile,
+    ) || readFileSync(managementHead, "utf-8").trim() !== `ref: ${fence.expectedRef}`) {
+        throw new Error(`Worktree registration backpointer changed: ${worktreePath}`);
+    }
+    const refreshed = {
+        ...fence,
+        worktreeGitFileIdentity: captureFileIdentity(gitFile),
+        managementGitdirIdentity: captureFileIdentity(managementGitdir),
+        managementHeadIdentity: captureFileIdentity(managementHead),
+    };
+    if (!worktreeManagementBackpointersMatch(worktreePath, refreshed)) {
+        throw new Error(`Worktree registration changed while refreshing metadata: ${worktreePath}`);
+    }
+    return refreshed;
+}
+
+function refreshMissingWorktreeRegistrationFenceFileIdentities(
+    repositoryPath: string,
+    worktreePath: string,
+    fence: WorktreeRegistrationFence,
+): WorktreeRegistrationFence {
+    const managementGitdir = join(fence.managementIdentity.realpath, "gitdir");
+    const managementHead = join(fence.managementIdentity.realpath, "HEAD");
+    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+    if (!sameObservedPath(
+        readFileSync(managementGitdir, "utf-8").trim(),
+        join(worktreePath, ".git"),
+    ) || readFileSync(managementHead, "utf-8").trim() !== `ref: ${fence.expectedRef}`) {
+        throw new Error(`Missing worktree registration backpointer changed: ${worktreePath}`);
+    }
+    const refreshed = {
+        ...fence,
+        managementGitdirIdentity: captureFileIdentity(managementGitdir),
+        managementHeadIdentity: captureFileIdentity(managementHead),
+    };
+    if (!missingWorktreeManagementMatches(repositoryPath, worktreePath, refreshed)) {
+        throw new Error(`Missing worktree registration changed: ${worktreePath}`);
+    }
+    return refreshed;
 }
 
 function missingWorktreeManagementMatches(
@@ -1466,12 +1568,16 @@ function missingWorktreeManagementMatches(
 ): boolean {
     try {
         assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+        const managementGitdir = join(fence.managementIdentity.realpath, "gitdir");
+        const managementHead = join(fence.managementIdentity.realpath, "HEAD");
+        assertFileIdentity(managementGitdir, fence.managementGitdirIdentity);
+        assertFileIdentity(managementHead, fence.managementHeadIdentity);
         const registeredGitFile = readFileSync(
-            join(fence.managementIdentity.realpath, "gitdir"),
+            managementGitdir,
             "utf-8",
         ).trim();
         const managedHead = readFileSync(
-            join(fence.managementIdentity.realpath, "HEAD"),
+            managementHead,
             "utf-8",
         ).trim();
         if (!sameObservedPath(registeredGitFile, join(worktreePath, ".git"))
@@ -1512,12 +1618,16 @@ function missingWorktreeManagementMatches(
             });
         if (matches.length !== 1) return false;
         assertDirectoryIdentity(matches[0], fence.managementIdentity);
-        return worktreeRegistryEntryMatches(
+        const registryMatches = worktreeRegistryEntryMatches(
             repositoryPath,
             worktreePath,
             fence.expectedRef,
             fence.expectedOid,
         );
+        assertFileIdentity(managementGitdir, fence.managementGitdirIdentity);
+        assertFileIdentity(managementHead, fence.managementHeadIdentity);
+        assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+        return registryMatches;
     } catch {
         return false;
     }
@@ -1541,9 +1651,13 @@ function captureExistingWorktreeRegistrationFence(
     if (head.error || head.status !== 0) {
         throw new Error(`Unable to capture worktree HEAD ownership: ${worktreePath}`);
     }
-    const fence = {
+    const managementIdentity = captureWorktreeManagementIdentity(worktreePath);
+    const fence: WorktreeRegistrationFence = {
         destinationIdentity,
-        managementIdentity: captureWorktreeManagementIdentity(worktreePath),
+        managementIdentity,
+        worktreeGitFileIdentity: captureFileIdentity(join(worktreePath, ".git")),
+        managementGitdirIdentity: captureFileIdentity(join(managementIdentity.realpath, "gitdir")),
+        managementHeadIdentity: captureFileIdentity(join(managementIdentity.realpath, "HEAD")),
         expectedOid: (head.stdout ?? "").trim(),
         expectedRef: `refs/heads/${branch}`,
     };
@@ -1638,6 +1752,8 @@ function captureMissingWorktreeRegistrationFence(
     }
     const fence = {
         managementIdentity: matches[0],
+        managementGitdirIdentity: captureFileIdentity(join(matches[0].realpath, "gitdir")),
+        managementHeadIdentity: captureFileIdentity(join(matches[0].realpath, "HEAD")),
         expectedOid,
         expectedRef,
     };
@@ -1662,14 +1778,49 @@ function quarantineMissingWorktreeRegistration(
         fence.managementIdentity.realpath,
         dirname(fence.managementIdentity.realpath),
     );
-    assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
-    assertDirectoryIdentity(dirname(fence.managementIdentity.realpath), parentIdentity);
-    renameSync(fence.managementIdentity.realpath, location.path);
-    assertQuarantinedIdentity(location.path, fence.managementIdentity, "directory");
-    if (registeredWorktreePath(repositoryPath, worktreePath)) {
-        throw new Error(`Failed to remove stale worktree registration: ${worktreePath}`);
+    let renamed = false;
+    try {
+        if (!missingWorktreeManagementMatches(repositoryPath, worktreePath, fence)) {
+            throw new Error(`Stale worktree registration changed before quarantine: ${worktreePath}`);
+        }
+        assertDirectoryIdentity(fence.managementIdentity.realpath, fence.managementIdentity);
+        assertFileIdentity(
+            join(fence.managementIdentity.realpath, "gitdir"),
+            fence.managementGitdirIdentity,
+        );
+        assertFileIdentity(
+            join(fence.managementIdentity.realpath, "HEAD"),
+            fence.managementHeadIdentity,
+        );
+        assertDirectoryIdentity(dirname(fence.managementIdentity.realpath), parentIdentity);
+        renameSync(fence.managementIdentity.realpath, location.path);
+        renamed = true;
+        assertQuarantinedIdentity(location.path, fence.managementIdentity, "directory");
+        if (registeredWorktreePath(repositoryPath, worktreePath)) {
+            throw new Error(`Failed to remove stale worktree registration: ${worktreePath}`);
+        }
+        return { fence, location, parentIdentity };
+    } catch (error) {
+        if (renamed) {
+            try {
+                rollbackQuarantinedPath(
+                    fence.managementIdentity.realpath,
+                    location,
+                    fence.managementIdentity,
+                    parentIdentity,
+                    "directory",
+                );
+            } catch (rollbackError) {
+                throw new Error(
+                    `${(error as Error).message}; stale registration rollback failed: ${(rollbackError as Error).message}`,
+                    { cause: error },
+                );
+            }
+        } else {
+            removePrivateQuarantine(location);
+        }
+        throw error;
     }
-    return { fence, location, parentIdentity };
 }
 
 function restoreQuarantinedMissingWorktreeRegistration(
@@ -1718,10 +1869,10 @@ function worktreeRegistryEntryMatches(
         ["worktree", "list", "--porcelain"],
         { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    return listed.status === 0
-        && (listed.stdout ?? "")
-            .split(/\r?\n\r?\n/)
-            .some((block) => {
+    if (listed.status !== 0) return false;
+    const matches = (listed.stdout ?? "")
+        .split(/\r?\n\r?\n/)
+        .filter((block) => {
                 const lines = block.split(/\r?\n/);
                 const worktreeLine = lines.find((line) => line.startsWith("worktree "));
                 const branchLine = lines.find((line) => line.startsWith("branch "));
@@ -1739,7 +1890,8 @@ function worktreeRegistryEntryMatches(
                         worktreeLine.slice("worktree ".length).trim(),
                         worktreePath,
                     );
-            });
+        });
+    return matches.length === 1;
 }
 
 function worktreeRegistrationOwnershipMatches(
@@ -1755,8 +1907,7 @@ function worktreeRegistrationOwnershipMatches(
         );
         if (!worktreeManagementBackpointersMatch(
             worktreePath,
-            fence.managementIdentity,
-            fence.expectedRef,
+            fence,
         )) {
             return false;
         }
@@ -1799,8 +1950,7 @@ function worktreeRegistrationMatches(
             assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
             if (!worktreeManagementBackpointersMatch(
                 worktreePath,
-                fence.managementIdentity,
-                fence.expectedRef,
+                fence,
             )) {
                 return false;
             }
@@ -1840,8 +1990,7 @@ function worktreeRegistrationMatches(
             assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
             if (!worktreeManagementBackpointersMatch(
                 worktreePath,
-                fence.managementIdentity,
-                fence.expectedRef,
+                fence,
             )) {
                 return false;
             }
@@ -1967,12 +2116,12 @@ function runPreparedWorktreeAdd(
     let registrationFence: WorktreeRegistrationFence;
     try {
         assertDirectoryIdentity(worktreePath, destinationIdentity);
-        registrationFence = {
+        registrationFence = captureExistingWorktreeRegistrationFence(
+            repositoryPath,
+            worktreePath,
+            branch,
             destinationIdentity,
-            managementIdentity: captureWorktreeManagementIdentity(worktreePath),
-            expectedOid: expectedBranchOid,
-            expectedRef: `refs/heads/${branch}`,
-        };
+        );
     } catch (error) {
         return {
             result: { status: 1, error: error as Error },
@@ -1999,6 +2148,33 @@ function runPreparedWorktreeAdd(
         ["checkout", "--force", branch],
         { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
+    try {
+        registrationFence = refreshWorktreeRegistrationFenceFileIdentities(
+            worktreePath,
+            registrationFence,
+        );
+    } catch (error) {
+        if (!pathExistsStrict(worktreePath)) {
+            try {
+                registrationFence = refreshMissingWorktreeRegistrationFenceFileIdentities(
+                    repositoryPath,
+                    worktreePath,
+                    registrationFence,
+                );
+                return { result: checkout, registrationFence };
+            } catch {
+                // Preserve the original registration fence for conservative rollback.
+            }
+        }
+        return {
+            result: {
+                status: 1,
+                error: error as Error,
+                stderr: "worktree branch identity changed during checkout",
+            },
+            registrationFence,
+        };
+    }
     if (checkout.error || checkout.status !== 0) {
         return { result: checkout, registrationFence };
     }
@@ -3446,6 +3622,12 @@ export function fixBrokenWorktree(
                     join(backup.path, name),
                     join(destPath, name),
                 );
+            }
+            if (quarantinedStaleRegistration) {
+                commitQuarantinedMissingWorktreeRegistration(
+                    quarantinedStaleRegistration,
+                );
+                quarantinedStaleRegistration = null;
             }
             rmSync(backup.path, { recursive: true, force: true });
             if (pathExistsStrict(backup.path)) {

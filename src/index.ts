@@ -1162,6 +1162,19 @@ export function workspaceRemovalCompleted(
     return result.errors.length === 0;
 }
 
+export function removeWorkspaceThenContainers<T extends { errors: string[] }>(
+    removeWorkspaceOperation: () => T,
+    removeContainersOperation: () => string[],
+): { result: T; removedContainers: string[] } {
+    const result = removeWorkspaceOperation();
+    return {
+        result,
+        removedContainers: workspaceRemovalCompleted(result)
+            ? removeContainersOperation()
+            : [],
+    };
+}
+
 function handleWorktreeRemove(
     cwd: string,
     branch: string,
@@ -1175,11 +1188,15 @@ function handleWorktreeRemove(
         withWorkspaceRemovalLifecycleLock(wsProjectId, force, () => {
             assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
             ensureDockerRunning();
-            for (const containerName of removeWorkspaceContainers(wsPath)) {
+            console.log(`Removing workspace @${branch}...`);
+            const completed = removeWorkspaceThenContainers(
+                () => removeWorkspace(cwd, branch, { force }),
+                () => removeWorkspaceContainers(wsPath),
+            );
+            removalResult = completed.result;
+            for (const containerName of completed.removedContainers) {
                 console.log(`Removed associated container ${containerName}.`);
             }
-            console.log(`Removing workspace @${branch}...`);
-            removalResult = removeWorkspace(cwd, branch, { force });
         });
         const result = removalResult!;
 
