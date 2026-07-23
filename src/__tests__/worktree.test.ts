@@ -646,6 +646,20 @@ describe("createWorkspace", () => {
         expect(existsSync(wsPath)).toBe(false);
     });
 
+    it("rolls back a unified workspace when nested worktree creation fails", () => {
+        initRepo(sourceDir);
+        const nestedRepo = join(sourceDir, "nested");
+        initRepo(nestedRepo);
+        spawnSync("git", ["switch", "-c", "nested-conflict"], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+
+        expect(() => createWorkspace(sourceDir, "nested-conflict"))
+            .toThrow("Failed to create nested worktree for nested");
+        expect(existsSync(getWorkspacePath(sourceDir, "nested-conflict"))).toBe(false);
+    });
+
     it.skipIf(process.platform === "win32")("fails and rolls back when a source entry cannot be copied safely", () => {
         initRepo(join(sourceDir, "repo-a"));
         const configDir = join(sourceDir, "config");
@@ -855,6 +869,22 @@ describe("assertWorkspaceBranch", () => {
         )).toThrow("repository 'nested' belongs to branch 'wrong-nested'");
         expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
             .toThrow("do not share one checked-out branch");
+    });
+
+    it("rejects a unified workspace when registered nested metadata disappears", () => {
+        const nestedSource = join(repoPath, "nested");
+        initRepo(nestedSource);
+        const result = createWorkspace(repoPath, "nested-missing");
+        rmSync(join(result.workspacePath, "nested", ".git"));
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("Workspace Git metadata is missing or damaged");
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-missing",
+            spawnSync,
+            repoPath,
+        )).toThrow("is not owned by its source repository");
     });
 
     it("rejects an unmanaged nested repository during direct worktree detection", () => {
@@ -1392,6 +1422,28 @@ describe("repairWorkspace", () => {
 
         // backend files should now exist
         expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(true);
+    });
+
+    it("rolls back nested worktrees created earlier in the same repair", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "a-first"));
+        const failingRepo = join(tmpDir, "z-failing");
+        initRepo(failingRepo);
+        spawnSync("git", ["switch", "-c", "repair-conflict"], {
+            cwd: failingRepo,
+            stdio: "pipe",
+        });
+        const wsPath = getWorkspacePath(tmpDir, "repair-conflict");
+        spawnSync("git", ["worktree", "add", "-b", "repair-conflict", wsPath], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+
+        expect(() => repairWorkspace(tmpDir, wsPath, "repair-conflict"))
+            .toThrow("Failed to create nested worktree for z-failing");
+        expect(existsSync(join(wsPath, "a-first"))).toBe(false);
+        expect(existsSync(join(wsPath, "z-failing"))).toBe(false);
+        expect(isValidWorktree(wsPath, tmpDir)).toBe(true);
     });
 
     it("skips nested repos that are already valid worktrees", () => {
@@ -1994,6 +2046,41 @@ describe("getWorktreeGitMounts", () => {
         const relativeMount = mounts.find((m) => m.containerPath === "/project/source/.git");
         expect(relativeMount).toBeDefined();
         expect(relativeMount!.hostPath).toBe(sourceGitDir);
+    });
+
+    it("returns verified mounts for every repository in a multi-repo workspace", () => {
+        const sourcePath = join(tmpDir, "multi-source");
+        mkdirSync(sourcePath);
+        initRepo(join(sourcePath, "repo-a"));
+        initRepo(join(sourcePath, "repo-b"));
+        const result = createWorkspace(sourcePath, "multi-mounts");
+
+        const mounts = getWorktreeGitMounts(result.workspacePath, true);
+        expect(mounts.some((mount) => (
+            mount.hostPath === join(sourcePath, "repo-a", ".git")
+        ))).toBe(true);
+        expect(mounts.some((mount) => (
+            mount.hostPath === join(sourcePath, "repo-b", ".git")
+        ))).toBe(true);
+    });
+
+    it("rejects mount metadata copied from a different registered worktree", () => {
+        const repoPath = join(tmpDir, "source-forged");
+        const target = join(tmpDir, "target");
+        const foreign = join(tmpDir, "foreign");
+        initRepo(repoPath);
+        spawnSync("git", ["worktree", "add", "-b", "target", target], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["worktree", "add", "-b", "foreign", foreign], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        writeFileSync(join(target, ".git"), readFileSync(join(foreign, ".git"), "utf-8"));
+
+        expect(() => getWorktreeGitMounts(target, true))
+            .toThrow(/worktree metadata is invalid|ownership could not be verified/i);
     });
 
     it("includes nested git repo mounts", () => {
