@@ -618,9 +618,19 @@ function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
         .some((line) => line.startsWith("160000 "));
 }
 
-function branchRepositories(workspacePath: string): Array<{ name: string; path: string }> {
+function branchRepositories(
+    workspacePath: string,
+    expectedTopology?: "root" | "children",
+): Array<{ name: string; path: string }> {
     const rootGit = join(workspacePath, ".git");
-    if (existsSync(rootGit)) {
+    const hasRootGit = pathExistsStrict(rootGit);
+    if (expectedTopology === "root" && !hasRootGit) {
+        throw new Error(`Workspace root metadata changed during inspection: ${rootGit}`);
+    }
+    if (expectedTopology === "children" && hasRootGit) {
+        throw new Error(`Workspace topology changed during inspection: ${rootGit}`);
+    }
+    if (hasRootGit) {
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
         for (const entry of scanDirectory(workspacePath, { strict: true })) {
             if (!entry.isGitRepo) continue;
@@ -712,7 +722,7 @@ export function detectWorktreeWorkspaceBranch(
     let repositories: Array<{ name: string; path: string }>;
     if (pathExistsStrict(rootGit)) {
         if (gitLinkKind(rootGit) !== "worktree") return null;
-        repositories = branchRepositories(workspacePath);
+        repositories = branchRepositories(workspacePath, "root");
     } else {
         const candidates = scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo);
         const kinds = candidates.map((entry) => ({
@@ -930,7 +940,7 @@ export function needsSubmoduleSetup(dirPath: string): string[] | null {
         return null;
     }
 
-    const entries = scanDirectory(resolved);
+    const entries = scanDirectory(resolved, { strict: true });
     const gitRepos = entries.filter((e) => e.isGitRepo);
 
     if (gitRepos.length === 0) {
@@ -1309,11 +1319,19 @@ function createMultiRepoWorkspace(
         const destPath = join(wsPath, entry.name);
         try {
             copyDirRecursive(entry.path, destPath);
+            if (!pathExistsStrict(destPath)) {
+                throw new Error(`Source entry could not be copied safely: ${entry.path}`);
+            }
             copied.push(entry.name);
         } catch (e) {
-            if ((e as NodeJS.ErrnoException).code === "EEXIST") {
-                continue;
+            const rollback = removeWorkspace(resolved, branch, { force: true });
+            if (rollback.errors.length > 0) {
+                throw new Error(
+                    `${(e as Error).message}; workspace rollback failed: ${rollback.errors.join("; ")}`,
+                    { cause: e },
+                );
             }
+            throw e;
         }
     }
 

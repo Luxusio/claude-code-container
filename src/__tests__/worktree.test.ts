@@ -646,6 +646,16 @@ describe("createWorkspace", () => {
         expect(existsSync(wsPath)).toBe(false);
     });
 
+    it.skipIf(process.platform === "win32")("fails and rolls back when a source entry cannot be copied safely", () => {
+        initRepo(join(sourceDir, "repo-a"));
+        writeFileSync(join(sourceDir, "target.txt"), "target");
+        symlinkSync("target.txt", join(sourceDir, "linked.txt"));
+
+        expect(() => createWorkspace(sourceDir, "unsafe-copy"))
+            .toThrow("could not be copied safely");
+        expect(existsSync(getWorkspacePath(sourceDir, "unsafe-copy"))).toBe(false);
+    });
+
     it("creates worktree from remote branch", () => {
         // Create a "remote" bare repo and a local clone
         const bareRepo = join(tmpDir, "bare-origin.git");
