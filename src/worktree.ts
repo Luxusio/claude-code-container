@@ -4,6 +4,7 @@ import { spawnSync } from "child_process";
 import { randomBytes } from "crypto";
 import {
     chmodSync,
+    closeSync,
     existsSync,
     mkdtempSync,
     mkdirSync,
@@ -15,8 +16,10 @@ import {
     rmdirSync,
     lstatSync,
     linkSync,
+    openSync,
     renameSync,
     realpathSync,
+    unlinkSync,
 } from "fs";
 import { basename, dirname, join, posix, relative, resolve, win32 } from "path";
 
@@ -362,7 +365,21 @@ function removeRegisteredWorktree(
     expectedIdentity: DirectoryIdentity,
     force: boolean,
     quarantineBase = dirname(worktreePath),
+    registrationFence?: WorktreeRegistrationFence,
 ): void {
+    const expectedBranch = registrationFence?.expectedRef.replace(/^refs\/heads\//, "");
+    if (registrationFence && (
+        !expectedBranch
+        || !worktreeRegistrationMatches(
+            sourceRepository,
+            worktreePath,
+            expectedBranch,
+            registrationFence.expectedOid,
+            registrationFence,
+        )
+    )) {
+        throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
+    }
     const parentIdentity = captureDirectoryIdentity(dirname(worktreePath));
     assertDirectoryIdentity(worktreePath, expectedIdentity);
     assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
@@ -381,6 +398,32 @@ function removeRegisteredWorktree(
         if (repaired.error || repaired.status !== 0
             || !isValidWorktree(quarantine.path, sourceRepository)) {
             throw new Error((repaired.stderr ?? "").trim() || "git worktree repair failed");
+        }
+        if (registrationFence) {
+            const quarantineIdentity = captureDirectoryIdentity(quarantine.path);
+            assertQuarantinedIdentity(
+                quarantine.path,
+                registrationFence.destinationIdentity,
+                "directory",
+            );
+            assertDirectoryIdentity(
+                registrationFence.managementIdentity.realpath,
+                registrationFence.managementIdentity,
+            );
+            if (!expectedBranch || !worktreeRegistrationMatches(
+                sourceRepository,
+                quarantine.path,
+                expectedBranch,
+                registrationFence.expectedOid,
+                {
+                    ...registrationFence,
+                    destinationIdentity: quarantineIdentity,
+                },
+            )) {
+                throw new Error(
+                    `Worktree registration ownership changed after quarantine: ${worktreePath}`,
+                );
+            }
         }
         const args = ["worktree", "remove", quarantine.path];
         if (force) args.push("--force");
@@ -1144,6 +1187,7 @@ function expectedFailedCreationBranchOid(
 type BranchTrackingConfig = {
     remote: string[];
     merge: string[];
+    rebase: string[];
 };
 
 type BranchCreationFence = {
@@ -1155,11 +1199,17 @@ type BranchCreationFence = {
 function readBranchTrackingConfig(
     repositoryPath: string,
     branch: string,
+    configFile?: string,
 ): BranchTrackingConfig {
-    const readValues = (suffix: "remote" | "merge"): string[] => {
+    const readValues = (suffix: keyof BranchTrackingConfig): string[] => {
         const result = spawnSync(
             "git",
-            ["config", "--local", "--get-all", `branch.${branch}.${suffix}`],
+            [
+                "config",
+                ...(configFile ? ["--file", configFile] : ["--local"]),
+                "--get-all",
+                `branch.${branch}.${suffix}`,
+            ],
             { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         if (result.error || (result.status !== 0 && result.status !== 1)) {
@@ -1171,6 +1221,7 @@ function readBranchTrackingConfig(
     return {
         remote: readValues("remote"),
         merge: readValues("merge"),
+        rebase: readValues("rebase"),
     };
 }
 
@@ -1181,31 +1232,79 @@ function sameBranchTrackingConfig(
     return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function restoreBranchTrackingConfig(
+function replaceBranchTrackingConfig(
     repositoryPath: string,
     branch: string,
-    snapshot: BranchTrackingConfig,
+    expected: BranchTrackingConfig,
+    replacement: BranchTrackingConfig,
+    beforeCommit: () => void = () => {},
 ): void {
-    for (const suffix of ["remote", "merge"] as const) {
-        const key = `branch.${branch}.${suffix}`;
-        const unset = spawnSync(
-            "git",
-            ["config", "--local", "--unset-all", key],
-            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        if (unset.error || (unset.status !== 0 && unset.status !== 5)) {
-            throw new Error(`Failed to clear branch tracking configuration for '${branch}'.`);
+    const commonDirResult = spawnSync(
+        "git",
+        ["rev-parse", "--git-common-dir"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (commonDirResult.error || commonDirResult.status !== 0) {
+        throw new Error(`Unable to locate Git configuration for '${branch}'.`);
+    }
+    const commonDir = resolve(repositoryPath, (commonDirResult.stdout ?? "").trim());
+    const commonDirIdentity = captureDirectoryIdentity(commonDir);
+    const configPath = join(commonDir, "config");
+    const configIdentity = capturePathIdentity(configPath);
+    const lockPath = `${configPath}.lock`;
+    let lockCreated = false;
+    try {
+        assertDirectoryIdentity(commonDir, commonDirIdentity);
+        const lockFd = openSync(lockPath, "wx", 0o600);
+        lockCreated = true;
+        closeSync(lockFd);
+        if (!sameBranchTrackingConfig(
+            readBranchTrackingConfig(repositoryPath, branch, configPath),
+            expected,
+        )) {
+            throw new Error(
+                `Branch '${branch}' tracking configuration changed; preserving it.`,
+            );
         }
-        for (const value of snapshot[suffix]) {
-            const restored = spawnSync(
+        copyFileSync(configPath, lockPath);
+        for (const suffix of ["remote", "merge", "rebase"] as const) {
+            const key = `branch.${branch}.${suffix}`;
+            const unset = spawnSync(
                 "git",
-                ["config", "--local", "--add", key, value],
+                ["config", "--file", lockPath, "--unset-all", key],
                 { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
             );
-            if (restored.error || restored.status !== 0) {
-                throw new Error(`Failed to restore branch tracking configuration for '${branch}'.`);
+            if (unset.error || (unset.status !== 0 && unset.status !== 5)) {
+                throw new Error(`Failed to clear branch tracking configuration for '${branch}'.`);
+            }
+            for (const value of replacement[suffix]) {
+                const restored = spawnSync(
+                    "git",
+                    ["config", "--file", lockPath, "--add", key, value],
+                    { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                );
+                if (restored.error || restored.status !== 0) {
+                    throw new Error(
+                        `Failed to restore branch tracking configuration for '${branch}'.`,
+                    );
+                }
             }
         }
+        assertDirectoryIdentity(commonDir, commonDirIdentity);
+        if (!sameBranchTrackingConfig(
+            readBranchTrackingConfig(repositoryPath, branch, configPath),
+            expected,
+        )) {
+            throw new Error(
+                `Branch '${branch}' tracking configuration changed; preserving it.`,
+            );
+        }
+        beforeCommit();
+        assertPathIdentity(configPath, configIdentity);
+        renameSync(lockPath, configPath);
+        lockCreated = false;
+    } finally {
+        if (lockCreated) unlinkSync(lockPath);
     }
 }
 
@@ -1239,27 +1338,28 @@ function rollbackFailedCreatedBranch(
             `Branch '${branch}' changed during failed creation; preserving ref ${currentOid || "<unknown>"}.`,
         );
     }
-    const currentConfig = readBranchTrackingConfig(repositoryPath, branch);
-    if (!sameBranchTrackingConfig(currentConfig, fence.configAfter)) {
-        throw new Error(
-            `Branch '${branch}' tracking configuration changed during failed creation; preserving it.`,
-        );
-    }
-    const removed = spawnSync(
-        "git",
-        ["update-ref", "-d", ref, expectedOid],
-        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    replaceBranchTrackingConfig(
+        repositoryPath,
+        branch,
+        fence.configAfter,
+        fence.configBefore,
+        () => {
+            const removed = spawnSync(
+                "git",
+                ["update-ref", "-d", ref, expectedOid],
+                { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            const remaining = spawnSync(
+                "git",
+                ["rev-parse", "--verify", "--quiet", ref],
+                { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            if (removed.error || removed.status !== 0
+                || remaining.error || remaining.status !== 1) {
+                throw new Error(`Failed to roll back branch '${branch}' by exact ref identity.`);
+            }
+        },
     );
-    const remaining = spawnSync(
-        "git",
-        ["rev-parse", "--verify", "--quiet", ref],
-        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (removed.error || removed.status !== 0
-        || remaining.error || remaining.status !== 1) {
-        throw new Error(`Failed to roll back branch '${branch}' by exact ref identity.`);
-    }
-    restoreBranchTrackingConfig(repositoryPath, branch, fence.configBefore);
 }
 
 function registeredWorktreePath(
@@ -1289,6 +1389,16 @@ type WorktreeRegistrationFence = {
     expectedOid: string;
     expectedRef: string;
 };
+
+function requireWorktreeRegistrationFence(
+    fence: WorktreeRegistrationFence | null,
+    worktreePath: string,
+): WorktreeRegistrationFence {
+    if (!fence) {
+        throw new Error(`Missing worktree registration ownership fence: ${worktreePath}`);
+    }
+    return fence;
+}
 
 function captureWorktreeManagementIdentity(
     worktreePath: string,
@@ -1367,7 +1477,7 @@ function worktreeRegistrationMatches(
             { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
         const expectedRef = fence?.expectedRef ?? `refs/heads/${branch}`;
-        return (!requireBranchRef || (
+        const matches = (!requireBranchRef || (
             branchResult.status === 0
             && (branchResult.stdout ?? "").trim() === expectedOid
         ))
@@ -1381,6 +1491,15 @@ function worktreeRegistrationMatches(
                 expectedOid,
             )
             && (worktreeResult.stdout ?? "").trim() === expectedOid;
+        if (!matches) return false;
+        if (fence) {
+            assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
+            assertDirectoryIdentity(
+                fence.managementIdentity.realpath,
+                fence.managementIdentity,
+            );
+        }
+        return true;
     } catch {
         return false;
     }
@@ -1417,6 +1536,7 @@ function rollbackFailedWorktreeAdd(
                 destinationIdentity,
                 true,
                 dirname(worktreePath),
+                registrationFence,
             );
         } else {
             removeDirectoryByQuarantine(
@@ -1589,9 +1709,7 @@ function prepareWorktreeCreation(
             },
         };
     }
-    const branchArgs = action === "worktree-remote"
-        ? ["branch", "--track", branch, `origin/${branch}`]
-        : ["branch", branch, sourceOid];
+    const branchArgs = ["branch", "--no-track", branch, sourceOid];
     const created = spawnSync(
         "git",
         branchArgs,
@@ -1615,23 +1733,50 @@ function prepareWorktreeCreation(
             `Branch '${branch}' changed while reserving worktree creation; preserving any existing ref.`,
         );
     }
-    const configAfter = readBranchTrackingConfig(repositoryPath, branch);
-    const expectedConfigAfter = action === "worktree-remote"
-        ? {
+    let configAfter = configBefore;
+    if (action === "worktree-remote") {
+        const autoRebase = spawnSync(
+            "git",
+            ["config", "--get", "branch.autoSetupRebase"],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const autoRebaseValue = autoRebase.status === 0
+            ? (autoRebase.stdout ?? "").trim().toLowerCase()
+            : "";
+        configAfter = {
             remote: ["origin"],
             merge: [`refs/heads/${branch}`],
+            rebase: autoRebaseValue === "always" || autoRebaseValue === "remote"
+                ? ["true"]
+                : [],
+        };
+        try {
+            replaceBranchTrackingConfig(
+                repositoryPath,
+                branch,
+                configBefore,
+                configAfter,
+            );
+        } catch (error) {
+            removeDirectoryByQuarantine(
+                worktreePath,
+                destinationIdentity,
+                dirname(worktreePath),
+                true,
+            );
+            const removed = spawnSync(
+                "git",
+                ["update-ref", "-d", `refs/heads/${branch}`, sourceOid],
+                { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            if (removed.error || removed.status !== 0) {
+                throw new Error(
+                    `${(error as Error).message}; failed to roll back newly created branch '${branch}'.`,
+                    { cause: error },
+                );
+            }
+            throw error;
         }
-        : configBefore;
-    if (!sameBranchTrackingConfig(configAfter, expectedConfigAfter)) {
-        removeDirectoryByQuarantine(
-            worktreePath,
-            destinationIdentity,
-            dirname(worktreePath),
-            true,
-        );
-        throw new Error(
-            `Branch '${branch}' tracking configuration changed during creation; preserving it.`,
-        );
     }
     return {
         destinationIdentity,
@@ -1970,6 +2115,10 @@ function createUnifiedWorkspace(
         }
         throw new Error(`Failed to create worktree: ${stderr}`);
     }
+    const rootRegistrationFence = requireWorktreeRegistrationFence(
+        registrationFence,
+        wsPath,
+    );
 
     // Init submodules if any (without --remote to avoid fetch failures on local repos)
     const submoduleCheck = spawnSync(
@@ -1998,9 +2147,10 @@ function createUnifiedWorkspace(
             removeRegisteredWorktree(
                 resolved,
                 wsPath,
-                captureDirectoryIdentity(wsPath),
+                rootRegistrationFence.destinationIdentity,
                 true,
                 dirname(wsPath),
+                rootRegistrationFence,
             );
             rollbackFailedCreatedBranch(
                 resolved,
@@ -2058,7 +2208,9 @@ function createMultiRepoWorkspace(
 
     const created: WorktreeRepoResult[] = [];
     const rollbackOids = new Map<string, BranchCreationFence | null>();
+    const registrationFences = new Map<string, WorktreeRegistrationFence>();
     const copied: string[] = [];
+    const copiedIdentities = new Map<string, DirectoryIdentity>();
 
     // Process git repos → worktree (with rollback on failure)
     try {
@@ -2121,6 +2273,10 @@ function createMultiRepoWorkspace(
 
             created.push({ name: repo.name, branch, action });
             rollbackOids.set(repo.name, expectedBranchOid);
+            registrationFences.set(
+                repo.name,
+                requireWorktreeRegistrationFence(registrationFence, destPath),
+            );
         }
     } catch (e) {
         const rollbackErrors: string[] = [];
@@ -2133,12 +2289,17 @@ function createMultiRepoWorkspace(
                 continue;
             }
             try {
+                const registrationFence = registrationFences.get(c.name);
+                if (!registrationFence) {
+                    throw new Error("missing worktree registration fence");
+                }
                 removeRegisteredWorktree(
                     sourceRepo.path,
                     destPath,
-                    captureDirectoryIdentity(destPath),
+                    registrationFence.destinationIdentity,
                     true,
                     dirname(wsPath),
+                    registrationFence,
                 );
                 rollbackFailedCreatedBranch(
                     sourceRepo.path,
@@ -2180,16 +2341,27 @@ function createMultiRepoWorkspace(
                 throw new Error(`Source entry could not be copied safely: ${entry.path}`);
             }
             copied.push(entry.name);
+            copiedIdentities.set(entry.name, capturePathIdentity(destPath));
         } catch (e) {
-            const rollback = removeWorkspace(resolved, branch, { force: true });
-            const rollbackErrors = [...rollback.errors];
-            for (const createdEntry of created) {
-                if (!rollback.removed.includes(createdEntry.name)) continue;
+            const rollbackErrors: string[] = [];
+            for (const createdEntry of [...created].reverse()) {
                 const sourceRepo = gitRepos.find((repo) => (
                     repo.name === createdEntry.name
                 ));
                 if (!sourceRepo) continue;
                 try {
+                    const registrationFence = registrationFences.get(createdEntry.name);
+                    if (!registrationFence) {
+                        throw new Error("missing worktree registration fence");
+                    }
+                    removeRegisteredWorktree(
+                        sourceRepo.path,
+                        join(wsPath, createdEntry.name),
+                        registrationFence.destinationIdentity,
+                        true,
+                        dirname(wsPath),
+                        registrationFence,
+                    );
                     rollbackFailedCreatedBranch(
                         sourceRepo.path,
                         branch,
@@ -2200,6 +2372,33 @@ function createMultiRepoWorkspace(
                     rollbackErrors.push(
                         `${createdEntry.name}: ${(rollbackError as Error).message}`,
                     );
+                }
+            }
+            for (const copiedName of [...copied].reverse()) {
+                const identity = copiedIdentities.get(copiedName);
+                if (!identity) continue;
+                try {
+                    removePathByQuarantine(
+                        join(wsPath, copiedName),
+                        identity,
+                        dirname(wsPath),
+                    );
+                } catch (rollbackError) {
+                    rollbackErrors.push(
+                        `${copiedName}: ${(rollbackError as Error).message}`,
+                    );
+                }
+            }
+            if (pathExistsStrict(destPath)) {
+                rollbackErrors.push(`${entry.name}: partial copied content was preserved`);
+            } else if (rollbackErrors.length === 0) {
+                try {
+                    assertDirectoryIdentity(wsPath, workspaceIdentity);
+                    if (readdirSync(wsPath).length === 0) {
+                        removeDirectoryByQuarantine(wsPath, workspaceIdentity);
+                    }
+                } catch (rollbackError) {
+                    rollbackErrors.push((rollbackError as Error).message);
                 }
             }
             if (rollbackErrors.length > 0) {
@@ -2261,6 +2460,7 @@ export function repairWorkspace(
     // end up as empty or missing directories in the worktree.
     const created: WorktreeRepoResult[] = [];
     const rollbackOids = new Map<string, BranchCreationFence | null>();
+    const registrationFences = new Map<string, WorktreeRegistrationFence>();
     const removedEmptyDestinations: string[] = [];
     const sourceEntries = scanDirectory(resolved, { strict: true });
 
@@ -2279,12 +2479,17 @@ export function repairWorkspace(
                 continue;
             }
             try {
+                const registrationFence = registrationFences.get(createdEntry.name);
+                if (!registrationFence) {
+                    throw new Error("missing worktree registration fence");
+                }
                 removeRegisteredWorktree(
                     sourceEntry.path,
                     destination,
-                    captureDirectoryIdentity(destination),
+                    registrationFence.destinationIdentity,
                     true,
                     dirname(wsPath),
+                    registrationFence,
                 );
                 rollbackFailedCreatedBranch(
                     sourceEntry.path,
@@ -2397,6 +2602,10 @@ export function repairWorkspace(
         }
         created.push({ name: entry.name, branch, action: nestedAction });
         rollbackOids.set(entry.name, expectedBranchOid);
+        registrationFences.set(
+            entry.name,
+            requireWorktreeRegistrationFence(registrationFence, destPath),
+        );
     }
 
     return created;
@@ -2850,6 +3059,10 @@ export function fixBrokenWorktree(
         }
         return null;
     }
+    const createdRegistrationFence = requireWorktreeRegistrationFence(
+        registrationFence,
+        destPath,
+    );
 
     if (backup && backupIdentity) {
         try {
@@ -2881,9 +3094,10 @@ export function fixBrokenWorktree(
                 removeRegisteredWorktree(
                     sourceRepo.path,
                     destPath,
-                    captureDirectoryIdentity(destPath),
+                    createdRegistrationFence.destinationIdentity,
                     true,
                     dirname(wsPath),
+                    createdRegistrationFence,
                 );
                 rollbackFailedCreatedBranch(
                     sourceRepo.path,
