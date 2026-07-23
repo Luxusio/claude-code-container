@@ -1,7 +1,7 @@
 // src/worktree.ts - Git worktree workspace management for ccc
 
 import { spawnSync } from "child_process";
-import { randomUUID } from "crypto";
+import { randomBytes } from "crypto";
 import {
     chmodSync,
     existsSync,
@@ -177,24 +177,27 @@ export function portableWorktreeGitDirectory(
 function normalizeWorktreeGitLink(
     gitFile: string,
     resolvedGitDirectory: string,
+    gitFileIdentity: DirectoryIdentity,
 ): string {
     const portableGitDirectory = portableWorktreeGitDirectory(
         dirname(gitFile),
         resolvedGitDirectory,
     );
     const expectedContent = `gitdir: ${portableGitDirectory}\n`;
-    if (readFileSync(gitFile, "utf-8") === expectedContent) {
+    assertPathIdentity(gitFile, gitFileIdentity);
+    const existingContent = readFileSync(gitFile, "utf-8");
+    assertPathIdentity(gitFile, gitFileIdentity);
+    if (existingContent === expectedContent) {
         return portableGitDirectory;
     }
-    const gitFileIdentity = capturePathIdentity(gitFile);
     const parentIdentity = captureDirectoryIdentity(dirname(gitFile));
     const temporary = join(
         dirname(gitFile),
-        `.${basename(gitFile)}.ccc-${randomUUID()}.tmp`,
+        `.${basename(gitFile)}.ccc-${randomBytes(16).toString("hex")}.tmp`,
     );
     const backup = join(
         dirname(gitFile),
-        `.${basename(gitFile)}.ccc-${randomUUID()}.backup`,
+        `.${basename(gitFile)}.ccc-${randomBytes(16).toString("hex")}.backup`,
     );
     let temporaryIdentity: FileIdentity | null = null;
     try {
@@ -1116,34 +1119,16 @@ export function branchExistsInRepo(
     return "none";
 }
 
-function rollbackCreatedBranch(
-    repositoryPath: string,
-    branch: string,
-    action: WorktreeRepoResult["action"],
-): void {
-    if (action === "worktree-existing") return;
-    const result = spawnSync(
-        "git",
-        ["branch", "-D", branch],
-        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (result.error || result.status !== 0) {
-        const detail = (result.stderr ?? "").trim()
-            || result.error?.message
-            || `git exited with status ${String(result.status)}`;
-        throw new Error(`Failed to roll back branch '${branch}': ${detail}`);
-    }
-}
-
 function expectedFailedCreationBranchOid(
     repositoryPath: string,
     branch: string,
     action: WorktreeRepoResult["action"],
-): string | null {
-    if (action === "worktree-existing") return null;
-    const sourceRef = action === "worktree-remote"
-        ? `refs/remotes/origin/${branch}^{commit}`
-        : "HEAD^{commit}";
+): string {
+    const sourceRef = action === "worktree-existing"
+        ? `refs/heads/${branch}^{commit}`
+        : action === "worktree-remote"
+            ? `refs/remotes/origin/${branch}^{commit}`
+            : "HEAD^{commit}";
     const resolved = spawnSync(
         "git",
         ["rev-parse", "--verify", sourceRef],
@@ -1229,10 +1214,16 @@ function rollbackFailedWorktreeAdd(
     action: WorktreeRepoResult["action"],
     expectedBranchOid: string | null,
     destinationIdentity: DirectoryIdentity,
+    registrationOwned: boolean,
 ): void {
     if (pathExistsStrict(worktreePath)) {
         assertDirectoryIdentity(worktreePath, destinationIdentity);
         if (isValidWorktree(worktreePath, repositoryPath)) {
+            if (!registrationOwned) {
+                throw new Error(
+                    `Failed worktree creation found a foreign registration at '${worktreePath}'; preserving it.`,
+                );
+            }
             removeRegisteredWorktree(
                 repositoryPath,
                 worktreePath,
@@ -1249,9 +1240,20 @@ function rollbackFailedWorktreeAdd(
             );
         }
     } else if (registeredWorktreePath(repositoryPath, worktreePath)) {
-        throw new Error(
-            `Failed worktree creation left an unowned registry entry at '${worktreePath}'.`,
+        if (!registrationOwned) {
+            throw new Error(
+                `Failed worktree creation left an unowned registry entry at '${worktreePath}'.`,
+            );
+        }
+        const pruned = spawnSync(
+            "git",
+            ["worktree", "prune", "--expire", "now"],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
+        if (pruned.error || pruned.status !== 0
+            || registeredWorktreePath(repositoryPath, worktreePath)) {
+            throw new Error(`Failed to remove owned worktree registration: ${worktreePath}`);
+        }
     }
     rollbackFailedCreatedBranch(
         repositoryPath,
@@ -1259,6 +1261,74 @@ function rollbackFailedWorktreeAdd(
         action,
         expectedBranchOid,
     );
+}
+
+type PreparedWorktreeAddResult = {
+    result: {
+        error?: Error;
+        status: number | null;
+        stdout?: string;
+        stderr?: string;
+    };
+    registrationOwned: boolean;
+};
+
+function runPreparedWorktreeAdd(
+    repositoryPath: string,
+    worktreePath: string,
+    branch: string,
+    expectedBranchOid: string,
+): PreparedWorktreeAddResult {
+    const registered = spawnSync(
+        "git",
+        ["worktree", "add", "--no-checkout", worktreePath, branch],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (registered.error || registered.status !== 0) {
+        return { result: registered, registrationOwned: false };
+    }
+    const identityMatches = () => {
+        const branchResult = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+            { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const worktreeResult = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "HEAD^{commit}"],
+            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        return branchResult.status === 0
+            && worktreeResult.status === 0
+            && (branchResult.stdout ?? "").trim() === expectedBranchOid
+            && (worktreeResult.stdout ?? "").trim() === expectedBranchOid;
+    };
+    if (!identityMatches()) {
+        return {
+            result: {
+                status: 1,
+                stderr: "worktree branch identity changed after registration",
+            },
+            registrationOwned: true,
+        };
+    }
+    const checkout = spawnSync(
+        "git",
+        ["checkout", "--force", branch],
+        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (checkout.error || checkout.status !== 0) {
+        return { result: checkout, registrationOwned: true };
+    }
+    return identityMatches()
+        ? { result: checkout, registrationOwned: true }
+        : {
+            result: {
+                status: 1,
+                stderr: "worktree branch identity changed during checkout",
+            },
+            registrationOwned: true,
+        };
 }
 
 function reserveWorktreeDestination(worktreePath: string): DirectoryIdentity {
@@ -1273,7 +1343,7 @@ function prepareWorktreeCreation(
     action: WorktreeRepoResult["action"],
 ): {
     destinationIdentity: DirectoryIdentity;
-    expectedBranchOid: string | null;
+    expectedBranchOid: string;
 } {
     const expectedBranchOid = expectedFailedCreationBranchOid(
         repositoryPath,
@@ -1590,20 +1660,16 @@ function createUnifiedWorkspace(
 ): WorktreeResult {
     const existence = branchExistsInRepo(resolved, branch);
 
-    let args: string[];
     let action: WorktreeRepoResult["action"];
 
     switch (existence) {
         case "local":
-            args = ["worktree", "add", wsPath, branch];
             action = "worktree-existing";
             break;
         case "remote":
-            args = ["worktree", "add", "-b", branch, wsPath, `origin/${branch}`];
             action = "worktree-remote";
             break;
         case "none":
-            args = ["worktree", "add", "-b", branch, wsPath];
             action = "worktree-new";
             break;
     }
@@ -1616,15 +1682,12 @@ function createUnifiedWorkspace(
         branch,
         action,
     );
-    if (action !== "worktree-existing") {
-        args = ["worktree", "add", wsPath, branch];
-    }
-
-    const result = spawnSync("git", args, {
-        cwd: resolved,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-    });
+    const { result, registrationOwned } = runPreparedWorktreeAdd(
+        resolved,
+        wsPath,
+        branch,
+        expectedBranchOid,
+    );
 
     if (result.status !== 0) {
         const stderr = (result.stderr ?? "").trim();
@@ -1636,6 +1699,7 @@ function createUnifiedWorkspace(
                 action,
                 expectedBranchOid,
                 destinationIdentity,
+                registrationOwned,
             );
         } catch (rollbackError) {
             throw new Error(
@@ -1677,7 +1741,12 @@ function createUnifiedWorkspace(
                 true,
                 dirname(wsPath),
             );
-            rollbackCreatedBranch(resolved, branch, action);
+            rollbackFailedCreatedBranch(
+                resolved,
+                branch,
+                action,
+                expectedBranchOid,
+            );
         } catch (rollbackError) {
             rollbackErrors.push((rollbackError as Error).message);
         }
@@ -1727,6 +1796,7 @@ function createMultiRepoWorkspace(
     const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     const created: WorktreeRepoResult[] = [];
+    const rollbackOids = new Map<string, string | null>();
     const copied: string[] = [];
 
     // Process git repos → worktree (with rollback on failure)
@@ -1735,27 +1805,16 @@ function createMultiRepoWorkspace(
             const destPath = join(wsPath, repo.name);
             const existence = branchExistsInRepo(repo.path, branch);
 
-            let args: string[];
             let action: WorktreeRepoResult["action"];
 
             switch (existence) {
                 case "local":
-                    args = ["worktree", "add", destPath, branch];
                     action = "worktree-existing";
                     break;
                 case "remote":
-                    args = [
-                        "worktree",
-                        "add",
-                        "-b",
-                        branch,
-                        destPath,
-                        `origin/${branch}`,
-                    ];
                     action = "worktree-remote";
                     break;
                 case "none":
-                    args = ["worktree", "add", "-b", branch, destPath];
                     action = "worktree-new";
                     break;
             }
@@ -1768,15 +1827,12 @@ function createMultiRepoWorkspace(
                 branch,
                 action,
             );
-            if (action !== "worktree-existing") {
-                args = ["worktree", "add", destPath, branch];
-            }
-
-            const result = spawnSync("git", args, {
-                cwd: repo.path,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-            });
+            const { result, registrationOwned } = runPreparedWorktreeAdd(
+                repo.path,
+                destPath,
+                branch,
+                expectedBranchOid,
+            );
 
             if (result.status !== 0) {
                 const stderr = (result.stderr ?? "").trim();
@@ -1788,6 +1844,7 @@ function createMultiRepoWorkspace(
                         action,
                         expectedBranchOid,
                         destinationIdentity,
+                        registrationOwned,
                     );
                 } catch (rollbackError) {
                     throw new Error(
@@ -1801,6 +1858,7 @@ function createMultiRepoWorkspace(
             }
 
             created.push({ name: repo.name, branch, action });
+            rollbackOids.set(repo.name, expectedBranchOid);
         }
     } catch (e) {
         const rollbackErrors: string[] = [];
@@ -1820,7 +1878,12 @@ function createMultiRepoWorkspace(
                     true,
                     dirname(wsPath),
                 );
-                rollbackCreatedBranch(sourceRepo.path, branch, c.action);
+                rollbackFailedCreatedBranch(
+                    sourceRepo.path,
+                    branch,
+                    c.action,
+                    rollbackOids.get(c.name) ?? null,
+                );
             } catch (rollbackError) {
                 rollbackErrors.push(`${c.name}: ${(rollbackError as Error).message}`);
             }
@@ -1857,9 +1920,29 @@ function createMultiRepoWorkspace(
             copied.push(entry.name);
         } catch (e) {
             const rollback = removeWorkspace(resolved, branch, { force: true });
-            if (rollback.errors.length > 0) {
+            const rollbackErrors = [...rollback.errors];
+            for (const createdEntry of created) {
+                if (!rollback.removed.includes(createdEntry.name)) continue;
+                const sourceRepo = gitRepos.find((repo) => (
+                    repo.name === createdEntry.name
+                ));
+                if (!sourceRepo) continue;
+                try {
+                    rollbackFailedCreatedBranch(
+                        sourceRepo.path,
+                        branch,
+                        createdEntry.action,
+                        rollbackOids.get(createdEntry.name) ?? null,
+                    );
+                } catch (rollbackError) {
+                    rollbackErrors.push(
+                        `${createdEntry.name}: ${(rollbackError as Error).message}`,
+                    );
+                }
+            }
+            if (rollbackErrors.length > 0) {
                 throw new Error(
-                    `${(e as Error).message}; workspace rollback failed: ${rollback.errors.join("; ")}`,
+                    `${(e as Error).message}; workspace rollback failed: ${rollbackErrors.join("; ")}`,
                     { cause: e },
                 );
             }
@@ -1915,6 +1998,7 @@ export function repairWorkspace(
     // Nested git repos (gitignored or gitlink entries without submodule config)
     // end up as empty or missing directories in the worktree.
     const created: WorktreeRepoResult[] = [];
+    const rollbackOids = new Map<string, string | null>();
     const removedEmptyDestinations: string[] = [];
     const sourceEntries = scanDirectory(resolved, { strict: true });
 
@@ -1940,10 +2024,11 @@ export function repairWorkspace(
                     true,
                     dirname(wsPath),
                 );
-                rollbackCreatedBranch(
+                rollbackFailedCreatedBranch(
                     sourceEntry.path,
                     branch,
                     createdEntry.action,
+                    rollbackOids.get(createdEntry.name) ?? null,
                 );
             } catch (rollbackError) {
                 rollbackErrors.push(
@@ -1988,20 +2073,16 @@ export function repairWorkspace(
         }
 
         const nestedExistence = branchExistsInRepo(entry.path, branch);
-        let nestedArgs: string[];
         let nestedAction: WorktreeRepoResult["action"];
 
         switch (nestedExistence) {
             case "local":
-                nestedArgs = ["worktree", "add", destPath, branch];
                 nestedAction = "worktree-existing";
                 break;
             case "remote":
-                nestedArgs = ["worktree", "add", "-b", branch, destPath, `origin/${branch}`];
                 nestedAction = "worktree-remote";
                 break;
             case "none":
-                nestedArgs = ["worktree", "add", "-b", branch, destPath];
                 nestedAction = "worktree-new";
                 break;
         }
@@ -2017,15 +2098,15 @@ export function repairWorkspace(
             rollbackNestedCreation(error);
         }
         const { expectedBranchOid, destinationIdentity } = prepared;
-        if (nestedAction !== "worktree-existing") {
-            nestedArgs = ["worktree", "add", destPath, branch];
-        }
-
-        const nestedResult = spawnSync("git", nestedArgs, {
-            cwd: entry.path,
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-        });
+        const {
+            result: nestedResult,
+            registrationOwned,
+        } = runPreparedWorktreeAdd(
+            entry.path,
+            destPath,
+            branch,
+            expectedBranchOid,
+        );
 
         if (nestedResult.error || nestedResult.status !== 0) {
             const detail = (nestedResult.stderr ?? "").trim()
@@ -2039,6 +2120,7 @@ export function repairWorkspace(
                     nestedAction,
                     expectedBranchOid,
                     destinationIdentity,
+                    registrationOwned,
                 );
             } catch (rollbackError) {
                 rollbackNestedCreation(new Error(
@@ -2051,6 +2133,7 @@ export function repairWorkspace(
             );
         }
         created.push({ name: entry.name, branch, action: nestedAction });
+        rollbackOids.set(entry.name, expectedBranchOid);
     }
 
     return created;
@@ -2144,6 +2227,7 @@ export function getWorktreeGitMounts(
     }
 
     for (const gitFile of gitFiles) {
+        const gitFileIdentity = capturePathIdentity(gitFile);
         let kind: GitLinkKind;
         try {
             kind = gitLinkKind(gitFile);
@@ -2170,7 +2254,11 @@ export function getWorktreeGitMounts(
         if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
-        const portableGitDirectory = normalizeWorktreeGitLink(gitFile, resolvedGitdir);
+        const portableGitDirectory = normalizeWorktreeGitLink(
+            gitFile,
+            resolvedGitdir,
+            gitFileIdentity,
+        );
         const sourceBasename = basename(sourceRepoDir);
         const containerGitFileDirectory = containerWorkspacePath
             ? posix.join(
@@ -2413,24 +2501,20 @@ export function fixBrokenWorktree(
 
     // Create worktree
     const existence = branchExistsInRepo(sourceRepo.path, branch);
-    let args: string[];
     let action: WorktreeRepoResult["action"];
 
     switch (existence) {
         case "local":
-            args = ["worktree", "add", destPath, branch];
             action = "worktree-existing";
             break;
         case "remote":
-            args = ["worktree", "add", "-b", branch, destPath, `origin/${branch}`];
             action = "worktree-remote";
             break;
         case "none":
-            args = ["worktree", "add", "-b", branch, destPath];
             action = "worktree-new";
             break;
     }
-    let expectedBranchOid: string | null;
+    let expectedBranchOid: string;
     let destinationIdentity: DirectoryIdentity;
     try {
         ({
@@ -2454,15 +2538,12 @@ export function fixBrokenWorktree(
         }
         throw error;
     }
-    if (action !== "worktree-existing") {
-        args = ["worktree", "add", destPath, branch];
-    }
-
-    const result = spawnSync("git", args, {
-        cwd: sourceRepo.path,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "pipe"],
-    });
+    const { result, registrationOwned } = runPreparedWorktreeAdd(
+        sourceRepo.path,
+        destPath,
+        branch,
+        expectedBranchOid,
+    );
 
     if (result.status !== 0) {
         try {
@@ -2473,6 +2554,7 @@ export function fixBrokenWorktree(
                 action,
                 expectedBranchOid,
                 destinationIdentity,
+                registrationOwned,
             );
         } catch (rollbackError) {
             const preservation = backup
@@ -2534,7 +2616,12 @@ export function fixBrokenWorktree(
                     true,
                     dirname(wsPath),
                 );
-                rollbackCreatedBranch(sourceRepo.path, branch, action);
+                rollbackFailedCreatedBranch(
+                    sourceRepo.path,
+                    branch,
+                    action,
+                    expectedBranchOid,
+                );
             }
             rollbackQuarantinedPath(
                 destPath,

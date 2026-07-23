@@ -1562,6 +1562,56 @@ describe("docker.ts module exports", () => {
             ))).toBe(true);
         });
 
+        it("rejects a labeled container when an extra worktree bind challenge fails", () => {
+            const extraMount = {
+                hostPath: "/home/user/repo/.git",
+                containerPath: "/project/repo/.git",
+            };
+            const inspected = JSON.parse(fullCredentialMountsJson([{
+                Source: extraMount.hostPath,
+                Destination: extraMount.containerPath,
+            }]));
+            mockWriteFileSync.mockImplementation((path: string, content: string) => {
+                const markerName = path.slice(
+                    Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1,
+                );
+                mountMarkers.set(
+                    markerName,
+                    path.startsWith(`${extraMount.hostPath}/`)
+                        ? "wrong-mounted-directory"
+                        : content,
+                );
+            });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                [extraMount],
+                undefined,
+                undefined,
+                undefined,
+                () => false,
+            )).toThrow("contract failed safety validation");
+            expect([...mountChallengePaths].some((path) => (
+                path.startsWith(`${extraMount.containerPath}/.ccc-mount-identity-`)
+            ))).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call) => {
+                const args = call[1] as string[];
+                return ["stop", "rm", "run"].includes(args[0]);
+            })).toBe(false);
+        });
+
         it("preserves a running pre-identity-label container when the live bind challenge fails", () => {
             const inspected = JSON.parse(fullCredentialMountsJson()) as {
                 Config: { Labels: Record<string, string> };

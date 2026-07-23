@@ -1263,23 +1263,21 @@ function containerMatchesRunContract(
                 }
             }
         }
-        if (!labeledProjectIdentity) {
-            const identityMounts = requiredMounts.filter((mount) => (
-                mount.type === "bind" && mount.expectedIdentity
-            ));
-            if (typeof inspected.Id !== "string"
-                || identityMounts.length === 0
-                || !identityMounts.every((mount) => (
-                    mount.expectedIdentity
-                    && containerSeesCurrentBindDirectory(
-                        inspected.Id as string,
-                        mount.hostPath,
-                        mount.containerPath,
-                        mount.expectedIdentity,
-                    )
-                ))) {
-                return failContract("legacy bind mount identities could not be verified");
-            }
+        const identityMounts = requiredMounts.filter((mount) => (
+            mount.type === "bind" && mount.expectedIdentity
+        ));
+        if (typeof inspected.Id !== "string"
+            || identityMounts.length === 0
+            || !identityMounts.every((mount) => (
+                mount.expectedIdentity
+                && containerSeesCurrentBindDirectory(
+                    inspected.Id as string,
+                    mount.hostPath,
+                    mount.containerPath,
+                    mount.expectedIdentity,
+                )
+            ))) {
+            return failContract("bind mount identities could not be verified");
         }
         const unexpectedMount = unexpectedContainerMount(mounts, requiredMounts);
         if (unexpectedMount) return failContract(`unexpected mount ${unexpectedMount}`);
@@ -1390,23 +1388,21 @@ function containerRunContractIsSafeToDefer(
         if (!bindSourcePathsEquivalent(mountedProject.Source, expectedProjectSource)) {
             return unsafe(`bind source changed for ${projectMount.containerPath}`);
         }
-        if (!labeledProjectIdentity) {
-            const identityMounts = requiredMounts.filter((mount) => (
-                mount.type === "bind" && mount.expectedIdentity
-            ));
-            if (typeof inspected.Id !== "string"
-                || identityMounts.length === 0
-                || !identityMounts.every((mount) => (
-                    mount.expectedIdentity
-                    && containerSeesCurrentBindDirectory(
-                        inspected.Id as string,
-                        mount.hostPath,
-                        mount.containerPath,
-                        mount.expectedIdentity,
-                    )
-                ))) {
-                return unsafe("legacy bind mount identities could not be verified");
-            }
+        const identityMounts = requiredMounts.filter((mount) => (
+            mount.type === "bind" && mount.expectedIdentity
+        ));
+        if (typeof inspected.Id !== "string"
+            || identityMounts.length === 0
+            || !identityMounts.every((mount) => (
+                mount.expectedIdentity
+                && containerSeesCurrentBindDirectory(
+                    inspected.Id as string,
+                    mount.hostPath,
+                    mount.containerPath,
+                    mount.expectedIdentity,
+                )
+            ))) {
+            return unsafe("bind mount identities could not be verified");
         }
         if (projectMount.readonly !== undefined && mountedProject.RW !== !projectMount.readonly) {
             return unsafe(`mount access changed for ${projectMount.containerPath}`);

@@ -700,6 +700,8 @@ describe("createWorkspace", () => {
         expect(() => createWorkspace(sourceDir, "unsafe-copy"))
             .toThrow("symbolic link that cannot be copied safely");
         expect(existsSync(getWorkspacePath(sourceDir, "unsafe-copy"))).toBe(false);
+        expect(branchExistsInRepo(join(sourceDir, "repo-a"), "unsafe-copy"))
+            .toBe("none");
     });
 
     it("creates worktree from remote branch", () => {
@@ -1533,6 +1535,38 @@ describe("repairWorkspace", () => {
             cwd: tmpDir,
             encoding: "utf-8",
         });
+        expect(preserved.stdout.trim()).toBe(alternate);
+    });
+
+    it("rejects a successful checkout whose branch ref changes concurrently", () => {
+        initRepo(tmpDir);
+        const original = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        }).stdout.trim();
+        writeFileSync(join(tmpDir, "alternate.txt"), "alternate");
+        spawnSync("git", ["add", "alternate.txt"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "alternate"], { cwd: tmpDir, stdio: "pipe" });
+        const alternate = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        }).stdout.trim();
+        spawnSync("git", ["reset", "--hard", original], { cwd: tmpDir, stdio: "pipe" });
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            `#!/bin/sh\ngit update-ref refs/heads/hook-success-race ${alternate}\nexit 0\n`,
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, "hook-success-race"))
+            .toThrow("changed during failed creation");
+        expect(existsSync(getWorkspacePath(tmpDir, "hook-success-race"))).toBe(false);
+        const preserved = spawnSync(
+            "git",
+            ["rev-parse", "refs/heads/hook-success-race"],
+            { cwd: tmpDir, encoding: "utf-8" },
+        );
         expect(preserved.stdout.trim()).toBe(alternate);
     });
 
