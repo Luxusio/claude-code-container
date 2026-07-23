@@ -370,11 +370,9 @@ function removeRegisteredWorktree(
     const expectedBranch = registrationFence?.expectedRef.replace(/^refs\/heads\//, "");
     if (registrationFence && (
         !expectedBranch
-        || !worktreeRegistrationMatches(
+        || !worktreeRegistrationOwnershipMatches(
             sourceRepository,
             worktreePath,
-            expectedBranch,
-            registrationFence.expectedOid,
             registrationFence,
         )
     )) {
@@ -410,11 +408,9 @@ function removeRegisteredWorktree(
                 registrationFence.managementIdentity.realpath,
                 registrationFence.managementIdentity,
             );
-            if (!expectedBranch || !worktreeRegistrationMatches(
+            if (!expectedBranch || !worktreeRegistrationOwnershipMatches(
                 sourceRepository,
                 quarantine.path,
-                expectedBranch,
-                registrationFence.expectedOid,
                 {
                     ...registrationFence,
                     destinationIdentity: quarantineIdentity,
@@ -1328,7 +1324,15 @@ function rollbackFailedCreatedBranch(
     if (current.error || current.status === null) {
         throw new Error(`Unable to inspect branch '${branch}' during rollback.`);
     }
-    if (current.status === 1) return;
+    if (current.status === 1) {
+        replaceBranchTrackingConfig(
+            repositoryPath,
+            branch,
+            fence.configAfter,
+            fence.configBefore,
+        );
+        return;
+    }
     if (current.status !== 0) {
         throw new Error(`Unable to inspect branch '${branch}' during rollback.`);
     }
@@ -1416,6 +1420,7 @@ function worktreeRegistryEntryMatches(
     worktreePath: string,
     expectedRef: string,
     expectedOid: string,
+    allowMissingRefOid = false,
 ): boolean {
     const listed = spawnSync(
         "git",
@@ -1432,12 +1437,55 @@ function worktreeRegistryEntryMatches(
                 const headLine = lines.find((line) => line.startsWith("HEAD "));
                 return worktreeLine !== undefined
                     && branchLine === `branch ${expectedRef}`
-                    && headLine === `HEAD ${expectedOid}`
+                    && (
+                        headLine === `HEAD ${expectedOid}`
+                        || (
+                            allowMissingRefOid
+                            && headLine === `HEAD ${"0".repeat(expectedOid.length)}`
+                        )
+                    )
                     && sameObservedPath(
                         worktreeLine.slice("worktree ".length).trim(),
                         worktreePath,
                     );
             });
+}
+
+function worktreeRegistrationOwnershipMatches(
+    repositoryPath: string,
+    worktreePath: string,
+    fence: WorktreeRegistrationFence,
+): boolean {
+    try {
+        assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
+        assertDirectoryIdentity(
+            fence.managementIdentity.realpath,
+            fence.managementIdentity,
+        );
+        const symbolicHead = spawnSync(
+            "git",
+            ["symbolic-ref", "-q", "HEAD"],
+            { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const matches = symbolicHead.status === 0
+            && (symbolicHead.stdout ?? "").trim() === fence.expectedRef
+            && worktreeRegistryEntryMatches(
+                repositoryPath,
+                worktreePath,
+                fence.expectedRef,
+                fence.expectedOid,
+                true,
+            );
+        if (!matches) return false;
+        assertDirectoryIdentity(worktreePath, fence.destinationIdentity);
+        assertDirectoryIdentity(
+            fence.managementIdentity.realpath,
+            fence.managementIdentity,
+        );
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 function worktreeRegistrationMatches(
@@ -1518,13 +1566,10 @@ function rollbackFailedWorktreeAdd(
         assertDirectoryIdentity(worktreePath, destinationIdentity);
         if (isValidWorktree(worktreePath, repositoryPath)) {
             if (!registrationFence
-                || !worktreeRegistrationMatches(
+                || !worktreeRegistrationOwnershipMatches(
                     repositoryPath,
                     worktreePath,
-                    branch,
-                    registrationFence.expectedOid,
                     registrationFence,
-                    false,
                 )) {
                 throw new Error(
                     `Failed worktree creation found a foreign registration at '${worktreePath}'; preserving it.`,

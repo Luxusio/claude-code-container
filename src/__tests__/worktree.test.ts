@@ -883,11 +883,28 @@ describe("createWorkspace", () => {
             ["config", "--local", "--add", "branch.remote-rollback.merge", "refs/heads/old"],
             { cwd: repoInSource, stdio: "pipe" },
         );
-        installFailingCheckoutHook(repoInSource);
+        const hook = join(repoInSource, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            [
+                "#!/bin/sh",
+                "git update-ref -d refs/heads/remote-rollback",
+                "exit 1",
+                "",
+            ].join("\n"),
+        );
+        chmodSync(hook, 0o755);
 
         expect(() => createWorkspace(sourceDir, "remote-rollback"))
             .toThrow("Failed to create worktree");
         expect(branchExistsInRepo(repoInSource, "remote-rollback")).toBe("remote");
+        const workspace = getWorkspacePath(sourceDir, "remote-rollback");
+        expect(existsSync(workspace)).toBe(false);
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: repoInSource,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).not.toContain(workspace);
         const remote = spawnSync(
             "git",
             ["config", "--local", "--get-all", "branch.remote-rollback.remote"],
