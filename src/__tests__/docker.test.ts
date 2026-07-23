@@ -56,6 +56,7 @@ const {
     isDockerRunning,
     isDockerDesktop,
     isContainerRunning,
+    isContainerConfirmedStopped,
     isContainerExists,
     isContainerImageOutdated,
     isImageExists,
@@ -79,7 +80,7 @@ const {
     removeProjectContainer,
 } = await import("../docker.js");
 
-const { CLI_VERSION, CLIPBOARD_FILES_CONTAINER_DIR } = await import("../utils.js");
+const { CLI_VERSION, CLIPBOARD_FILES_CONTAINER_DIR, getProjectId } = await import("../utils.js");
 const { getAllCredentialMounts } = await import("../tool-registry.js");
 const { deviceLabOwnerId } = await import("../device-lab-owner.js");
 const {
@@ -88,7 +89,7 @@ const {
 } = await import("../container-runtime.js");
 
 function makeResult(
-    status: number,
+    status: number | null,
     stdout = "",
 ): SpawnSyncReturns<string> {
     return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
@@ -123,6 +124,12 @@ function fullCredentialMountsJson(
         Type: "bind",
         RW: true,
     }));
+    const projectMounts = [{
+        Source: "/home/user/my-project",
+        Destination: `/project/${getProjectId("/home/user/my-project")}`,
+        Type: "bind",
+        RW: true,
+    }];
     const gitIdentityMounts = [
         { Source: "/host/home/user/.gitconfig", Destination: "/host-stage/gitconfig" },
         { Source: "/host/home/user/.config/git", Destination: "/home/ccc/.config/git" },
@@ -164,10 +171,13 @@ function fullCredentialMountsJson(
     const devices = options.devices ?? (options.kvmDevice === false ? [] : [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm" }]);
     const groupAdd = options.groupAdd ?? (status === "ready" && options.kvmDevice !== false ? ["108"] : []);
     return JSON.stringify({
-        Mounts: [...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...deviceLabMounts, ...labStateMounts, ...extra],
+        Mounts: [...projectMounts, ...credMounts, ...gitIdentityMounts, ...clipboardMounts, ...deviceLabMounts, ...labStateMounts, ...extra],
         Config: {
             Env: env,
-            Labels: { "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity() },
+            Labels: {
+                "ccc.project.path": "/home/user/my-project",
+                "ccc.device-lab.mount-identity": defaultDeviceLabMountIdentity(),
+            },
         },
         HostConfig: { Devices: devices, GroupAdd: groupAdd, Privileged: options.privileged === true },
     });
@@ -294,6 +304,30 @@ describe("docker.ts module exports", () => {
         it("returns false when container not in docker ps", () => {
             spawnSyncMock.mockReturnValue(makeResult(0, ""));
             expect(isContainerRunning("my-container")).toBe(false);
+        });
+    });
+
+    describe("isContainerConfirmedStopped", () => {
+        it("returns true only for a successful empty running-container query", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, ""));
+            expect(isContainerConfirmedStopped("my-container")).toBe(true);
+        });
+
+        it("returns false when the container is running", () => {
+            spawnSyncMock.mockReturnValue(makeResult(0, "abc123\n"));
+            expect(isContainerConfirmedStopped("my-container")).toBe(false);
+        });
+
+        it.each([
+            ["nonzero status", makeResult(1, "")],
+            ["timeout status", makeResult(null, "")],
+            ["Windows EINVAL", {
+                ...makeResult(null, ""),
+                error: Object.assign(new Error("spawnSync docker EINVAL"), { code: "EINVAL" }),
+            }],
+        ])("fails closed on %s", (_name, result) => {
+            spawnSyncMock.mockReturnValue(result as SpawnSyncReturns<string>);
+            expect(isContainerConfirmedStopped("my-container")).toBe(false);
         });
     });
 
@@ -1121,10 +1155,10 @@ describe("docker.ts module exports", () => {
             const name = startWithApprovedReplacement();
             expect(name).toMatch(/^ccc-/);
 
-            const stopCall = spawnSyncMock.mock.calls.find(
-                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
+            const removedCall = spawnSyncMock.mock.calls.find(
+                (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
-            expect(stopCall).toBeDefined();
+            expect(removedCall).toBeDefined();
         });
 
         it("refuses contract-drift replacement when the caller omits the session guard", () => {
@@ -1144,11 +1178,14 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
-        it("preserves a running container with contract drift even when the current CCC session is alone", () => {
-            mockExistsSync.mockReturnValue(false);
-            const driftMountsJson = JSON.stringify([
-                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
-            ]);
+        it("preserves a running container with safe VM metadata drift even when the current CCC session is alone", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            inspected.Config.Env = inspected.Config.Env.map((entry: string) => (
+                entry.startsWith("CCC_LAB_RUNNER_STATUS=")
+                    ? "CCC_LAB_RUNNER_STATUS=unsupported"
+                    : entry
+            ));
+            const driftMountsJson = JSON.stringify(inspected);
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
@@ -1187,7 +1224,7 @@ describe("docker.ts module exports", () => {
             })).toBe(false);
         });
 
-        it("preserves a running Windows container when its device-lab file identity label changed", () => {
+        it("fails closed without replacing a running Windows container when its device-lab file identity label changed", () => {
             const inspected = JSON.parse(fullCredentialMountsJson()) as {
                 Config: { Labels: Record<string, string> };
             };
@@ -1204,13 +1241,12 @@ describe("docker.ts module exports", () => {
             const guard = vi.fn(() => true);
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-            const name = startProjectContainer(
+            expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            );
+            )).toThrow("contract failed safety validation");
 
-            expect(name).toBe(getContainerName(projectPath));
             expect(guard).not.toHaveBeenCalled();
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("device-lab mount identity changed"));
+            expect(warnSpy).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
 
@@ -1241,6 +1277,16 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
+            ["project source substitution", (value: ReturnType<typeof JSON.parse>) => {
+                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination.startsWith("/project/"));
+                mount.Source = "/foreign/project";
+            }],
+            ["project identity label substitution", (value: ReturnType<typeof JSON.parse>) => {
+                value.Config.Labels["ccc.project.path"] = "/foreign/project";
+            }],
+            ["missing credential mount", (value: ReturnType<typeof JSON.parse>) => {
+                value.Mounts = value.Mounts.filter((item: { Destination: string }) => item.Destination !== "/home/ccc/.claude");
+            }],
             ["credential source substitution", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.claude");
                 mount.Source = "/foreign/.claude";
@@ -1330,8 +1376,36 @@ describe("docker.ts module exports", () => {
             );
 
             expect(guard).toHaveBeenCalledOnce();
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(false);
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
+        });
+
+        it("aborts replacement without stop when a confirmed-stopped container starts before rm", () => {
+            const driftMountsJson = JSON.stringify([
+                { Source: "/host/.claude", Destination: "/home/ccc/.claude" },
+            ]);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
+                if (args[0] === "rm") return makeResult(1, "");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                replace();
+                return true;
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("stopped container could not be removed");
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(false);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "run")).toBe(false);
         });
 
         it("fails fast without replacing a temporarily unresponsive container owned by another session", () => {
@@ -1354,7 +1428,7 @@ describe("docker.ts module exports", () => {
                     undefined,
                     () => false,
                 ))
-                .toThrow("another active session prevented destructive recovery");
+                .toThrow("automatic destructive recovery was refused");
 
             const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
@@ -1457,7 +1531,7 @@ describe("docker.ts module exports", () => {
 
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            )).toThrow("another active session prevented replacement");
+            )).toThrow("automatic replacement was not authorized");
             expect(guard).toHaveBeenCalledOnce();
             expectNoContainerReplacement();
         });
@@ -1561,7 +1635,7 @@ describe("docker.ts module exports", () => {
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args?.[0] === "stop";
+                return args?.[0] === "rm";
             })).toBe(true);
         });
 
@@ -1586,7 +1660,7 @@ describe("docker.ts module exports", () => {
 
             startWithApprovedReplacement();
 
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
         });
 
         it("recreates a container whose broker auth bind source is not the current owner secret", () => {
@@ -1609,7 +1683,7 @@ describe("docker.ts module exports", () => {
 
             startWithApprovedReplacement();
 
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
         });
 
         it("recreates an existing container whose bind identity label refers to obsolete inodes", () => {
@@ -1631,7 +1705,7 @@ describe("docker.ts module exports", () => {
 
             startWithApprovedReplacement();
 
-            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(true);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
         });
 
         it("fails closed when the prepared owner directory is a symbolic link", () => {
@@ -1798,7 +1872,7 @@ describe("docker.ts module exports", () => {
 
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args?.[0] === "stop";
+                return args?.[0] === "rm";
             })).toBe(true);
         });
 
@@ -2125,7 +2199,7 @@ describe("docker.ts module exports", () => {
             const rmCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "rm"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
             expect(rmCall).toBeDefined();
         });
 
@@ -2151,7 +2225,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when durable lab state mount is missing", () => {
@@ -2184,7 +2258,7 @@ describe("docker.ts module exports", () => {
             const runCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
             expect(runCall).toBeDefined();
         });
 
@@ -2218,7 +2292,7 @@ describe("docker.ts module exports", () => {
             const runCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "run"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
             expect(runCall).toBeDefined();
         });
 
@@ -2253,7 +2327,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when VM contract changes from ready to unsupported", () => {
@@ -2282,7 +2356,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when ready VM contract has extra group-add entries", () => {
@@ -2312,7 +2386,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when ready VM contract has extra host devices", () => {
@@ -2347,7 +2421,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when unsupported VM contract has any stale device", () => {
@@ -2381,7 +2455,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("recreates existing default container when it is privileged", () => {
@@ -2411,7 +2485,7 @@ describe("docker.ts module exports", () => {
             const stopCall = spawnSyncMock.mock.calls.find(
                 (c: unknown[]) => c[0] === "docker" && (c[1] as string[])[0] === "stop"
             );
-            expect(stopCall).toBeDefined();
+            expect(stopCall).toBeUndefined();
         });
 
         it("reuses container when extraMounts are present and all mounts exist", () => {

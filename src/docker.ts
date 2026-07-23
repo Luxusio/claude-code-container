@@ -584,6 +584,16 @@ export function isContainerRunning(containerName: string): boolean {
     return (result.stdout ?? "").trim().length > 0;
 }
 
+/** Destructive lifecycle operations require a successful, explicit stopped result. */
+export function isContainerConfirmedStopped(containerName: string): boolean {
+    const result = spawnSync(
+        runtimeCli(),
+        ["ps", "-q", "-f", `name=^${containerName}$`],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return !result.error && result.status === 0 && (result.stdout ?? "").trim().length === 0;
+}
+
 export function canExecContainer(containerName: string, timeoutMs = 5000): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -830,6 +840,7 @@ function containerMatchesRunContract(
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
     deviceLabMountIdentity: string,
+    projectPath: string,
     reportMismatch: (reason: string) => void = () => undefined,
 ): boolean {
     const result = spawnSync(
@@ -852,6 +863,9 @@ function containerMatchesRunContract(
         };
         const mounts = inspected.Mounts || [];
         const env = envMap(inspected.Config?.Env);
+        if (inspected.Config?.Labels?.["ccc.project.path"] !== projectPath) {
+            return failContract("project path identity changed");
+        }
         if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) {
             return failContract("device-lab mount identity changed");
         }
@@ -918,14 +932,16 @@ function containerMatchesRunContract(
 }
 
 /**
- * A missing immutable feature can be deferred while another session owns the
- * container. Permission expansion, auth drift, source substitution, or an
- * unreadable contract cannot: the joining session must fail closed instead.
+ * A non-security immutable metadata change can be deferred while a container
+ * remains running. Permission expansion, identity/auth drift, a missing mount,
+ * source substitution, or an unreadable contract must fail closed instead.
  */
 function containerRunContractIsSafeToDefer(
     containerName: string,
     requiredMounts: RequiredContainerMount[],
     labRunner: LabRunnerRunConfig,
+    deviceLabMountIdentity: string,
+    projectPath: string,
 ): boolean {
     const result = spawnSync(
         runtimeCli(),
@@ -936,14 +952,16 @@ function containerRunContractIsSafeToDefer(
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
-            Config?: { Env?: string[] };
+            Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
+        if (inspected.Config?.Labels?.["ccc.project.path"] !== projectPath) return false;
+        if (inspected.Config?.Labels?.[DEVICE_LAB_MOUNT_IDENTITY_LABEL] !== deviceLabMountIdentity) return false;
         if (inspected.HostConfig?.Privileged === true) return false;
         const mounts = inspected.Mounts || [];
         for (const req of requiredMounts) {
             const mount = mounts.find((item) => item.Destination === req.containerPath);
-            if (!mount) continue;
+            if (!mount) return false;
             if (req.readonly !== undefined && mount.RW !== !req.readonly) return false;
             if (req.type !== undefined && mount.Type !== req.type) return false;
             if (req.verifySource) {
@@ -958,9 +976,9 @@ function containerRunContractIsSafeToDefer(
         const env = envMap(inspected.Config?.Env);
         const authRequired = requiredMounts.some((mount) => mount.containerPath === DEVICE_BROKER_AUTH_CONTAINER_FILE);
         const authMounted = mounts.some((mount) => mount.Destination === DEVICE_BROKER_AUTH_CONTAINER_FILE);
-        // A missing newly-required auth mount is a deferred feature update.
-        // A stale/extra auth mount or a mounted token with the wrong env path
-        // could expose another owner and must fail closed.
+        // Missing, stale, or incorrectly selected auth mounts can expose
+        // writable-layer credentials or another owner and must fail closed.
+        if (authRequired && !authMounted) return false;
         if (!authRequired && authMounted) return false;
         if (authMounted && env.get("CCC_DEVICE_BROKER_AUTH_FILE") !== DEVICE_BROKER_AUTH_CONTAINER_FILE) return false;
         if (!authMounted && env.has("CCC_DEVICE_BROKER_AUTH_FILE")) return false;
@@ -1140,8 +1158,16 @@ export function syncManagedMcpBundles(containerName: string): void {
 function recreateContainer(containerName: string, reason: string, onRecreate?: () => void): void {
     console.log(`Recreating container (${reason})...`);
     const cli = runtimeCli();
-    spawnSync(cli, ["stop", containerName], { stdio: "ignore" });
-    spawnSync(cli, ["rm", containerName], { stdio: "ignore" });
+    // Do not stop here. The caller confirmed the container was stopped under
+    // the lifecycle lock; plain `rm` fails if an external actor starts it in
+    // the meantime, closing the destructive TOCTOU window.
+    const removed = spawnSync(cli, ["rm", containerName], {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (removed.error || removed.status !== 0) {
+        throw new Error("Container replacement aborted because the stopped container could not be removed.");
+    }
     onRecreate?.();
 }
 
@@ -1157,7 +1183,7 @@ function recreateContainerWithSessionGuard(
     }
     // A running project container is itself live ownership evidence. Mount or
     // image drift is applied after it stops; it never authorizes stop/rm.
-    if (isContainerRunning(containerName)) return false;
+    if (!isContainerConfirmedStopped(containerName)) return false;
     return guard(recreate);
 }
 
@@ -1204,6 +1230,8 @@ export function startProjectContainer(
     const deviceLabStateHostDir = preparedDeviceLabSources.stateRoot.path;
     const currentDeviceLabOwnerRoot = preparedDeviceLabSources.ownerRoot.path;
     const currentDeviceLabOwnerAuthFile = preparedDeviceLabSources.ownerAuthFile?.path;
+    const projectId = getProjectId(fullPath);
+    const projectMountPath = `/project/${projectId}`;
 
     const debug = !!process.env.DEBUG;
 
@@ -1216,6 +1244,7 @@ export function startProjectContainer(
         const gitIdentityMounts = getHostGitIdentityMounts();
         const labRunner = buildContainerVmRunConfig(containerName);
         const requiredMounts: RequiredContainerMount[] = [
+            { hostPath: fullPath, containerPath: projectMountPath, readonly: false, type: "bind", verifySource: true },
             ...getAllCredentialMounts().map((m) => ({
                 hostPath: resolveCredentialHostPath(m, profile),
                 containerPath: m.containerDir,
@@ -1251,6 +1280,7 @@ export function startProjectContainer(
             requiredMounts,
             labRunner,
             preparedDeviceLabSources.contractIdentity,
+            fullPath,
             (reason) => { contractMismatchReason = reason; },
         );
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
@@ -1269,16 +1299,22 @@ export function startProjectContainer(
                     recreateRunningContainer,
                 );
                 if (!recreated) {
-                    if (!containerRunContractIsSafeToDefer(containerName, requiredMounts, labRunner)) {
+                    if (!containerRunContractIsSafeToDefer(
+                        containerName,
+                        requiredMounts,
+                        labRunner,
+                        preparedDeviceLabSources.contractIdentity,
+                        fullPath,
+                    )) {
                         throw new Error("Running container contract failed safety validation; preserving the active session without joining it.");
                     }
                     if (!isContainerRunning(containerName)) {
-                        throw new Error("Container contract update is required; another active session prevented replacement.");
+                        throw new Error("Container contract update is required, but automatic replacement was not authorized.");
                     }
                     if (!canExecContainerAfterBriefRetry(containerName)) {
-                        throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
+                        throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
                     }
-                    console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the container is still running. Stop it before restarting CCC to apply the update.`);
+                    console.warn(`[ccc] Container update deferred (${contractMismatchReason}) because the container is still running. Exit active CCC sessions, run 'ccc stop', then retry.`);
                     return containerName;
                 }
             } else {
@@ -1335,7 +1371,7 @@ export function startProjectContainer(
                     recreateRunningContainer,
                 );
                 if (!recreated) {
-                    throw new Error("Running container is unavailable; another active session prevented destructive recovery.");
+                    throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
                 }
             } else {
                 recreateContainerWithSessionGuard(containerName, "container exec failed", onRecreate, undefined);
@@ -1353,7 +1389,7 @@ export function startProjectContainer(
                 recreateRunningContainer,
             );
             if (!recreated) {
-                throw new Error("Device-lab mount source changed; another active session prevented replacement.");
+                throw new Error("Device-lab mount source changed; automatic replacement was not authorized.");
             }
         } else {
             spawnSync(cli, ["start", containerName], { stdio: "inherit" });
@@ -1368,7 +1404,7 @@ export function startProjectContainer(
                     recreateRunningContainer,
                 );
                 if (!recreated) {
-                    throw new Error("Restarted container is unavailable; another active session prevented replacement.");
+                    throw new Error("Restarted container is unavailable; automatic replacement was refused.");
                 }
             } else {
                 syncManagedMcpBundles(containerName);
@@ -1382,7 +1418,7 @@ export function startProjectContainer(
                     recreateRunningContainer,
                 );
                 if (!recreated) {
-                    throw new Error("Device-lab mount source changed during restart; another active session prevented replacement.");
+                    throw new Error("Device-lab mount source changed during restart; automatic replacement was refused.");
                 }
             }
         }
@@ -1398,8 +1434,6 @@ export function startProjectContainer(
     }
     console.log("Creating container...");
 
-    const projectId = getProjectId(fullPath);
-    const projectMountPath = `/project/${projectId}`;
     const credentialMounts = getAllCredentialMounts().map(m => {
         const hostPath = resolveCredentialHostPath(m, profile);
         mkdirSync(hostPath, { recursive: true });

@@ -58,6 +58,7 @@ import {
     isDockerDesktop,
     ensureDockerRunning,
     isContainerRunning,
+    isContainerConfirmedStopped,
     isContainerExists,
     isImageExists,
     getImageLabel,
@@ -139,6 +140,22 @@ async function prepareHostDeviceBroker(fullPath: string, profile?: string): Prom
 // Progress indicator for startup steps (dim text on stderr)
 function progress(msg: string): void {
     process.stderr.write(`\x1b[2m▸ ${msg}\x1b[0m\n`);
+}
+
+export function replaceStoppedContainerWithoutInterruptingSessions(
+    containerName: string,
+    containerPrefix: string,
+    currentLockFile: string,
+    replace: () => void,
+    replacementGuard: typeof recreateContainerWithoutInterruptingSessions = recreateContainerWithoutInterruptingSessions,
+    confirmedStopped: typeof isContainerConfirmedStopped = isContainerConfirmedStopped,
+): boolean {
+    return replacementGuard(
+        containerPrefix,
+        currentLockFile,
+        replace,
+        () => confirmedStopped(containerName),
+    );
 }
 
 
@@ -414,11 +431,11 @@ async function exec(
     let wasAlreadyRunning = containerStatus.running;
     const sessionContainerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
     const recreateRunningContainer = (recreate: () => void) => (
-        recreateContainerWithoutInterruptingSessions(
+        replaceStoppedContainerWithoutInterruptingSessions(
+            targetContainer,
             sessionContainerPrefix,
             sessionLockFile,
             recreate,
-            () => !isContainerRunning(targetContainer),
         )
     );
 
@@ -440,7 +457,7 @@ async function exec(
                 }
             });
             if (!recreated) {
-                console.log("Update available, but the container is still running. Stop it before restarting CCC to upgrade.");
+                console.log("Update available, but the container is still running. Exit active CCC sessions, run 'ccc stop', then retry.");
             }
         }
     }
@@ -452,7 +469,7 @@ async function exec(
         console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
-        if (isContainerRunning(targetContainer)) return false;
+        if (!isContainerConfirmedStopped(targetContainer)) return false;
         if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
         recreate();
         return true;

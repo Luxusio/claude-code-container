@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, withWorkspaceRemovalLifecycleLock } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -210,10 +210,41 @@ describe('auto container version-up', () => {
   })
 
   it('deferred upgrade message requires an explicit container stop', () => {
-    const message = "Update available, but the container is still running. Stop it before restarting CCC to upgrade."
+    const message = "Update available, but the container is still running. Exit active CCC sessions, run 'ccc stop', then retry."
     expect(message).toContain("container is still running")
-    expect(message).toContain("Stop it")
-    expect(message).toContain("upgrade")
+    expect(message).toContain("ccc stop")
+  })
+
+  it('does not invoke automatic replacement unless the container is confirmed stopped', () => {
+    const replace = vi.fn()
+    const replacementGuard = vi.fn((_prefix, _lock, operation, allowed) => {
+      if (!allowed()) return false
+      operation()
+      return true
+    })
+    const confirmedStopped = vi.fn(() => false)
+
+    expect(replaceStoppedContainerWithoutInterruptingSessions(
+      'ccc-project', 'project', '/locks/current.lock', replace,
+      replacementGuard, confirmedStopped,
+    )).toBe(false)
+    expect(confirmedStopped).toHaveBeenCalledWith('ccc-project')
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('runs automatic replacement only after the locked stopped probe succeeds', () => {
+    const replace = vi.fn()
+    const replacementGuard = vi.fn((_prefix, _lock, operation, allowed) => {
+      expect(allowed()).toBe(true)
+      operation()
+      return true
+    })
+
+    expect(replaceStoppedContainerWithoutInterruptingSessions(
+      'ccc-project', 'project', '/locks/current.lock', replace,
+      replacementGuard, () => true,
+    )).toBe(true)
+    expect(replace).toHaveBeenCalledOnce()
   })
 })
 
