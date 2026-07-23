@@ -134,7 +134,7 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
             remoteSessionReservationShell(containerName, token, 60, "exit 99"),
             remoteRefreshSessionShell(containerName, token, 60),
             remoteReleaseSessionShell(containerName, token),
-            remoteStopShell(containerName, token),
+            remoteStopShell(containerName, token, "a".repeat(64)),
         ];
 
         for (const command of commands) {
@@ -268,10 +268,10 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         const marker = join(home, ".ccc", "remote-runtime", "sessions-" + hashPath(containerName), token);
         expect(readFileSync(marker, "utf8").trim().split(/\s+/)[1]).toBe(originalId);
 
-        await expect(runShell(remoteRefreshSessionShell(containerName, token, 60, true), home, env)).resolves.toBe(0);
+        await expect(runShell(remoteRefreshSessionShell(containerName, token, 60, true, originalId), home, env)).resolves.toBe(0);
         expect(readFileSync(marker, "utf8").trim().split(/\s+/)[1]).toBe(originalId);
 
-        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(0);
+        await expect(runShell(remoteStopShell(containerName, token, originalId), home, env)).resolves.toBe(0);
         expect(readFileSync(stoppedFile, "utf8").trim()).toBe(originalId);
     });
 
@@ -282,7 +282,7 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         const token = "f".repeat(32);
         await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":"), home)).resolves.toBe(0);
 
-        await expect(runShell(remoteStopShell(containerName, token), home)).resolves.toBe(74);
+        await expect(runShell(remoteStopShell(containerName, token, "f".repeat(64)), home)).resolves.toBe(74);
     });
 
     it("rejects a symlink that preclaims a reservation marker", async () => {
@@ -344,7 +344,7 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         chmodSync(docker, 0o755);
         const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
 
-        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(44);
+        await expect(runShell(remoteStopShell(containerName, token, "a".repeat(64)), home, env)).resolves.toBe(44);
         expect(existsSync(dockerCalled)).toBe(false);
     });
 
@@ -368,7 +368,35 @@ describe.runIf(process.platform !== "win32")("remote lifecycle lock integration"
         const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
         await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":", true), home, env)).resolves.toBe(0);
 
-        await expect(runShell(remoteStopShell(containerName, token), home, env)).resolves.toBe(74);
+        await expect(runShell(remoteStopShell(containerName, token, pinnedId), home, env)).resolves.toBe(74);
         expect(existsSync(stoppedFile)).toBe(false);
+    });
+
+    it("rejects a regular marker replaced with a same-name successor ID", async () => {
+        const home = mkdtempSync(join(tmpdir(), "ccc-remote-regular-marker-home-"));
+        const bin = mkdtempSync(join(tmpdir(), "ccc-remote-regular-marker-bin-"));
+        roots.push(home, bin);
+        const containerName = "ccc-regular-marker";
+        const token = "6".repeat(32);
+        const originalId = "c".repeat(64);
+        const successorId = "d".repeat(64);
+        const dockerCalled = join(home, "docker-called");
+        const docker = join(bin, "docker");
+        writeFileSync(docker, [
+            "#!/bin/sh",
+            "touch " + shellEscapeArg(dockerCalled),
+            "if [ \"$1\" = inspect ] && [ \"$3\" = '{{.Name}}' ]; then printf '%s\\n' " + shellEscapeArg(`/${containerName}`) + "; exit 0; fi",
+            "if [ \"$1\" = inspect ]; then printf '%s\\n' " + shellEscapeArg(originalId) + "; exit 0; fi",
+            "exit 0",
+        ].join("\n"));
+        chmodSync(docker, 0o755);
+        const env = { ...process.env, PATH: [bin, process.env.PATH ?? ""].join(":") };
+        await expect(runShell(remoteSessionReservationShell(containerName, token, 60, ":", true), home, env)).resolves.toBe(0);
+        rmSync(dockerCalled, { force: true });
+        const marker = join(home, ".ccc", "remote-runtime", `sessions-${hashPath(containerName)}`, token);
+        writeFileSync(marker, `${Math.floor(Date.now() / 1000) + 60} ${successorId}\n`);
+
+        await expect(runShell(remoteStopShell(containerName, token, originalId), home, env)).resolves.toBe(74);
+        expect(existsSync(dockerCalled)).toBe(false);
     });
 });

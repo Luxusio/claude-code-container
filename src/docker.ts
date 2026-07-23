@@ -643,7 +643,7 @@ function canExecContainerAfterBriefRetry(containerName: string): boolean {
 export function isContainerExists(containerName: string): boolean {
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-aq", "-f", `name=^${containerName}$`],
+        ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
         { encoding: "utf-8" },
     );
     // Unknown must not bypass contract validation or authorize creation of a
@@ -656,7 +656,7 @@ export function isContainerExists(containerName: string): boolean {
 function getListedContainerId(containerName: string): { known: boolean; containerId: string | null } {
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-aq", "-f", `name=^${containerName}$`],
+        ["ps", "-aq", "--no-trunc", "-f", `name=^${containerName}$`],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (result.error || result.status !== 0) return { known: false, containerId: null };

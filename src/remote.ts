@@ -179,7 +179,10 @@ export function remoteSessionReservationShell(
     ].join("; "));
 }
 
-export function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number, requireContainerIdentity = false): string {
+export function remoteRefreshSessionShell(containerName: string, token: string, leaseSeconds: number, requireContainerIdentity = false, expectedContainerId?: string): string {
+    if (requireContainerIdentity && !expectedContainerId?.match(/^[a-fA-F0-9]{12,64}$/)) {
+        throw new RangeError("expectedContainerId is required when refreshing a pinned remote session");
+    }
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
@@ -198,6 +201,7 @@ export function remoteRefreshSessionShell(containerName: string, token: string, 
             `case "$_ccc_expiry" in ''|*[!0-9]*) exit 74 ;; esac`,
             `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
             '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
+            `[ "$_ccc_container_id" = ${shellEscapeArg(expectedContainerId!)} ] || exit 74`,
         ] : []),
         "_ccc_now=$(date +%s)",
         `_ccc_assert_sessions || exit 74`,
@@ -217,7 +221,10 @@ export function remoteReleaseSessionShell(containerName: string, token: string):
     return remoteLifecycleShell(containerName, `_ccc_sessions=$_ccc_runtime/sessions-${key}; if [ -e \"$_ccc_sessions\" ]; then _ccc_assert_private \"$_ccc_sessions\" || exit 74; _ccc_sessions_identity=$(_ccc_identity \"$_ccc_sessions\") || exit 74; _ccc_assert_sessions() { _ccc_assert_runtime && _ccc_assert_private \"$_ccc_sessions\" && [ \"$(_ccc_identity \"$_ccc_sessions\")\" = \"$_ccc_sessions_identity\" ]; }; _ccc_assert_sessions || exit 74; rm -f \"$_ccc_sessions/${token}\"; _ccc_assert_sessions || exit 74; fi; _ccc_assert_runtime || exit 74`);
 }
 
-export function remoteStopShell(containerName: string, ownToken: string): string {
+export function remoteStopShell(containerName: string, ownToken: string, expectedContainerId: string): string {
+    if (!expectedContainerId.match(/^[a-fA-F0-9]{12,64}$/)) {
+        throw new RangeError("expectedContainerId must be a 12-64 character hexadecimal container ID");
+    }
     const key = hashPath(containerName);
     return remoteLifecycleShell(containerName, [
         `_ccc_sessions=$_ccc_runtime/sessions-${key}`,
@@ -233,6 +240,7 @@ export function remoteStopShell(containerName: string, ownToken: string): string
         `case "$_ccc_own_expiry" in ''|*[!0-9]*) exit 74 ;; esac`,
         `case "$_ccc_container_id" in ''|*[!a-fA-F0-9]*) exit 74 ;; esac`,
         '[ "${#_ccc_container_id}" -ge 12 ] && [ "${#_ccc_container_id}" -le 64 ] || exit 74',
+        `[ "$_ccc_container_id" = ${shellEscapeArg(expectedContainerId)} ] || exit 74`,
         `_ccc_expected_name=${shellEscapeArg(`/${containerName}`)}`,
         `_ccc_actual_name=$(docker inspect --format ${shellEscapeArg("{{.Name}}")} "$_ccc_container_id") || exit 44`,
         `[ "$_ccc_actual_name" = "$_ccc_expected_name" ] || exit 74`,
@@ -306,10 +314,13 @@ async function startRemoteContainer(config: RemoteConfig, projectPath: string, r
  */
 async function createContainerProjectDir(config: RemoteConfig, containerName: string, projectId: string): Promise<void> {
     const cmd = `docker exec ${containerName} mkdir -p /project/${projectId}`;
-    spawnSync("ssh", [
+    const result = spawnSync("ssh", [
         `${config.user}@${config.host}`,
         cmd
     ], {encoding: "utf-8"});
+    if (result.error || result.status !== 0) {
+        throw new Error(`Failed to prepare remote container project directory: ${result.stderr || result.error?.message || "unknown error"}`);
+    }
 }
 
 function printSection(title: string): void {
@@ -563,7 +574,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
             if (!remoteReservationActive) return;
             const refreshed = spawnSync("ssh", [
                 `${resolvedConfig.user}@${resolvedConfig.host}`,
-                remoteRefreshSessionShell(remoteContainer.name, remoteReservationToken, remoteReservationLeaseSeconds, true),
+                remoteRefreshSessionShell(remoteContainer.name, remoteReservationToken, remoteReservationLeaseSeconds, true, remoteContainer.id),
             ], { encoding: "utf-8", timeout: 10000 });
             if (refreshed.status !== 0) console.error("Remote session lease refresh failed; container stop protection may expire.");
         }, 30_000);
@@ -629,7 +640,7 @@ export async function remoteExec(projectPath: string, host?: string, args: strin
                     console.log("Stopping container...");
                     const stopped = spawnSync(
                         "ssh",
-                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(remoteContainer.name, remoteReservationToken)],
+                        [`${resolvedConfig.user}@${resolvedConfig.host}`, remoteStopShell(remoteContainer.name, remoteReservationToken, remoteContainer.id)],
                         { encoding: "utf-8", timeout: 60000 },
                     );
                     if (stopped.status === 42 || stopped.stdout?.includes("ccc-remote-sessions-active")) {

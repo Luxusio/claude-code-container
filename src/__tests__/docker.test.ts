@@ -1226,6 +1226,35 @@ describe("docker.ts module exports", () => {
             expect(targeted.flatMap((call: unknown[]) => call[1] as string[])).not.toContain(name);
         });
 
+        it("requests untruncated IDs before comparing the listed and inspected identities", () => {
+            const fullId = "a".repeat(64);
+            const ready = vi.fn();
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, `${fullId}\n`);
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, `${fullId}\n`);
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, `${fullId}|true\n`);
+                }
+                if (args[0] === "inspect") return makeResult(0, fullCredentialMountsJson());
+                return makeResult(0);
+            });
+
+            startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, undefined, ready,
+            );
+
+            expect(ready).toHaveBeenCalledWith(fullId);
+            const listCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "ps" && args[1] === "-aq";
+            });
+            expect(listCalls.length).toBeGreaterThan(0);
+            expect(listCalls.every((call: unknown[]) => (call[1] as string[]).includes("--no-trunc"))).toBe(true);
+        });
+
         it("refuses session handoff when the pinned container identity changes", () => {
             const ready = vi.fn();
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {

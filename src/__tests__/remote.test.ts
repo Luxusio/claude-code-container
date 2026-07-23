@@ -75,7 +75,7 @@ describe('getProjectHash', () => {
 
 describe('remote stop identity fencing', () => {
   it('loads the start-time container ID before removing its reservation', () => {
-    const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32))
+    const shell = remoteStopShell('ccc-project-safe', 'a'.repeat(32), 'c'.repeat(64))
     const readAt = shell.indexOf('read -r _ccc_own_expiry _ccc_container_id')
     const removeMarkerAt = shell.indexOf('rm -f "$_ccc_marker"')
 
@@ -89,7 +89,7 @@ describe('remote stop identity fencing', () => {
   })
 
   it('does not use the container name as a stop target', () => {
-    const shell = remoteStopShell("ccc-name'; touch /tmp/unsafe; '", 'b'.repeat(32))
+    const shell = remoteStopShell("ccc-name'; touch /tmp/unsafe; '", 'b'.repeat(32), 'd'.repeat(64))
     expect(shell).not.toContain(shellEscapeArg("ccc-name'; touch /tmp/unsafe; '"))
     expect(shell).toContain('docker stop "$_ccc_container_id"')
   })
@@ -1206,6 +1206,22 @@ describe('remoteExec', () => {
     expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'ssh'
       && (call[1] as string[]).some((arg) => arg.includes('_ccc_sessions=$_ccc_runtime/sessions-')
         && arg.includes('_ccc_assert_private \"$_ccc_sessions\"')))).toBe(true)
+  })
+
+  it('exits with code 1 when preparing the pinned remote container fails', async () => {
+    mockSpawnSync
+      .mockReturnValueOnce({ status: 0, stdout: 'mutagen version 0.17.0\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'sha256abc\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: 'ccc-container-id=abcdef1234567890\n', stderr: '', pid: 0, output: [], signal: null })
+      .mockReturnValueOnce({ status: 1, stdout: '', stderr: 'container disappeared', pid: 0, output: [], signal: null })
+    mockExistsSync.mockReturnValue(true)
+    mockReadFileSync.mockReturnValue(JSON.stringify({ host: 'myhost', user: 'myuser', remotePath: '' }) as any)
+    const exitMock = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit:1') })
+
+    await expect(remoteExec('/home/user/project')).rejects.toThrow('exit:1')
+    expect(exitMock).toHaveBeenCalledWith(1)
+    expect(mockSpawn).not.toHaveBeenCalled()
+    expect(mockSpawnSync.mock.calls.some((call) => call[0] === 'mutagen' && (call[1] as string[])[0] === 'sync')).toBe(false)
   })
 
   it('resumes paused sync session when it exists as paused', async () => {
