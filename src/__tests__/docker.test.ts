@@ -178,8 +178,9 @@ const {
 function makeResult(
     status: number | null,
     stdout = "",
+    stderr = "",
 ): SpawnSyncReturns<string> {
-    return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
+    return { pid: 1, output: [], stdout, stderr, status, signal: null };
 }
 
 function defaultDeviceLabMountIdentity(): string {
@@ -2876,7 +2877,7 @@ describe("docker.ts module exports", () => {
                     return makeResult(0, "<no value>\n");
                 }
                 if (args[0] === "inspect" && args.includes("{{.Id}}")) {
-                    return makeResult(1);
+                    return makeResult(1, "", `Error: No such object: ${createdId}`);
                 }
                 if (args[0] === "ps") return makeResult(0, "");
                 if (args[0] === "run") return makeResult(0, `${createdId}\n`);
@@ -2916,7 +2917,7 @@ describe("docker.ts module exports", () => {
                 .toThrow(`failed to remove rejected container ${createdId}`);
         });
 
-        it("accepts rejected-container cleanup when removal reports failure but inspect proves absence", () => {
+        it("accepts rejected-container cleanup only when inspect explicitly proves absence", () => {
             const createdId = "c0ffee123456";
             autoInspectCreatedContainer = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -2929,7 +2930,7 @@ describe("docker.ts module exports", () => {
                     return makeResult(1);
                 }
                 if (args[0] === "inspect" && args.includes("{{.Id}}")) {
-                    return makeResult(1);
+                    return makeResult(1, "", `Error: No such object: ${createdId}`);
                 }
                 if (args[0] === "rm") return makeResult(1);
                 if (args[0] === "ps") return makeResult(0, "");
@@ -2947,6 +2948,31 @@ describe("docker.ts module exports", () => {
                 .toContain("created container bind mount identity verification failed");
             expect(thrown?.message)
                 .not.toContain(`failed to remove rejected container ${createdId}`);
+        });
+
+        it("reports rejected-container cleanup as unverified after an ambiguous inspect failure", () => {
+            const createdId = "c0ffee123456";
+            autoInspectCreatedContainer = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "inspect" && args.includes("{{json .}}")) {
+                    return makeResult(1);
+                }
+                if (args[0] === "inspect" && args.includes("{{.Id}}")) {
+                    return makeResult(1, "", "daemon transport unavailable");
+                }
+                if (args[0] === "rm") return makeResult(0);
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "run") return makeResult(0, `${createdId}\n`);
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(projectPath, ensureDirs))
+                .toThrow(`failed to remove rejected container ${createdId}`);
         });
 
         it("rejects a replaced worktree mount source before container creation", () => {

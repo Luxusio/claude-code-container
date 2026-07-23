@@ -1099,6 +1099,15 @@ function createdContainerBindMountsMatch(
     }
 }
 
+function containerInspectExplicitlyNotFound(
+    result: ReturnType<typeof spawnSync>,
+): boolean {
+    return !result.error
+        && result.status !== null
+        && result.status !== 0
+        && /\bno such (?:container|object)\b/i.test(result.stderr?.toString() ?? "");
+}
+
 function hasKvmDevice(devices: unknown): boolean {
     return JSON.stringify(devices ?? []).includes("/dev/kvm");
 }
@@ -2100,7 +2109,7 @@ export function startProjectContainer(
                 ["inspect", "-f", "{{.Id}}", createdContainerId],
                 { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
             );
-            if (remaining.error || remaining.status === null || remaining.status === 0) {
+            if (!containerInspectExplicitlyNotFound(remaining)) {
                 throw new Error(
                     `${(error as Error).message}; failed to remove rejected container ${createdContainerId}`,
                     { cause: error },

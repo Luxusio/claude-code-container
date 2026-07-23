@@ -763,6 +763,13 @@ describe("createWorkspace", () => {
         const wsResult = createWorkspace(sourceDir, "remote-only");
         expect(wsResult.created[0].action).toBe("worktree-remote");
         expect(wsResult.created[0].branch).toBe("remote-only");
+        const upstream = spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "remote-only@{upstream}"],
+            { cwd: repoInSource, encoding: "utf-8" },
+        );
+        expect(upstream.status).toBe(0);
+        expect(upstream.stdout.trim()).toBe("origin/remote-only");
     });
 
     it("handles EEXIST gracefully when workspace dir already exists", () => {
@@ -1495,6 +1502,40 @@ describe("repairWorkspace", () => {
         expect(listed.stdout).not.toContain(wsPath);
     });
 
+    it("preserves a failed-add branch when its ref changes concurrently", () => {
+        initRepo(tmpDir);
+        const original = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        }).stdout.trim();
+        writeFileSync(join(tmpDir, "alternate.txt"), "alternate");
+        spawnSync("git", ["add", "alternate.txt"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "alternate"], { cwd: tmpDir, stdio: "pipe" });
+        const alternate = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        }).stdout.trim();
+        spawnSync("git", ["reset", "--hard", original], { cwd: tmpDir, stdio: "pipe" });
+        const hook = join(tmpDir, ".git", "hooks", "post-checkout");
+        writeFileSync(
+            hook,
+            `#!/bin/sh\ngit update-ref refs/heads/hook-race ${alternate}\nexit 1\n`,
+        );
+        chmodSync(hook, 0o755);
+
+        expect(() => createWorkspace(tmpDir, "hook-race"))
+            .toThrow("changed during failed creation");
+
+        const wsPath = getWorkspacePath(tmpDir, "hook-race");
+        expect(existsSync(wsPath)).toBe(false);
+        expect(branchExistsInRepo(tmpDir, "hook-race")).toBe("local");
+        const preserved = spawnSync("git", ["rev-parse", "refs/heads/hook-race"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+        });
+        expect(preserved.stdout.trim()).toBe(alternate);
+    });
+
     it("rolls back a side-effecting failed nested repair add", () => {
         initRepo(tmpDir);
         const failingRepo = join(tmpDir, "nested-hook");
@@ -1982,6 +2023,38 @@ describe("fixBrokenWorktree", () => {
         expect(existsSync(join(wsFrontend, ".git"))).toBe(false);
     });
 
+    it("removes a newly created nested branch after broken-content merge fails", () => {
+        initRepo(tmpDir);
+        const wsResult = createWorkspace(tmpDir, "new-conflict");
+        const nestedRepo = join(tmpDir, "frontend");
+        initRepo(nestedRepo);
+        writeFileSync(join(nestedRepo, "app.ts"), "tracked-base");
+        spawnSync("git", ["add", "app.ts"], { cwd: nestedRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "tracked app"], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        const wsFrontend = join(wsResult.workspacePath, "frontend");
+        mkdirSync(wsFrontend);
+        writeFileSync(join(wsFrontend, "app.ts"), "uncommitted-user-work");
+
+        expect(() => fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "frontend",
+            "new-conflict",
+            true,
+        )).toThrow("Workspace content conflicts");
+        expect(branchExistsInRepo(nestedRepo, "new-conflict")).toBe("none");
+        expect(readFileSync(join(wsFrontend, "app.ts"), "utf-8"))
+            .toBe("uncommitted-user-work");
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+        });
+        expect(listed.stdout).not.toContain(wsFrontend);
+    });
+
     it("does not remove a pre-existing legacy backup path", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));
@@ -2141,6 +2214,14 @@ describe("getWorktreeGitMounts", () => {
         )).toThrow("crosses incompatible filesystem roots");
     });
 
+    it("accepts case aliases for the same Windows worktree metadata path", () => {
+        expect(portableWorktreeGitDirectory(
+            "C:\\Work\\repo--feature",
+            "c:\\work\\repo\\.git\\worktrees\\repo--feature",
+            "win32",
+        )).toBe("../repo/.git/worktrees/repo--feature");
+    });
+
     it("normalizes worktree metadata for host and container portability", () => {
         const repoPath = join(tmpDir, "portable-source");
         initRepo(repoPath);
@@ -2257,6 +2338,26 @@ describe("getWorktreeGitMounts", () => {
             mount.containerPath.startsWith("/")
             && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
         ))).toBe(true);
+    });
+
+    it("rejects different Git sources targeting the same container path", () => {
+        const repoPath = join(tmpDir, "same-name");
+        initRepo(repoPath);
+        const nestedPath = join(repoPath, "same-name");
+        initRepo(nestedPath);
+        writeFileSync(join(repoPath, ".gitignore"), "same-name/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested"], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const wtPath = createWorkspace(repoPath, "mount-conflict").workspacePath;
+
+        expect(() => getWorktreeGitMounts(
+            wtPath,
+            true,
+            "/project/same-name--mount-conflict-id",
+        )).toThrow("Conflicting Git mount sources target '/project/same-name/.git'");
     });
 
     it("deduplicates identical mounts", () => {
