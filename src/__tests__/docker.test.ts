@@ -2207,6 +2207,7 @@ describe("docker.ts module exports", () => {
                 runtime: "docker",
                 flavor: "docker-desktop",
                 remote: true,
+                dockerDesktop: true,
             });
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported",
@@ -2243,9 +2244,11 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
-            ["native Docker", { runtime: "docker" as const, flavor: "docker-native" as const, remote: false }, "/var/run/docker.sock.raw"],
-            ["Docker Desktop foreign socket", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true }, "/foreign/docker.sock"],
-            ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true }, "/var/run/docker.sock.raw"],
+            ["native Docker", { runtime: "docker" as const, flavor: "docker-native" as const, remote: false, dockerDesktop: false }, "/var/run/docker.sock.raw"],
+            ["WSL2 NAT native Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
+            ["remote Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
+            ["Docker Desktop foreign socket", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: true }, "/foreign/docker.sock"],
+            ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
         ])("fails closed on socket alias substitution for %s", (_name, runtime, source) => {
             _setRuntimeInfoForTest(runtime);
             const inspected = JSON.parse(fullCredentialMountsJson([], {

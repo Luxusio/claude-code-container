@@ -1828,7 +1828,7 @@ export function startProjectContainer(
                 verifySource: true,
                 verifySourceCanonical: false,
                 equivalentSources: runtimeInfo.runtime === "docker"
-                    && runtimeInfo.flavor === "docker-desktop"
+                    && runtimeInfo.dockerDesktop
                     ? ["/var/run/docker.sock.raw"]
                     : [],
             },

@@ -43,6 +43,7 @@ export interface RuntimeInfo {
     socketPath: string | null; // host-side path to the container-manager socket
     rootless: boolean;         // true iff the selected runtime is rootless
     remote: boolean;           // true iff Docker Desktop or podman machine (VM-backed)
+    dockerDesktop: boolean;    // true only when the daemon identifies itself as Docker Desktop
 }
 
 // === Module state (cache for process lifetime) ===
@@ -72,6 +73,7 @@ export function _setRuntimeInfoForTest(info: Partial<RuntimeInfo> & { runtime: R
         socketPath: info.runtime === "docker" ? "/var/run/docker.sock" : "/run/podman/podman.sock",
         rootless: false,
         remote: false,
+        dockerDesktop: false,
     };
     _cachedInfo = { ...defaults, ...info };
     _runtimeOverride = info.runtime;
@@ -158,19 +160,23 @@ function detectVersion(runtime: RuntimeName): string | null {
  * Detect whether the resolved runtime is VM-backed (Docker Desktop / podman
  * machine). Called once and cached.
  */
-function detectRemote(runtime: RuntimeName): boolean {
+function detectDockerDesktop(runtime: RuntimeName): boolean {
+    if (runtime !== "docker") return false;
+    const result = spawnSync(
+        "docker",
+        ["info", "--format", "{{.OperatingSystem}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return result.status === 0
+        && (result.stdout ?? "").toLowerCase().includes("docker desktop");
+}
+
+function detectRemote(runtime: RuntimeName, dockerDesktop: boolean): boolean {
     // Non-Linux always runs via a VM (Docker Desktop or podman machine).
     if (process.platform !== "linux") return true;
 
     if (runtime === "docker") {
-        const result = spawnSync(
-            "docker",
-            ["info", "--format", "{{.OperatingSystem}}"],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        if ((result.stdout ?? "").toLowerCase().includes("docker desktop")) {
-            return true;
-        }
+        if (dockerDesktop) return true;
         if (process.env.WSL_DISTRO_NAME) {
             // WSL2 has two networking modes. Mirrored mode shares the Windows
             // host's loopback so --network host behaves equivalently to native
@@ -309,18 +315,20 @@ export function getRuntimeInfo(): RuntimeInfo {
             socketPath: "/var/run/docker.sock",
             rootless: false,
             remote: false,
+            dockerDesktop: false,
         };
         return _cachedInfo;
     }
 
     const runtime = resolveRuntime();
     const version = detectVersion(runtime);
-    const remote = detectRemote(runtime);
+    const dockerDesktop = detectDockerDesktop(runtime);
+    const remote = detectRemote(runtime, dockerDesktop);
     const rootless = detectRootless(runtime);
     const flavor = deriveFlavor(runtime, remote, rootless);
     const socketPath = detectSocketPath(runtime, rootless);
 
-    _cachedInfo = { runtime, flavor, version, socketPath, rootless, remote };
+    _cachedInfo = { runtime, flavor, version, socketPath, rootless, remote, dockerDesktop };
     return _cachedInfo;
 }
 

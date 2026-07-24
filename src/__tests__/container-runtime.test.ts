@@ -325,6 +325,7 @@ describe("container-runtime", () => {
             const info = getRuntimeInfo();
             expect(info.remote).toBe(true);
             expect(info.flavor).toBe("docker-desktop");
+            expect(info.dockerDesktop).toBe(true);
         });
 
         it("WSL2 NAT mode (no loopback0) is treated as remote", () => {
@@ -338,6 +339,7 @@ describe("container-runtime", () => {
 
             const info = getRuntimeInfo();
             expect(info.remote).toBe(true);
+            expect(info.dockerDesktop).toBe(false);
             delete process.env.WSL_DISTRO_NAME;
         });
 
@@ -353,6 +355,7 @@ describe("container-runtime", () => {
             const info = getRuntimeInfo();
             expect(info.remote).toBe(false);
             expect(info.flavor).toBe("docker-native");
+            expect(info.dockerDesktop).toBe(false);
             delete process.env.WSL_DISTRO_NAME;
         });
     });
