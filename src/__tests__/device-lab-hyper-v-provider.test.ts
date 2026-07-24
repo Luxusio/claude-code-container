@@ -674,6 +674,9 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("FinalReleaseComObject($ComObject)");
         expect(seedScript).toContain("[IO.File]::WriteAllBytes($EntryPath, $EntryBytes)");
         expect(seedScript).toContain("$ImageRoot.AddTree($SourceRoot, $false)");
+        expect(seedScript).toContain("[Console]::Out.WriteLine('hyper-v-provisioning-media-add-tree-failed')");
+        expect(seedScript).toContain("[Console]::Out.WriteLine('hyper-v-provisioning-media-output-open-failed')");
+        expect(seedScript).toContain("[Console]::Out.WriteLine($CccIsoFailure)");
         expect(seedScript).toContain("Assert-NoReparsePath $SourceRoot");
         expect(seedScript).toContain("function Remove-CccIsoSourceRoot");
         expect(seedScript).toContain("Get-ChildItem -LiteralPath $SourceRoot -Force");
@@ -682,7 +685,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("[Security.AccessControl.FileSystemAccessRule]::new(");
         expect(seedScript).not.toContain("New-Object Security.AccessControl.FileSystemAccessRule(");
         expect(seedScript).toContain("hyper-v-provisioning-media-source-cleanup-failed");
-        expect(seedScript.indexOf("if ($null -ne $CccIsoFailure) { throw $CccIsoFailure }")).toBeGreaterThan(seedScript.indexOf("finally {"));
+        expect(seedScript.indexOf("if ($null -ne $CccIsoFailure) { [Console]::Out.WriteLine($CccIsoFailure); throw $CccIsoFailure }")).toBeGreaterThan(seedScript.indexOf("finally {"));
         expect(seedScript).not.toContain("Remove-Item -LiteralPath $SourceRoot -Recurse");
         expect(seedScript).not.toContain("ADODB.Stream");
         expect(seedScript).not.toContain("$SourceStream.Close()");
@@ -1185,6 +1188,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("FinalReleaseComObject($ComObject)");
         expect(script).toContain("[IO.File]::WriteAllBytes($EntryPath, $EntryBytes)");
         expect(script).toContain("$ImageRoot.AddTree($SourceRoot, $false)");
+        expect(script).toContain("[Console]::Out.WriteLine('hyper-v-provisioning-media-add-tree-failed')");
+        expect(script).toContain("[Console]::Out.WriteLine('hyper-v-provisioning-media-output-open-failed')");
+        expect(script).toContain("[Console]::Out.WriteLine($CccIsoFailure)");
         expect(script).toContain("Assert-NoReparsePath $SourceRoot");
         expect(script).toContain("function Remove-CccIsoSourceRoot");
         expect(script).toContain("Get-ChildItem -LiteralPath $SourceRoot -Force");
@@ -1193,7 +1199,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("[Security.AccessControl.FileSystemAccessRule]::new(");
         expect(script).not.toContain("New-Object Security.AccessControl.FileSystemAccessRule(");
         expect(script).toContain("hyper-v-provisioning-media-source-cleanup-failed");
-        expect(script.indexOf("if ($null -ne $CccIsoFailure) { throw $CccIsoFailure }")).toBeGreaterThan(script.indexOf("finally {"));
+        expect(script.indexOf("if ($null -ne $CccIsoFailure) { [Console]::Out.WriteLine($CccIsoFailure); throw $CccIsoFailure }")).toBeGreaterThan(script.indexOf("finally {"));
         expect(script).not.toContain("Remove-Item -LiteralPath $SourceRoot -Recurse");
         expect(script).not.toContain("ADODB.Stream");
         expect(script).not.toContain("$SourceStream.Close()");

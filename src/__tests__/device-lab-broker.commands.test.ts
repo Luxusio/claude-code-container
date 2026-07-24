@@ -101,6 +101,24 @@ describe("device-lab host broker lifecycle commands", () => {
         }));
     });
 
+    it("preserves the last internal media-build marker across a generic nested PowerShell failure", () => {
+        expect(redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            stdout: [
+                "hyper-v-guest-provision-media-build-command-failed",
+                "hyper-v-provisioning-media-add-tree-failed",
+                "hyper-v-provisioning-media-output-open-failed",
+            ].join("\n"),
+            stderr: "hyper-v-powershell-execution-failed",
+        }, true, "hyper-v-guest-provision-command-failed")).toEqual(expect.objectContaining({
+            diagnosticCode: "hyper-v-provisioning-media-output-open-failed",
+            stdout: "[redacted]",
+            stderr: "[redacted]",
+        }));
+    });
+
     it("prefers a specific reported diagnostic over stage markers", () => {
         expect(redactProviderCommandInput({
             mode: "exec",

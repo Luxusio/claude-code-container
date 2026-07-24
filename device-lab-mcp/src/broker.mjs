@@ -76,7 +76,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "guest-helper-recording-proxy-v1",
     "physical-unattached-wireless-routing-v1",
     "android-recording-signal-fallback-v1",
-    "hyper-v-vm-managed-auto-images-v13",
+    "hyper-v-vm-managed-auto-images-v14",
     "hyper-v-setup-network-v3",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
