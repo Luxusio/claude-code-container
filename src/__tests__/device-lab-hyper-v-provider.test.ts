@@ -1,4 +1,7 @@
 import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { describe, expect, it } from "vitest";
 import {
     hyperVAcquireBaseImageCommand,
@@ -63,6 +66,81 @@ function scriptOf(command: { args: string[]; input?: string }): string {
 }
 
 describe("Hyper-V provider adapter", () => {
+    it.skipIf(process.platform !== "win32")("creates provisioning ISO media from an in-memory COM stream", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-media-probe-"));
+        try {
+            const generated = scriptOf(hyperVGuestProvisionCommand({
+                executable: "powershell.exe",
+                ownerId,
+                deviceId,
+                incarnationId,
+                vmName: hyperVVmName(ownerId, deviceId, incarnationId),
+                vmId,
+                diskPath: join(root, "root.vhdx"),
+                deviceRoot: root,
+                credentialPath: join(root, "guest.credential.xml"),
+                provisioningMediaPath: join(root, "autounattend.iso"),
+                guestUsername: "ccc01234567",
+                guestPassword: "Ccc!7this-is-a-long-disposable-password",
+            }));
+            const assertStart = generated.indexOf("function Assert-NoReparsePath");
+            const assertEnd = generated.indexOf("\n$Vm =", assertStart);
+            const typeStart = generated.indexOf("if (-not ('CccIsoStreamWriter' -as [type]))");
+            const typeMarker = "'@ -Language CSharp -ErrorAction Stop\n}";
+            const typeEnd = generated.indexOf(typeMarker, typeStart) + typeMarker.length;
+            const writerStart = generated.indexOf("function Write-CccIso");
+            const writerEnd = generated.indexOf("\n  Write-CccIso $IsoFiles", writerStart);
+            expect({ assertStart, assertEnd, typeStart, typeEnd, writerStart, writerEnd }).toEqual(expect.objectContaining({
+                assertStart: expect.any(Number),
+                assertEnd: expect.any(Number),
+                typeStart: expect.any(Number),
+                typeEnd: expect.any(Number),
+                writerStart: expect.any(Number),
+                writerEnd: expect.any(Number),
+            }));
+            expect(Math.min(assertStart, assertEnd, typeStart, typeEnd, writerStart, writerEnd)).toBeGreaterThanOrEqual(0);
+            const isoPath = join(root, "probe.iso").replace(/'/g, "''");
+            const probeScript = [
+                "$ErrorActionPreference = 'Stop'",
+                generated.slice(assertStart, assertEnd),
+                generated.slice(typeStart, typeEnd),
+                generated.slice(writerStart, writerEnd),
+                `$IsoPath = '${isoPath}'`,
+                "$IsoFiles = [ordered]@{ 'probe.txt' = [Text.Encoding]::UTF8.GetBytes('ccc-hyper-v-media-probe') }",
+                "try {",
+                "  Write-CccIso $IsoFiles $IsoPath 'CCC_PROBE'",
+                "  $IsoItem = Get-Item -LiteralPath $IsoPath -Force -ErrorAction Stop",
+                "  $IsoText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($IsoPath))",
+                "  if ($IsoText.IndexOf('probe.txt', [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'hyper-v-provisioning-media-probe-name-missing' }",
+                "  if ($IsoText.IndexOf('ccc-hyper-v-media-probe', [StringComparison]::Ordinal) -lt 0) { throw 'hyper-v-provisioning-media-probe-content-missing' }",
+                "  [ordered]@{ ok = $true; contentVerified = $true; length = [long]$IsoItem.Length } | ConvertTo-Json -Compress",
+                "} finally {",
+                "  Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue",
+                "}",
+            ].join("\n");
+            const result = spawnSync("powershell.exe", [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                Buffer.from(probeScript, "utf16le").toString("base64"),
+            ], {
+                encoding: "utf8",
+                timeout: 30_000,
+                maxBuffer: 1024 * 1024,
+                windowsHide: true,
+            });
+            expect(result.status, result.stderr || result.error?.message).toBe(0);
+            expect(result.stdout).toContain('"ok":true');
+            expect(result.stdout).toContain('"contentVerified":true');
+            expect(result.stdout).toMatch(/"length":\d+/);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it("streams the standard Ubuntu acquisition program over stdin instead of the Windows command line", () => {
         const acquire = hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
@@ -457,10 +535,12 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("readBytes != expectedBytes || writtenBytes != expectedBytes");
         expect(seedScript).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
         expect(seedScript).toContain("FinalReleaseComObject($ComObject)");
-        expect(seedScript).toContain("New-Object -ComObject ADODB.Stream");
-        expect(seedScript.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(seedScript.indexOf("$SourceStream.Open()"));
+        expect(seedScript).toContain("CreateStreamOnHGlobal");
+        expect(seedScript).toContain("[CccIsoStreamWriter]::CreateSource($EntryBytes)");
+        expect(seedScript.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(seedScript.indexOf("$ImageRoot.AddFile($EntryName, $SourceStream)"));
         expect(seedScript).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
-        expect(seedScript).toContain("$SourceStream.Close()");
+        expect(seedScript).not.toContain("ADODB.Stream");
+        expect(seedScript).not.toContain("$SourceStream.Close()");
         expect(seedScript).not.toContain("$ImageRoot.AddTree(");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
@@ -944,10 +1024,12 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-provisioning-media-result-image-failed");
         expect(script).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
         expect(script).toContain("FinalReleaseComObject($ComObject)");
-        expect(script).toContain("New-Object -ComObject ADODB.Stream");
-        expect(script.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(script.indexOf("$SourceStream.Open()"));
+        expect(script).toContain("CreateStreamOnHGlobal");
+        expect(script).toContain("[CccIsoStreamWriter]::CreateSource($EntryBytes)");
+        expect(script.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(script.indexOf("$ImageRoot.AddFile($EntryName, $SourceStream)"));
         expect(script).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
-        expect(script).toContain("$SourceStream.Close()");
+        expect(script).not.toContain("ADODB.Stream");
+        expect(script).not.toContain("$SourceStream.Close()");
         expect(script).not.toContain("$ImageRoot.AddTree(");
         expect(script).toContain("Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue");
         expect(script).not.toContain("input.Read(");
