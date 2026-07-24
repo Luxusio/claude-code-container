@@ -49,10 +49,13 @@ describe("device-lab host broker lifecycle commands", () => {
         const diagnosticCodes = [
             "hyper-v-guest-provision-credential-command-failed",
             "hyper-v-guest-provision-input-validation-command-failed",
-            "hyper-v-guest-provision-media-command-failed",
+            "hyper-v-guest-provision-media-build-command-failed",
+            "hyper-v-guest-provision-media-attach-command-failed",
             "hyper-v-linux-seed-user-keygen-command-failed",
             "hyper-v-linux-seed-host-keygen-command-failed",
             "hyper-v-linux-seed-known-hosts-command-failed",
+            "hyper-v-linux-seed-media-build-command-failed",
+            "hyper-v-linux-seed-media-attach-command-failed",
             "hyper-v-linux-ssh-keygen-arguments-invalid",
             "hyper-v-linux-ssh-keygen-start-failed",
         ];
@@ -73,6 +76,36 @@ describe("device-lab host broker lifecycle commands", () => {
                 diagnosticCode,
             }));
         }
+    });
+
+    it("uses the last stage marker when PowerShell only reports a generic execution failure", () => {
+        expect(redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            stdout: [
+                "hyper-v-linux-seed-vm-lookup-command-failed",
+                "hyper-v-linux-seed-media-check-command-failed",
+                "hyper-v-linux-seed-media-build-command-failed",
+            ].join("\n"),
+            stderr: "hyper-v-powershell-execution-failed",
+        }, true, "hyper-v-linux-seed-command-failed")).toEqual(expect.objectContaining({
+            diagnosticCode: "hyper-v-linux-seed-media-build-command-failed",
+            stdout: "[redacted]",
+            stderr: "[redacted]",
+        }));
+    });
+
+    it("prefers a specific reported diagnostic over stage markers", () => {
+        expect(redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            stdout: "hyper-v-guest-provision-media-build-command-failed",
+            stderr: "hyper-v-provisioning-media-output-open-failed",
+        }, true, "hyper-v-guest-provision-command-failed")).toEqual(expect.objectContaining({
+            diagnosticCode: "hyper-v-provisioning-media-output-open-failed",
+        }));
     });
 
     let originalHome: string | undefined;

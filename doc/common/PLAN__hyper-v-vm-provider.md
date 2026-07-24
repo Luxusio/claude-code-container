@@ -89,11 +89,12 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v11`. Host CLI and
+The host broker advertises `hyper-v-vm-managed-auto-images-v12`. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
-runtimes. Version 11 includes PowerShell 5.1-safe IPv4 prefix-mask calculation,
+runtimes. Version 12 includes PowerShell 5.1-safe IPv4 prefix-mask calculation,
 bounded long-program loading, deterministic SSH key generation arguments, and
-redacted stage-specific guest-provisioning diagnostics.
+the stage-marker behavior added after version 11 for redacted, stage-specific
+guest-provisioning diagnostics.
 
 Level 3 treats missing Hyper-V management access as an explicit
 `host-permission` prerequisite skip, not an unknown skip. The test command does

@@ -178,7 +178,7 @@ const DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE = "windows-sandbox-b
 const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-recording-proxy-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v11";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v12";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
@@ -10811,7 +10811,10 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-vm-ownership-mismatch",
     "hyper-v-guest-provision-credential-command-failed",
     "hyper-v-guest-provision-input-validation-command-failed",
-    "hyper-v-guest-provision-media-command-failed",
+    "hyper-v-guest-provision-media-attach-command-failed",
+    "hyper-v-guest-provision-media-build-command-failed",
+    "hyper-v-guest-provision-media-check-command-failed",
+    "hyper-v-guest-provision-media-content-command-failed",
     "hyper-v-guest-provision-password-invalid",
     "hyper-v-guest-provision-requires-stopped-vm",
     "hyper-v-guest-provision-username-mismatch",
@@ -10833,7 +10836,9 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-guest-provisioning-media-attach-failed",
     "hyper-v-linux-seed-media-already-attached",
     "hyper-v-linux-seed-media-attach-failed",
-    "hyper-v-linux-seed-media-command-failed",
+    "hyper-v-linux-seed-media-attach-command-failed",
+    "hyper-v-linux-seed-media-build-command-failed",
+    "hyper-v-linux-seed-media-check-command-failed",
     "hyper-v-linux-seed-known-hosts-command-failed",
     "hyper-v-linux-seed-host-keygen-command-failed",
     "hyper-v-linux-seed-path-validation-command-failed",
@@ -10856,10 +10861,16 @@ export function redactProviderCommandInput(
     fallbackDiagnosticCode?: string,
 ): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
     const { input, ...publicResult } = result;
-    const outputDiagnosticCode = `${publicResult.error || ""}\n${publicResult.stderr || ""}\n${publicResult.stdout || ""}`
+    const diagnosticCodes = (value: unknown) => String(value || "")
         .match(/\bhyper-v-[a-z0-9-]{3,128}\b/gi)
         ?.map((candidate) => candidate.toLowerCase())
-        .find((candidate) => REDACTED_PROVIDER_DIAGNOSTIC_CODES.has(candidate));
+        .filter((candidate) => REDACTED_PROVIDER_DIAGNOSTIC_CODES.has(candidate)) || [];
+    const reportedDiagnosticCodes = diagnosticCodes(`${publicResult.error || ""}\n${publicResult.stderr || ""}`);
+    const stageDiagnosticCodes = diagnosticCodes(publicResult.stdout);
+    const reportedDiagnosticCode = reportedDiagnosticCodes.at(-1);
+    const outputDiagnosticCode = reportedDiagnosticCode && reportedDiagnosticCode !== "hyper-v-powershell-execution-failed"
+        ? reportedDiagnosticCode
+        : stageDiagnosticCodes.at(-1) || reportedDiagnosticCode;
     const diagnosticCode = redactOutput
         ? outputDiagnosticCode || fallbackDiagnosticCode
         : undefined;
