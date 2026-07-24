@@ -2141,6 +2141,58 @@ describe("docker.ts module exports", () => {
         });
 
         it.each([
+            ["Windows Docker Desktop", "C:\\ProgramData\\Docker\\volumes\\ccc-mise-cache\\_data"],
+            ["Linux Docker Engine", "/var/lib/docker/volumes/ccc-mise-cache/_data"],
+        ])("joins a running container when %s reports named-volume storage paths as Source", (_runtime, source) => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const volumeMounts = inspected.Mounts.filter(
+                (item: { Type: string }) => item.Type === "volume",
+            );
+            for (const [index, mount] of volumeMounts.entries()) {
+                mount.Name = mount.Source;
+                mount.Source = index === 0
+                    ? source
+                    : `${source}-${index}`;
+            }
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            expectNoContainerReplacement();
+        });
+
+        it("fails closed when a named-volume Name does not match even if Source resembles the expected storage path", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const miseMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/home/ccc/.local/share/mise",
+            );
+            miseMount.Name = "foreign-mise-cache";
+            miseMount.Source = "/var/lib/docker/volumes/ccc-mise-cache/_data";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+        });
+
+        it.each([
             ["Git identity", "/home/ccc/.config/git"],
             ["device broker auth", "/run/ccc-device-broker-auth/owner.json"],
         ])("fails closed when a legacy %s bind is no longer required", (_name, destination) => {

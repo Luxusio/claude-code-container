@@ -1053,6 +1053,24 @@ function unexpectedContainerMount(
     return null;
 }
 
+type InspectedContainerMount = {
+    Source: string;
+    Destination: string;
+    RW?: boolean;
+    Type?: string;
+    Name?: unknown;
+};
+
+function namedVolumeMatches(
+    mount: InspectedContainerMount,
+    expectedName: string,
+): boolean {
+    if (Object.hasOwn(mount, "Name")) {
+        return typeof mount.Name === "string" && mount.Name === expectedName;
+    }
+    return mount.Source === expectedName;
+}
+
 function createdContainerBindMountsMatch(
     containerId: string,
     required: Array<{
@@ -1195,7 +1213,7 @@ function containerMatchesRunContract(
         };
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Id?: unknown;
-            Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
+            Mounts?: InspectedContainerMount[];
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
@@ -1239,7 +1257,7 @@ function containerMatchesRunContract(
             }
             if (req.readonly !== undefined && mount.RW !== !req.readonly) return failContract(`mount access changed for ${req.containerPath}`);
             if (req.type !== undefined && mount.Type !== req.type) return failContract(`mount type changed for ${req.containerPath}`);
-            if (req.type === "volume" && mount.Source !== req.hostPath) {
+            if (req.type === "volume" && !namedVolumeMatches(mount, req.hostPath)) {
                 return failContract(`volume source changed for ${req.containerPath}`);
             }
             if (req.verifySource) {
@@ -1343,7 +1361,7 @@ function containerRunContractIsSafeToDefer(
     try {
         const inspected = JSON.parse((result.stdout ?? "").trim()) as {
             Id?: unknown;
-            Mounts?: Array<{ Source: string; Destination: string; RW?: boolean; Type?: string }>;
+            Mounts?: InspectedContainerMount[];
             Config?: { Env?: string[]; Labels?: Record<string, string> };
             HostConfig?: { Devices?: unknown; DeviceRequests?: unknown; GroupAdd?: unknown; Privileged?: boolean };
         };
@@ -1427,7 +1445,7 @@ function containerRunContractIsSafeToDefer(
             if (required.readonly !== undefined && mounted.RW !== !required.readonly) {
                 return unsafe(`mount access changed for ${required.containerPath}`);
             }
-            if (required.type === "volume" && mounted.Source !== required.hostPath) {
+            if (required.type === "volume" && !namedVolumeMatches(mounted, required.hostPath)) {
                 return unsafe(`volume source changed for ${required.containerPath}`);
             }
             if (required.verifySource) {
