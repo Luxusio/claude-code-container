@@ -2199,6 +2199,79 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it.each([
+            ["strict contract", false],
+            ["safe defer after additive mount drift", true],
+        ])("joins a Docker Desktop container with docker.sock.raw through the %s path", (_name, defer) => {
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+            });
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = "/var/run/docker.sock.raw";
+            if (defer) {
+                inspected.Mounts = inspected.Mounts.filter(
+                    (item: { Destination: string }) => item.Destination !== "/home/ccc/.claude",
+                );
+            }
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            if (defer) {
+                expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            }
+            expectNoContainerReplacement();
+        });
+
+        it.each([
+            ["native Docker", { runtime: "docker" as const, flavor: "docker-native" as const, remote: false }, "/var/run/docker.sock.raw"],
+            ["Docker Desktop foreign socket", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true }, "/foreign/docker.sock"],
+            ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true }, "/var/run/docker.sock.raw"],
+        ])("fails closed on socket alias substitution for %s", (_name, runtime, source) => {
+            _setRuntimeInfoForTest(runtime);
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = source;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+        });
+
         it("fails closed when a named-volume Name does not match even if Source resembles the expected storage path", () => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             const miseMount = inspected.Mounts.find(

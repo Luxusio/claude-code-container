@@ -88,6 +88,7 @@ type RequiredContainerMount = {
     type?: "bind" | "tmpfs" | "volume";
     verifySource?: boolean;
     verifySourceCanonical?: boolean;
+    equivalentSources?: string[];
     expectedIdentity?: BindMountSourceIdentity;
 };
 
@@ -207,6 +208,17 @@ export function bindSourcePathsEquivalent(actual: string, expected: string): boo
     const expectedWindows = windowsBindSourceIdentity(expected);
     if (actualWindows || expectedWindows) return actualWindows === expectedWindows;
     return normalizedHostPath(actual) === normalizedHostPath(expected);
+}
+
+function requiredBindSourceMatches(
+    actualSource: string,
+    required: RequiredContainerMount,
+): boolean {
+    const expectedSource = required.verifySourceCanonical === false
+        ? required.hostPath
+        : canonicalHostPath(required.hostPath);
+    return [expectedSource, ...(required.equivalentSources ?? [])]
+        .some((candidate) => bindSourcePathsEquivalent(actualSource, candidate));
 }
 
 function sameFileIdentity(
@@ -1262,22 +1274,16 @@ function containerMatchesRunContract(
             }
             if (req.verifySource) {
                 if (mount.Type !== "bind" || !mount.Source) return failContract(`bind source missing for ${req.containerPath}`);
-                let actualSource: string;
-                let expectedSource: string;
                 try {
                     // The runtime daemon may be reached through a host socket, so
                     // its Source path is not necessarily readable in this process.
                     // The expected source was already resolved and identity-checked
                     // before it entered the contract.
-                    actualSource = mount.Source;
-                    expectedSource = req.verifySourceCanonical === false
-                        ? req.hostPath
-                        : canonicalHostPath(req.hostPath);
+                    if (!requiredBindSourceMatches(mount.Source, req)) {
+                        return failContract(`bind source changed for ${req.containerPath}`);
+                    }
                 } catch {
                     return failContract(`bind source unreadable for ${req.containerPath}`);
-                }
-                if (!bindSourcePathsEquivalent(actualSource, expectedSource)) {
-                    return failContract(`bind source changed for ${req.containerPath}`);
                 }
             }
         }
@@ -1452,18 +1458,12 @@ function containerRunContractIsSafeToDefer(
                 if (mounted.Type !== "bind" || !mounted.Source) {
                     return unsafe(`bind source missing for ${required.containerPath}`);
                 }
-                let actualSource: string;
-                let expectedSource: string;
                 try {
-                    actualSource = mounted.Source;
-                    expectedSource = required.verifySourceCanonical === false
-                        ? required.hostPath
-                        : canonicalHostPath(required.hostPath);
+                    if (!requiredBindSourceMatches(mounted.Source, required)) {
+                        return unsafe(`bind source changed for ${required.containerPath}`);
+                    }
                 } catch {
                     return unsafe(`bind source unreadable for ${required.containerPath}`);
-                }
-                if (!bindSourcePathsEquivalent(actualSource, expectedSource)) {
-                    return unsafe(`bind source changed for ${required.containerPath}`);
                 }
             }
         }
@@ -1788,6 +1788,7 @@ export function startProjectContainer(
     if (listedContainer.containerId) {
         const gitIdentityMounts = getHostGitIdentityMounts();
         const labRunner = buildContainerVmRunConfig(containerName);
+        const runtimeInfo = getRuntimeInfo();
         const requiredMounts: RequiredContainerMount[] = [
             {
                 hostPath: fullPath,
@@ -1826,6 +1827,10 @@ export function startProjectContainer(
                 type: "bind",
                 verifySource: true,
                 verifySourceCanonical: false,
+                equivalentSources: runtimeInfo.runtime === "docker"
+                    && runtimeInfo.flavor === "docker-desktop"
+                    ? ["/var/run/docker.sock.raw"]
+                    : [],
             },
             ...(hostSshDir
                 ? [{ hostPath: hostSshDir, containerPath: "/home/ccc/.ssh", readonly: true, type: "bind" as const, verifySource: true }]
