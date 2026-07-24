@@ -160,6 +160,20 @@ function detectVersion(runtime: RuntimeName): string | null {
  * Detect whether the resolved runtime is VM-backed (Docker Desktop / podman
  * machine). Called once and cached.
  */
+function dockerEndpointIsLocal(): boolean {
+    const configured = process.env.DOCKER_HOST?.trim();
+    if (configured) {
+        return /^(?:unix|npipe):\/\//i.test(configured);
+    }
+    const result = spawnSync(
+        "docker",
+        ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (result.status !== 0) return false;
+    return /^(?:unix|npipe):\/\//i.test((result.stdout ?? "").trim());
+}
+
 function detectDockerDesktop(runtime: RuntimeName): boolean {
     if (runtime !== "docker") return false;
     const result = spawnSync(
@@ -168,7 +182,8 @@ function detectDockerDesktop(runtime: RuntimeName): boolean {
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     return result.status === 0
-        && (result.stdout ?? "").toLowerCase().includes("docker desktop");
+        && (result.stdout ?? "").toLowerCase().includes("docker desktop")
+        && dockerEndpointIsLocal();
 }
 
 function detectRemote(runtime: RuntimeName, dockerDesktop: boolean): boolean {
