@@ -477,7 +477,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const vmCreate = script.includes("New-VM");
             if (vmCreate) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
             if (orphanRecovery) orphanRecoveryCalls += 1;
-            const guestProvision = script.includes("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'");
+            const guestProvision = script.includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'");
             const guestReady = script.includes("hyper-v-guest-ready-timeout");
             const guestExec = script.includes("Start-Process -FilePath 'powershell.exe'");
             const guestUpload = script.includes("-ToSession $Session");
@@ -796,7 +796,7 @@ describe("device-lab host broker lifecycle commands", () => {
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
-            if (script.includes("Write-CccIso $ProvisioningSource $ProvisioningMedia 'CCC_UNATTEND'")
+            if (script.includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'")
                 && (activeVariant === "provision-failure" || activeVariant === "provision-untagged-failure" || activeVariant === "state-claim-conflict")) {
                 const deviceId = `invalid-create-${activeVariant}`;
                 const vmName = script.match(/\$ExpectedName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";

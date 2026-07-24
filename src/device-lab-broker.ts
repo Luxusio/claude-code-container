@@ -10804,7 +10804,6 @@ function providerFailureDetail(result: ProviderCommandResult): string {
 
 const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-provisioning-source-missing",
-    "hyper-v-provisioning-source-reparse-point-rejected",
     "hyper-v-provisioning-media-create-failed",
     "hyper-v-provisioning-media-block-invalid",
     "hyper-v-provisioning-media-stream-invalid",
@@ -10812,7 +10811,8 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-provisioning-media-copy-incomplete",
     "hyper-v-provisioning-media-com-unavailable",
     "hyper-v-provisioning-media-configure-failed",
-    "hyper-v-provisioning-media-source-tree-failed",
+    "hyper-v-provisioning-media-source-entry-invalid",
+    "hyper-v-provisioning-media-source-stream-failed",
     "hyper-v-provisioning-media-result-image-failed",
     "hyper-v-provisioning-media-invalid",
     "hyper-v-guest-provisioning-media-already-attached",

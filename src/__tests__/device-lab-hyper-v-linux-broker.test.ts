@@ -1097,7 +1097,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
-            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) {
+            if (script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'")) {
                 return { ...command, status: 1, stdout: seedSecretEcho, stderr: `hyper-v-provisioning-media-copy-incomplete: ${seedSecretEcho}` };
             }
             return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
@@ -1193,7 +1193,7 @@ describe("device-lab Hyper-V broker", () => {
                 const diskPath = powerShellString(script, "DiskPath");
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
             }
-            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed" };
+            if (script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed" };
             if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) return { ...command, status: 0, stdout: "malformed recovery output", stderr: "" };
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -1495,7 +1495,7 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 1, stdout: "", stderr: "New-NetIPAddress: PermissionDenied (Windows System Error 5)" };
             }
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
-            const seed = script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'");
+            const seed = script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'");
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");
