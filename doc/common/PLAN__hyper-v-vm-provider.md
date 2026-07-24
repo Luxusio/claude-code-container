@@ -89,7 +89,7 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v7`. Host CLI and
+The host broker advertises `hyper-v-vm-managed-auto-images-v8`. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Version 6 includes PowerShell 5.1-safe IPv4 prefix-mask calculation
 and returns completed guest-provisioning metadata in Hyper-V create responses.
