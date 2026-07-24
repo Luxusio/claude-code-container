@@ -4,7 +4,7 @@ import { spawnSync } from "child_process";
 import { ensureDockerRunning } from "./docker.js";
 import { runtimeCli } from "./container-runtime.js";
 import { prompt, DOCKER_REGISTRY_IMAGE } from "./utils.js";
-import { getActiveSessionsForContainer, withContainerLifecycleLock } from "./session.js";
+import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
 
 export interface CleanOptions {
     volumes?: boolean;   // also remove volumes
@@ -164,9 +164,9 @@ export async function cleanContainers(options: CleanOptions): Promise<void> {
         const containerPrefix = c.name.startsWith("ccc-") ? c.name.slice("ccc-".length) : "";
         if (!containerPrefix) throw new Error(`Refusing to clean unmanaged container name: ${c.name}`);
         withContainerLifecycleLock(containerPrefix, () => {
-            const activeSessions = getActiveSessionsForContainer(containerPrefix);
-            if (activeSessions.length > 0) {
-                console.log(`Skipping ${c.name}: ${activeSessions.length} active CCC session(s).`);
+            const sessionClaims = getSessionLockClaimsForContainer(containerPrefix);
+            if (sessionClaims.length > 0) {
+                console.log(`Skipping ${c.name}: ${sessionClaims.length} CCC session ownership claim(s).`);
                 return;
             }
             if (stopNames.has(c.name)) {

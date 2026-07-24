@@ -115,10 +115,10 @@ vi.mock("../device-lab-admin.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
 }));
 
-const mockGetActiveSessionsForContainer = vi.fn<(...args: unknown[]) => string[]>();
+const mockGetSessionLockClaimsForContainer = vi.fn<(...args: unknown[]) => string[]>();
 const mockWithContainerLifecycleLock = vi.fn((_: string, operation: () => unknown) => operation());
 vi.mock("../session.js", () => ({
-    getActiveSessionsForContainer: (...args: unknown[]) => mockGetActiveSessionsForContainer(...args),
+    getSessionLockClaimsForContainer: (...args: unknown[]) => mockGetSessionLockClaimsForContainer(...args),
     withContainerLifecycleLock: (...args: [string, () => unknown]) => mockWithContainerLifecycleLock(...args),
 }));
 
@@ -325,7 +325,7 @@ describe("docker.ts module exports", () => {
         mountChallengeContainerIds.clear();
         mountChallengePaths.clear();
         mockCleanupOwnerDevices.mockReset();
-        mockGetActiveSessionsForContainer.mockReset().mockReturnValue([]);
+        mockGetSessionLockClaimsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
         mockExistsSync.mockReset().mockReturnValue(true);
         mockCloseSync.mockReset();
@@ -2066,10 +2066,6 @@ describe("docker.ts module exports", () => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/run/ccc-device-broker-auth/owner.json");
                 mount.Source = "/foreign/owner.json";
             }],
-            ["container socket source substitution", (value: ReturnType<typeof JSON.parse>) => {
-                const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/var/run/docker.sock");
-                mount.Source = "/foreign/docker.sock";
-            }],
             ["mise volume source substitution", (value: ReturnType<typeof JSON.parse>) => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.local/share/mise");
                 mount.Source = "foreign-mise-cache";
@@ -2249,7 +2245,7 @@ describe("docker.ts module exports", () => {
             ["remote Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
             ["Docker Desktop foreign socket", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: true }, "/foreign/docker.sock"],
             ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
-        ])("fails closed on socket alias substitution for %s", (_name, runtime, source) => {
+        ])("joins without replacement when %s reports a different socket source", (_name, runtime, source) => {
             _setRuntimeInfoForTest(runtime);
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported",
@@ -2260,6 +2256,49 @@ describe("docker.ts module exports", () => {
                 (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
             );
             socketMount.Source = source;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            expectNoContainerReplacement();
+        });
+
+        it.each([
+            ["missing", (inspected: ReturnType<typeof JSON.parse>) => {
+                inspected.Mounts = inspected.Mounts.filter(
+                    (item: { Destination: string }) => item.Destination !== "/var/run/docker.sock",
+                );
+            }],
+            ["read-only", (inspected: ReturnType<typeof JSON.parse>) => {
+                const socket = inspected.Mounts.find(
+                    (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+                );
+                socket.RW = false;
+            }],
+            ["non-bind", (inspected: ReturnType<typeof JSON.parse>) => {
+                const socket = inspected.Mounts.find(
+                    (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+                );
+                socket.Type = "volume";
+            }],
+        ])("still rejects a %s container-manager socket mount", (_name, mutate) => {
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            mutate(inspected);
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
@@ -3966,10 +4005,10 @@ describe("docker.ts module exports", () => {
             expect(console.log).not.toHaveBeenCalledWith("Container stopped");
         });
 
-        it("refuses to stop a container with active sessions unless forced", () => {
-            mockGetActiveSessionsForContainer.mockReturnValue(["active.lock"]);
+        it("refuses to stop a container with any session ownership claim unless forced", () => {
+            mockGetSessionLockClaimsForContainer.mockReturnValue(["active.lock"]);
 
-            expect(() => stopProjectContainer(projectPath)).toThrow("Container has 1 active session(s)");
+            expect(() => stopProjectContainer(projectPath)).toThrow("Container has 1 session ownership claim(s)");
             expect(spawnSyncMock).not.toHaveBeenCalled();
 
             spawnSyncMock

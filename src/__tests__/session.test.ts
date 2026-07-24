@@ -87,8 +87,11 @@ const {
     removeSessionLock,
     getActiveSessionsForProject,
     getActiveSessionsForContainer,
+    getSessionLockClaimsForContainer,
+    getSessionLockClaimsForProjectFamily,
     getActiveSessionsForProjectFamily,
     hasOtherActiveSessions,
+    hasOtherSessionClaims,
     recreateContainerWithoutInterruptingSessions,
     cleanupSession,
     setupSignalHandlers,
@@ -836,6 +839,73 @@ describe("session.ts", () => {
         });
     });
 
+    describe("hasOtherSessionClaims", () => {
+        it("preserves a foreign claim without probing its Windows process identity", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "proj-abc--current.lock",
+                "proj-abc--foreign.lock",
+            ]);
+
+            expect(hasOtherSessionClaims(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+            )).toBe(true);
+            expect(getSessionLockClaimsForContainer("proj-abc")).toEqual([
+                "proj-abc--current.lock",
+                "proj-abc--foreign.lock",
+            ]);
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("returns false when only the current ownership claim exists", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--current.lock"]);
+
+            expect(hasOtherSessionClaims(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+            )).toBe(false);
+        });
+
+        it("keeps base and profile ownership namespaces isolated", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "proj-abc--current.lock",
+                "proj-abc--p--work--profile.lock",
+            ]);
+
+            expect(hasOtherSessionClaims(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+            )).toBe(false);
+            expect(hasOtherSessionClaims(
+                "proj-abc--p--work",
+                "/locks/proj-abc--p--work--profile.lock",
+            )).toBe(false);
+        });
+
+        it("returns every base and profile claim for exact worktree removal fencing", () => {
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "worktree-a--base.lock",
+                "worktree-a--p--work--profile.lock",
+                "worktree-ab--foreign.lock",
+                "worktree-a.container-lifecycle.guard",
+            ]);
+
+            expect(getSessionLockClaimsForProjectFamily("worktree-a")).toEqual([
+                "worktree-a--base.lock",
+                "worktree-a--p--work--profile.lock",
+            ]);
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+    });
+
     describe("recreateContainerWithoutInterruptingSessions", () => {
         it("runs replacement under the lifecycle lock when the current session is alone", () => {
             mockExistsSync.mockReturnValue(true);
@@ -878,13 +948,20 @@ describe("session.ts", () => {
             expect(mockWithSharedMutationLock).toHaveBeenCalledOnce();
         });
 
-        it("checks other sessions before evaluating the final replacement predicate", () => {
+        it("observes session liveness only after the final replacement predicate allows replacement", () => {
+            const order: string[] = [];
             mockExistsSync.mockReturnValue(true);
-            mockReaddirSync.mockReturnValue(["proj-abc--current.lock", "proj-abc--other.lock"]);
+            mockReaddirSync.mockImplementation(() => {
+                order.push("sessions");
+                return ["proj-abc--current.lock", "proj-abc--other.lock"];
+            });
             mockReadFileSync.mockReturnValue(String(process.pid));
             vi.spyOn(process, "kill").mockImplementation(() => true);
             const recreate = vi.fn();
-            const replacementAllowed = vi.fn(() => true);
+            const replacementAllowed = vi.fn(() => {
+                order.push("replacement");
+                return true;
+            });
 
             const result = recreateContainerWithoutInterruptingSessions(
                 "proj-abc",
@@ -894,7 +971,80 @@ describe("session.ts", () => {
             );
 
             expect(result).toBe(false);
-            expect(replacementAllowed).not.toHaveBeenCalled();
+            expect(replacementAllowed).toHaveBeenCalledOnce();
+            expect(order).toEqual(["replacement", "sessions"]);
+            expect(recreate).not.toHaveBeenCalled();
+        });
+
+        it("does not delete a live Windows session lock when running-container replacement is deferred", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "proj-abc--current.lock",
+                "proj-abc--foreign.lock",
+            ]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:old-token",
+            }));
+            mockSpawnSync.mockReturnValue({
+                status: 0,
+                stdout: "FOUND:638000000000000001\n",
+                stderr: "",
+            });
+            const recreate = vi.fn();
+
+            expect(recreateContainerWithoutInterruptingSessions(
+                "proj-abc",
+                "/locks/proj-abc--current.lock",
+                recreate,
+                () => false,
+            )).toBe(false);
+
+            expect(mockReaddirSync).not.toHaveBeenCalled();
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(recreate).not.toHaveBeenCalled();
+        });
+
+        it("preserves the first Windows session through deferred upgrade and second-session cleanup", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            const projectId = "proj-abc";
+            const first = `${projectId}--first.lock`;
+            const second = `${projectId}--second.lock`;
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([first, second]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:old-token",
+            }));
+            mockSpawnSync.mockReturnValue({
+                status: 0,
+                stdout: "FOUND:638000000000000001\n",
+                stderr: "",
+            });
+            const recreate = vi.fn();
+
+            expect(recreateContainerWithoutInterruptingSessions(
+                projectId,
+                `/locks/${second}`,
+                recreate,
+                () => false,
+            )).toBe(false);
+
+            mockGetProjectId.mockReturnValue(projectId);
+            setSession(`/locks/${second}`, "/home/user/proj");
+            setSessionContainerId("shared-container-id");
+            cleanupSession();
+
+            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${second}`);
+            expect(mockUnlinkSync).not.toHaveBeenCalledWith(`/locks/${first}`);
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
             expect(recreate).not.toHaveBeenCalled();
         });
 
@@ -915,7 +1065,7 @@ describe("session.ts", () => {
             expect(recreate).not.toHaveBeenCalled();
         });
 
-        it("ignores stale foreign locks and permits replacement for the only live session", () => {
+        it("preserves stale-looking foreign claims and refuses automatic replacement", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--current.lock", "proj-abc--stale.lock"]);
             mockReadFileSync.mockImplementation((path: string) => (
@@ -933,9 +1083,10 @@ describe("session.ts", () => {
                 "proj-abc",
                 "/locks/proj-abc--current.lock",
                 recreate,
-            )).toBe(true);
-            expect(recreate).toHaveBeenCalledOnce();
-            expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining("proj-abc--stale.lock"));
+            )).toBe(false);
+            expect(recreate).not.toHaveBeenCalled();
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 
         it("does not let a base-project lock block replacement of an isolated profile container", () => {
@@ -1257,7 +1408,7 @@ describe("session.ts", () => {
             expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
-        it("stops the container when the only foreign lock belongs to a reused PID", () => {
+        it("does not stop the container when a foreign lock appears stale by PID reuse", () => {
             const projectId = "my-project-abc123";
             const current = `${projectId}--current.lock`;
             const stale = `${projectId}--stale.lock`;
@@ -1283,12 +1434,41 @@ describe("session.ts", () => {
             setSessionContainerId("pinned-container-id");
             cleanupSession();
 
-            expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining(stale));
-            expect(mockSpawnSync).toHaveBeenCalledWith(
-                "docker",
-                ["stop", "pinned-container-id"],
-                expect.any(Object),
-            );
+            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(stale));
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
+        });
+
+        it("does not stop the shared container when Windows reports a different start token for the foreign session", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            const projectId = "my-project-abc123";
+            const current = `${projectId}--current.lock`;
+            const foreign = `${projectId}--foreign.lock`;
+            mockGetProjectId.mockReturnValue(projectId);
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([current, foreign]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:old-token",
+            }));
+            mockSpawnSync.mockReturnValue({
+                status: 0,
+                stdout: "FOUND:638000000000000001\n",
+                stderr: "",
+            });
+
+            setSession(`/locks/${current}`, "/home/user/my-project");
+            setSessionContainerId("pinned-container-id");
+            cleanupSession();
+
+            expect(mockUnlinkSync).toHaveBeenCalledWith(`/locks/${current}`);
+            expect(mockUnlinkSync).not.toHaveBeenCalledWith(expect.stringContaining(foreign));
+            expect(mockReadFileSync).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
+            expect(mockCleanupOwnerDevices).not.toHaveBeenCalled();
         });
 
         it("preserves a corrupt foreign lock and refuses last-session cleanup", () => {

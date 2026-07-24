@@ -22,10 +22,10 @@ vi.mock("../docker.js", async (importOriginal) => {
     return { ...actual, ensureDockerRunning: ensureDockerRunningMock };
 });
 
-const getActiveSessionsForContainerMock = vi.fn<(...args: unknown[]) => string[]>();
+const getSessionLockClaimsForContainerMock = vi.fn<(...args: unknown[]) => string[]>();
 const withContainerLifecycleLockMock = vi.fn((_: string, operation: () => unknown) => operation());
 vi.mock("../session.js", () => ({
-    getActiveSessionsForContainer: getActiveSessionsForContainerMock,
+    getSessionLockClaimsForContainer: getSessionLockClaimsForContainerMock,
     withContainerLifecycleLock: withContainerLifecycleLockMock,
 }));
 
@@ -44,8 +44,8 @@ describe("cleanContainers", () => {
         spawnSyncMock.mockReset();
         promptMock.mockReset();
         ensureDockerRunningMock.mockReset();
-        getActiveSessionsForContainerMock.mockReset();
-        getActiveSessionsForContainerMock.mockReturnValue([]);
+        getSessionLockClaimsForContainerMock.mockReset();
+        getSessionLockClaimsForContainerMock.mockReturnValue([]);
         withContainerLifecycleLockMock.mockClear();
         vi.spyOn(console, "log").mockImplementation(() => {});
         vi.spyOn(console, "error").mockImplementation(() => {});
@@ -205,7 +205,7 @@ describe("cleanContainers", () => {
         await expect(cleanContainers({ volumes: true, yes: true })).rejects.toThrow("cleanup aborted");
     });
 
-    it("never stops or removes a container with an active CCC session", async () => {
+    it("never stops or removes a container with any CCC session ownership claim", async () => {
         spawnSyncMock.mockImplementation((_cmd: unknown, args: unknown[]) => {
             const argsArr = args as string[];
             if (argsArr[0] === "ps") return makeResult(0, "111111111111\tccc-live-aabbcc112233\tUp 10 minutes");
@@ -213,14 +213,14 @@ describe("cleanContainers", () => {
             if (argsArr[0] === "volume" && argsArr[1] === "ls") return makeResult(0, "");
             return makeResult(0, "");
         });
-        getActiveSessionsForContainerMock.mockReturnValue(["live.lock"]);
+        getSessionLockClaimsForContainerMock.mockReturnValue(["live.lock"]);
 
         await expect(cleanContainers({ all: true, yes: true })).rejects.toThrow("process.exit called");
 
         const calls = spawnSyncMock.mock.calls.map((c) => (c[1] as string[]).join(" "));
         expect(calls.some((c) => c.startsWith("stop ccc-live"))).toBe(false);
         expect(calls.some((c) => c.startsWith("rm ccc-live"))).toBe(false);
-        expect(console.log).toHaveBeenCalledWith("Skipping ccc-live-aabbcc112233: 1 active CCC session(s).");
+        expect(console.log).toHaveBeenCalledWith("Skipping ccc-live-aabbcc112233: 1 CCC session ownership claim(s).");
     });
 
     it("--dry-run: prints plan but does not execute docker rm/rmi/volume rm", async () => {

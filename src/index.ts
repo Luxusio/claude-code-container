@@ -91,8 +91,8 @@ import {
 } from "./container-setup.js";
 import {
     createSessionLock,
-    getActiveSessionsForProjectFamily,
-    hasOtherActiveSessions,
+    getSessionLockClaimsForProjectFamily,
+    hasOtherSessionClaims,
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
     withProjectFamilyLifecycleLock,
@@ -557,7 +557,7 @@ async function exec(
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
         if (!isContainerConfirmedStopped(targetContainer)) return false;
-        if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
+        if (hasOtherSessionClaims(sessionContainerPrefix, sessionLockFile)) return false;
         recreate();
         return true;
     };
@@ -1073,12 +1073,12 @@ export function withWorkspaceRemovalLifecycleLock<T>(
     force: boolean,
     operation: () => T,
     lifecycleLock: typeof withProjectFamilyLifecycleLock = withProjectFamilyLifecycleLock,
-    activeSessions: typeof getActiveSessionsForProjectFamily = getActiveSessionsForProjectFamily,
+    activeSessions: typeof getSessionLockClaimsForProjectFamily = getSessionLockClaimsForProjectFamily,
 ): T {
     return lifecycleLock(projectId, () => {
         const sessions = activeSessions(projectId);
         if (sessions.length > 0 && !force) {
-            throw new Error(`Workspace has ${sessions.length} active session(s); stop sessions first or use -f to force removal.`);
+            throw new Error(`Workspace has ${sessions.length} session ownership claim(s); stop sessions first or use -f to force removal.`);
         }
         return operation();
     });

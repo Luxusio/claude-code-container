@@ -153,17 +153,17 @@ describe('workspace removal lifecycle lock', () => {
     expect(insideLock).toBe(false)
   })
 
-  it('blocks removal when a session appears at the final locked check', () => {
+  it('blocks removal when any session ownership claim appears at the final locked check', () => {
     const removal = vi.fn()
     const lifecycleLock = (_projectId: string, operation: () => unknown) => operation()
     const activeSessions = () => ['new-session.lock']
 
     expect(() => withWorkspaceRemovalLifecycleLock('project-id', false, removal, lifecycleLock, activeSessions))
-      .toThrow('Workspace has 1 active session(s)')
+      .toThrow('Workspace has 1 session ownership claim(s)')
     expect(removal).not.toHaveBeenCalled()
   })
 
-  it('uses the project-family session query before removal', () => {
+  it('uses the project-family ownership-claim query before removal', () => {
     const lifecycleLock = (_projectId: string, operation: () => unknown) => operation()
     const activeSessions = vi.fn(() => [
       'project-id--base.lock',
@@ -177,7 +177,7 @@ describe('workspace removal lifecycle lock', () => {
       removal,
       lifecycleLock,
       activeSessions,
-    )).toThrow('Workspace has 2 active session(s)')
+    )).toThrow('Workspace has 2 session ownership claim(s)')
     expect(activeSessions).toHaveBeenCalledWith('project-id')
     expect(removal).not.toHaveBeenCalled()
   })

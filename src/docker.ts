@@ -50,7 +50,7 @@ import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { deviceLabContainerName, deviceLabOwnerId } from "./device-lab-owner.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
-import { getActiveSessionsForContainer, withContainerLifecycleLock } from "./session.js";
+import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
 
 const MANAGED_MCP_BUNDLES = ["x11-mcp", "device-lab-mcp"] as const;
 const MANAGED_MCP_BUNDLE_MAX_BYTES = 32 * 1024 * 1024;
@@ -1444,7 +1444,12 @@ function containerRunContractIsSafeToDefer(
                 }
             }
             const mounted = mounts.find((mount) => mount.Destination === required.containerPath);
-            if (!mounted) continue;
+            if (!mounted) {
+                if (required.containerPath === "/var/run/docker.sock") {
+                    return unsafe(`missing mount ${required.containerPath}`);
+                }
+                continue;
+            }
             if (required.type !== undefined && mounted.Type !== required.type) {
                 return unsafe(`mount type changed for ${required.containerPath}`);
             }
@@ -1454,7 +1459,7 @@ function containerRunContractIsSafeToDefer(
             if (required.type === "volume" && !namedVolumeMatches(mounted, required.hostPath)) {
                 return unsafe(`volume source changed for ${required.containerPath}`);
             }
-            if (required.verifySource) {
+            if (required.verifySource && required.containerPath !== "/var/run/docker.sock") {
                 if (mounted.Type !== "bind" || !mounted.Source) {
                     return unsafe(`bind source missing for ${required.containerPath}`);
                 }
@@ -2179,9 +2184,9 @@ function withDestructiveContainerGuard<T>(
     const projectId = getProjectId(resolve(projectPath));
     const containerPrefix = profile ? `${projectId}--p--${profile}` : projectId;
     return withContainerLifecycleLock(containerPrefix, () => {
-        const sessions = getActiveSessionsForContainer(containerPrefix);
-        if (sessions.length > 0 && options.force !== true) {
-            throw new Error(`Container has ${sessions.length} active session(s); use --force to continue.`);
+        const sessionClaims = getSessionLockClaimsForContainer(containerPrefix);
+        if (sessionClaims.length > 0 && options.force !== true) {
+            throw new Error(`Container has ${sessionClaims.length} session ownership claim(s); use --force to continue.`);
         }
         return operation();
     });

@@ -123,8 +123,12 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
         // including a concurrent ENOENT, must not authorize container cleanup.
         throw error;
     }
+    return filterLiveSessionLocks(sessionLockClaimsForContainer(entries, containerPrefix));
+}
+
+function sessionLockClaimsForContainer(entries: string[], containerPrefix: string): string[] {
     const isProfilePrefix = containerPrefix.includes("--p--");
-    const locks = entries.filter((f) => {
+    return entries.filter((f) => {
         if (!f.endsWith(".lock")) return false;
 
         // New format: prefix--sessionId.lock
@@ -150,7 +154,23 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
 
         return false;
     });
-    return filterLiveSessionLocks(locks);
+}
+
+/**
+ * Return raw ownership claims without PID/start-token inference.
+ * Automatic container shutdown must not turn an imperfect Windows process
+ * observation into permission to terminate another session.
+ */
+export function getSessionLockClaimsForContainer(containerPrefix: string): string[] {
+    ensureLocksDirectory();
+    return sessionLockClaimsForContainer(readdirSync(locksDir), containerPrefix);
+}
+
+export function getSessionLockClaimsForProjectFamily(projectId: string): string[] {
+    ensureLocksDirectory();
+    return readdirSync(locksDir).filter((entry) =>
+        entry.endsWith(".lock") && entry.startsWith(`${projectId}--`),
+    );
 }
 
 function filterLiveSessionLocks(locks: string[]): string[] {
@@ -179,12 +199,7 @@ function filterLiveSessionLocks(locks: string[]): string[] {
  * containers. This broader query is reserved for removing the project path.
  */
 export function getActiveSessionsForProjectFamily(projectId: string): string[] {
-    ensureLocksDirectory();
-    const entries = readdirSync(locksDir);
-    const locks = entries.filter((entry) =>
-        entry.endsWith(".lock") && entry.startsWith(`${projectId}--`),
-    );
-    return filterLiveSessionLocks(locks);
+    return filterLiveSessionLocks(getSessionLockClaimsForProjectFamily(projectId));
 }
 
 /**
@@ -204,10 +219,20 @@ export function hasOtherActiveSessions(
     return sessions.some((s) => s !== currentLockName);
 }
 
+export function hasOtherSessionClaims(
+    containerPrefix: string,
+    currentLockFile: string,
+): boolean {
+    const claims = getSessionLockClaimsForContainer(containerPrefix);
+    const currentLockName = basename(currentLockFile);
+    return claims.some((claim) => claim !== currentLockName);
+}
+
 /**
- * Atomically check for another live session and, only when none exists, run a
- * destructive container replacement. Session creation takes the same lock, so
- * a new CCC process cannot appear between the final check and stop/rm.
+ * Atomically prove replacement is currently allowed, then require that no
+ * foreign ownership claim exists before destructive replacement. Session
+ * creation takes the same lock, so a new CCC process cannot appear between
+ * the final check and stop/rm.
  */
 export function recreateContainerWithoutInterruptingSessions(
     containerPrefix: string,
@@ -216,8 +241,8 @@ export function recreateContainerWithoutInterruptingSessions(
     replacementAllowed: () => boolean = () => true,
 ): boolean {
     return withContainerLifecycleLock(containerPrefix, () => {
-        if (hasOtherActiveSessions(containerPrefix, currentLockFile)) return false;
         if (!replacementAllowed()) return false;
+        if (hasOtherSessionClaims(containerPrefix, currentLockFile)) return false;
         recreate();
         return true;
     });
@@ -239,9 +264,10 @@ export function cleanupSession(): void {
     }
     const projectId = getProjectId(currentProjectPath);
     const containerPrefix = currentProfile ? `${projectId}--p--${currentProfile}` : projectId;
-    // Stop clipboard server if this is the last CCC session (check BEFORE removing lock)
+    // Automatic shutdown requires the absence of every foreign ownership claim.
+    // Liveness inference is intentionally excluded from this destructive path.
     withContainerLifecycleLock(containerPrefix, () => {
-        const hasOthers = hasOtherActiveSessions(containerPrefix, currentSessionLockFile!);
+        const hasOthers = hasOtherSessionClaims(containerPrefix, currentSessionLockFile!);
         removeSessionLock(currentSessionLockFile!);
         if (!hasOthers) {
             cleanupDevicesBestEffort(currentProjectPath!, currentProfile);
