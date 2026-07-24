@@ -455,6 +455,11 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("SHCreateStreamOnFileEx");
         expect(seedScript).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
         expect(seedScript).toContain("readBytes != expectedBytes || writtenBytes != expectedBytes");
+        expect(seedScript).toContain("@($ImageStream, $ResultImage, $ImageRoot, $Image)");
+        expect(seedScript).toContain("FinalReleaseComObject($ComObject)");
+        expect(seedScript.indexOf("FinalReleaseComObject($ComObject)")).toBeLessThan(seedScript.lastIndexOf("Remove-Item -LiteralPath $SeedSource -Recurse"));
+        expect(seedScript).toContain("Assert-NoReparseTree $SourceRoot");
+        expect(seedScript).toContain("hyper-v-provisioning-source-reparse-point-rejected");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
@@ -935,6 +940,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
         expect(script).toContain("hyper-v-provisioning-media-copy-incomplete");
         expect(script).toContain("hyper-v-provisioning-media-result-image-failed");
+        expect(script).toContain("@($ImageStream, $ResultImage, $ImageRoot, $Image)");
+        expect(script).toContain("FinalReleaseComObject($ComObject)");
+        expect(script.indexOf("FinalReleaseComObject($ComObject)")).toBeLessThan(script.lastIndexOf("Remove-Item -LiteralPath $ProvisioningSource -Recurse"));
+        expect(script).toContain("Assert-NoReparseTree $SourceRoot");
+        expect(script).toContain("Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue");
         expect(script).not.toContain("input.Read(");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).toContain("Remove-Item -LiteralPath $ProvisioningSource -Recurse -Force -ErrorAction Stop");

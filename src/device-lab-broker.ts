@@ -10804,6 +10804,7 @@ function providerFailureDetail(result: ProviderCommandResult): string {
 
 const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-provisioning-source-missing",
+    "hyper-v-provisioning-source-reparse-point-rejected",
     "hyper-v-provisioning-media-create-failed",
     "hyper-v-provisioning-media-block-invalid",
     "hyper-v-provisioning-media-stream-invalid",
@@ -11821,7 +11822,11 @@ async function lifecycleCommandInvokeUnlocked(
                 return { status: rollback.ok ? 500 : 502, payload: { ok: false, error: "hyper-v-linux-seed-plan-failed", ownerId, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error), rollback } };
             }
             const seedExecution = await hyperVProviderCommandRunner(normalized, seedCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 180000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            hyperVProvisioningExecution = redactProviderCommandInput(seedExecution);
+            hyperVProvisioningExecution = redactProviderCommandInput(
+                seedExecution,
+                true,
+                "hyper-v-linux-seed-command-failed",
+            );
             if (hyperVOperationDeadlineExpired(hyperVDeadlineAt)) {
                 const rollback = await rollbackProvisioning();
                 return { status: 504, payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };

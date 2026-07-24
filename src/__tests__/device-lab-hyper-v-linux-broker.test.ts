@@ -1078,6 +1078,7 @@ describe("device-lab Hyper-V broker", () => {
         const imagePath = join(imageProfileRoot, "base.vhdx");
         const imageBytes = Buffer.from("valid-image");
         const imageSha256 = createHash("sha256").update(imageBytes).digest("hex");
+        const seedSecretEcho = "linux-seed-secret-echo";
         let recoveryCalls = 0;
         const commandRunner = vi.fn((command: { args?: string[] }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
@@ -1096,7 +1097,9 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
             }
-            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed before attachment" };
+            if (script.includes("Write-CccIso $SeedSource $SeedDisk 'cidata'")) {
+                return { ...command, status: 1, stdout: seedSecretEcho, stderr: `hyper-v-provisioning-media-copy-incomplete: ${seedSecretEcho}` };
+            }
             return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
         });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
@@ -1110,6 +1113,13 @@ describe("device-lab Hyper-V broker", () => {
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-linux-seed-failed", rollback: expect.objectContaining({ ok: true }) }));
+            expect(JSON.stringify(body)).not.toContain(seedSecretEcho);
+            expect(body.provisioning).toEqual(expect.objectContaining({
+                stdout: "[redacted]",
+                stderr: "[redacted]",
+                outputRedacted: true,
+                diagnosticCode: "hyper-v-provisioning-media-copy-incomplete",
+            }));
             expect(recoveryCalls).toBe(1);
             const recoveryScripts = commandRunner.mock.calls.map(([command]) => providerScript(command)).filter((script) => script.includes("hyper-v-orphan-vm-ownership-mismatch"));
             expect(recoveryScripts.at(-1)).toContain("$ExpectedPaths -notcontains $_");
