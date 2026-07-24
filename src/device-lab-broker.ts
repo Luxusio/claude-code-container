@@ -178,7 +178,7 @@ const DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE = "windows-sandbox-b
 const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-recording-proxy-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v8";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v11";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
@@ -10803,6 +10803,20 @@ function providerFailureDetail(result: ProviderCommandResult): string {
 }
 
 const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
+    "hyper-v-path-reparse-point-rejected",
+    "hyper-v-path-root-invalid",
+    "hyper-v-powershell-execution-failed",
+    "hyper-v-powershell-program-invalid",
+    "hyper-v-powershell-parse-failed",
+    "hyper-v-vm-ownership-mismatch",
+    "hyper-v-guest-provision-credential-command-failed",
+    "hyper-v-guest-provision-input-validation-command-failed",
+    "hyper-v-guest-provision-media-command-failed",
+    "hyper-v-guest-provision-password-invalid",
+    "hyper-v-guest-provision-requires-stopped-vm",
+    "hyper-v-guest-provision-username-mismatch",
+    "hyper-v-guest-provision-vm-lookup-command-failed",
+    "hyper-v-guest-provision-vm-state-command-failed",
     "hyper-v-provisioning-source-missing",
     "hyper-v-provisioning-media-create-failed",
     "hyper-v-provisioning-media-block-invalid",
@@ -10817,9 +10831,26 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-provisioning-media-invalid",
     "hyper-v-guest-provisioning-media-already-attached",
     "hyper-v-guest-provisioning-media-attach-failed",
+    "hyper-v-linux-seed-media-already-attached",
+    "hyper-v-linux-seed-media-attach-failed",
+    "hyper-v-linux-seed-media-command-failed",
+    "hyper-v-linux-seed-known-hosts-command-failed",
+    "hyper-v-linux-seed-host-keygen-command-failed",
+    "hyper-v-linux-seed-path-validation-command-failed",
+    "hyper-v-linux-seed-requires-stopped-vm",
+    "hyper-v-linux-seed-user-keygen-command-failed",
+    "hyper-v-linux-seed-vm-lookup-command-failed",
+    "hyper-v-linux-seed-vm-state-command-failed",
+    "hyper-v-linux-ssh-host-keygen-failed",
+    "hyper-v-linux-ssh-host-public-key-invalid",
+    "hyper-v-linux-ssh-keygen-arguments-invalid",
+    "hyper-v-linux-ssh-keygen-failed",
+    "hyper-v-linux-ssh-keygen-start-failed",
+    "hyper-v-linux-ssh-keygen-unavailable",
+    "hyper-v-linux-ssh-public-key-invalid",
 ]);
 
-function redactProviderCommandInput(
+export function redactProviderCommandInput(
     result: ProviderCommandResult,
     redactOutput = false,
     fallbackDiagnosticCode?: string,

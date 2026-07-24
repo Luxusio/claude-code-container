@@ -13,8 +13,8 @@ function providerScript(command: { args?: string[]; input?: string }): string {
     const encodedCommand = Buffer.from(command.args?.at(-1) || "", "base64").toString("utf16le");
     if (
         typeof command.input === "string"
-        && encodedCommand.includes("$CccEncodedProgram")
-        && encodedCommand.includes("[Convert]::FromBase64String($CccEncodedProgram)")
+        && encodedCommand.includes("$E=[Console]::In.ReadToEnd().Trim()")
+        && encodedCommand.includes("[Convert]::FromBase64String($E)")
         && encodedCommand.includes("[ScriptBlock]::Create")
     ) {
         return Buffer.from(command.input.trim(), "base64").toString("utf8");

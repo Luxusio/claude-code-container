@@ -58,11 +58,17 @@ function scriptOf(command: { args: string[]; input?: string }): string {
     const encoded = command.args.at(-1);
     if (!encoded) throw new Error("missing encoded PowerShell script");
     const decoded = Buffer.from(encoded, "base64").toString("utf16le");
-    if (decoded.includes("$CccEncodedProgram = [Console]::In.ReadToEnd().Trim()")) {
+    if (decoded.includes("$E=[Console]::In.ReadToEnd().Trim()")) {
         if (!command.input) throw new Error("missing streamed PowerShell program");
         return Buffer.from(command.input, "base64").toString("utf8");
     }
     return decoded;
+}
+
+function loaderOf(command: { args: string[] }): string {
+    const encoded = command.args.at(-1);
+    if (!encoded) throw new Error("missing encoded PowerShell loader");
+    return Buffer.from(encoded, "base64").toString("utf16le");
 }
 
 describe("Hyper-V provider adapter", () => {
@@ -151,8 +157,8 @@ describe("Hyper-V provider adapter", () => {
         expect(acquire.args).toContain("-EncodedCommand");
         expect(acquire.args).not.toContain("-");
         const loader = Buffer.from(acquire.args.at(-1)!, "base64").toString("utf16le");
-        expect(loader).toContain("$CccEncodedProgram = [Console]::In.ReadToEnd().Trim()");
-        expect(loader).toContain("[ScriptBlock]::Create($CccProgram)");
+        expect(loader).toContain("$E=[Console]::In.ReadToEnd().Trim()");
+        expect(loader).toContain("[ScriptBlock]::Create($P)");
         expect(acquire.input).toMatch(/^[A-Za-z0-9+/=]+$/);
         expect(scriptOf(acquire)).toContain("Save-BoundedDownload");
         expect(scriptOf(acquire)).toContain("CCC_HYPER_V_RESULT_B64:");
@@ -160,22 +166,95 @@ describe("Hyper-V provider adapter", () => {
         expect(scriptOf(acquire)).toContain("ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
     });
 
-    it.skipIf(process.platform !== "win32")("executes the bounded loader with Base64 stdin on Windows PowerShell 5.1", () => {
+    it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
         const acquire = hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-loader-probe",
         });
-        const probe = "Write-Output 'ccc-hyper-v-loader-ok'";
-        const result = spawnSync(acquire.executable, acquire.args, {
-            input: Buffer.from(probe, "utf8").toString("base64"),
+        const run = (input: string) => spawnSync(acquire.executable, acquire.args, {
+            input,
             encoding: "utf8",
             windowsHide: true,
             timeout: 15_000,
         });
+        const encoded = (program: string) => Buffer.from(program, "utf8").toString("base64");
 
-        expect(result.status, result.stderr || result.error?.message).toBe(0);
-        expect(result.stdout).toContain("ccc-hyper-v-loader-ok");
+        const success = run(encoded("Write-Output 'ccc-hyper-v-loader-ok'"));
+        expect(success.status, success.stderr || success.error?.message).toBe(0);
+        expect(success.stdout).toContain("ccc-hyper-v-loader-ok");
+
+        const invalid = run("not-base64!");
+        expect(invalid.status).toBe(1);
+        expect(invalid.stderr).toContain("hyper-v-powershell-program-invalid");
+
+        const parseFailure = run(encoded("if ("));
+        expect(parseFailure.status).toBe(1);
+        expect(parseFailure.stderr).toContain("hyper-v-powershell-parse-failed");
+
+        const knownFailure = run(encoded("throw 'hyper-v-vm-ownership-mismatch'"));
+        expect(knownFailure.status).toBe(1);
+        expect(knownFailure.stderr).toContain("hyper-v-vm-ownership-mismatch");
+
+        const runtimeFailure = run(encoded("throw 'untrusted secret-bearing failure'"));
+        expect(runtimeFailure.status).toBe(1);
+        expect(runtimeFailure.stderr).toContain("hyper-v-powershell-execution-failed");
+        expect(runtimeFailure.stderr).not.toContain("secret-bearing");
+    });
+
+    it.skipIf(process.platform !== "win32")("creates an unencrypted SSH key through PowerShell 5.1 without native empty-argument rewriting", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-keygen-probe-"));
+        const privateKeyPath = join(root, "id_ed25519");
+        try {
+            const seed = hyperVLinuxSeedCommand({
+                executable: "powershell.exe",
+                ownerId,
+                deviceId: "linux-keygen-probe",
+                incarnationId,
+                vmName: hyperVVmName(ownerId, "linux-keygen-probe", incarnationId),
+                vmId,
+                deviceRoot: root,
+                privateRoot: root,
+                seedDiskPath: join(root, "cidata.iso"),
+                sshPrivateKeyPath: privateKeyPath,
+                sshPublicKeyPath: `${privateKeyPath}.pub`,
+                sshHostPrivateKeyPath: join(root, "ssh_host_ed25519_key"),
+                sshHostPublicKeyPath: join(root, "ssh_host_ed25519_key.pub"),
+                knownHostsPath: join(root, "known_hosts"),
+                guestUsername: "ccc01234567",
+                networkAddress: "172.29.0.10",
+                networkGateway: "172.29.0.1",
+                networkPrefixLength: 24,
+            });
+            const generated = scriptOf(seed);
+            const functionStart = generated.indexOf("function New-CccSshKey");
+            const functionEnd = generated.indexOf("\nif (-not (Test-Path", functionStart);
+            expect(functionStart).toBeGreaterThanOrEqual(0);
+            expect(functionEnd).toBeGreaterThan(functionStart);
+            const escapedPath = privateKeyPath.replace(/'/g, "''");
+            const probe = [
+                "$ErrorActionPreference = 'Stop'",
+                generated.slice(functionStart, functionEnd),
+                "$SshKeygen = (Get-Command ssh-keygen.exe -ErrorAction Stop).Source",
+                `$Status = New-CccSshKey $SshKeygen 'ccc-device-lab-${vmId}' '${escapedPath}'`,
+                "if ($Status -ne 0) { throw 'hyper-v-linux-ssh-keygen-probe-failed' }",
+            ].join("\n");
+            const created = spawnSync("powershell.exe", [
+                "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-EncodedCommand", Buffer.from(probe, "utf16le").toString("base64"),
+            ], { encoding: "utf8", timeout: 30_000, windowsHide: true });
+            expect(created.status, created.stderr || created.error?.message).toBe(0);
+
+            const readable = spawnSync("ssh-keygen.exe", ["-y", "-f", privateKeyPath], {
+                encoding: "utf8",
+                timeout: 15_000,
+                windowsHide: true,
+            });
+            expect(readable.status, readable.stderr || readable.error?.message).toBe(0);
+            expect(readable.stdout).toMatch(/^ssh-ed25519 [A-Za-z0-9+/=]+/);
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("parses a framed base-image result from noisy Windows PowerShell stdin output", () => {
@@ -545,8 +624,15 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
-        expect(seedScript).toContain("-N '\"\"'");
-        expect(seedScript).not.toContain("-N ''");
+        expect(seedScript).toContain("function New-CccSshKey");
+        expect(seedScript).toContain("$StartInfo.Arguments = '-q -t ed25519 -N \"\"");
+        expect(seedScript).toContain("[Diagnostics.Process]::Start($StartInfo)");
+        expect(seedScript).not.toContain("& $SshKeygen.Source");
+        expect(seedScript).toContain("$CccProvisionStage = 'vm-lookup'");
+        expect(seedScript).toContain("$CccProvisionStage = 'user-keygen'");
+        expect(seedScript).toContain("$CccProvisionStage = 'host-keygen'");
+        expect(seedScript).toContain("$CccProvisionStage = 'known-hosts'");
+        expect(seedScript).toContain("hyper-v-linux-seed-' + $CccProvisionStage + '-command-failed");
         expect(seedScript).toContain("ssh_host_ed25519_key");
         expect(seedScript).toContain("ssh_deletekeys: true");
         expect(seedScript).toContain("sshHostKeyFingerprint");
@@ -1039,12 +1125,22 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");
         expect(script).toContain("Remove CCC bootstrap secrets");
+        expect(script).toContain("$CccProvisionStage = 'vm-lookup'");
+        expect(script).toContain("$CccProvisionStage = 'input-validation'");
+        expect(script).toContain("$CccProvisionStage = 'credential'");
+        expect(script).toContain("$CccProvisionStage = 'media'");
+        expect(script).toContain("hyper-v-guest-provision-' + $CccProvisionStage + '-command-failed");
         expect(script).not.toContain(guestPassword);
         expect(command.args.join(" ")).not.toContain(guestPassword);
         const payloadBase64 = script.match(/\$CccCommandInputBase64 = '([A-Za-z0-9+/=]+)'/)?.[1];
         expect(payloadBase64).toBeTruthy();
         expect(JSON.parse(Buffer.from(payloadBase64!, "base64").toString("utf8")))
             .toEqual({ username: "ccc01234567", password: guestPassword });
+        const loader = loaderOf(command);
+        expect(loader).toContain("hyper-v-powershell-parse-failed");
+        expect(loader).toContain("hyper-v-powershell-execution-failed");
+        expect(loader).toContain("if($M -match '^hyper-v-[a-z0-9-]{3,128}$')");
+        expect(loader).not.toContain(guestPassword);
         expect(parseHyperVGuestProvisionObservation(JSON.stringify({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath })))
             .toEqual({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath });
         expect(() => hyperVGuestProvisionCommand({
