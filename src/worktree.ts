@@ -1140,36 +1140,34 @@ export function scanDirectory(
 export function branchExistsInRepo(
     repoPath: string,
     branch: string,
+    runner: typeof spawnSync = spawnSync,
 ): "local" | "remote" | "none" {
-    // Check local branch (refs/heads/ restricts to branch refs only)
-    const localResult = spawnSync(
-        "git",
-        ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
-        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (localResult.status === 0) {
+    const exactRefExists = (ref: string, description: string): boolean => {
+        const result = runner(
+            "git",
+            ["for-each-ref", "--format=%(refname)", ref],
+            { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (result.error || result.status !== 0) {
+            throw new Error(`Unable to inspect ${description} branch '${branch}'.`);
+        }
+        return (result.stdout ?? "")
+            .split(/\r?\n/)
+            .some((candidate) => candidate.trim() === ref);
+    };
+
+    // for-each-ref reports an absent ref as a successful empty result on all
+    // supported Git platforms, unlike rev-parse's platform-dependent status.
+    if (exactRefExists(`refs/heads/${branch}`, "local")) {
         return "local";
     }
-    if (localResult.error || localResult.status !== 1) {
-        throw new Error(`Unable to inspect local branch '${branch}'.`);
-    }
 
-    // Check remote branch
-    const remoteResult = spawnSync(
-        "git",
-        ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${branch}`],
-        { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (remoteResult.status === 0) {
+    if (exactRefExists(`refs/remotes/origin/${branch}`, "remote")) {
         return "remote";
-    }
-    if (remoteResult.error || remoteResult.status !== 1) {
-        throw new Error(`Unable to inspect remote branch '${branch}'.`);
     }
 
     return "none";
 }
-
 function expectedFailedCreationBranchOid(
     repositoryPath: string,
     branch: string,

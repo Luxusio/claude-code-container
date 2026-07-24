@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
     mkdirSync,
     readdirSync,
@@ -481,6 +481,62 @@ describe("branchExistsInRepo", () => {
 
     it('returns "none" for non-existent branch', () => {
         expect(branchExistsInRepo(repoPath, "nonexistent")).toBe("none");
+    });
+
+    it("uses successful empty exact-ref results for an absent branch", () => {
+        const runner = vi.fn(() => ({
+            pid: 1,
+            output: [null, "", ""],
+            stdout: "",
+            stderr: "",
+            status: 0,
+            signal: null,
+        })) as unknown as typeof spawnSync;
+
+        expect(branchExistsInRepo(repoPath, "new-on-windows", runner)).toBe("none");
+        expect(runner).toHaveBeenNthCalledWith(
+            1,
+            "git",
+            ["for-each-ref", "--format=%(refname)", "refs/heads/new-on-windows"],
+            expect.objectContaining({ cwd: repoPath }),
+        );
+        expect(runner).toHaveBeenNthCalledWith(
+            2,
+            "git",
+            ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/new-on-windows"],
+            expect.objectContaining({ cwd: repoPath }),
+        );
+    });
+
+    it("fails closed when exact-ref inspection fails", () => {
+        const runner = vi.fn(() => ({
+            pid: 1,
+            output: [null, "", "fatal"],
+            stdout: "",
+            stderr: "fatal",
+            status: 128,
+            signal: null,
+        })) as unknown as typeof spawnSync;
+
+        expect(() => branchExistsInRepo(repoPath, "new-on-windows", runner))
+            .toThrow("Unable to inspect local branch 'new-on-windows'.");
+    });
+
+    it("fails closed when remote exact-ref inspection fails", () => {
+        const runner = (vi.fn()
+            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null })
+            .mockReturnValueOnce({ pid: 1, output: [null, "", "fatal"], stdout: "", stderr: "fatal", status: 128, signal: null })) as unknown as typeof spawnSync;
+
+        expect(() => branchExistsInRepo(repoPath, "new-on-windows", runner))
+            .toThrow("Unable to inspect remote branch 'new-on-windows'.");
+    });
+
+    it("does not treat a prefix descendant as the exact requested branch", () => {
+        const runner = (vi.fn()
+            .mockReturnValueOnce({ pid: 1, output: [null, "refs/heads/feature/child\n", ""], stdout: "refs/heads/feature/child\n", stderr: "", status: 0, signal: null })
+            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null })) as unknown as typeof spawnSync;
+
+        expect(branchExistsInRepo(repoPath, "feature", runner)).toBe("none");
     });
 
     it('returns "local" for current branch (master/main)', () => {
@@ -1559,6 +1615,10 @@ describe("createWorkspace (unified mode)", () => {
         // Top-level is a git repo
         initRepo(tmpDir);
 
+        writeFileSync(join(tmpDir, ".gitignore"), "frontend/\nbackend/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested repos"], { cwd: tmpDir, stdio: "pipe" });
+
         // Create nested git repos (not submodules, gitignored by parent)
         initRepo(join(tmpDir, "frontend"));
         writeFileSync(join(tmpDir, "frontend", "app.ts"), "export default {}");
@@ -1569,6 +1629,9 @@ describe("createWorkspace (unified mode)", () => {
         writeFileSync(join(tmpDir, "backend", "server.ts"), "export default {}");
         spawnSync("git", ["add", "."], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
         spawnSync("git", ["commit", "-m", "add server"], { cwd: join(tmpDir, "backend"), stdio: "pipe" });
+
+        expect(spawnSync("git", ["check-ignore", "frontend"], { cwd: tmpDir, stdio: "pipe" }).status).toBe(0);
+        expect(spawnSync("git", ["check-ignore", "backend"], { cwd: tmpDir, stdio: "pipe" }).status).toBe(0);
 
         const result = createWorkspace(tmpDir, "feature");
 
@@ -1586,6 +1649,9 @@ describe("createWorkspace (unified mode)", () => {
         const createdNames = result.created.map((c) => c.name).sort();
         expect(createdNames).toContain("frontend");
         expect(createdNames).toContain("backend");
+        expect(branchExistsInRepo(tmpDir, "feature")).toBe("local");
+        expect(branchExistsInRepo(join(tmpDir, "frontend"), "feature")).toBe("local");
+        expect(branchExistsInRepo(join(tmpDir, "backend"), "feature")).toBe("local");
     });
 });
 
