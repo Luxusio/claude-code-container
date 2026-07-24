@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import { hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
-import { createPackagedCccCandidate, hyperVWindowsVmE2ECapability, selectHyperVWindowsProfile } from "./hyper-v-windows-vm-e2e.ts";
+import {
+    createPackagedCccCandidate,
+    hyperVWindowsVmE2ECapability,
+    resolveNpmCliPath,
+    selectHyperVWindowsProfile,
+} from "./hyper-v-windows-vm-e2e.ts";
 import { formatBrokerToolFailure } from "./device-lab-mcp-client.ts";
 import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
@@ -35,16 +40,34 @@ afterEach(() => {
 });
 
 describe("Hyper-V E2E zero-config image selection", () => {
+    it("finds the npm CLI beside the active Windows Node installation during direct invocation", () => {
+        const nodeRoot = mkdtempSync(join(tmpdir(), "ccc-hyper-v-node-install-"));
+        const npmExecPath = join(nodeRoot, "node_modules", "npm", "bin", "npm-cli.js");
+        mkdirSync(join(nodeRoot, "node_modules", "npm", "bin"), { recursive: true });
+        writeFileSync(npmExecPath, "// test npm cli");
+        try {
+            expect(resolveNpmCliPath({
+                nodePath: join(nodeRoot, "node.exe"),
+            })).toBe(npmExecPath);
+            expect(resolveNpmCliPath({
+                env: { npm_execpath: join(nodeRoot, "attacker.js") },
+                nodePath: join(nodeRoot, "node.exe"),
+            })).toBe(npmExecPath);
+        } finally {
+            rmSync(nodeRoot, { recursive: true, force: true });
+        }
+    });
+
     it("builds the guest probe from an npm package artifact without invoking package scripts", () => {
         const outputDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-test-"));
-        const npmExecPath = join(outputDir, "npm-cli.js");
+        const npmExecPath = join(outputDir, "node_modules", "npm", "bin", "npm-cli.js");
+        mkdirSync(dirname(npmExecPath), { recursive: true });
         writeFileSync(npmExecPath, "// test npm cli");
         try {
             const candidate = createPackagedCccCandidate(outputDir, {
-                npmExecPath,
-                nodePath: "node.exe",
+                nodePath: join(outputDir, "node.exe"),
                 spawnSyncImpl: (command: string, args: string[]) => {
-                    expect(command).toBe("node.exe");
+                    expect(command).toBe(join(outputDir, "node.exe"));
                     expect(args).toEqual(expect.arrayContaining([npmExecPath, "pack", "--json", "--ignore-scripts", "--pack-destination", outputDir]));
                     writeFileSync(join(outputDir, "claude-code-container-test.tgz"), "package");
                     return { status: 0, stdout: JSON.stringify([{ filename: "claude-code-container-test.tgz" }]), stderr: "" };
@@ -52,6 +75,45 @@ describe("Hyper-V E2E zero-config image selection", () => {
             });
             expect(candidate.packagePath).toBe(join(outputDir, "claude-code-container-test.tgz"));
             expect(candidate.version).toMatch(/^\d+\.\d+\.\d+$/);
+        } finally {
+            rmSync(outputDir, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects package artifact paths reported outside the pack destination", () => {
+        const outputDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-path-test-"));
+        const npmExecPath = join(outputDir, "node_modules", "npm", "bin", "npm-cli.js");
+        mkdirSync(dirname(npmExecPath), { recursive: true });
+        writeFileSync(npmExecPath, "// test npm cli");
+        try {
+            expect(() => createPackagedCccCandidate(outputDir, {
+                nodePath: join(outputDir, "node.exe"),
+                spawnSyncImpl: () => ({
+                    status: 0,
+                    stdout: JSON.stringify([{ filename: "../outside.tgz" }]),
+                    stderr: "",
+                }),
+            })).toThrow(/unsafe package artifact filename/);
+        } finally {
+            rmSync(outputDir, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects a reported package artifact that is not a regular file", () => {
+        const outputDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-type-test-"));
+        const npmExecPath = join(outputDir, "node_modules", "npm", "bin", "npm-cli.js");
+        mkdirSync(dirname(npmExecPath), { recursive: true });
+        writeFileSync(npmExecPath, "// test npm cli");
+        mkdirSync(join(outputDir, "not-a-package.tgz"));
+        try {
+            expect(() => createPackagedCccCandidate(outputDir, {
+                nodePath: join(outputDir, "node.exe"),
+                spawnSyncImpl: () => ({
+                    status: 0,
+                    stdout: JSON.stringify([{ filename: "not-a-package.tgz" }]),
+                    stderr: "",
+                }),
+            })).toThrow(/regular package artifact/);
         } finally {
             rmSync(outputDir, { recursive: true, force: true });
         }

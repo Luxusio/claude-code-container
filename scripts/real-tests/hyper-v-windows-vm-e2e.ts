@@ -1,7 +1,7 @@
 import assert from "assert";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { windowsVmBackend } from "../../device-lab-mcp/src/backends/windows-vm.mjs";
 import { ownerId } from "../../device-lab-mcp/src/context.mjs";
 import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/device-lab/providers/hyper-v.ts";
@@ -34,8 +34,27 @@ function resultValue(value: any) {
     return value?.result && typeof value.result === "object" ? value.result : value;
 }
 
+export function resolveNpmCliPath(options: any = {}) {
+    const nodePath = String(options.nodePath || process.execPath);
+    const nodeDir = dirname(nodePath);
+    const candidates = [
+        join(nodeDir, "node_modules", "npm", "bin", "npm-cli.js"),
+        join(dirname(nodeDir), "lib", "node_modules", "npm", "bin", "npm-cli.js"),
+    ];
+    return candidates
+        .map((candidate) => String(candidate || "").trim())
+        .find((candidate, index, values) => {
+            if (!candidate || values.indexOf(candidate) !== index) return false;
+            try {
+                return lstatSync(candidate).isFile();
+            } catch {
+                return false;
+            }
+        }) || "";
+}
+
 export function createPackagedCccCandidate(outputDir: string, options: any = {}) {
-    const npmExecPath = String(options.npmExecPath || process.env.npm_execpath || "").trim();
+    const npmExecPath = resolveNpmCliPath(options);
     if (!npmExecPath || !existsSync(npmExecPath)) throw new Error("npm CLI path is unavailable for packaged CCC probe");
     const packed = (options.spawnSyncImpl || hiddenSpawnSync)(options.nodePath || process.execPath, [
         npmExecPath,
@@ -59,8 +78,21 @@ export function createPackagedCccCandidate(outputDir: string, options: any = {})
         throw new Error(`npm pack returned invalid JSON: ${error?.message || String(error)}`);
     }
     const filename = Array.isArray(report) && typeof report[0]?.filename === "string" ? report[0].filename : "";
-    const packagePath = filename ? join(outputDir, filename) : "";
-    if (!packagePath || !existsSync(packagePath)) throw new Error("npm pack did not produce the reported package artifact");
+    if (!filename || basename(filename) !== filename || !filename.endsWith(".tgz")) {
+        throw new Error("npm pack reported an unsafe package artifact filename");
+    }
+    const resolvedOutputDir = resolve(outputDir);
+    const packagePath = resolve(resolvedOutputDir, filename);
+    if (dirname(packagePath) !== resolvedOutputDir) throw new Error("npm pack reported a package artifact outside the output directory");
+    let packageStat;
+    try {
+        packageStat = lstatSync(packagePath);
+    } catch {
+        throw new Error("npm pack did not produce the reported package artifact");
+    }
+    if (!packageStat.isFile() || packageStat.isSymbolicLink()) {
+        throw new Error("npm pack did not produce a regular package artifact");
+    }
     const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
     return { packagePath, version: String(packageJson.version || "") };
 }

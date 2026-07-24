@@ -93,7 +93,13 @@ Real host-provider tests are split by authority level:
 npm run test:level1       # Readiness/inventory only
 npm run test:level2       # Creates disposable VMs, simulators, emulators, or sandboxes when prerequisites exist
 npm run test:level3       # Runs Level 3 and writes a platform result, or aggregates result files passed after --
+npm run test:level3:hyper-v          # Runs only the Hyper-V Windows and Linux VM E2E tests
+npm run test:level3:hyper-v:windows  # Runs only the Hyper-V Windows VM E2E test
+npm run test:level3:hyper-v:linux    # Runs only the Hyper-V Linux VM E2E test
 ```
+
+The targeted Hyper-V commands rebuild the packaged test artifacts and prepare
+the host broker automatically before running the selected provider tests.
 
 Run `npm run test:level3` on each provider host. Selecting Level 3 is the
 explicit authorization for destructive operations against disposable or leased
