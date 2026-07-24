@@ -2170,6 +2170,35 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it("joins through safe defer with Windows named-volume storage paths and additive mount drift", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            for (const [index, mount] of inspected.Mounts
+                .filter((item: { Type: string }) => item.Type === "volume")
+                .entries()) {
+                mount.Name = mount.Source;
+                mount.Source = `C:\\ProgramData\\Docker\\volumes\\${mount.Name}\\_data-${index}`;
+            }
+            inspected.Mounts = inspected.Mounts.filter(
+                (item: { Destination: string }) => item.Destination !== "/home/ccc/.claude",
+            );
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            expectNoContainerReplacement();
+        });
+
         it("fails closed when a named-volume Name does not match even if Source resembles the expected storage path", () => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             const miseMount = inspected.Mounts.find(
