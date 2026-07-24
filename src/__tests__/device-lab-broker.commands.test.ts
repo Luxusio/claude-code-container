@@ -58,6 +58,11 @@ describe("device-lab host broker lifecycle commands", () => {
             "hyper-v-linux-seed-media-attach-command-failed",
             "hyper-v-linux-ssh-keygen-arguments-invalid",
             "hyper-v-linux-ssh-keygen-start-failed",
+            "hyper-v-provisioning-media-source-directory-failed",
+            "hyper-v-provisioning-media-source-file-invalid",
+            "hyper-v-provisioning-media-source-file-failed",
+            "hyper-v-provisioning-media-source-cleanup-failed",
+            "hyper-v-provisioning-media-add-tree-failed",
         ];
         for (const diagnosticCode of diagnosticCodes) {
             expect(redactProviderCommandInput({

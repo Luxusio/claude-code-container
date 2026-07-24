@@ -178,7 +178,7 @@ const DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE = "windows-sandbox-b
 const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-recording-proxy-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v12";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v13";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
@@ -10829,7 +10829,11 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-provisioning-media-com-unavailable",
     "hyper-v-provisioning-media-configure-failed",
     "hyper-v-provisioning-media-source-entry-invalid",
-    "hyper-v-provisioning-media-source-stream-failed",
+    "hyper-v-provisioning-media-source-directory-failed",
+    "hyper-v-provisioning-media-source-file-invalid",
+    "hyper-v-provisioning-media-source-file-failed",
+    "hyper-v-provisioning-media-source-cleanup-failed",
+    "hyper-v-provisioning-media-add-tree-failed",
     "hyper-v-provisioning-media-result-image-failed",
     "hyper-v-provisioning-media-invalid",
     "hyper-v-guest-provisioning-media-already-attached",

@@ -89,12 +89,15 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v12`. Host CLI and
+The host broker advertises `hyper-v-vm-managed-auto-images-v13`. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
-runtimes. Version 12 includes PowerShell 5.1-safe IPv4 prefix-mask calculation,
+runtimes. Version 13 builds provisioning media from a fenced temporary file
+tree in the broker-private device root through IMAPI `AddTree`, removing the
+nonstandard in-memory COM source stream path. Each source tree has a random
+name, a current-user-only ACL, reparse-point checks, and mandatory cleanup on a
+successful build. It retains PowerShell 5.1-safe IPv4 prefix-mask calculation,
 bounded long-program loading, deterministic SSH key generation arguments, and
-the stage-marker behavior added after version 11 for redacted, stage-specific
-guest-provisioning diagnostics.
+stage-specific guest-provisioning diagnostics.
 
 Level 3 treats missing Hyper-V management access as an explicit
 `host-permission` prerequisite skip, not an unknown skip. The test command does

@@ -72,7 +72,7 @@ function loaderOf(command: { args: string[] }): string {
 }
 
 describe("Hyper-V provider adapter", () => {
-    it.skipIf(process.platform !== "win32")("creates provisioning ISO media from an in-memory COM stream", () => {
+    it.skipIf(process.platform !== "win32")("creates provisioning ISO media from a fenced file tree", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-media-probe-"));
         try {
             const generated = scriptOf(hyperVGuestProvisionCommand({
@@ -94,7 +94,7 @@ describe("Hyper-V provider adapter", () => {
             const typeStart = generated.indexOf("if (-not ('CccIsoStreamWriter' -as [type]))");
             const typeMarker = "'@ -Language CSharp -ErrorAction Stop\n}";
             const typeEnd = generated.indexOf(typeMarker, typeStart) + typeMarker.length;
-            const writerStart = generated.indexOf("function Write-CccIso");
+            const writerStart = generated.indexOf("function Remove-CccIsoSourceRoot");
             const writerEnd = generated.indexOf("\n  Write-CccIso $IsoFiles", writerStart);
             expect({ assertStart, assertEnd, typeStart, typeEnd, writerStart, writerEnd }).toEqual(expect.objectContaining({
                 assertStart: expect.any(Number),
@@ -106,19 +106,22 @@ describe("Hyper-V provider adapter", () => {
             }));
             expect(Math.min(assertStart, assertEnd, typeStart, typeEnd, writerStart, writerEnd)).toBeGreaterThanOrEqual(0);
             const isoPath = join(root, "probe.iso").replace(/'/g, "''");
+            const sourceRoot = join(root, "private", "probe.source").replace(/'/g, "''");
             const probeScript = [
                 "$ErrorActionPreference = 'Stop'",
                 generated.slice(assertStart, assertEnd),
                 generated.slice(typeStart, typeEnd),
                 generated.slice(writerStart, writerEnd),
                 `$IsoPath = '${isoPath}'`,
+                `$SourceRoot = '${sourceRoot}'`,
                 "$IsoFiles = [ordered]@{ 'probe.txt' = [Text.Encoding]::UTF8.GetBytes('ccc-hyper-v-media-probe') }",
                 "try {",
-                "  Write-CccIso $IsoFiles $IsoPath 'CCC_PROBE'",
+                "  Write-CccIso $IsoFiles $IsoPath 'CCC_PROBE' $SourceRoot",
                 "  $IsoItem = Get-Item -LiteralPath $IsoPath -Force -ErrorAction Stop",
                 "  $IsoText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($IsoPath))",
                 "  if ($IsoText.IndexOf('probe.txt', [StringComparison]::OrdinalIgnoreCase) -lt 0) { throw 'hyper-v-provisioning-media-probe-name-missing' }",
                 "  if ($IsoText.IndexOf('ccc-hyper-v-media-probe', [StringComparison]::Ordinal) -lt 0) { throw 'hyper-v-provisioning-media-probe-content-missing' }",
+                "  if (Test-Path -LiteralPath $SourceRoot) { throw 'hyper-v-provisioning-media-probe-source-residue' }",
                 "  [ordered]@{ ok = $true; contentVerified = $true; length = [long]$IsoItem.Length } | ConvertTo-Json -Compress",
                 "} finally {",
                 "  Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue",
@@ -142,6 +145,61 @@ describe("Hyper-V provider adapter", () => {
             expect(result.stdout).toContain('"ok":true');
             expect(result.stdout).toContain('"contentVerified":true');
             expect(result.stdout).toMatch(/"length":\d+/);
+
+            const cleanupIsoPath = join(root, "cleanup-failure.iso").replace(/'/g, "''");
+            const cleanupSourceRoot = join(root, "private", "cleanup-failure.source").replace(/'/g, "''");
+            const primaryIsoPath = join(root, "primary-failure.iso").replace(/'/g, "''");
+            const primarySourceRoot = join(root, "private", "primary-failure.source").replace(/'/g, "''");
+            const cleanupFailureScript = [
+                "$ErrorActionPreference = 'Stop'",
+                generated.slice(assertStart, assertEnd),
+                generated.slice(typeStart, typeEnd),
+                generated.slice(writerStart, writerEnd),
+                "$OriginalRemoveCccIsoSourceRoot = ${function:Remove-CccIsoSourceRoot}",
+                "function Invoke-CccCleanupFailureCase([string]$IsoPath, [string]$SourceRoot, [Collections.IDictionary]$IsoFiles, [string]$ExpectedFailure) {",
+                "  $script:CccCleanupCalls = 0",
+                "  function Remove-CccIsoSourceRoot([string]$Candidate) {",
+                "    $script:CccCleanupCalls++",
+                "    if ($script:CccCleanupCalls -gt 1) { throw 'injected-cleanup-failure' }",
+                "    & $OriginalRemoveCccIsoSourceRoot $Candidate",
+                "  }",
+                "  try {",
+                "    Write-CccIso $IsoFiles $IsoPath 'CCC_PROBE' $SourceRoot",
+                "    throw 'expected-write-ccc-iso-failure'",
+                "  } catch {",
+                "    if ([string]$_.Exception.Message -ne $ExpectedFailure) { throw }",
+                "    [Console]::Out.WriteLine($ExpectedFailure)",
+                "  } finally {",
+                "    & $OriginalRemoveCccIsoSourceRoot $SourceRoot",
+                "    Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue",
+                "  }",
+                "}",
+                `$CleanupIsoPath = '${cleanupIsoPath}'`,
+                `$CleanupSourceRoot = '${cleanupSourceRoot}'`,
+                "$ValidFiles = [ordered]@{ 'probe.txt' = [Text.Encoding]::UTF8.GetBytes('cleanup-failure') }",
+                "Invoke-CccCleanupFailureCase $CleanupIsoPath $CleanupSourceRoot $ValidFiles 'hyper-v-provisioning-media-source-cleanup-failed'",
+                `$PrimaryIsoPath = '${primaryIsoPath}'`,
+                `$PrimarySourceRoot = '${primarySourceRoot}'`,
+                "$InvalidFiles = [ordered]@{ '../bad' = [Text.Encoding]::UTF8.GetBytes('primary-failure') }",
+                "Invoke-CccCleanupFailureCase $PrimaryIsoPath $PrimarySourceRoot $InvalidFiles 'hyper-v-provisioning-media-source-entry-invalid'",
+            ].join("\n");
+            const cleanupFailureResult = spawnSync("powershell.exe", [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                Buffer.from(cleanupFailureScript, "utf16le").toString("base64"),
+            ], {
+                encoding: "utf8",
+                timeout: 30_000,
+                maxBuffer: 1024 * 1024,
+                windowsHide: true,
+            });
+            expect(cleanupFailureResult.status, cleanupFailureResult.stderr || cleanupFailureResult.error?.message).toBe(0);
+            expect(cleanupFailureResult.stdout).toContain("hyper-v-provisioning-media-source-cleanup-failed");
+            expect(cleanupFailureResult.stdout).toContain("hyper-v-provisioning-media-source-entry-invalid");
         } finally {
             rmSync(root, { recursive: true, force: true });
         }
@@ -607,20 +665,30 @@ describe("Hyper-V provider adapter", () => {
         });
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
-        expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata'");
+        expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
         expect(seedScript).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(seedScript).toContain("SHCreateStreamOnFileEx");
         expect(seedScript).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
         expect(seedScript).toContain("readBytes != expectedBytes || writtenBytes != expectedBytes");
-        expect(seedScript).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
+        expect(seedScript).toContain("@($ImageStream, $ResultImage, $ImageRoot, $Image)");
         expect(seedScript).toContain("FinalReleaseComObject($ComObject)");
-        expect(seedScript).toContain("CreateStreamOnHGlobal");
-        expect(seedScript).toContain("[CccIsoStreamWriter]::CreateSource($EntryBytes)");
-        expect(seedScript.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(seedScript.indexOf("$ImageRoot.AddFile($EntryName, $SourceStream)"));
-        expect(seedScript).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
+        expect(seedScript).toContain("[IO.File]::WriteAllBytes($EntryPath, $EntryBytes)");
+        expect(seedScript).toContain("$ImageRoot.AddTree($SourceRoot, $false)");
+        expect(seedScript).toContain("Assert-NoReparsePath $SourceRoot");
+        expect(seedScript).toContain("function Remove-CccIsoSourceRoot");
+        expect(seedScript).toContain("Get-ChildItem -LiteralPath $SourceRoot -Force");
+        expect(seedScript).toContain("$CurrentChild = Get-Item -LiteralPath $SourceChild.FullName");
+        expect(seedScript).toContain("$SourceAcl.SetAccessRuleProtection($true, $false)");
+        expect(seedScript).toContain("[Security.AccessControl.FileSystemAccessRule]::new(");
+        expect(seedScript).not.toContain("New-Object Security.AccessControl.FileSystemAccessRule(");
+        expect(seedScript).toContain("hyper-v-provisioning-media-source-cleanup-failed");
+        expect(seedScript.indexOf("if ($null -ne $CccIsoFailure) { throw $CccIsoFailure }")).toBeGreaterThan(seedScript.indexOf("finally {"));
+        expect(seedScript).not.toContain("Remove-Item -LiteralPath $SourceRoot -Recurse");
         expect(seedScript).not.toContain("ADODB.Stream");
         expect(seedScript).not.toContain("$SourceStream.Close()");
-        expect(seedScript).not.toContain("$ImageRoot.AddTree(");
+        expect(seedScript).not.toContain("CreateStreamOnHGlobal");
+        expect(seedScript).not.toContain("[CccIsoStreamWriter]::CreateSource");
+        expect(seedScript).not.toContain("$ImageRoot.AddFile(");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
         expect(seedScript).toContain("ssh-keygen.exe");
@@ -1107,21 +1175,31 @@ describe("Hyper-V provider adapter", () => {
         });
         const script = scriptOf(command);
         expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
-        expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'");
+        expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot");
         expect(script).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(script).toContain("SHCreateStreamOnFileEx");
         expect(script).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
         expect(script).toContain("hyper-v-provisioning-media-copy-incomplete");
         expect(script).toContain("hyper-v-provisioning-media-result-image-failed");
-        expect(script).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
+        expect(script).toContain("@($ImageStream, $ResultImage, $ImageRoot, $Image)");
         expect(script).toContain("FinalReleaseComObject($ComObject)");
-        expect(script).toContain("CreateStreamOnHGlobal");
-        expect(script).toContain("[CccIsoStreamWriter]::CreateSource($EntryBytes)");
-        expect(script.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(script.indexOf("$ImageRoot.AddFile($EntryName, $SourceStream)"));
-        expect(script).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
+        expect(script).toContain("[IO.File]::WriteAllBytes($EntryPath, $EntryBytes)");
+        expect(script).toContain("$ImageRoot.AddTree($SourceRoot, $false)");
+        expect(script).toContain("Assert-NoReparsePath $SourceRoot");
+        expect(script).toContain("function Remove-CccIsoSourceRoot");
+        expect(script).toContain("Get-ChildItem -LiteralPath $SourceRoot -Force");
+        expect(script).toContain("$CurrentChild = Get-Item -LiteralPath $SourceChild.FullName");
+        expect(script).toContain("$SourceAcl.SetAccessRuleProtection($true, $false)");
+        expect(script).toContain("[Security.AccessControl.FileSystemAccessRule]::new(");
+        expect(script).not.toContain("New-Object Security.AccessControl.FileSystemAccessRule(");
+        expect(script).toContain("hyper-v-provisioning-media-source-cleanup-failed");
+        expect(script.indexOf("if ($null -ne $CccIsoFailure) { throw $CccIsoFailure }")).toBeGreaterThan(script.indexOf("finally {"));
+        expect(script).not.toContain("Remove-Item -LiteralPath $SourceRoot -Recurse");
         expect(script).not.toContain("ADODB.Stream");
         expect(script).not.toContain("$SourceStream.Close()");
-        expect(script).not.toContain("$ImageRoot.AddTree(");
+        expect(script).not.toContain("CreateStreamOnHGlobal");
+        expect(script).not.toContain("[CccIsoStreamWriter]::CreateSource");
+        expect(script).not.toContain("$ImageRoot.AddFile(");
         expect(script).toContain("Remove-Item -LiteralPath $IsoPath -Force -ErrorAction SilentlyContinue");
         expect(script).not.toContain("input.Read(");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
