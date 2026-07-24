@@ -458,6 +458,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
         expect(seedScript).toContain("FinalReleaseComObject($ComObject)");
         expect(seedScript).toContain("New-Object -ComObject ADODB.Stream");
+        expect(seedScript.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(seedScript.indexOf("$SourceStream.Open()"));
         expect(seedScript).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
         expect(seedScript).toContain("$SourceStream.Close()");
         expect(seedScript).not.toContain("$ImageRoot.AddTree(");
@@ -944,6 +945,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("@($ImageStream, $ResultImage, $ImageRoot) + @($SourceStreams) + @($Image)");
         expect(script).toContain("FinalReleaseComObject($ComObject)");
         expect(script).toContain("New-Object -ComObject ADODB.Stream");
+        expect(script.indexOf("[void]$SourceStreams.Add($SourceStream)")).toBeLessThan(script.indexOf("$SourceStream.Open()"));
         expect(script).toContain("$ImageRoot.AddFile($EntryName, $SourceStream)");
         expect(script).toContain("$SourceStream.Close()");
         expect(script).not.toContain("$ImageRoot.AddTree(");
