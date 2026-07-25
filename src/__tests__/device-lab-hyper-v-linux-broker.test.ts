@@ -1496,6 +1496,7 @@ describe("device-lab Hyper-V broker", () => {
             }
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const seed = script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'");
+            const bootDiagnostic = script.includes("bootDeviceTypes = $BootDeviceTypes");
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");
@@ -1517,7 +1518,9 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(hostPublicKeyPath, `ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
-            const result = imageSetup
+            const result = bootDiagnostic
+                ? { ok: true, vmId, vmName, state: vmState, uptimeMs: 1000, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, hardDiskCount: 1, dvdCount: 1, bootDeviceTypes: ["hard-disk", "dvd"] }
+                : imageSetup
                 ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
                 : networkSetup
                     ? hyperVNetworkObservation(command)
@@ -1582,7 +1585,25 @@ describe("device-lab Hyper-V broker", () => {
             readinessFailure = true;
             const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);
-            expect(await exhausted.json()).toEqual(expect.objectContaining({ error: "hyper-v-guest-not-ready" }));
+            const exhaustedBody = await exhausted.json();
+            expect(exhaustedBody).toEqual(expect.objectContaining({
+                error: "hyper-v-guest-not-ready",
+                result: expect.objectContaining({
+                    boot: {
+                        ready: false,
+                        provider: "hyper-v-ssh",
+                        error: "ssh-unavailable",
+                        diagnosticAvailable: true,
+                        diagnostic: expect.objectContaining({
+                            state: "Running",
+                            hardDiskCount: 1,
+                            bootDeviceTypes: ["hard-disk", "dvd"],
+                        }),
+                    },
+                }),
+            }));
+            expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmId");
+            expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmName");
             readinessFailure = false;
 
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });

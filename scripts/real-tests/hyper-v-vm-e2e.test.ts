@@ -278,6 +278,53 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(1024);
     });
 
+    it("reports bounded Hyper-V guest readiness diagnostics without exposing command output", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "broker-operation-failed",
+            body: {
+                error: "hyper-v-guest-not-ready",
+                result: {
+                    boot: {
+                        ready: false,
+                        provider: "hyper-v-ssh",
+                        error: "ssh-connection-refused",
+                        diagnosticAvailable: true,
+                        diagnostic: {
+                            vmId: "12345678-1234-1234-1234-123456789abc",
+                            vmName: "private-vm-name",
+                            state: "Running",
+                            uptimeMs: 600123,
+                            heartbeatEnabled: true,
+                            heartbeatPrimaryStatus: 2,
+                            heartbeatSecondaryStatus: 0,
+                            hardDiskCount: 1,
+                            dvdCount: 1,
+                            bootDeviceTypes: ["hard-disk", "dvd"],
+                            diskPath: "C:\\Users\\Luxus\\private\\root.vhdx",
+                        },
+                    },
+                    execution: {
+                        command: {
+                            hyperVGuestReady: {
+                                stderr: "token=secret C:\\Users\\Luxus\\private",
+                            },
+                        },
+                    },
+                },
+            },
+        }, "fallback");
+        expect(message).toContain("hyper-v-guest-not-ready");
+        expect(message).toContain('"error":"ssh-connection-refused"');
+        expect(message).toContain('"state":"Running"');
+        expect(message).toContain('"bootDeviceTypes":["hard-disk","dvd"]');
+        expect(message).not.toContain("private-vm-name");
+        expect(message).not.toContain("diskPath");
+        expect(message).not.toContain("token=secret");
+        expect(message).not.toContain("C:\\Users");
+        expect(message.length).toBeLessThan(1024);
+    });
+
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {
         const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
         expect(source).toContain("hyper-v-image-contracts.ts");

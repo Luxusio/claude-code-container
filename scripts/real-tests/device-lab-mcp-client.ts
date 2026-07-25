@@ -377,11 +377,39 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             timeoutMs: Number.isFinite(lastAttempt.timeoutMs) ? lastAttempt.timeoutMs : undefined,
         })
         : "";
+    const boot = body?.result?.boot && typeof body.result.boot === "object" && !Array.isArray(body.result.boot)
+        ? body.result.boot
+        : value?.result?.boot && typeof value.result.boot === "object" && !Array.isArray(value.result.boot)
+            ? value.result.boot
+            : null;
+    const bootObservation = boot?.diagnostic && typeof boot.diagnostic === "object" && !Array.isArray(boot.diagnostic)
+        ? boot.diagnostic
+        : null;
+    const bootDiagnostic = boot
+        ? JSON.stringify({
+            provider: typeof boot.provider === "string" ? boot.provider : undefined,
+            error: typeof boot.error === "string" ? boot.error : undefined,
+            diagnosticAvailable: boot.diagnosticAvailable === true,
+            vm: bootObservation ? {
+                state: typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
+                uptimeMs: Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
+                heartbeatEnabled: typeof bootObservation.heartbeatEnabled === "boolean" ? bootObservation.heartbeatEnabled : null,
+                heartbeatPrimaryStatus: Number.isSafeInteger(bootObservation.heartbeatPrimaryStatus) ? bootObservation.heartbeatPrimaryStatus : null,
+                heartbeatSecondaryStatus: Number.isSafeInteger(bootObservation.heartbeatSecondaryStatus) ? bootObservation.heartbeatSecondaryStatus : null,
+                hardDiskCount: Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
+                dvdCount: Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
+                bootDeviceTypes: Array.isArray(bootObservation.bootDeviceTypes)
+                    ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 8)
+                    : undefined,
+            } : undefined,
+        })
+        : "";
     const message = [
         value?.error,
         value?.detail,
         body?.error,
         body?.detail,
+        bootDiagnostic,
         diagnostic,
         transportDiagnostic,
     ].filter(Boolean).join(": ") || fallback;

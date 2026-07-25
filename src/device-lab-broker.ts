@@ -17,7 +17,7 @@ import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness,
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
 import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "./device-lab-safe-cleanup.js";
 import { HYPER_V_IMAGE_CATALOG, readHyperVWindowsEvaluationReceipt } from "./device-lab/hyper-v-images.js";
-import { hyperVAcquireBaseImageCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVDeleteObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
+import { hyperVAcquireBaseImageCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -10802,6 +10802,25 @@ function providerFailureDetail(result: ProviderCommandResult): string {
     return truncateOutput(parts.join("\n") || `provider exited with status ${String(result.status)}`, 8192);
 }
 
+function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", result: ProviderCommandResult): string {
+    if (backend === "windows-vm") {
+        const observation = parseHyperVGuestReadyFailureObservation(result.stdout || "");
+        if (observation) return observation.reason;
+        const error = String(result.error || "");
+        if (/^hyper-v-[a-z0-9-]+$/.test(error)) return error;
+        return result.timedOut ? "powershell-direct-timeout" : "powershell-direct-unavailable";
+    }
+    const diagnostic = `${result.error || ""}\n${result.stderr || ""}`.toLowerCase();
+    if (diagnostic.includes("connection refused")) return "ssh-connection-refused";
+    if (diagnostic.includes("connection timed out") || diagnostic.includes("operation timed out") || result.timedOut) return "ssh-connection-timeout";
+    if (diagnostic.includes("no route to host") || diagnostic.includes("host is down")) return "ssh-host-unreachable";
+    if (diagnostic.includes("host key verification failed") || diagnostic.includes("remote host identification has changed")) return "ssh-host-key-rejected";
+    if (diagnostic.includes("permission denied") || diagnostic.includes("authentication failed")) return "ssh-authentication-failed";
+    const error = String(result.error || "");
+    if (/^hyper-v-[a-z0-9-]+$/.test(error)) return error;
+    return "ssh-unavailable";
+}
+
 const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-path-reparse-point-rejected",
     "hyper-v-path-root-invalid",
@@ -12342,6 +12361,10 @@ async function lifecycleCommandInvokeUnlocked(
     let androidBoot: AndroidEmulatorBootRegistration | null = null;
     let hyperVGuestReadyExecution: ProviderCommandResult | null = null;
     let hyperVGuestReady: ReturnType<typeof parseHyperVGuestReadyObservation> | null = null;
+    let hyperVGuestBootDiagnosticExecution: ProviderCommandResult | null = null;
+    let hyperVGuestBootDiagnostic: ReturnType<typeof parseHyperVGuestBootDiagnosticObservation> | null = null;
+    let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
+    let hyperVGuestReadyFailureCode: string | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
     let windowsMinimizeWatchdogCleanup: ReturnType<typeof cancelBrokerWindowsMinimizeWatchdog> | null = null;
@@ -12509,6 +12532,49 @@ async function lifecycleCommandInvokeUnlocked(
             }
         }
     }
+    if (!success
+        && hyperVGuestReadyExecution
+        && isHyperVBackend(parsed.backend)
+        && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
+        hyperVGuestReadyFailureCode = hyperVGuestReadinessFailureCode(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
+        const device = payload.result?.device as Record<string, unknown>;
+        try {
+            const diagnosticCommand = hyperVGuestBootDiagnosticCommand({
+                executable: providerCommand.executable || "powershell.exe",
+                ownerId,
+                deviceId: parsed.deviceId,
+                incarnationId: hyperVDeviceIncarnationId(device) || "",
+                vmName: field(device, "vmName") || "",
+                vmId: field(device, "vmId"),
+                diskPath: field(device, "diskPath"),
+            });
+            hyperVGuestBootDiagnosticExecution = await hyperVProviderCommandRunner(normalized, diagnosticCommand, {
+                timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 15000),
+                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+            });
+            hyperVGuestBootDiagnostic = commandSucceeded(hyperVGuestBootDiagnosticExecution)
+                ? parseHyperVGuestBootDiagnosticObservation(hyperVGuestBootDiagnosticExecution.stdout || "")
+                : null;
+            if (hyperVGuestBootDiagnostic
+                && (hyperVGuestBootDiagnostic.vmId !== String(field(device, "vmId") || "").toLowerCase()
+                    || hyperVGuestBootDiagnostic.vmName !== field(device, "vmName"))) {
+                hyperVGuestBootDiagnostic = null;
+            }
+            hyperVGuestBootDiagnosticPublic = hyperVGuestBootDiagnostic ? {
+                state: hyperVGuestBootDiagnostic.state,
+                uptimeMs: hyperVGuestBootDiagnostic.uptimeMs,
+                heartbeatEnabled: hyperVGuestBootDiagnostic.heartbeatEnabled,
+                heartbeatPrimaryStatus: hyperVGuestBootDiagnostic.heartbeatPrimaryStatus,
+                heartbeatSecondaryStatus: hyperVGuestBootDiagnostic.heartbeatSecondaryStatus,
+                hardDiskCount: hyperVGuestBootDiagnostic.hardDiskCount,
+                dvdCount: hyperVGuestBootDiagnostic.dvdCount,
+                bootDeviceTypes: hyperVGuestBootDiagnostic.bootDeviceTypes,
+            } : null;
+        } catch {
+            hyperVGuestBootDiagnosticExecution = null;
+            hyperVGuestBootDiagnostic = null;
+        }
+    }
     if (!success && windowsMinimizeWatchdog?.pid) {
         windowsMinimizeWatchdogCleanup = cancelBrokerWindowsMinimizeWatchdog(ownerId, parsed.deviceId);
     }
@@ -12614,12 +12680,18 @@ async function lifecycleCommandInvokeUnlocked(
         if (!success && hyperVGuestReadyExecution && isHyperVBackend(parsed.backend) && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
             mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.map((candidate) => {
                 if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== parsed.deviceId) return candidate;
+                const observedRuntimeState = hyperVGuestBootDiagnostic?.state || "Running";
                 updatedDevice = {
                     ...(candidate as Record<string, unknown>),
-                    status: "running",
-                    runtimeState: "Running",
+                    status: observedRuntimeState.toLowerCase() === "off" ? "stopped" : "running",
+                    runtimeState: observedRuntimeState,
                     bootReady: false,
-                    lastBootCheck: { ready: false, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", error: hyperVGuestReadyExecution?.error || hyperVGuestReadyExecution?.stderr || "guest-not-ready" },
+                    lastBootCheck: {
+                        ready: false,
+                        provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
+                        error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                        ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
+                    },
                     updatedAt: new Date().toISOString(),
                 };
                 return updatedDevice;
@@ -12683,7 +12755,13 @@ async function lifecycleCommandInvokeUnlocked(
                 ...(hyperVGuestReadyExecution ? {
                     boot: hyperVGuestReady
                         ? { ready: true, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", computerName: hyperVGuestReady.computerName, attempts: hyperVGuestReady.attempts }
-                        : { ready: false, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", error: hyperVGuestReadyExecution.error || hyperVGuestReadyExecution.stderr || "guest-not-ready" },
+                        : {
+                            ready: false,
+                            provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
+                            error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                            ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
+                            diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
+                        },
                 } : {}),
                 ...(windowsMinimizeWatchdog ? { minimizeWatchdog: windowsMinimizeWatchdog } : {}),
                 ...(windowsMinimizeConfirmation ? { minimizeConfirmation: windowsMinimizeConfirmation } : {}),

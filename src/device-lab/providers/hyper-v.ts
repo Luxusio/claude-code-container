@@ -109,6 +109,27 @@ export type HyperVGuestReadyObservation = {
     networkAddress?: string;
 };
 
+export type HyperVGuestReadyFailureObservation = {
+    ok: false;
+    error: "hyper-v-guest-ready-timeout";
+    reason: string;
+    attempts: number;
+};
+
+export type HyperVGuestBootDiagnosticObservation = {
+    ok: true;
+    vmId: string;
+    vmName: string;
+    state: string;
+    uptimeMs: number;
+    heartbeatEnabled: boolean | null;
+    heartbeatPrimaryStatus: number | null;
+    heartbeatSecondaryStatus: number | null;
+    hardDiskCount: number;
+    dvdCount: number;
+    bootDeviceTypes: string[];
+};
+
 export type HyperVBaseImageObservation = {
     ok: boolean;
     profile: "windows-11" | "windows-server" | "ubuntu-lts";
@@ -1671,7 +1692,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         `$ExpectedNetworkAddress = ${psQuote(expectedNetworkAddress)}`,
         `$Deadline = [DateTime]::UtcNow.AddMilliseconds(${timeoutMs})`,
         "$Attempts = 0",
-        "$LastFailure = $null",
+        "$LastFailure = 'powershell-direct-unavailable'",
         "if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) { throw 'hyper-v-guest-credential-unavailable' }",
         "$Credential = Import-Clixml -LiteralPath $CredentialPath -ErrorAction Stop",
         "if ($Credential -isnot [System.Management.Automation.PSCredential]) { throw 'hyper-v-guest-credential-invalid' }",
@@ -1696,13 +1717,55 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "    $Result | ConvertTo-Json -Compress -Depth 5",
         "    exit 0",
         "  } catch {",
-        "    $LastFailure = $_.Exception.Message",
+        "    $Candidate = [string]$_.Exception.Message",
+        "    $FailureId = [string]$_.FullyQualifiedErrorId",
+        "    if ($Candidate -match '^hyper-v-guest-vm-state:') { $LastFailure = 'hyper-v-guest-vm-not-running' }",
+        "    elseif ($Candidate -match '^hyper-v-[a-z0-9-]+$') { $LastFailure = $Candidate }",
+        "    elseif ($FailureId -match 'AccessDenied|InvalidCredential|Authentication') { $LastFailure = 'powershell-direct-authentication-failed' }",
+        "    elseif ($FailureId -match 'PSSession|VMNotRunning|InvalidState') { $LastFailure = 'powershell-direct-session-unavailable' }",
+        "    else { $LastFailure = 'powershell-direct-unavailable' }",
         "  } finally {",
         "    if ($Session) { Remove-PSSession -Session $Session -ErrorAction SilentlyContinue }",
         "  }",
         "  Start-Sleep -Seconds 2",
         "}",
-        "throw ('hyper-v-guest-ready-timeout: ' + $LastFailure)",
+        "$Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts }",
+        "$Failure | ConvertTo-Json -Compress -Depth 4",
+        "exit 1",
+    ]));
+}
+
+export function hyperVGuestBootDiagnosticCommand(options: HyperVCommandOptions): HyperVProviderCommand {
+    return command(options.executable, jsonScript([
+        ...ownedVmPrelude(options),
+        "$Heartbeat = @(Get-VMIntegrationService -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Heartbeat' } | Select-Object -First 1)",
+        "$Firmware = Get-VMFirmware -VM $Vm -ErrorAction SilentlyContinue",
+        "$BootDeviceTypes = @()",
+        "if ($Firmware) {",
+        "  $BootDeviceTypes = @($Firmware.BootOrder | ForEach-Object {",
+        "    $TypeName = $_.GetType().Name",
+        "    if ($TypeName -match 'HardDisk') { 'hard-disk' }",
+        "    elseif ($TypeName -match 'Dvd') { 'dvd' }",
+        "    elseif ($TypeName -match 'Network') { 'network' }",
+        "    else { 'unknown' }",
+        "  })",
+        "}",
+        "$HardDisks = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction SilentlyContinue)",
+        "$DvdDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue)",
+        "$Result = [ordered]@{",
+        "  ok = $true",
+        "  vmId = [string]$Vm.Id",
+        "  vmName = $Vm.Name",
+        "  state = [string]$Vm.State",
+        "  uptimeMs = [Math]::Floor($Vm.Uptime.TotalMilliseconds)",
+        "  heartbeatEnabled = if ($Heartbeat.Count -eq 1) { [bool]$Heartbeat[0].Enabled } else { $null }",
+        "  heartbeatPrimaryStatus = if ($Heartbeat.Count -eq 1 -and $null -ne $Heartbeat[0].PrimaryStatus) { [int]$Heartbeat[0].PrimaryStatus } else { $null }",
+        "  heartbeatSecondaryStatus = if ($Heartbeat.Count -eq 1 -and $null -ne $Heartbeat[0].SecondaryStatus) { [int]$Heartbeat[0].SecondaryStatus } else { $null }",
+        "  hardDiskCount = $HardDisks.Count",
+        "  dvdCount = $DvdDrives.Count",
+        "  bootDeviceTypes = $BootDeviceTypes",
+        "}",
+        "$Result | ConvertTo-Json -Compress -Depth 5",
     ]));
 }
 
@@ -2263,5 +2326,61 @@ export function parseHyperVGuestReadyObservation(stdout: string): HyperVGuestRea
         computerName: parsed.computerName,
         attempts: parsed.attempts,
         ...(typeof parsed.networkAddress === "string" && parsed.networkAddress ? { networkAddress: parsed.networkAddress } : {}),
+    };
+}
+
+export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVGuestReadyFailureObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed
+        || parsed.ok !== false
+        || parsed.error !== "hyper-v-guest-ready-timeout"
+        || typeof parsed.reason !== "string"
+        || !/^(?:hyper-v-[a-z0-9-]+|powershell-direct-(?:authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
+        || typeof parsed.attempts !== "number"
+        || !Number.isSafeInteger(parsed.attempts)
+        || parsed.attempts < 1) return null;
+    return {
+        ok: false,
+        error: "hyper-v-guest-ready-timeout",
+        reason: parsed.reason,
+        attempts: parsed.attempts,
+    };
+}
+
+export function parseHyperVGuestBootDiagnosticObservation(stdout: string): HyperVGuestBootDiagnosticObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed
+        || parsed.ok !== true
+        || typeof parsed.vmId !== "string"
+        || !VM_ID_PATTERN.test(parsed.vmId)
+        || typeof parsed.vmName !== "string"
+        || typeof parsed.state !== "string"
+        || !["Off", "Running", "Starting", "Stopping", "Saving", "Saved", "Pausing", "Paused", "Resuming", "Reset", "FastSaved", "FastSaving", "ForceShutdown", "ForceReboot", "RunningCritical", "OffCritical", "StoppingCritical", "SavedCritical", "PausedCritical", "StartingCritical", "ResetCritical", "SavingCritical", "PausingCritical", "ResumingCritical", "FastSavedCritical", "FastSavingCritical"].includes(parsed.state)
+        || typeof parsed.uptimeMs !== "number"
+        || !Number.isSafeInteger(parsed.uptimeMs)
+        || parsed.uptimeMs < 0
+        || (parsed.heartbeatEnabled !== null && typeof parsed.heartbeatEnabled !== "boolean")
+        || (parsed.heartbeatPrimaryStatus !== null && (typeof parsed.heartbeatPrimaryStatus !== "number" || !Number.isSafeInteger(parsed.heartbeatPrimaryStatus) || parsed.heartbeatPrimaryStatus < 0))
+        || (parsed.heartbeatSecondaryStatus !== null && (typeof parsed.heartbeatSecondaryStatus !== "number" || !Number.isSafeInteger(parsed.heartbeatSecondaryStatus) || parsed.heartbeatSecondaryStatus < 0))
+        || typeof parsed.hardDiskCount !== "number"
+        || !Number.isSafeInteger(parsed.hardDiskCount)
+        || parsed.hardDiskCount < 0
+        || typeof parsed.dvdCount !== "number"
+        || !Number.isSafeInteger(parsed.dvdCount)
+        || parsed.dvdCount < 0
+        || !Array.isArray(parsed.bootDeviceTypes)
+        || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))) return null;
+    return {
+        ok: true,
+        vmId: parsed.vmId.toLowerCase(),
+        vmName: parsed.vmName,
+        state: parsed.state,
+        uptimeMs: parsed.uptimeMs,
+        heartbeatEnabled: parsed.heartbeatEnabled as boolean | null,
+        heartbeatPrimaryStatus: parsed.heartbeatPrimaryStatus as number | null,
+        heartbeatSecondaryStatus: parsed.heartbeatSecondaryStatus as number | null,
+        hardDiskCount: parsed.hardDiskCount,
+        dvdCount: parsed.dvdCount,
+        bootDeviceTypes: parsed.bootDeviceTypes,
     };
 }

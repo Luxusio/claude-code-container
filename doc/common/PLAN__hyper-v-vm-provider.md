@@ -461,6 +461,12 @@ Real-provider tests:
 - Transport failures include only the bounded final broker attempt
   (port, status/error code, duration, and timeout). Hosts, endpoints, request bodies,
   owner tokens, and unbounded process output remain excluded.
+- Guest-readiness failures use fixed PowerShell Direct or SSH reason codes and
+  include only owner-fenced, bounded Hyper-V observations: VM state and uptime,
+  heartbeat numeric status, attached disk/media counts, and categorical boot
+  device types. They never expose VM names, disk paths, credentials, raw
+  PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
+  the observed VM state instead of assuming a started VM remained running.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - Unsupported hosts return short, categorized readiness diagnostics.
 

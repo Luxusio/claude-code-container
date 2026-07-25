@@ -9,6 +9,7 @@ import {
     hyperVCreateCommand,
     hyperVDeleteCommand,
     hyperVEnsureNetworkCommand,
+    hyperVGuestBootDiagnosticCommand,
     hyperVGuestDownloadCommand,
     hyperVGuestExecCommand,
     hyperVGuestProvisionCommand,
@@ -37,7 +38,9 @@ import {
     parseHyperVBaseImageObservation,
     parseHyperVDeleteObservation,
     parseHyperVGuestExecObservation,
+    parseHyperVGuestBootDiagnosticObservation,
     parseHyperVGuestProvisionObservation,
+    parseHyperVGuestReadyFailureObservation,
     parseHyperVGuestReadyObservation,
     parseHyperVGuestTransferObservation,
     parseHyperVNetworkObservation,
@@ -1145,10 +1148,15 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
         expect(script).toContain("Remove-Item -LiteralPath $ProvisioningMedia");
         expect(script).toContain("hyper-v-guest-ready-timeout");
+        expect(script).toContain("powershell-direct-authentication-failed");
+        expect(script).toContain("$Failure | ConvertTo-Json");
         expect(script).toContain("hyper-v-vm-ownership-mismatch");
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId: vmId.toUpperCase(), vmName, computerName: "CCC-WIN", attempts: 4 })))
             .toEqual({ ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 4 });
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 })))
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "C:\\secret", attempts: 150 }))).toBeNull();
         expect(() => hyperVGuestReadyCommand({
             executable: "powershell.exe",
             ownerId,
@@ -1161,6 +1169,62 @@ describe("Hyper-V provider adapter", () => {
             provisioningMediaPath: "/state/owners/foreign/autounattend.iso",
             timeoutMs: 300000,
         })).toThrow("hyper-v-guest-provisioning-media-path-outside-owner-root");
+    });
+
+    it("collects bounded owner-fenced Hyper-V boot diagnostics", () => {
+        const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
+        const command = hyperVGuestBootDiagnosticCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            diskPath: "/state/root.vhdx",
+        });
+        const script = scriptOf(command);
+        expect(script).toContain("Get-VMIntegrationService -VM $Vm");
+        expect(script).toContain("Get-VMFirmware -VM $Vm");
+        expect(script).toContain("bootDeviceTypes = $BootDeviceTypes");
+        expect(script).not.toContain("PrimaryStatusDescription");
+        expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
+            ok: true,
+            vmId: vmId.toUpperCase(),
+            vmName,
+            state: "Running",
+            uptimeMs: 600123,
+            heartbeatEnabled: true,
+            heartbeatPrimaryStatus: 2,
+            heartbeatSecondaryStatus: 0,
+            hardDiskCount: 1,
+            dvdCount: 1,
+            bootDeviceTypes: ["hard-disk", "dvd", "network"],
+        }))).toEqual({
+            ok: true,
+            vmId,
+            vmName,
+            state: "Running",
+            uptimeMs: 600123,
+            heartbeatEnabled: true,
+            heartbeatPrimaryStatus: 2,
+            heartbeatSecondaryStatus: 0,
+            hardDiskCount: 1,
+            dvdCount: 1,
+            bootDeviceTypes: ["hard-disk", "dvd", "network"],
+        });
+        expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
+            ok: true,
+            vmId,
+            vmName,
+            state: "Running",
+            uptimeMs: 1,
+            heartbeatEnabled: true,
+            heartbeatPrimaryStatus: 2,
+            heartbeatSecondaryStatus: 0,
+            hardDiskCount: 1,
+            dvdCount: 1,
+            bootDeviceTypes: ["C:\\secret"],
+        }))).toBeNull();
     });
 
     it("provisions a per-device Windows guest account without putting its password on the command line", () => {
