@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, unlinkSync } from "fs";
+import { request as httpRequest } from "http";
 import { homedir } from "os";
 import { delimiter, dirname, join, resolve } from "path";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "./context.mjs";
@@ -532,6 +533,118 @@ async function readBrokerHttpJson(response, maxBytes) {
             maxBytes,
         };
     }
+}
+
+function brokerRpcHttpJsonRequest({ host, port, path, headers, body, timeoutMs, maxBytes }) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            callback(value);
+        };
+        const request = httpRequest({
+            host,
+            port,
+            path,
+            method: "POST",
+            headers: {
+                ...headers,
+                "content-length": String(Buffer.byteLength(body)),
+                connection: "close",
+            },
+            agent: false,
+        });
+        const timer = setTimeout(() => {
+            const error = new Error("broker RPC timed out");
+            error.name = "AbortError";
+            request.destroy(error);
+        }, timeoutMs);
+        request.once("response", (response) => {
+            const status = Number(response.statusCode || 0);
+            if (status >= 300 && status < 400) {
+                response.destroy();
+                finish(resolve, {
+                    status,
+                    ok: false,
+                    responseBody: { ok: false, error: "broker-redirect-disallowed", body: null, maxBytes },
+                });
+                return;
+            }
+            const declaredLength = Array.isArray(response.headers["content-length"])
+                ? response.headers["content-length"][0]
+                : response.headers["content-length"];
+            if (typeof declaredLength === "string" && /^\d+$/.test(declaredLength)
+                && BigInt(declaredLength) > BigInt(maxBytes)) {
+                response.destroy();
+                finish(resolve, {
+                    status,
+                    ok: status >= 200 && status < 300,
+                    responseBody: {
+                        ok: false,
+                        error: "broker-response-too-large",
+                        body: null,
+                        declaredBytes: declaredLength,
+                        maxBytes,
+                    },
+                });
+                return;
+            }
+            const chunks = [];
+            let total = 0;
+            response.on("data", (chunk) => {
+                if (settled) return;
+                const bytes = Buffer.from(chunk);
+                total += bytes.length;
+                if (total > maxBytes) {
+                    response.destroy();
+                    finish(resolve, {
+                        status,
+                        ok: status >= 200 && status < 300,
+                        responseBody: {
+                            ok: false,
+                            error: "broker-response-too-large",
+                            body: null,
+                            receivedBytes: total,
+                            maxBytes,
+                        },
+                    });
+                    return;
+                }
+                chunks.push(bytes);
+            });
+            response.once("end", () => {
+                if (settled) return;
+                const text = Buffer.concat(chunks, total).toString("utf8");
+                try {
+                    const parsed = text ? JSON.parse(text) : null;
+                    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("broker response is not an object");
+                    finish(resolve, {
+                        status,
+                        ok: status >= 200 && status < 300,
+                        responseBody: { ok: true, body: parsed, receivedBytes: total, maxBytes },
+                    });
+                } catch {
+                    finish(resolve, {
+                        status,
+                        ok: status >= 200 && status < 300,
+                        responseBody: {
+                            ok: false,
+                            error: "invalid-broker-json",
+                            body: { raw: boundedBrokerRawText(text) },
+                            receivedBytes: total,
+                            maxBytes,
+                        },
+                    });
+                }
+            });
+            response.once("aborted", () => finish(reject, new Error("broker response aborted")));
+            response.once("error", (error) => finish(reject, error));
+        });
+        request.once("error", (error) => finish(reject, error));
+        request.end(body);
+    });
 }
 
 async function probeBrokerHealth({ hostCandidates, port, timeoutMs }) {
@@ -1492,22 +1605,23 @@ async function brokerRpcRequest(options = {}) {
 
     const attempts = [];
     for (const host of probeOptions.hostCandidates) {
-        const endpoint = `http://${host}:${probeOptions.port}/v1/owners/${encodeURIComponent(owner)}/rpc`;
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), rpcTimeoutMs);
+        const rpcPath = `/v1/owners/${encodeURIComponent(owner)}/rpc`;
+        const endpoint = `http://${host}:${probeOptions.port}${rpcPath}`;
         const startedAt = Date.now();
         try {
-            const response = await fetch(endpoint, {
-                method: "POST",
-                signal: controller.signal,
-                redirect: "manual",
+            const response = await brokerRpcHttpJsonRequest({
+                host,
+                port: probeOptions.port,
+                path: rpcPath,
+                timeoutMs: rpcTimeoutMs,
+                maxBytes: BROKER_RPC_RESPONSE_LIMIT_BYTES,
                 headers: {
                     "content-type": "application/json",
                     "x-ccc-device-token": token,
                 },
                 body: requestBody,
             });
-            const responseBody = await readBrokerHttpJson(response, BROKER_RPC_RESPONSE_LIMIT_BYTES);
+            const responseBody = response.responseBody;
             const body = responseBody.body;
             const attempt = {
                 host,
@@ -1568,8 +1682,6 @@ async function brokerRpcRequest(options = {}) {
                 timeoutMs: rpcTimeoutMs,
                 error: error?.name === "AbortError" ? "timeout" : error?.message || String(error),
             });
-        } finally {
-            clearTimeout(timer);
         }
     }
     return {

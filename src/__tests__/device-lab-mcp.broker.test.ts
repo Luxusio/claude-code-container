@@ -444,6 +444,189 @@ describe("device-lab MCP", () => {
         }
     });
 
+    it("uses the bounded Node HTTP transport for authenticated RPC instead of fetch", async () => {
+        const ownerId = "acacacacacacacac";
+        provisionTestOwnerSecret(ownerId);
+        const server = createServer((req, res) => {
+            res.setHeader("content-type", "application/json");
+            if (req.method === "POST" && req.url === "/v1/owner/resolve") {
+                res.end(JSON.stringify({ ok: true, result: { ownerId } }));
+                return;
+            }
+            if (req.method === "POST" && req.url === `/v1/owners/${ownerId}/rpc`) {
+                setTimeout(() => {
+                    res.end(JSON.stringify({ ok: true, result: { value: "long-rpc-ok" } }));
+                }, 100);
+                return;
+            }
+            res.statusCode = 404;
+            res.end(JSON.stringify({ ok: false, error: "not-found" }));
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+        const nativeFetch = globalThis.fetch.bind(globalThis);
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+            const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+            if (url.includes(`/v1/owners/${ownerId}/rpc`)) {
+                return Promise.reject(new Error("authenticated RPC must not use fetch"));
+            }
+            return nativeFetch(input, init);
+        });
+
+        try {
+            const result = await brokerRpc({
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(result).toEqual(expect.objectContaining({
+                ok: true,
+                ownerId,
+                result: { value: "long-rpc-ok" },
+                selected: expect.objectContaining({
+                    status: 200,
+                    timeoutMs: 1000,
+                }),
+            }));
+            expect(fetchSpy.mock.calls.some(([input]) => {
+                const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+                return url.includes(`/v1/owners/${ownerId}/rpc`);
+            })).toBe(false);
+        } finally {
+            fetchSpy.mockRestore();
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("destroys an indefinitely streaming authenticated RPC redirect without following it", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        let redirectTargetRequests = 0;
+        let redirectResponseClosed = false;
+        const redirectTarget = createServer((_req, res) => {
+            redirectTargetRequests += 1;
+            res.end("unexpected");
+        });
+        await new Promise<void>((resolve) => redirectTarget.listen(0, "127.0.0.1", resolve));
+        const redirectTargetPort = (redirectTarget.address() as AddressInfo).port;
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            res.writeHead(302, {
+                location: `http://127.0.0.1:${redirectTargetPort}/token`,
+                "transfer-encoding": "chunked",
+            });
+            const interval = setInterval(() => res.write("x".repeat(1024)), 5);
+            res.once("close", () => {
+                redirectResponseClosed = true;
+                clearInterval(interval);
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const result = await brokerRpc({
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                ownerId,
+                error: "broker-redirect-disallowed",
+                status: 302,
+            }));
+            await vi.waitFor(() => expect(redirectResponseClosed).toBe(true));
+            expect(redirectTargetRequests).toBe(0);
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+            await new Promise<void>((resolve, reject) => redirectTarget.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("applies the absolute timeout while authenticated RPC response headers are pending", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            setTimeout(() => {
+                if (!res.destroyed) res.end(JSON.stringify({ ok: true, result: {} }));
+            }, 500);
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const startedAt = Date.now();
+            const result = await brokerRpc({
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 50,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(Date.now() - startedAt).toBeLessThan(500);
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                ownerId,
+                error: "broker-rpc-unavailable",
+                attempts: [
+                    expect.objectContaining({
+                        status: null,
+                        error: "timeout",
+                        timeoutMs: 50,
+                    }),
+                ],
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("reports an authenticated RPC response aborted after headers", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            res.writeHead(200, { "content-type": "application/json", "transfer-encoding": "chunked" });
+            res.write('{"ok":true,"result":');
+            res.destroy();
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const result = await brokerRpc({
+                method: "broker.echo",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                ownerId,
+                error: "broker-rpc-unavailable",
+                attempts: [
+                    expect.objectContaining({
+                        status: null,
+                        error: expect.stringMatching(/aborted|socket hang up/),
+                    }),
+                ],
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
     it("uses shared ccc-host runtime metadata for zero-config broker status", { timeout: TIMEOUT }, async () => {
         const initial = await client.callTool({ name: "device_broker_status", arguments: { probe: false, autolaunch: false } });
         const initialPayload = JSON.parse(((initial.content as Array<{ text?: string }>)[0].text ?? "{}")) as {

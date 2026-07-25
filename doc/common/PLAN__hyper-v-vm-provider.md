@@ -76,6 +76,11 @@ Linux guests without requiring users to operate Hyper-V Manager manually.
   and the broker RPC buffer. Caller-supplied lifecycle timeouts cannot shorten
   or extend this transport envelope; provider-specific boot timeout controls
   determine the bounded operation deadline.
+- Authenticated lifecycle RPC uses a bounded Node HTTP request transport rather
+  than the runtime `fetch` implementation. This avoids Undici's independent
+  five-minute response-header timeout while retaining an absolute RPC timer,
+  redirect rejection, trusted broker-host fencing, and bounded response
+  accumulation.
 - Never expose arbitrary PowerShell or host shell execution through MCP.
 
 The intended CLI surface is:
