@@ -483,13 +483,13 @@ describe("branchExistsInRepo", () => {
         expect(branchExistsInRepo(repoPath, "nonexistent")).toBe("none");
     });
 
-    it("uses successful empty exact-ref results for an absent branch", () => {
+    it("uses the documented exact-ref missing status for an absent branch", () => {
         const runner = vi.fn(() => ({
             pid: 1,
             output: [null, "", ""],
             stdout: "",
             stderr: "",
-            status: 0,
+            status: 1,
             signal: null,
         })) as unknown as typeof spawnSync;
 
@@ -497,15 +497,31 @@ describe("branchExistsInRepo", () => {
         expect(runner).toHaveBeenNthCalledWith(
             1,
             "git",
-            ["for-each-ref", "--format=%(refname)", "refs/heads/new-on-windows"],
+            ["show-ref", "--quiet", "--verify", "--", "refs/heads/new-on-windows"],
             expect.objectContaining({ cwd: repoPath }),
         );
         expect(runner).toHaveBeenNthCalledWith(
             2,
             "git",
-            ["for-each-ref", "--format=%(refname)", "refs/remotes/origin/new-on-windows"],
+            ["show-ref", "--quiet", "--verify", "--", "refs/remotes/origin/new-on-windows"],
             expect.objectContaining({ cwd: repoPath }),
         );
+    });
+
+    it("fails closed when Git for Windows cannot spawn exact-ref inspection", () => {
+        const error = Object.assign(new Error("spawnSync git EINVAL"), { code: "EINVAL" });
+        const runner = vi.fn(() => ({
+            pid: 0,
+            output: [null, null, null],
+            stdout: null,
+            stderr: null,
+            status: null,
+            signal: null,
+            error,
+        })) as unknown as typeof spawnSync;
+
+        expect(() => branchExistsInRepo(repoPath, "new-on-windows", runner))
+            .toThrow("Unable to inspect local branch 'new-on-windows' (spawn-EINVAL).");
     });
 
     it("fails closed when exact-ref inspection fails", () => {
@@ -519,22 +535,22 @@ describe("branchExistsInRepo", () => {
         })) as unknown as typeof spawnSync;
 
         expect(() => branchExistsInRepo(repoPath, "new-on-windows", runner))
-            .toThrow("Unable to inspect local branch 'new-on-windows'.");
+            .toThrow("Unable to inspect local branch 'new-on-windows' (exit-128).");
     });
 
     it("fails closed when remote exact-ref inspection fails", () => {
         const runner = (vi.fn()
-            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null })
+            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 1, signal: null })
             .mockReturnValueOnce({ pid: 1, output: [null, "", "fatal"], stdout: "", stderr: "fatal", status: 128, signal: null })) as unknown as typeof spawnSync;
 
         expect(() => branchExistsInRepo(repoPath, "new-on-windows", runner))
-            .toThrow("Unable to inspect remote branch 'new-on-windows'.");
+            .toThrow("Unable to inspect remote branch 'new-on-windows' (exit-128).");
     });
 
-    it("does not treat a prefix descendant as the exact requested branch", () => {
+    it("does not treat a missing exact ref as a prefix descendant", () => {
         const runner = (vi.fn()
-            .mockReturnValueOnce({ pid: 1, output: [null, "refs/heads/feature/child\n", ""], stdout: "refs/heads/feature/child\n", stderr: "", status: 0, signal: null })
-            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 0, signal: null })) as unknown as typeof spawnSync;
+            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 1, signal: null })
+            .mockReturnValueOnce({ pid: 1, output: [null, "", ""], stdout: "", stderr: "", status: 1, signal: null })) as unknown as typeof spawnSync;
 
         expect(branchExistsInRepo(repoPath, "feature", runner)).toBe("none");
     });

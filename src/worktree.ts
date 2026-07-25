@@ -1145,19 +1145,19 @@ export function branchExistsInRepo(
     const exactRefExists = (ref: string, description: string): boolean => {
         const result = runner(
             "git",
-            ["for-each-ref", "--format=%(refname)", ref],
+            ["show-ref", "--quiet", "--verify", "--", ref],
             { cwd: repoPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
         );
-        if (result.error || result.status !== 0) {
-            throw new Error(`Unable to inspect ${description} branch '${branch}'.`);
-        }
-        return (result.stdout ?? "")
-            .split(/\r?\n/)
-            .some((candidate) => candidate.trim() === ref);
+        if (!result.error && result.status === 0) return true;
+        if (!result.error && result.status === 1) return false;
+        const failure = result.error
+            ? `spawn-${(result.error as NodeJS.ErrnoException).code || "error"}`
+            : `exit-${String(result.status)}`;
+        throw new Error(`Unable to inspect ${description} branch '${branch}' (${failure}).`);
     };
 
-    // for-each-ref reports an absent ref as a successful empty result on all
-    // supported Git platforms, unlike rev-parse's platform-dependent status.
+    // show-ref --verify uses a full ref and reports an absent ref as status 1
+    // on every supported Git version, including Git for Windows.
     if (exactRefExists(`refs/heads/${branch}`, "local")) {
         return "local";
     }
