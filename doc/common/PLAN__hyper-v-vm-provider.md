@@ -89,18 +89,21 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v14`. Host CLI and
+The host broker advertises `hyper-v-vm-managed-auto-images-v15`. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
-runtimes. Version 14 builds provisioning media from a fenced temporary file
+runtimes. Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random
 name, a current-user-only ACL, reparse-point checks, and mandatory cleanup on a
 successful build. Internal media-build stage markers are also emitted through
 the bounded broker diagnostic channel so nested PowerShell failures retain the
-specific failed operation after output redaction. It retains PowerShell
-5.1-safe IPv4 prefix-mask calculation, bounded long-program loading,
-deterministic SSH key generation arguments, and stage-specific
-guest-provisioning diagnostics.
+specific failed operation after output redaction. ISO/Joliet selection is
+applied directly, with the physical-media defaults API used only as a fallback
+when the COM property setter is unavailable. Volume labels are normalized to
+the ISO9660 uppercase, 15-character subset; the Linux seed therefore uses the
+cloud-init-supported `CIDATA` label. It retains PowerShell 5.1-safe IPv4
+prefix-mask calculation, bounded long-program loading, deterministic SSH key
+generation arguments, and stage-specific guest-provisioning diagnostics.
 
 Level 3 treats missing Hyper-V management access as an explicit
 `host-permission` prerequisite skip, not an unknown skip. The test command does

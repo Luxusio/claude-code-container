@@ -63,6 +63,9 @@ describe("device-lab host broker lifecycle commands", () => {
             "hyper-v-provisioning-media-source-file-failed",
             "hyper-v-provisioning-media-source-cleanup-failed",
             "hyper-v-provisioning-media-add-tree-failed",
+            "hyper-v-provisioning-media-filesystem-selection-failed",
+            "hyper-v-provisioning-media-volume-name-invalid",
+            "hyper-v-provisioning-media-volume-name-failed",
         ];
         for (const diagnosticCode of diagnosticCodes) {
             expect(redactProviderCommandInput({

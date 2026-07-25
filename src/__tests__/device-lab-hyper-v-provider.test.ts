@@ -666,6 +666,13 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
+        expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
+        expect(seedScript).toContain("$Image.FileSystemsToCreate = 3");
+        expect(seedScript).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
+        expect(seedScript).toContain("$Image.VolumeName = $NormalizedVolumeName");
+        expect(seedScript).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
+        expect(seedScript).toContain("hyper-v-provisioning-media-volume-name-failed");
+        expect(seedScript).toContain("configure-failed|filesystem-selection-failed|volume-name-invalid|volume-name-failed|source-entry-invalid");
         expect(seedScript).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(seedScript).toContain("SHCreateStreamOnFileEx");
         expect(seedScript).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
@@ -1179,6 +1186,13 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot");
+        expect(script).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
+        expect(script).toContain("$Image.FileSystemsToCreate = 3");
+        expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
+        expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");
+        expect(script).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
+        expect(script).toContain("hyper-v-provisioning-media-volume-name-failed");
+        expect(script).toContain("configure-failed|filesystem-selection-failed|volume-name-invalid|volume-name-failed|source-entry-invalid");
         expect(script).toContain("[int]$ResultImage.BlockSize, [long]$ResultImage.TotalBlocks");
         expect(script).toContain("SHCreateStreamOnFileEx");
         expect(script).toContain("input.CopyTo(output, expectedBytes, readPointer, writtenPointer)");
