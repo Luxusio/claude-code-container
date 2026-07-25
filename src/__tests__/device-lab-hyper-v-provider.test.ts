@@ -1189,6 +1189,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("([string]$_.Id).ToLowerInvariant()");
         expect(script).not.toContain("$_.Name -eq 'Heartbeat'");
         expect(script).toContain("Get-VMFirmware -VM $Vm");
+        expect(script).toContain("$BootType = [string]$_.BootType");
+        expect(script).toContain("$_.Device.GetType().Name");
+        expect(script).not.toContain("$TypeName = $_.GetType().Name");
         expect(script).toContain("bootDeviceTypes = $BootDeviceTypes");
         expect(script).not.toContain("PrimaryStatusDescription");
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
