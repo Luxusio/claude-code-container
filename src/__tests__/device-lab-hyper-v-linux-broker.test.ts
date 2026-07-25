@@ -1439,6 +1439,7 @@ describe("device-lab Hyper-V broker", () => {
         const expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
         writeFileSync(uploadPath, "upload");
         let vmState = "Off";
+        let bootDiagnosticState: string | null = null;
         let snapshotExists = false;
         let sshFailure = false;
         let readinessFailure = false;
@@ -1519,7 +1520,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
             const result = bootDiagnostic
-                ? { ok: true, vmId, vmName, state: vmState, uptimeMs: 1000, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, hardDiskCount: 1, dvdCount: 1, bootDeviceTypes: ["hard-disk", "dvd"] }
+                ? { ok: true, vmId, vmName, state: bootDiagnosticState || vmState, uptimeMs: 1000, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, hardDiskCount: 1, dvdCount: 1, bootDeviceTypes: ["hard-disk", "dvd"] }
                 : imageSetup
                 ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
                 : networkSetup
@@ -1583,6 +1584,7 @@ describe("device-lab Hyper-V broker", () => {
             writeFileSync(knownHostsPath, `${allocatedAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
 
             readinessFailure = true;
+            bootDiagnosticState = "OffCritical";
             const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);
             const exhaustedBody = await exhausted.json();
@@ -1595,7 +1597,7 @@ describe("device-lab Hyper-V broker", () => {
                         error: "ssh-unavailable",
                         diagnosticAvailable: true,
                         diagnostic: expect.objectContaining({
-                            state: "Running",
+                            state: "OffCritical",
                             hardDiskCount: 1,
                             bootDeviceTypes: ["hard-disk", "dvd"],
                         }),
@@ -1604,7 +1606,22 @@ describe("device-lab Hyper-V broker", () => {
             }));
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmId");
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmName");
+            expect(exhaustedBody.result.device).toEqual(expect.objectContaining({ status: "stopped", runtimeState: "OffCritical", bootReady: false }));
+            expect(exhaustedBody.result.execution.command).toEqual(expect.objectContaining({
+                guestReadiness: {
+                    provider: "hyper-v-ssh",
+                    error: "ssh-unavailable",
+                    diagnosticAvailable: true,
+                },
+            }));
+            expect(exhaustedBody.result.execution.command).not.toHaveProperty("args");
+            expect(exhaustedBody.result.execution.command).not.toHaveProperty("input");
+            expect(exhaustedBody.result.execution.command).not.toHaveProperty("stdout");
+            expect(exhaustedBody.result.execution.command).not.toHaveProperty("stderr");
+            expect(exhaustedBody.result.providerCommand).toEqual({ mode: "exec", provider: "hyper-v" });
+            expect(exhaustedBody.detail).toBe("ssh-unavailable");
             readinessFailure = false;
+            bootDiagnosticState = null;
 
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);

@@ -1720,7 +1720,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "    $Candidate = [string]$_.Exception.Message",
         "    $FailureId = [string]$_.FullyQualifiedErrorId",
         "    if ($Candidate -match '^hyper-v-guest-vm-state:') { $LastFailure = 'hyper-v-guest-vm-not-running' }",
-        "    elseif ($Candidate -match '^hyper-v-[a-z0-9-]+$') { $LastFailure = $Candidate }",
+        "    elseif ($Candidate -match '^hyper-v-[a-z0-9-]{3,120}$') { $LastFailure = $Candidate }",
         "    elseif ($FailureId -match 'AccessDenied|InvalidCredential|Authentication') { $LastFailure = 'powershell-direct-authentication-failed' }",
         "    elseif ($FailureId -match 'PSSession|VMNotRunning|InvalidState') { $LastFailure = 'powershell-direct-session-unavailable' }",
         "    else { $LastFailure = 'powershell-direct-unavailable' }",
@@ -1738,7 +1738,8 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
 export function hyperVGuestBootDiagnosticCommand(options: HyperVCommandOptions): HyperVProviderCommand {
     return command(options.executable, jsonScript([
         ...ownedVmPrelude(options),
-        "$Heartbeat = @(Get-VMIntegrationService -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'Heartbeat' } | Select-Object -First 1)",
+        "$HeartbeatServiceId = '84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'",
+        "$Heartbeat = @(Get-VMIntegrationService -VM $Vm -ErrorAction SilentlyContinue | Where-Object { ([string]$_.Id).ToLowerInvariant() -eq $HeartbeatServiceId } | Select-Object -First 1)",
         "$Firmware = Get-VMFirmware -VM $Vm -ErrorAction SilentlyContinue",
         "$BootDeviceTypes = @()",
         "if ($Firmware) {",
@@ -2335,7 +2336,8 @@ export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVG
         || parsed.ok !== false
         || parsed.error !== "hyper-v-guest-ready-timeout"
         || typeof parsed.reason !== "string"
-        || !/^(?:hyper-v-[a-z0-9-]+|powershell-direct-(?:authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
+        || parsed.reason.length > 128
+        || !/^(?:hyper-v-[a-z0-9-]{3,120}|powershell-direct-(?:authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
         || typeof parsed.attempts !== "number"
         || !Number.isSafeInteger(parsed.attempts)
         || parsed.attempts < 1) return null;
@@ -2369,6 +2371,7 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         || !Number.isSafeInteger(parsed.dvdCount)
         || parsed.dvdCount < 0
         || !Array.isArray(parsed.bootDeviceTypes)
+        || parsed.bootDeviceTypes.length > 8
         || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))) return null;
     return {
         ok: true,

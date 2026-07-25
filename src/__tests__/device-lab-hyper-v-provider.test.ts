@@ -1157,6 +1157,7 @@ describe("Hyper-V provider adapter", () => {
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 })))
             .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "C:\\secret", attempts: 150 }))).toBeNull();
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: `hyper-v-${"x".repeat(121)}`, attempts: 150 }))).toBeNull();
         expect(() => hyperVGuestReadyCommand({
             executable: "powershell.exe",
             ownerId,
@@ -1184,6 +1185,9 @@ describe("Hyper-V provider adapter", () => {
         });
         const script = scriptOf(command);
         expect(script).toContain("Get-VMIntegrationService -VM $Vm");
+        expect(script).toContain("84eaae65-2f2e-45f5-9bb5-0e857dc8eb47");
+        expect(script).toContain("([string]$_.Id).ToLowerInvariant()");
+        expect(script).not.toContain("$_.Name -eq 'Heartbeat'");
         expect(script).toContain("Get-VMFirmware -VM $Vm");
         expect(script).toContain("bootDeviceTypes = $BootDeviceTypes");
         expect(script).not.toContain("PrimaryStatusDescription");
@@ -1224,6 +1228,19 @@ describe("Hyper-V provider adapter", () => {
             hardDiskCount: 1,
             dvdCount: 1,
             bootDeviceTypes: ["C:\\secret"],
+        }))).toBeNull();
+        expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
+            ok: true,
+            vmId,
+            vmName,
+            state: "Running",
+            uptimeMs: 1,
+            heartbeatEnabled: true,
+            heartbeatPrimaryStatus: 2,
+            heartbeatSecondaryStatus: 0,
+            hardDiskCount: 1,
+            dvdCount: 1,
+            bootDeviceTypes: Array(9).fill("hard-disk"),
         }))).toBeNull();
     });
 

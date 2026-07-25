@@ -10807,7 +10807,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
         const observation = parseHyperVGuestReadyFailureObservation(result.stdout || "");
         if (observation) return observation.reason;
         const error = String(result.error || "");
-        if (/^hyper-v-[a-z0-9-]+$/.test(error)) return error;
+        if (error.length <= 128 && /^hyper-v-[a-z0-9-]+$/.test(error)) return error;
         return result.timedOut ? "powershell-direct-timeout" : "powershell-direct-unavailable";
     }
     const diagnostic = `${result.error || ""}\n${result.stderr || ""}`.toLowerCase();
@@ -10817,7 +10817,7 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
     if (diagnostic.includes("host key verification failed") || diagnostic.includes("remote host identification has changed")) return "ssh-host-key-rejected";
     if (diagnostic.includes("permission denied") || diagnostic.includes("authentication failed")) return "ssh-authentication-failed";
     const error = String(result.error || "");
-    if (/^hyper-v-[a-z0-9-]+$/.test(error)) return error;
+    if (error.length <= 128 && /^hyper-v-[a-z0-9-]+$/.test(error)) return error;
     return "ssh-unavailable";
 }
 
@@ -12683,7 +12683,7 @@ async function lifecycleCommandInvokeUnlocked(
                 const observedRuntimeState = hyperVGuestBootDiagnostic?.state || "Running";
                 updatedDevice = {
                     ...(candidate as Record<string, unknown>),
-                    status: observedRuntimeState.toLowerCase() === "off" ? "stopped" : "running",
+                    status: observedRuntimeState === "Running" ? "running" : "stopped",
                     runtimeState: observedRuntimeState,
                     bootReady: false,
                     lastBootCheck: {
@@ -12741,11 +12741,15 @@ async function lifecycleCommandInvokeUnlocked(
                     : windowsMinimizeWatchdog && (registration === windowsMinimizeWatchdog || registration?.provider === "windows-sandbox-window")
                     ? "windows-sandbox-minimize-watchdog-failed"
                     : "provider-command-failed",
-                detail: providerFailureDetail(execution),
+                detail: hyperVGuestReadyExecution
+                    ? hyperVGuestReadyFailureCode || "guest-not-ready"
+                    : providerFailureDetail(execution),
             }),
             result: {
                 ...(payload.result || {}),
-                providerCommand: effectiveProviderCommand,
+                providerCommand: hyperVGuestReadyExecution && !hyperVGuestReady
+                    ? { mode: effectiveProviderCommand.mode, provider: effectiveProviderCommand.provider }
+                    : effectiveProviderCommand,
                 device: redactBrokerDeviceSecrets(updatedDevice),
                 ...(androidBoot ? {
                     boot: androidBoot.ok
@@ -12776,8 +12780,20 @@ async function lifecycleCommandInvokeUnlocked(
                     mode: execution.mode,
                     providerExecution: "executed",
                     mutatesHost: success && parsed.command !== "device_status",
-                    command: registration || (macosBoot && !macosBoot.ok) || (androidBoot && !androidBoot.ok) || (hyperVGuestReadyExecution && !hyperVGuestReady)
-                        ? { ...execution, registration, macosBoot, androidBoot, hyperVGuestReady: hyperVGuestReadyExecution }
+                    command: hyperVGuestReadyExecution && !hyperVGuestReady
+                        ? {
+                            mode: execution.mode,
+                            provider: execution.provider,
+                            status: execution.status,
+                            signal: execution.signal,
+                            guestReadiness: {
+                                provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
+                                error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                                diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
+                            },
+                        }
+                        : registration || (macosBoot && !macosBoot.ok) || (androidBoot && !androidBoot.ok)
+                        ? { ...execution, registration, macosBoot, androidBoot }
                         : execution,
                 },
             },
