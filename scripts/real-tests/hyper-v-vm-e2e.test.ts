@@ -249,6 +249,35 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(4096);
     });
 
+    it("reports the bounded final broker transport attempt without exposing endpoints or bodies", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "broker-rpc-unavailable",
+            attempts: [
+                {
+                    host: "https://token@host/C:\\Users\\Luxus/private/home/secret",
+                    port: 17373,
+                    endpoint: "http://127.0.0.1:17373/v1/owners/secret/rpc",
+                    body: { ownerToken: "secret" },
+                    error: `fetch failed token=secret C:\\Users\\Luxus\\private ${"x".repeat(1000)}`,
+                    durationMs: 630010,
+                    timeoutMs: 630000,
+                },
+            ],
+        }, "fallback");
+        expect(message).toContain("broker-rpc-unavailable");
+        expect(message).toContain('"error":"fetch-failed"');
+        expect(message).toContain('"durationMs":630010');
+        expect(message).toContain('"timeoutMs":630000');
+        expect(message).not.toContain("/v1/owners");
+        expect(message).not.toContain("ownerToken");
+        expect(message).not.toContain("token=secret");
+        expect(message).not.toContain("token@host");
+        expect(message).not.toContain("C:\\Users");
+        expect(message).not.toContain("/home/");
+        expect(message.length).toBeLessThan(1024);
+    });
+
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {
         const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
         expect(source).toContain("hyper-v-image-contracts.ts");

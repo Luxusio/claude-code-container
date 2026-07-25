@@ -329,27 +329,26 @@ export function brokerDeviceToolExecutionTimeout(name, args) {
 }
 
 export function brokerLifecycleExecutionTimeout(args) {
-    if ((args?.backend === "windows-vm" || args?.backend === "linux-vm") && (args?.name || args?.sourceImage || args?.image)) {
-        return {
-            rpcTimeoutMs: Number.isFinite(args?.rpcTimeoutMs)
-                ? boundedTimeoutMs(args.rpcTimeoutMs, HYPER_V_CREATE_RPC_TIMEOUT_MS, HYPER_V_CREATE_RPC_TIMEOUT_MS)
-                : HYPER_V_CREATE_RPC_TIMEOUT_MS,
-        };
+    const hyperVBackend = args?.backend === "windows-vm" || args?.backend === "linux-vm";
+    if (hyperVBackend && args?.command === "device_create") {
+        return { rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS };
+    }
+    if (hyperVBackend) {
+        const waitsForBoot = (args?.command === "device_start" || args?.command === "device_reboot")
+            && args?.waitForBoot !== false;
+        const bootTimeoutMs = waitsForBoot
+            ? Number.isFinite(args?.bootTimeoutMs)
+                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
+                : 5 * 60 * 1000
+            : 0;
+        const automaticRpcTimeoutMs = HYPER_V_HOST_LOCK_WAIT_MS
+            + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS
+            + bootTimeoutMs
+            + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
+        return { rpcTimeoutMs: automaticRpcTimeoutMs };
     }
     if (Number.isFinite(args?.rpcTimeoutMs)) return { rpcTimeoutMs: boundedTimeoutMs(args.rpcTimeoutMs, MAX_DEVICE_TOOL_RPC_TIMEOUT_MS, DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS) };
     if (Number.isFinite(args?.timeoutMs)) return { rpcTimeoutMs: boundedTimeoutMs(args.timeoutMs, MAX_DEVICE_OPERATION_TIMEOUT_MS, DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS) };
-    if ((args?.backend === "windows-vm" || args?.backend === "linux-vm")
-        && (args?.command === "device_start" || args?.command === "device_reboot")) {
-        const bootTimeoutMs = args?.waitForBoot === false
-            ? 0
-            : Number.isFinite(args?.bootTimeoutMs)
-                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
-                : 5 * 60 * 1000;
-        return { rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + bootTimeoutMs + HYPER_V_LIFECYCLE_RPC_BUFFER_MS };
-    }
-    if (args?.backend === "windows-vm" || args?.backend === "linux-vm") {
-        return { rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS };
-    }
     if (args?.backend === "android-emulator" && args?.createAvd === true) {
         return { rpcTimeoutMs: 315000 };
     }

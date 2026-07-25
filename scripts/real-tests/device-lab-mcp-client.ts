@@ -12,14 +12,49 @@ const TOOL_SESSIONS_KEY = Symbol.for("ccc.deviceLabRealTests.toolSessions");
 let nextSessionId = 0;
 const DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS = 120000;
 const LONG_REAL_MCP_TOOL_TIMEOUT_MS = 360000;
-const MAX_REAL_MCP_TOOL_TIMEOUT_MS = 21615000;
+const HYPER_V_MAX_SERVER_RPC_TIMEOUT_MS = 21615000;
+const MAX_REAL_MCP_TOOL_TIMEOUT_MS = HYPER_V_MAX_SERVER_RPC_TIMEOUT_MS;
+const HYPER_V_MAX_CLIENT_TIMEOUT_MS = HYPER_V_MAX_SERVER_RPC_TIMEOUT_MS + 30000;
+const HYPER_V_HOST_LOCK_WAIT_MS = 600000;
+const HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 120000;
+const HYPER_V_LIFECYCLE_RPC_BUFFER_MS = 15000;
+const REAL_MCP_CLIENT_RPC_BUFFER_MS = 30000;
+const HYPER_V_LIFECYCLE_TOOLS = new Set([
+    "device_create",
+    "device_status",
+    "device_start",
+    "device_stop",
+    "device_reboot",
+    "device_delete",
+]);
 
 export function realMcpToolRequestTimeoutMs(name: string, args: Record<string, any> = {}) {
+    const hyperVBackend = args?.backend === "windows-vm" || args?.backend === "linux-vm";
+    if (hyperVBackend && name === "device_create") {
+        return HYPER_V_MAX_SERVER_RPC_TIMEOUT_MS + REAL_MCP_CLIENT_RPC_BUFFER_MS;
+    }
+    if (hyperVBackend && (name === "device_start" || name === "device_reboot")) {
+        const bootTimeoutMs = args?.waitForBoot === false
+            ? 0
+            : Number.isFinite(args?.bootTimeoutMs)
+                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
+                : 5 * 60 * 1000;
+        const automaticRpcTimeoutMs = HYPER_V_HOST_LOCK_WAIT_MS
+            + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS
+            + bootTimeoutMs
+            + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
+        return Math.min(HYPER_V_MAX_CLIENT_TIMEOUT_MS, automaticRpcTimeoutMs + REAL_MCP_CLIENT_RPC_BUFFER_MS);
+    }
+    if (hyperVBackend && HYPER_V_LIFECYCLE_TOOLS.has(name)) {
+        return HYPER_V_HOST_LOCK_WAIT_MS
+            + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS
+            + HYPER_V_LIFECYCLE_RPC_BUFFER_MS
+            + REAL_MCP_CLIENT_RPC_BUFFER_MS;
+    }
     const explicitRpcTimeoutMs = Number(args?.rpcTimeoutMs);
     if (Number.isFinite(explicitRpcTimeoutMs)) {
         return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS, explicitRpcTimeoutMs + 15000));
     }
-    if (name === "device_create" && (args?.backend === "windows-vm" || args?.backend === "linux-vm")) return 21615000;
     const helperTimeoutMs = Number(args?.helperTimeoutMs);
     if (Number.isFinite(helperTimeoutMs)) {
         return Math.min(MAX_REAL_MCP_TOOL_TIMEOUT_MS, Math.max(DEFAULT_REAL_MCP_TOOL_TIMEOUT_MS, helperTimeoutMs + 30000));
@@ -312,13 +347,45 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             stderr: String(execution.stderr || "").slice(-2048),
         })
         : "";
-    return [
+    const attempts = Array.isArray(value?.attempts)
+        ? value.attempts
+        : Array.isArray(value?.launch?.attempts)
+            ? value.launch.attempts
+            : [];
+    const lastAttempt = attempts.length > 0 && attempts[attempts.length - 1]
+        && typeof attempts[attempts.length - 1] === "object"
+        ? attempts[attempts.length - 1]
+        : null;
+    const transportError = String(lastAttempt?.error || "").toLowerCase();
+    const transportErrorCode = transportError.includes("timeout")
+        ? "timeout"
+        : transportError.includes("econnrefused") || transportError.includes("connection refused")
+            ? "connection-refused"
+            : transportError.includes("abort")
+                ? "aborted"
+                : transportError.includes("fetch")
+                    ? "fetch-failed"
+                    : transportError
+                        ? "transport-error"
+                        : undefined;
+    const transportDiagnostic = lastAttempt
+        ? JSON.stringify({
+            port: Number.isFinite(lastAttempt.port) ? lastAttempt.port : undefined,
+            status: Number.isFinite(lastAttempt.status) ? lastAttempt.status : undefined,
+            error: transportErrorCode,
+            durationMs: Number.isFinite(lastAttempt.durationMs) ? lastAttempt.durationMs : undefined,
+            timeoutMs: Number.isFinite(lastAttempt.timeoutMs) ? lastAttempt.timeoutMs : undefined,
+        })
+        : "";
+    const message = [
         value?.error,
         value?.detail,
         body?.error,
         body?.detail,
         diagnostic,
+        transportDiagnostic,
     ].filter(Boolean).join(": ") || fallback;
+    return message.slice(0, 4095);
 }
 
 export function parseContractToolPayload<K extends keyof DeviceLabToolOutputMap>(name: K, result: any): DeviceLabToolOutputMap[K] {

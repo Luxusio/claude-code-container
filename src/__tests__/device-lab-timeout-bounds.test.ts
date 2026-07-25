@@ -103,17 +103,52 @@ describe("device-lab public timeout bounds", () => {
         })).toEqual({
             rpcTimeoutMs: 195000,
         });
-        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", name: "automatic-image" })).toEqual({
+        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_create", name: "automatic-image" })).toEqual({
             rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS,
         });
-        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", name: "automatic-image", rpcTimeoutMs: Number.MAX_SAFE_INTEGER })).toEqual({
+        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_create", name: "automatic-image", rpcTimeoutMs: Number.MAX_SAFE_INTEGER })).toEqual({
             rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_create", name: "automatic-image", rpcTimeoutMs: 30000 })).toEqual({
+            rpcTimeoutMs: HYPER_V_CREATE_RPC_TIMEOUT_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({
+            backend: "windows-vm",
+            command: "device_start",
+            name: "spoofed-create",
+            sourceImage: "spoofed.vhdx",
+            image: "spoofed-image",
+        })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_start" })).toEqual({
             rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_reboot", bootTimeoutMs: 600000 })).toEqual({
             rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + 600000 + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({
+            backend: "linux-vm",
+            command: "device_reboot",
+            bootTimeoutMs: 600000,
+            rpcTimeoutMs: 30000,
+        })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + 600000 + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({
+            backend: "linux-vm",
+            command: "device_reboot",
+            rpcTimeoutMs: Number.MAX_SAFE_INTEGER,
+        })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({
+            backend: "windows-vm",
+            command: "device_start",
+            waitForBoot: false,
+            timeoutMs: 30000,
+        })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_stop" })).toEqual({
             rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,

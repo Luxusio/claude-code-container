@@ -443,7 +443,35 @@ describe("npm package contents", () => {
         expect(realMcpToolRequestTimeoutMs("mobile_get_clipboard", { backend: "android-emulator" })).toBe(360000);
         expect(realMcpToolRequestTimeoutMs("device_exec", { helperTimeoutMs: 180000 })).toBe(210000);
         expect(realMcpToolRequestTimeoutMs("device_create", { rpcTimeoutMs: 615000 })).toBe(630000);
-        expect(realMcpToolRequestTimeoutMs("device_create", { backend: "windows-vm" })).toBe(21615000);
+        expect(realMcpToolRequestTimeoutMs("device_create", { backend: "windows-vm" })).toBe(21645000);
+        expect(realMcpToolRequestTimeoutMs("device_create", {
+            backend: "windows-vm",
+            rpcTimeoutMs: 30000,
+        })).toBe(21645000);
+        expect(realMcpToolRequestTimeoutMs("device_start", {
+            backend: "windows-vm",
+            waitForBoot: true,
+            bootTimeoutMs: 180000,
+        })).toBe(945000);
+        expect(realMcpToolRequestTimeoutMs("device_reboot", {
+            backend: "linux-vm",
+            waitForBoot: true,
+            bootTimeoutMs: 600000,
+            rpcTimeoutMs: 30000,
+        })).toBe(1365000);
+        expect(realMcpToolRequestTimeoutMs("device_reboot", {
+            backend: "linux-vm",
+            rpcTimeoutMs: Number.MAX_SAFE_INTEGER,
+        })).toBe(1065000);
+        expect(realMcpToolRequestTimeoutMs("device_start", {
+            backend: "windows-vm",
+            waitForBoot: false,
+        })).toBe(765000);
+        for (const name of ["device_status", "device_stop", "device_delete"]) {
+            expect(realMcpToolRequestTimeoutMs(name, {
+                backend: "windows-vm",
+            })).toBe(765000);
+        }
     });
 
     it("keeps real-provider transfer fixtures inside the broker-visible project root", async () => {

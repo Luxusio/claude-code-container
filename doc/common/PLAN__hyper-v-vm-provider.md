@@ -71,6 +71,11 @@ Linux guests without requiring users to operate Hyper-V Manager manually.
   its remaining budget. Create operations reserve the final five minutes for
   identity-fenced rollback instead of allowing provisioning to consume it.
   Start and reboot share one bounded provider-plus-guest-readiness deadline.
+  The outer MCP client deadline must exceed the complete broker transport
+  budget: host-lock wait, provider lifecycle execution, guest readiness wait,
+  and the broker RPC buffer. Caller-supplied lifecycle timeouts cannot shorten
+  or extend this transport envelope; provider-specific boot timeout controls
+  determine the bounded operation deadline.
 - Never expose arbitrary PowerShell or host shell execution through MCP.
 
 The intended CLI surface is:
@@ -448,6 +453,9 @@ Real-provider tests:
   unavailable, live locks receive an eight-hour recovery bound, longer than
   the four-hour image acquisition ceiling but finite after a crashed owner.
 - Source and packaged MCP paths behave equivalently.
+- Transport failures include only the bounded final broker attempt
+  (port, status/error code, duration, and timeout). Hosts, endpoints, request bodies,
+  owner tokens, and unbounded process output remain excluded.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
