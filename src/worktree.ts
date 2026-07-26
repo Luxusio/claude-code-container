@@ -1340,14 +1340,53 @@ function scanUnifiedNestedRepositories(
 type NestedRepositoryIdentity = {
     directory: DirectoryIdentity;
     gitMetadata: DirectoryIdentity;
+    gitFileContent: string | null;
+    gitDirectory: DirectoryIdentity;
+    commonDirectory: DirectoryIdentity;
+    commonDirectoryFile: {
+        identity: FileIdentity;
+        content: string;
+    } | null;
 };
 
 function captureNestedRepositoryIdentity(
     repositoryPath: string,
 ): NestedRepositoryIdentity {
+    const gitMetadataPath = join(repositoryPath, ".git");
+    const gitMetadata = capturePathIdentity(gitMetadataPath);
+    const metadataObserved = lstatSync(gitMetadataPath);
+    let gitFileContent: string | null = null;
+    let gitDirectoryPath = gitMetadataPath;
+    if (metadataObserved.isFile()) {
+        gitFileContent = readFileSync(gitMetadataPath, "utf-8");
+        const match = gitFileContent.trim().match(/^gitdir:\s*(.+)$/);
+        if (!match) {
+            throw new Error(`Nested Git repository metadata is invalid: ${repositoryPath}`);
+        }
+        gitDirectoryPath = resolve(repositoryPath, match[1].trim());
+    }
+    const gitDirectory = captureDirectoryIdentity(gitDirectoryPath);
+    const commonDirectoryPath = join(gitDirectoryPath, "commondir");
+    let commonDirectoryFile: NestedRepositoryIdentity["commonDirectoryFile"] = null;
+    let resolvedCommonDirectory = gitDirectoryPath;
+    if (pathExistsStrict(commonDirectoryPath)) {
+        commonDirectoryFile = {
+            identity: captureFileIdentity(commonDirectoryPath),
+            content: readFileSync(commonDirectoryPath, "utf-8"),
+        };
+        const commonDirectoryValue = commonDirectoryFile.content.trim();
+        if (!commonDirectoryValue) {
+            throw new Error(`Nested Git repository common directory is invalid: ${repositoryPath}`);
+        }
+        resolvedCommonDirectory = resolve(gitDirectoryPath, commonDirectoryValue);
+    }
     return {
         directory: captureDirectoryIdentity(repositoryPath),
-        gitMetadata: capturePathIdentity(join(repositoryPath, ".git")),
+        gitMetadata,
+        gitFileContent,
+        gitDirectory,
+        commonDirectory: captureDirectoryIdentity(resolvedCommonDirectory),
+        commonDirectoryFile,
     };
 }
 
@@ -1356,7 +1395,37 @@ function assertNestedRepositoryIdentity(
     identity: NestedRepositoryIdentity,
 ): void {
     assertDirectoryIdentity(repositoryPath, identity.directory);
-    assertPathIdentity(join(repositoryPath, ".git"), identity.gitMetadata);
+    const gitMetadataPath = join(repositoryPath, ".git");
+    assertPathIdentity(gitMetadataPath, identity.gitMetadata);
+    let gitDirectoryPath = gitMetadataPath;
+    if (identity.gitFileContent !== null) {
+        const currentContent = readFileSync(gitMetadataPath, "utf-8");
+        if (currentContent !== identity.gitFileContent) {
+            throw new Error(`Nested Git repository metadata changed: ${repositoryPath}`);
+        }
+        const match = currentContent.trim().match(/^gitdir:\s*(.+)$/);
+        if (!match) {
+            throw new Error(`Nested Git repository metadata changed: ${repositoryPath}`);
+        }
+        gitDirectoryPath = resolve(repositoryPath, match[1].trim());
+    }
+    assertDirectoryIdentity(gitDirectoryPath, identity.gitDirectory);
+    let resolvedCommonDirectory = gitDirectoryPath;
+    if (identity.commonDirectoryFile) {
+        const commonDirectoryPath = join(gitDirectoryPath, "commondir");
+        assertFileIdentity(
+            commonDirectoryPath,
+            identity.commonDirectoryFile.identity,
+        );
+        const currentContent = readFileSync(commonDirectoryPath, "utf-8");
+        if (currentContent !== identity.commonDirectoryFile.content) {
+            throw new Error(`Nested Git repository common directory changed: ${repositoryPath}`);
+        }
+        resolvedCommonDirectory = resolve(gitDirectoryPath, currentContent.trim());
+    } else if (pathExistsStrict(join(gitDirectoryPath, "commondir"))) {
+        throw new Error(`Nested Git repository common directory changed: ${repositoryPath}`);
+    }
+    assertDirectoryIdentity(resolvedCommonDirectory, identity.commonDirectory);
 }
 
 function isNestedTrackedGitlink(
@@ -1398,8 +1467,16 @@ function ensureNestedWorktreeParent(
     let current = workspacePath;
     for (const segment of segments.slice(0, -1)) {
         current = join(current, segment);
+        assertDirectoryIdentity(workspacePath, workspace);
+        for (const parent of parents) {
+            assertDirectoryIdentity(parent.realpath, parent);
+        }
         if (!pathExistsStrict(current)) {
             mkdirSync(current);
+            assertDirectoryIdentity(workspacePath, workspace);
+            for (const parent of parents) {
+                assertDirectoryIdentity(parent.realpath, parent);
+            }
             createdParents.set(current, captureDirectoryIdentity(current));
         }
         const observed = lstatSync(current);
@@ -1411,6 +1488,10 @@ function ensureNestedWorktreeParent(
             throw new Error(`Nested worktree parent escapes its workspace: ${current}`);
         }
         parents.push(captureDirectoryIdentity(current));
+        assertDirectoryIdentity(workspacePath, workspace);
+        for (const parent of parents) {
+            assertDirectoryIdentity(parent.realpath, parent);
+        }
     }
     return { workspace, parents };
 }
@@ -2665,9 +2746,25 @@ function initializeNestedSubmodules(worktreePath: string): void {
         );
     }
     if (!(before.stdout ?? "").trim()) return;
+    const localSubmodules = spawnSync(
+        "git",
+        ["config", "--bool", "--get", "ccc.localSubmodules"],
+        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const updateArgs = localSubmodules.status === 0
+        && (localSubmodules.stdout ?? "").trim() === "true"
+        ? [
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ]
+        : ["submodule", "update", "--init", "--recursive"];
     const updated = spawnSync(
         "git",
-        ["submodule", "update", "--init", "--recursive"],
+        updateArgs,
         { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (updated.error || updated.status !== 0) {
@@ -2865,6 +2962,16 @@ export function initWithSubmodules(dirPath: string): void {
         cwd: resolved,
         stdio: "pipe",
     });
+    // This repository is generated from already-present child repositories.
+    // Keep their local-path submodule URLs usable in the resulting worktrees.
+    spawnSync("git", ["config", "protocol.file.allow", "always"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
+    spawnSync("git", ["config", "ccc.localSubmodules", "true"], {
+        cwd: resolved,
+        stdio: "pipe",
+    });
 
     const entries = scanDirectory(resolved);
     const gitRepos = entries.filter((e) => e.isGitRepo);
@@ -3020,18 +3127,7 @@ function createUnifiedWorkspace(
     );
 
     // Init submodules if any (without --remote to avoid fetch failures on local repos)
-    const submoduleCheck = spawnSync(
-        "git",
-        ["submodule", "status"],
-        { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (submoduleCheck.status === 0 && (submoduleCheck.stdout ?? "").trim()) {
-        spawnSync(
-            "git",
-            ["submodule", "update", "--init", "--recursive"],
-            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-    }
+    initializeNestedSubmodules(wsPath);
 
     const dirName = basename(resolved);
     let nestedCreated: WorktreeRepoResult[];
@@ -3340,18 +3436,7 @@ export function repairWorkspace(
     assertWorkspaceRootOwnership(wsPath, resolved);
 
     // Try to init submodules that may not be initialized yet
-    const submoduleCheck = spawnSync(
-        "git",
-        ["submodule", "status"],
-        { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (submoduleCheck.status === 0 && (submoduleCheck.stdout ?? "").trim()) {
-        spawnSync(
-            "git",
-            ["submodule", "update", "--init", "--recursive"],
-            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-    }
+    initializeNestedSubmodules(wsPath);
 
     // Create worktrees for nested git repos not managed as submodules.
     // In unified mode, git worktree only checks out the top-level repo.
@@ -3496,6 +3581,7 @@ export function repairWorkspace(
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
+        if (isNestedTrackedGitlink(resolved, sourceEntries, entry)) continue;
         if (blockedRepositoryPrefixes.some((prefix) => (
             entry.name.startsWith(`${prefix}/`)
         ))) {
@@ -3537,6 +3623,7 @@ export function repairWorkspace(
 
         // Check existing directory
         if (pathExistsStrict(destPath)) {
+            operationGuard();
             const destIdentity = captureDirectoryIdentity(destPath);
             const contents = readdirSync(destPath);
             if (contents.length > 0) {
@@ -3554,11 +3641,14 @@ export function repairWorkspace(
                 if (!managedSubmodule && !isValidWorktree(destPath, entry.path)) {
                     blockedRepositoryPrefixes.push(entry.name);
                 }
+                operationGuard();
                 // Non-empty invalid entries and their descendants require the
                 // explicit repair prompt.
                 continue;
             }
+            operationGuard();
             removeDirectoryByQuarantine(destPath, destIdentity, dirname(wsPath), true);
+            operationGuard();
             removedEmptyDestinations.push(destPath);
         }
 
@@ -3948,6 +4038,7 @@ export function detectBrokenWorktrees(
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
+        if (isNestedTrackedGitlink(resolved, sourceEntries, entry)) continue;
 
         const destPath = join(wsPath, entry.name);
         if (!existsSync(destPath)) continue;
@@ -4003,6 +4094,7 @@ export function fixBrokenWorktree(
     const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
     const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
     if (!sourceRepo) return null;
+    if (isNestedTrackedGitlink(resolved, sourceEntries, sourceRepo)) return null;
     const destPath = join(wsPath, ...sourceRepo.name.split("/"));
     for (const ancestor of sourceEntries.filter((entry) => (
         entry.isGitRepo
