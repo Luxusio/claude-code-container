@@ -101,7 +101,10 @@ but it is not required for normal use.
 
 The host broker advertises `hyper-v-vm-managed-auto-images-v15`. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
-runtimes. Version 15 builds provisioning media from a fenced temporary file
+runtimes. Readiness failure diagnostics additionally require
+`hyper-v-guest-readiness-diagnostics-v1`, so a same-version daemon started
+before that contract was added is also replaced instead of silently reused.
+Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random
 name, a current-user-only ACL, reparse-point checks, and mandatory cleanup on a
