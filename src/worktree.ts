@@ -384,7 +384,9 @@ function removeRegisteredWorktree(
     quarantineBase = dirname(worktreePath),
     registrationFence?: WorktreeRegistrationFence,
     sourceEnvironment?: NodeJS.ProcessEnv,
+    mutationGuard?: () => void,
 ): void {
+    mutationGuard?.();
     const expectedBranch = registrationFence?.expectedRef.replace(/^refs\/heads\//, "");
     if (registrationFence && (
         !expectedBranch
@@ -396,14 +398,18 @@ function removeRegisteredWorktree(
     )) {
         throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
     }
+    mutationGuard?.();
     const parentIdentity = captureDirectoryIdentity(dirname(worktreePath));
+    mutationGuard?.();
     assertDirectoryIdentity(worktreePath, expectedIdentity);
     assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
     const quarantine = createPrivateQuarantine(worktreePath, quarantineBase);
     try {
+        mutationGuard?.();
         assertDirectoryIdentity(worktreePath, expectedIdentity);
         assertDirectoryIdentity(dirname(worktreePath), parentIdentity);
         renameSync(worktreePath, quarantine.path);
+        mutationGuard?.();
         assertDirectoryIdentity(quarantine.directory, quarantine.directoryIdentity);
         assertQuarantinedIdentity(quarantine.path, expectedIdentity, "directory");
         if (registrationFence) {
@@ -422,6 +428,7 @@ function removeRegisteredWorktree(
                 env: sourceEnvironment,
             },
         );
+        mutationGuard?.();
         if (repaired.error || repaired.status !== 0
             || !isValidWorktree(quarantine.path, sourceRepository)) {
             throw new Error((repaired.stderr ?? "").trim() || "git worktree repair failed");
@@ -462,6 +469,7 @@ function removeRegisteredWorktree(
                 env: sourceEnvironment,
             },
         );
+        mutationGuard?.();
         if (removed.error || removed.status !== 0) {
             throw new Error((removed.stderr ?? "").trim() || "git worktree remove failed");
         }
@@ -2452,6 +2460,7 @@ function rollbackFailedWorktreeAdd(
     registrationFence: WorktreeRegistrationFence | null,
     quarantineBase = dirname(worktreePath),
     sourceIdentity?: NestedRepositoryIdentity,
+    mutationGuard?: () => void,
 ): void {
     if (pathExistsStrict(worktreePath)) {
         assertDirectoryIdentity(worktreePath, destinationIdentity);
@@ -2476,6 +2485,7 @@ function rollbackFailedWorktreeAdd(
                 sourceIdentity
                     ? pinnedNestedRepositoryEnvironment(sourceIdentity)
                     : undefined,
+                mutationGuard,
             );
         } else {
             removeDirectoryByQuarantine(
@@ -3589,6 +3599,17 @@ export function repairWorkspace(
                     dirname(wsPath),
                     registrationFence,
                     pinnedNestedRepositoryEnvironment(sourceIdentity),
+                    () => {
+                        assertNestedRepositoryIdentity(
+                            sourceEntry.path,
+                            sourceIdentity,
+                        );
+                        assertNestedWorktreeDestinationFence(
+                            wsPath,
+                            destination,
+                            destinationFence,
+                        );
+                    },
                 );
                 withPinnedNestedRepository(sourceIdentity, () => {
                     rollbackFailedCreatedBranch(
@@ -3801,6 +3822,7 @@ export function repairWorkspace(
                     registrationFence,
                     dirname(wsPath),
                     sourceIdentity,
+                    operationGuard,
                 );
                 operationGuard();
             } catch (rollbackError) {
@@ -4335,6 +4357,7 @@ export function fixBrokenWorktree(
                 registrationFence,
                 dirname(wsPath),
                 sourceIdentity,
+                operationGuard,
             );
             operationGuard();
         } catch (rollbackError) {
@@ -4403,6 +4426,7 @@ export function fixBrokenWorktree(
                     dirname(wsPath),
                     createdRegistrationFence,
                     pinnedNestedRepositoryEnvironment(sourceIdentity),
+                    operationGuard,
                 );
                 operationGuard();
                 withPinnedNestedRepository(sourceIdentity, () => (
@@ -4582,6 +4606,7 @@ function removeUnifiedWorkspace(
                 dirname(wsPath),
                 registrationFence,
                 pinnedNestedRepositoryEnvironment(sourceIdentity),
+                operationGuard,
             );
             operationGuard();
             removed.push(entry.name);
