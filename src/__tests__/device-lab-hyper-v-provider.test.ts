@@ -764,19 +764,12 @@ describe("Hyper-V provider adapter", () => {
         const networkBase64 = seedScript.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
         expect(networkBase64).toBeTruthy();
         const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
+        expect(networkConfig).toContain("  ccc0:");
         expect(networkConfig).toContain("macaddress: '02:11:22:33:44:66'");
+        expect(networkConfig).toContain("set-name: ccc0");
+        expect(networkConfig).not.toContain("set-name: eth0");
         expect(networkConfig).not.toContain("name: 'e*'");
-        expect(seedScript).toContain("('<ns1:dscfg>' + $AzureDataSourceConfigBase64 + '</ns1:dscfg>')");
-        const azureConfigBase64 = seedScript.match(/\$AzureDataSourceConfigBase64 = '([^']+)'/)?.[1];
-        expect(azureConfigBase64).toBeTruthy();
-        expect(Buffer.from(azureConfigBase64!, "base64").toString("utf8")).toBe([
-            "apply_network_config: false",
-            "set_hostname: false",
-            "experimental_skip_ready_report: true",
-            "hostname_bounce:",
-            "  policy: false",
-            "",
-        ].join("\n"));
+        expect(seedScript).not.toContain("<ns1:dscfg>");
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
         expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");

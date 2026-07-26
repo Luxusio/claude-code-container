@@ -1581,7 +1581,11 @@ describe("device-lab Hyper-V broker", () => {
                 .find((script) => script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'"));
             const networkBase64 = seedScript?.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
             expect(networkBase64).toBeTruthy();
-            expect(Buffer.from(networkBase64!, "base64").toString("utf8")).toContain(`macaddress: '${allocatedMac}'`);
+            const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
+            expect(networkConfig).toContain("  ccc0:");
+            expect(networkConfig).toContain("set-name: ccc0");
+            expect(networkConfig).not.toContain("set-name: eth0");
+            expect(networkConfig).toContain(`macaddress: '${allocatedMac}'`);
             expect(createdBody.result.device).not.toHaveProperty("privateRoot");
             expect(createdBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');
