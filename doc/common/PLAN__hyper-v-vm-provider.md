@@ -474,8 +474,9 @@ Real-provider tests:
   media includes an Azure-compatible UDF `ovf-env.xml` with base64 cloud-config
   in addition to the generic NoCloud files. The guest writes and applies the
   owner-assigned static netplan before SSH readiness. Broker compatibility
-  requires `hyper-v-azure-ovf-seed-v1`, preventing a same-version daemon with
-  the old NoCloud-only seed path from being reused.
+  requires `hyper-v-azure-ovf-seed-v2`, preventing same-version daemons with
+  either the old NoCloud-only media or an incomplete Azure OVF document from
+  being reused.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the removable answer file during its actual first configuration pass; the

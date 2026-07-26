@@ -707,6 +707,13 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
         expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");
+        expect(seedScript).toContain("<ns1:PlatformSettingsSection>");
+        expect(seedScript).toContain("<ns1:PlatformSettings>");
+        expect(seedScript).toContain("<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>");
+        expect(seedScript).toContain("<ns1:GuestAgentPackageName xsi:nil=\"true\" />");
+        expect(seedScript).toContain("<ns1:PreprovisionedVMType xsi:nil=\"true\" />");
+        expect(seedScript.indexOf("</ns1:ProvisioningSection>")).toBeLessThan(seedScript.indexOf("<ns1:PlatformSettingsSection>"));
+        expect(seedScript.indexOf("</ns1:PlatformSettingsSection>")).toBeLessThan(seedScript.indexOf("</ns0:Environment>"));
         expect(seedScript).toContain("apply_network_config: false");
         expect(seedScript).toContain("/etc/netplan/99-ccc-static.yaml");
         expect(seedScript).toContain("'  - [netplan, apply]'");

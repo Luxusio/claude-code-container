@@ -326,6 +326,39 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(300);
     });
 
+    it("keeps Hyper-V boot diagnostics ahead of long nested wrapper details", () => {
+        const message = formatBrokerToolFailure({
+            error: "broker-operation-failed",
+            detail: `hyper-v-guest-not-ready: ${"outer".repeat(200)}`,
+            body: {
+                error: "hyper-v-guest-not-ready",
+                detail: `powershell-direct-session-unavailable: ${"inner".repeat(200)}`,
+                result: {
+                    boot: {
+                        provider: "hyper-v-powershell-direct",
+                        error: "powershell-direct-session-unavailable",
+                        diagnosticAvailable: true,
+                        diagnostic: {
+                            state: "Running",
+                            uptimeMs: 600123,
+                            heartbeatEnabled: true,
+                            heartbeatPrimaryStatus: 2,
+                            heartbeatSecondaryStatus: 0,
+                            hardDiskCount: 1,
+                            dvdCount: 1,
+                            bootDeviceTypes: ["hard-disk", "dvd"],
+                        },
+                    },
+                },
+            },
+        }, "fallback");
+        expect(message.slice(0, 300)).toContain('boot={"provider":"hyper-v-powershell-direct"');
+        expect(message.slice(0, 300)).toContain('"heartbeat":true');
+        expect(message.slice(0, 300)).toContain('"boot":["hard-disk","dvd"]');
+        expect(message).not.toContain("outerouter");
+        expect(message).not.toContain("innerinner");
+    });
+
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {
         const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
         expect(source).toContain("hyper-v-image-contracts.ts");

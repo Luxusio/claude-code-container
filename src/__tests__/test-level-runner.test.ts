@@ -1112,7 +1112,7 @@ describe("test level runner", () => {
         expect(plan.env.CCC_REAL_DEVICE_LAB_FAIL_ON_SKIP).toBe("1");
     });
 
-    it("exposes only the four device-lab level commands", () => {
+    it("exposes the four device-lab levels and focused Hyper-V Level 3 commands", () => {
         const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")) as {
             scripts?: Record<string, string>;
         };
@@ -1122,6 +1122,9 @@ describe("test level runner", () => {
             "test:level1",
             "test:level2",
             "test:level3",
+            "test:level3:hyper-v",
+            "test:level3:hyper-v:windows",
+            "test:level3:hyper-v:linux",
         ]);
     });
 

@@ -403,12 +403,18 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
                     : undefined,
         })
         : "";
+    const boundedDetail = (candidate: unknown) => {
+        if (typeof candidate !== "string" || candidate.length === 0) return "";
+        const codes = candidate.match(/\b(?:appium|broker|hyper-v|powershell|ssh)-[a-z0-9-]{2,128}\b/g) || [];
+        if (codes.length > 0) return [...new Set(codes)].slice(0, 4).join(",");
+        return candidate.length <= 160 ? candidate : `${candidate.slice(0, 157)}...`;
+    };
     const parts = [
         value?.error,
-        value?.detail,
         body?.error,
-        body?.detail,
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",
+        boundedDetail(value?.detail),
+        boundedDetail(body?.detail),
         diagnostic,
         transportDiagnostic,
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
