@@ -1763,6 +1763,100 @@ describe("createWorkspace (unified mode)", () => {
         expect(detectWorktreeWorkspaceBranch(result.workspacePath))
             .toBe("recursive-feature");
     });
+
+    it("initializes submodules owned by a newly created ignored repository", () => {
+        const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-submodule-origin`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore vendor"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            initRepo(submoduleOrigin);
+            writeFileSync(join(submoduleOrigin, "child.txt"), "child");
+            spawnSync("git", ["add", "child.txt"], {
+                cwd: submoduleOrigin,
+                stdio: "pipe",
+            });
+            spawnSync("git", ["commit", "-m", "add child"], {
+                cwd: submoduleOrigin,
+                stdio: "pipe",
+            });
+            const outerRepo = join(tmpDir, "vendor", "platform");
+            initRepo(outerRepo);
+            spawnSync("git", ["config", "protocol.file.allow", "always"], {
+                cwd: outerRepo,
+                stdio: "pipe",
+            });
+            const added = spawnSync(
+                "git",
+                [
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    submoduleOrigin,
+                    "modules/child",
+                ],
+                { cwd: outerRepo, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(added.status, added.stderr).toBe(0);
+            spawnSync("git", ["commit", "-am", "add child submodule"], {
+                cwd: outerRepo,
+                stdio: "pipe",
+            });
+
+            const previousAllowedProtocol = process.env.GIT_ALLOW_PROTOCOL;
+            process.env.GIT_ALLOW_PROTOCOL = "file";
+            let result: ReturnType<typeof createWorkspace>;
+            try {
+                result = createWorkspace(tmpDir, "nested-submodule");
+            } finally {
+                if (previousAllowedProtocol === undefined) {
+                    delete process.env.GIT_ALLOW_PROTOCOL;
+                } else {
+                    process.env.GIT_ALLOW_PROTOCOL = previousAllowedProtocol;
+                }
+            }
+
+            expect(readFileSync(join(
+                result.workspacePath,
+                "vendor",
+                "platform",
+                "modules",
+                "child",
+                "child.txt",
+            ), "utf-8")).toBe("child");
+        } finally {
+            rmSync(submoduleOrigin, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects direct nested repositories whose git metadata is a symlink", () => {
+        const externalRepo = join(dirname(tmpDir), `${basename(tmpDir)}-external`);
+        try {
+            initRepo(tmpDir);
+            initRepo(externalRepo);
+            const nestedRepo = join(tmpDir, "nested");
+            mkdirSync(nestedRepo);
+            symlinkSync(
+                join(externalRepo, ".git"),
+                join(nestedRepo, ".git"),
+                process.platform === "win32" ? "junction" : "dir",
+            );
+
+            expect(() => createWorkspace(tmpDir, "metadata-symlink"))
+                .toThrow("metadata is a symbolic link");
+            expect(branchExistsInRepo(externalRepo, "metadata-symlink"))
+                .toBe("none");
+            expect(existsSync(getWorkspacePath(tmpDir, "metadata-symlink")))
+                .toBe(false);
+        } finally {
+            rmSync(externalRepo, { recursive: true, force: true });
+        }
+    });
 });
 
 describe("repairWorkspace", () => {
@@ -1835,6 +1929,80 @@ describe("repairWorkspace", () => {
         expect(repaired.map(({ name }) => name))
             .toContain("services/private/api");
         expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+    });
+
+    it("does not create descendants beneath a broken nested repository", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore vendor"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const outerRepo = join(tmpDir, "vendor", "platform");
+        initRepo(outerRepo);
+        writeFileSync(join(outerRepo, ".gitignore"), "plugins/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: outerRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore plugins"], {
+            cwd: outerRepo,
+            stdio: "pipe",
+        });
+        const innerRepo = join(outerRepo, "plugins", "tool");
+        initRepo(innerRepo);
+        const wsResult = createWorkspace(tmpDir, "broken-parent");
+        const outerWorktree = join(wsResult.workspacePath, "vendor", "platform");
+        const innerWorktree = join(outerWorktree, "plugins", "tool");
+        spawnSync("git", ["worktree", "remove", "--force", innerWorktree], {
+            cwd: innerRepo,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["worktree", "remove", "--force", outerWorktree], {
+            cwd: outerRepo,
+            stdio: "pipe",
+        });
+        mkdirSync(outerWorktree, { recursive: true });
+        writeFileSync(join(outerWorktree, "preserve.txt"), "preserve");
+
+        const repaired = repairWorkspace(
+            tmpDir,
+            wsResult.workspacePath,
+            "broken-parent",
+        );
+
+        expect(repaired).toEqual([]);
+        expect(readFileSync(join(outerWorktree, "preserve.txt"), "utf-8"))
+            .toBe("preserve");
+        expect(existsSync(innerWorktree)).toBe(false);
+    });
+
+    it("rejects a nested destination whose parent is a symlink", () => {
+        const external = join(dirname(tmpDir), `${basename(tmpDir)}-destination`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore nested services"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            const wsResult = createWorkspace(tmpDir, "parent-symlink");
+            mkdirSync(external);
+            symlinkSync(
+                external,
+                join(wsResult.workspacePath, "services"),
+                process.platform === "win32" ? "junction" : "dir",
+            );
+            initRepo(join(tmpDir, "services", "private", "api"));
+
+            expect(() => repairWorkspace(
+                tmpDir,
+                wsResult.workspacePath,
+                "parent-symlink",
+            )).toThrow("not a safe directory");
+            expect(readdirSync(external)).toEqual([]);
+        } finally {
+            rmSync(external, { recursive: true, force: true });
+        }
     });
 
     it("rolls back nested worktrees created earlier in the same repair", () => {
@@ -3104,6 +3272,32 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
         expect(mounts.some((mount) => (
             mount.hostPath === join(sourcePath, "repo-b", ".git")
+        ))).toBe(true);
+    });
+
+    it("uses unique compatibility mounts for deep repositories with the same basename", () => {
+        const sourcePath = join(tmpDir, "duplicate-basename-source");
+        initRepo(sourcePath);
+        writeFileSync(join(sourcePath, ".gitignore"), "services/\n");
+        spawnSync("git", ["add", ".gitignore"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["commit", "-m", "ignore services"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        initRepo(join(sourcePath, "services", "a", "api"));
+        initRepo(join(sourcePath, "services", "b", "api"));
+        const result = createWorkspace(sourcePath, "duplicate-api");
+
+        const mounts = getWorktreeGitMounts(result.workspacePath, true);
+
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/services/a/api/.git"
+        ))).toBe(true);
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/services/b/api/.git"
         ))).toBe(true);
     });
 
