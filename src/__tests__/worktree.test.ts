@@ -3304,7 +3304,7 @@ describe("removeWorkspace (unified mode)", () => {
 
         const removeResult = removeWorkspace(tmpDir, "deep-nested-rm");
 
-        expect(removeResult.errors).toHaveLength(0);
+        expect(removeResult.errors, removeResult.errors.join("; ")).toHaveLength(0);
         expect(removeResult.removed).toContain("services/private/api");
         expect(existsSync(wsResult.workspacePath)).toBe(false);
         const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
@@ -3343,6 +3343,56 @@ describe("removeWorkspace (unified mode)", () => {
             "vendor/platform",
         ]);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+
+    it("does not remove an external worktree through a symlinked parent", () => {
+        const external = join(dirname(tmpDir), `${basename(tmpDir)}-remove-external`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "services/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore services"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            const nestedRepo = join(tmpDir, "services", "private", "api");
+            initRepo(nestedRepo);
+            const wsResult = createWorkspace(tmpDir, "external-remove");
+            const nestedWorktree = join(
+                wsResult.workspacePath,
+                "services",
+                "private",
+                "api",
+            );
+            const externalWorktree = join(external, "private", "api");
+            mkdirSync(dirname(externalWorktree), { recursive: true });
+            renameSync(nestedWorktree, externalWorktree);
+            const repaired = spawnSync(
+                "git",
+                ["worktree", "repair", externalWorktree],
+                { cwd: nestedRepo, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(repaired.status, repaired.stderr).toBe(0);
+            rmSync(join(wsResult.workspacePath, "services"), {
+                recursive: true,
+                force: true,
+            });
+            symlinkSync(
+                external,
+                join(wsResult.workspacePath, "services"),
+                process.platform === "win32" ? "junction" : "dir",
+            );
+
+            const removeResult = removeWorkspace(tmpDir, "external-remove", {
+                force: true,
+            });
+
+            expect(removeResult.errors.join("; "))
+                .toContain("parent is not a safe directory");
+            expect(isValidWorktree(externalWorktree, nestedRepo)).toBe(true);
+        } finally {
+            rmSync(external, { recursive: true, force: true });
+        }
     });
 });
 
