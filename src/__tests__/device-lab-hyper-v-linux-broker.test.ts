@@ -1542,7 +1542,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
             const result = bootDiagnostic
-                ? { ok: true, vmId, vmName, state: bootDiagnosticState || vmState, uptimeMs: 1000, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, hardDiskCount: 1, dvdCount: 1, bootDeviceTypes: ["hard-disk", "dvd"] }
+                ? { ok: true, vmId, vmName, state: bootDiagnosticState || vmState, uptimeMs: 1000, generation: 2, secureBootEnabled: true, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["scsi"], bootDeviceTypes: ["hard-disk", "dvd"] }
                 : imageSetup
                 ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
                 : networkSetup
@@ -1641,7 +1641,10 @@ describe("device-lab Hyper-V broker", () => {
                         diagnosticAvailable: true,
                         diagnostic: expect.objectContaining({
                             state: "OffCritical",
+                            generation: 2,
+                            secureBootEnabled: true,
                             hardDiskCount: 1,
+                            hardDiskControllers: ["scsi"],
                             bootDeviceTypes: ["hard-disk", "dvd"],
                         }),
                     },

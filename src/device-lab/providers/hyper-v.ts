@@ -122,11 +122,20 @@ export type HyperVGuestBootDiagnosticObservation = {
     vmName: string;
     state: string;
     uptimeMs: number;
+    generation: 1 | 2;
+    secureBootEnabled: boolean | null;
     heartbeatEnabled: boolean | null;
     heartbeatPrimaryStatus: number | null;
     heartbeatSecondaryStatus: number | null;
+    integrationServices: Array<{
+        name: string;
+        enabled: boolean;
+        primaryStatus: number | null;
+        secondaryStatus: number | null;
+    }>;
     hardDiskCount: number;
     dvdCount: number;
+    hardDiskControllers: string[];
     bootDeviceTypes: string[];
 };
 
@@ -1244,11 +1253,22 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  New-VHD -Path $DiskPath -ParentPath $BaseImage -Differencing -ErrorAction Stop | Out-Null",
         "  $CreatedDisk = Get-VHD -Path $DiskPath -ErrorAction Stop",
         "  if (-not $CreatedDisk.ParentPath -or [IO.Path]::GetFullPath([string]$CreatedDisk.ParentPath) -ne [IO.Path]::GetFullPath($BaseImage)) { throw 'hyper-v-created-disk-parent-mismatch' }",
+        "  $BaseImageStream.Dispose()",
+        "  $BaseImageStream = $null",
+        "  $MountedBootDisk = $null",
+        "  try {",
+        "    $MountedBootDisk = Mount-VHD -Path $DiskPath -ReadOnly -NoDriveLetter -Passthru -ErrorAction Stop",
+        "    $BootDisk = $MountedBootDisk | Get-Disk -ErrorAction Stop",
+        "    $VmGeneration = switch ([string]$BootDisk.PartitionStyle) { 'GPT' { 2 } 'MBR' { 1 } default { throw 'hyper-v-base-image-partition-style-unsupported' } }",
+        "  } finally {",
+        "    if ($MountedBootDisk) { Dismount-VHD -Path $DiskPath -ErrorAction Stop }",
+        "  }",
+        "  $BaseImageStream = [IO.File]::Open($BaseImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)",
         "  $BaseImageStream.Position = 0",
         "  $Hasher = [Security.Cryptography.SHA256]::Create()",
         "  try { $BaseImageHashAfterCreate = ([BitConverter]::ToString($Hasher.ComputeHash($BaseImageStream))).Replace('-', '').ToLowerInvariant() } finally { $Hasher.Dispose() }",
         "  if ($BaseImageHashAfterCreate -ne $ExpectedBaseImageHash) { throw 'hyper-v-base-image-hash-mismatch' }",
-        `  $VmArgs = @{ Name = $VmName; Generation = 2; MemoryStartupBytes = ${memoryMb}MB; VHDPath = $DiskPath }`,
+        `  $VmArgs = @{ Name = $VmName; Generation = $VmGeneration; MemoryStartupBytes = ${memoryMb}MB; VHDPath = $DiskPath }`,
         "  if ($BootstrapSwitch) { $VmArgs.SwitchName = $BootstrapSwitch.Name } elseif ($ResolvedSwitch) { $VmArgs.SwitchName = $ResolvedSwitch.Name }",
         "  $CreatedVm = New-VM @VmArgs -ErrorAction Stop",
         "  $ManagedAdapter = $null",
@@ -1270,10 +1290,16 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  }",
         `  Set-VMProcessor -VM $CreatedVm -Count ${cpus} -ErrorAction Stop`,
         "  Set-VM -VM $CreatedVm -AutomaticCheckpointsEnabled $false -CheckpointType ProductionOnly -Notes $Marker -ErrorAction Stop",
-        `  Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -ErrorAction Stop`,
+        "  $CreatedOsDisks = @(Get-VMHardDiskDrive -VM $CreatedVm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
+        "  if ($CreatedOsDisks.Count -ne 1) { throw 'hyper-v-created-disk-attachment-mismatch' }",
+        "  if ($VmGeneration -eq 2) {",
+        `    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -FirstBootDevice $CreatedOsDisks[0] -ErrorAction Stop`,
+        "  } else {",
+        "    Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop",
+        "  }",
         "  $BaseImageStream.Dispose()",
         "  $BaseImageStream = $null",
-        "  $Result = [ordered]@{ ok = $true; vmId = [string]$CreatedVm.Id; vmName = $CreatedVm.Name; state = [string]$CreatedVm.State; diskPath = $DiskPath; switchName = if ($ResolvedSwitch) { $ResolvedSwitch.Name } else { $null } }",
+        "  $Result = [ordered]@{ ok = $true; vmId = [string]$CreatedVm.Id; vmName = $CreatedVm.Name; state = [string]$CreatedVm.State; generation = $VmGeneration; diskPath = $DiskPath; switchName = if ($ResolvedSwitch) { $ResolvedSwitch.Name } else { $null } }",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "} catch {",
         "  if ($BaseImageStream) { $BaseImageStream.Dispose() }",
@@ -1291,8 +1317,10 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
 export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVProviderCommand {
     assertIdentity(options);
     if (!options.vmId) throw new Error("hyper-v-vm-id-missing");
+    if (!options.diskPath) throw new Error("hyper-v-disk-path-missing");
     const deviceRoot = assertPlainPath(options.deviceRoot, "device-root");
     const privateRoot = assertPlainPath(options.privateRoot, "private-root");
+    const diskPath = assertPathInside(deviceRoot, options.diskPath, "linux-disk-path");
     const seedDiskPath = assertPathInside(deviceRoot, options.seedDiskPath, "linux-seed-disk");
     if (!/\.iso$/i.test(seedDiskPath)) throw new Error("hyper-v-linux-seed-media-format-invalid");
     const privateKeyPath = assertPathInside(privateRoot, options.sshPrivateKeyPath, "linux-ssh-private-key");
@@ -1339,6 +1367,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "try {",
         ...ownedVmPrelude(options),
         `$DeviceRoot = ${psQuote(deviceRoot)}`,
+        `$DiskPath = ${psQuote(diskPath)}`,
         `$SeedDisk = ${psQuote(seedDiskPath)}`,
         `$PrivateKey = ${psQuote(privateKeyPath)}`,
         `$PublicKey = ${psQuote(publicKeyPath)}`,
@@ -1421,6 +1450,10 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "  $IsoFiles = $null",
         "  Set-CccProvisionStage 'media-attach'",
         "  try { Add-VMDvdDrive -VM $Vm -Path $SeedDisk -ErrorAction Stop | Out-Null } catch { throw 'hyper-v-linux-seed-media-attach-failed' }",
+        "  $OsDisks = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
+        "  if ($OsDisks.Count -ne 1) { throw 'hyper-v-linux-disk-attachment-mismatch' }",
+        "  if ([int]$Vm.Generation -eq 2) { Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0] -ErrorAction Stop }",
+        "  else { Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop }",
         "}",
         "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; seedDiskPath = $SeedDisk; sshPrivateKeyPath = $PrivateKey; sshPublicKeyPath = $PublicKey; sshHostPublicKeyPath = $HostPublicKey; sshHostKeyFingerprint = $HostFingerprint; knownHostsPath = $KnownHosts; guestUsername = $GuestUsername; networkAddress = " + psQuote(address) + " }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
@@ -1882,8 +1915,10 @@ export function hyperVGuestBootDiagnosticCommand(options: HyperVCommandOptions):
     return command(options.executable, jsonScript([
         ...ownedVmPrelude(options),
         "$HeartbeatServiceId = '84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'",
-        "$Heartbeat = @(Get-VMIntegrationService -VM $Vm -ErrorAction SilentlyContinue | Where-Object { ([string]$_.Id).Trim('{}').ToLowerInvariant() -eq $HeartbeatServiceId } | Select-Object -First 1)",
-        "$Firmware = Get-VMFirmware -VM $Vm -ErrorAction SilentlyContinue",
+        "$IntegrationServices = @(Get-VMIntegrationService -VM $Vm -ErrorAction SilentlyContinue)",
+        "$Heartbeat = @($IntegrationServices | Where-Object { ([string]$_.Id).Trim('{}').ToLowerInvariant() -eq $HeartbeatServiceId } | Select-Object -First 1)",
+        "$Firmware = if ([int]$Vm.Generation -eq 2) { Get-VMFirmware -VM $Vm -ErrorAction SilentlyContinue } else { $null }",
+        "$Bios = if ([int]$Vm.Generation -eq 1) { Get-VMBios -VM $Vm -ErrorAction SilentlyContinue } else { $null }",
         "$BootDeviceTypes = @()",
         "if ($Firmware) {",
         "  $BootDeviceTypes = @($Firmware.BootOrder | ForEach-Object {",
@@ -1896,19 +1931,27 @@ export function hyperVGuestBootDiagnosticCommand(options: HyperVCommandOptions):
         "    else { 'unknown' }",
         "  })",
         "}",
+        "elseif ($Bios) {",
+        "  $BootDeviceTypes = @($Bios.StartupOrder | ForEach-Object { switch ([string]$_) { 'IDE' { 'hard-disk' } 'CD' { 'dvd' } 'LegacyNetworkAdapter' { 'network' } default { 'unknown' } } })",
+        "}",
         "$HardDisks = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction SilentlyContinue)",
         "$DvdDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue)",
+        "$IntegrationServiceSummary = @($IntegrationServices | Sort-Object Name | ForEach-Object { [ordered]@{ name = [string]$_.Name; enabled = [bool]$_.Enabled; primaryStatus = if ($null -ne $_.PrimaryStatus) { [int]$_.PrimaryStatus } else { $null }; secondaryStatus = if ($null -ne $_.SecondaryStatus) { [int]$_.SecondaryStatus } else { $null } } })",
         "$Result = [ordered]@{",
         "  ok = $true",
         "  vmId = [string]$Vm.Id",
         "  vmName = $Vm.Name",
         "  state = [string]$Vm.State",
         "  uptimeMs = [Math]::Floor($Vm.Uptime.TotalMilliseconds)",
+        "  generation = [int]$Vm.Generation",
+        "  secureBootEnabled = if ($Firmware) { [bool]$Firmware.SecureBoot } else { $null }",
         "  heartbeatEnabled = if ($Heartbeat.Count -eq 1) { [bool]$Heartbeat[0].Enabled } else { $null }",
         "  heartbeatPrimaryStatus = if ($Heartbeat.Count -eq 1 -and $null -ne $Heartbeat[0].PrimaryStatus) { [int]$Heartbeat[0].PrimaryStatus } else { $null }",
         "  heartbeatSecondaryStatus = if ($Heartbeat.Count -eq 1 -and $null -ne $Heartbeat[0].SecondaryStatus) { [int]$Heartbeat[0].SecondaryStatus } else { $null }",
+        "  integrationServices = $IntegrationServiceSummary",
         "  hardDiskCount = $HardDisks.Count",
         "  dvdCount = $DvdDrives.Count",
+        "  hardDiskControllers = @($HardDisks | ForEach-Object { ([string]$_.ControllerType).ToLowerInvariant() })",
         "  bootDeviceTypes = $BootDeviceTypes",
         "}",
         "$Result | ConvertTo-Json -Compress -Depth 5",
@@ -2238,6 +2281,10 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  }",
         "  Set-CccProvisionStage 'media-attach'",
         "  try { Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia -ErrorAction Stop | Out-Null } catch { throw 'hyper-v-guest-provisioning-media-attach-failed' }",
+        "  $OsDisks = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
+        "  if ($OsDisks.Count -ne 1) { throw 'hyper-v-guest-disk-attachment-mismatch' }",
+        "  if ([int]$Vm.Generation -eq 2) { Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0] -ErrorAction Stop }",
+        "  else { Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop }",
         "} catch {",
         "  Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue",
         "  Assert-NoReparsePath $ProvisioningMedia",
@@ -2583,15 +2630,33 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         || typeof parsed.uptimeMs !== "number"
         || !Number.isSafeInteger(parsed.uptimeMs)
         || parsed.uptimeMs < 0
+        || (parsed.generation !== 1 && parsed.generation !== 2)
+        || (parsed.secureBootEnabled !== null && typeof parsed.secureBootEnabled !== "boolean")
         || (parsed.heartbeatEnabled !== null && typeof parsed.heartbeatEnabled !== "boolean")
         || (parsed.heartbeatPrimaryStatus !== null && (typeof parsed.heartbeatPrimaryStatus !== "number" || !Number.isSafeInteger(parsed.heartbeatPrimaryStatus) || parsed.heartbeatPrimaryStatus < 0))
         || (parsed.heartbeatSecondaryStatus !== null && (typeof parsed.heartbeatSecondaryStatus !== "number" || !Number.isSafeInteger(parsed.heartbeatSecondaryStatus) || parsed.heartbeatSecondaryStatus < 0))
+        || !Array.isArray(parsed.integrationServices)
+        || parsed.integrationServices.length > 16
+        || parsed.integrationServices.some((candidate: unknown) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+            const service = candidate as Record<string, unknown>;
+            return typeof service.name !== "string"
+                || service.name.length < 1
+                || service.name.length > 128
+                || /[\u0000-\u001f]/.test(service.name)
+                || typeof service.enabled !== "boolean"
+                || (service.primaryStatus !== null && (typeof service.primaryStatus !== "number" || !Number.isSafeInteger(service.primaryStatus) || service.primaryStatus < 0))
+                || (service.secondaryStatus !== null && (typeof service.secondaryStatus !== "number" || !Number.isSafeInteger(service.secondaryStatus) || service.secondaryStatus < 0));
+        })
         || typeof parsed.hardDiskCount !== "number"
         || !Number.isSafeInteger(parsed.hardDiskCount)
         || parsed.hardDiskCount < 0
         || typeof parsed.dvdCount !== "number"
         || !Number.isSafeInteger(parsed.dvdCount)
         || parsed.dvdCount < 0
+        || !Array.isArray(parsed.hardDiskControllers)
+        || parsed.hardDiskControllers.length > 8
+        || parsed.hardDiskControllers.some((candidate: unknown) => !["ide", "scsi"].includes(String(candidate)))
         || !Array.isArray(parsed.bootDeviceTypes)
         || parsed.bootDeviceTypes.length > 8
         || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))) return null;
@@ -2601,11 +2666,20 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         vmName: parsed.vmName,
         state: parsed.state,
         uptimeMs: parsed.uptimeMs,
+        generation: parsed.generation,
+        secureBootEnabled: parsed.secureBootEnabled as boolean | null,
         heartbeatEnabled: parsed.heartbeatEnabled as boolean | null,
         heartbeatPrimaryStatus: parsed.heartbeatPrimaryStatus as number | null,
         heartbeatSecondaryStatus: parsed.heartbeatSecondaryStatus as number | null,
+        integrationServices: parsed.integrationServices.map((candidate: Record<string, unknown>) => ({
+            name: candidate.name as string,
+            enabled: candidate.enabled as boolean,
+            primaryStatus: candidate.primaryStatus as number | null,
+            secondaryStatus: candidate.secondaryStatus as number | null,
+        })),
         hardDiskCount: parsed.hardDiskCount,
         dvdCount: parsed.dvdCount,
+        hardDiskControllers: parsed.hardDiskControllers,
         bootDeviceTypes: parsed.bootDeviceTypes,
     };
 }

@@ -392,6 +392,8 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             error: typeof boot.error === "string" ? boot.error : undefined,
             state: bootObservation && typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
             uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
+            generation: bootObservation && (bootObservation.generation === 1 || bootObservation.generation === 2) ? bootObservation.generation : undefined,
+            secureBoot: bootObservation && typeof bootObservation.secureBootEnabled === "boolean" ? bootObservation.secureBootEnabled : null,
             heartbeat: bootObservation && typeof bootObservation.heartbeatEnabled === "boolean" ? bootObservation.heartbeatEnabled : null,
             heartbeatStatus: bootObservation ? [
                 Number.isSafeInteger(bootObservation.heartbeatPrimaryStatus) ? bootObservation.heartbeatPrimaryStatus : null,
@@ -399,6 +401,18 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             ] : undefined,
             disks: bootObservation && Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
             dvds: bootObservation && Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
+            controllers: bootObservation && Array.isArray(bootObservation.hardDiskControllers)
+                ? bootObservation.hardDiskControllers.filter((candidate: unknown) => ["ide", "scsi"].includes(String(candidate))).slice(0, 3)
+                : undefined,
+            services: bootObservation && Array.isArray(bootObservation.integrationServices)
+                ? bootObservation.integrationServices.slice(0, 8).map((candidate: unknown) => {
+                    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+                    const service = candidate as Record<string, unknown>;
+                    return typeof service.name === "string"
+                        ? [service.name.slice(0, 48), service.enabled === true, Number.isSafeInteger(service.primaryStatus) ? service.primaryStatus : null]
+                        : null;
+                }).filter(Boolean)
+                : undefined,
             boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
                     ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
                     : undefined,

@@ -279,6 +279,7 @@ describe("Hyper-V provider adapter", () => {
                 incarnationId,
                 vmName: hyperVVmName(ownerId, "linux-keygen-probe", incarnationId),
                 vmId,
+                diskPath: join(root, "root.vhdx"),
                 deviceRoot: root,
                 privateRoot: root,
                 seedDiskPath: join(root, "cidata.iso"),
@@ -582,7 +583,7 @@ describe("Hyper-V provider adapter", () => {
         })).toThrow("hyper-v-base-image-root-invalid");
     });
 
-    it("creates an owner-scoped generation 2 VM with rollback and secure defaults", () => {
+    it("creates an owner-scoped VM matching the boot disk generation with rollback and secure defaults", () => {
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         expect(vmName).toBe(`ccc-${ownerId}-${deviceId}-${incarnationId}`);
         const command = hyperVCreateCommand({
@@ -605,7 +606,12 @@ describe("Hyper-V provider adapter", () => {
 
         expect(command).toMatchObject({ mode: "exec", provider: "hyper-v", executable: "powershell.exe" });
         const script = scriptOf(command);
-        expect(script).toContain("Generation = 2");
+        expect(script).toContain("Mount-VHD -Path $DiskPath -ReadOnly -NoDriveLetter");
+        expect(script).toContain("$VmGeneration = switch ([string]$BootDisk.PartitionStyle)");
+        expect(script).toContain("'GPT' { 2 }");
+        expect(script).toContain("'MBR' { 1 }");
+        expect(script).toContain("Generation = $VmGeneration");
+        expect(script).toContain("hyper-v-base-image-partition-style-unsupported");
         expect(script).toContain("New-VHD -Path $DiskPath -ParentPath $BaseImage -Differencing");
         expect(script).toContain("[IO.FileShare]::Read");
         expect(script).toContain("$Hasher.ComputeHash($BaseImageStream)");
@@ -615,6 +621,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("AutomaticCheckpointsEnabled $false");
         expect(script).toContain("CheckpointType ProductionOnly");
         expect(script).toContain("EnableSecureBoot On");
+        expect(script).toContain("-FirstBootDevice $CreatedOsDisks[0]");
+        expect(script).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(script).toContain("Get-VMSwitch -Name $SwitchName");
         expect(script).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
         expect(script).toContain("02:11:22:33:44:55");
@@ -664,6 +672,7 @@ describe("Hyper-V provider adapter", () => {
         expect(linuxScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");
         expect(linuxScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
         expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
+        expect(linuxScript).toContain("SecureBootTemplate 'MicrosoftUEFICertificateAuthority'");
     });
 
     it("removes only the owner-fenced Default Switch bootstrap adapter", () => {
@@ -712,6 +721,7 @@ describe("Hyper-V provider adapter", () => {
             incarnationId,
             vmName,
             vmId,
+            diskPath: `${deviceRoot}/disks/root.vhdx`,
             deviceRoot,
             privateRoot,
             seedDiskPath,
@@ -729,6 +739,8 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
+        expect(seedScript).toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
+        expect(seedScript).toContain("Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(seedScript).toContain("$Image.FileSystemsToCreate = 7");
         expect(seedScript).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
@@ -1327,6 +1339,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("([string]$_.Id).Trim('{}').ToLowerInvariant()");
         expect(script).not.toContain("$_.Name -eq 'Heartbeat'");
         expect(script).toContain("Get-VMFirmware -VM $Vm");
+        expect(script).toContain("Get-VMBios -VM $Vm");
+        expect(script).toContain("integrationServices = $IntegrationServiceSummary");
+        expect(script).toContain("hardDiskControllers = @($HardDisks");
         expect(script).toContain("$BootType = [string]$_.BootType");
         expect(script).toContain("$_.Device.GetType().Name");
         expect(script).not.toContain("$TypeName = $_.GetType().Name");
@@ -1338,11 +1353,15 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             state: "Running",
             uptimeMs: 600123,
+            generation: 2,
+            secureBootEnabled: true,
             heartbeatEnabled: true,
             heartbeatPrimaryStatus: 2,
             heartbeatSecondaryStatus: 0,
+            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
             hardDiskCount: 1,
             dvdCount: 1,
+            hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
         }))).toEqual({
             ok: true,
@@ -1350,11 +1369,15 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             state: "Running",
             uptimeMs: 600123,
+            generation: 2,
+            secureBootEnabled: true,
             heartbeatEnabled: true,
             heartbeatPrimaryStatus: 2,
             heartbeatSecondaryStatus: 0,
+            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
             hardDiskCount: 1,
             dvdCount: 1,
+            hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
         });
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
@@ -1363,11 +1386,15 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             state: "Running",
             uptimeMs: 1,
+            generation: 2,
+            secureBootEnabled: true,
             heartbeatEnabled: true,
             heartbeatPrimaryStatus: 2,
             heartbeatSecondaryStatus: 0,
+            integrationServices: [],
             hardDiskCount: 1,
             dvdCount: 1,
+            hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["C:\\secret"],
         }))).toBeNull();
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
@@ -1376,11 +1403,15 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             state: "Running",
             uptimeMs: 1,
+            generation: 1,
+            secureBootEnabled: null,
             heartbeatEnabled: true,
             heartbeatPrimaryStatus: 2,
             heartbeatSecondaryStatus: 0,
+            integrationServices: [],
             hardDiskCount: 1,
             dvdCount: 1,
+            hardDiskControllers: ["ide"],
             bootDeviceTypes: Array(9).fill("hard-disk"),
         }))).toBeNull();
     });

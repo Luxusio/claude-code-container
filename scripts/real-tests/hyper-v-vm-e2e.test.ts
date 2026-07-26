@@ -295,11 +295,15 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             vmName: "private-vm-name",
                             state: "Running",
                             uptimeMs: 600123,
+                            generation: 2,
+                            secureBootEnabled: true,
                             heartbeatEnabled: true,
                             heartbeatPrimaryStatus: 2,
                             heartbeatSecondaryStatus: 0,
+                            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
                             hardDiskCount: 1,
                             dvdCount: 1,
+                            hardDiskControllers: ["scsi"],
                             bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
                             diskPath: "C:\\Users\\Luxus\\private\\root.vhdx",
                         },
@@ -317,13 +321,15 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain("hyper-v-guest-not-ready");
         expect(message).toContain('"error":"ssh-connection-refused"');
         expect(message).toContain('"state":"Running"');
+        expect(message).toContain('"generation":2');
+        expect(message).toContain('"controllers":["scsi"]');
         expect(message).toContain('"heartbeat":true');
         expect(message).toContain('"boot":["hard-disk","dvd","network"]');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");
         expect(message).not.toContain("C:\\Users");
-        expect(message.length).toBeLessThan(300);
+        expect(message.length).toBeLessThan(600);
     });
 
     it("keeps Hyper-V boot diagnostics ahead of long nested wrapper details", () => {
@@ -341,23 +347,27 @@ describe("Hyper-V E2E zero-config image selection", () => {
                         diagnostic: {
                             state: "Running",
                             uptimeMs: 600123,
+                            generation: 1,
+                            secureBootEnabled: null,
                             heartbeatEnabled: true,
                             heartbeatPrimaryStatus: 2,
                             heartbeatSecondaryStatus: 0,
+                            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
                             hardDiskCount: 1,
                             dvdCount: 1,
+                            hardDiskControllers: ["ide"],
                             bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
                         },
                     },
                 },
             },
         }, "fallback");
-        expect(message.slice(0, 300)).toContain('boot={"provider":"hyper-v-powershell-direct"');
-        expect(message.slice(0, 300)).toContain('"heartbeat":true');
-        expect(message.slice(0, 300)).toContain('"boot":["hard-disk","dvd","network"]');
+        expect(message.slice(0, 600)).toContain('boot={"provider":"hyper-v-powershell-direct"');
+        expect(message.slice(0, 600)).toContain('"heartbeat":true');
+        expect(message.slice(0, 600)).toContain('"boot":["hard-disk","dvd","network"]');
         expect(message).not.toContain("outerouter");
         expect(message).not.toContain("innerinner");
-        expect(message.length).toBeLessThan(300);
+        expect(message.length).toBeLessThan(600);
     });
 
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {

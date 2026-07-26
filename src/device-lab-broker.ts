@@ -191,6 +191,7 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstr
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED = "hyper-v-windows-specialize-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT = "hyper-v-windows-specialize-account-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND = "hyper-v-windows-offline-unattend-v2";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
@@ -273,6 +274,7 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION,
 ];
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
@@ -2647,6 +2649,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION,
             DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP,
@@ -11904,6 +11907,7 @@ async function lifecycleCommandInvokeUnlocked(
                     incarnationId: String(parsed.create?.incarnationId || ""),
                     vmName: expectedVmName,
                     vmId: observation.vmId,
+                    diskPath: expectedDiskPath,
                     deviceRoot,
                     privateRoot,
                     seedDiskPath,
@@ -12682,11 +12686,15 @@ async function lifecycleCommandInvokeUnlocked(
             hyperVGuestBootDiagnosticPublic = hyperVGuestBootDiagnostic ? {
                 state: hyperVGuestBootDiagnostic.state,
                 uptimeMs: hyperVGuestBootDiagnostic.uptimeMs,
+                generation: hyperVGuestBootDiagnostic.generation,
+                secureBootEnabled: hyperVGuestBootDiagnostic.secureBootEnabled,
                 heartbeatEnabled: hyperVGuestBootDiagnostic.heartbeatEnabled,
                 heartbeatPrimaryStatus: hyperVGuestBootDiagnostic.heartbeatPrimaryStatus,
                 heartbeatSecondaryStatus: hyperVGuestBootDiagnostic.heartbeatSecondaryStatus,
+                integrationServices: hyperVGuestBootDiagnostic.integrationServices,
                 hardDiskCount: hyperVGuestBootDiagnostic.hardDiskCount,
                 dvdCount: hyperVGuestBootDiagnostic.dvdCount,
+                hardDiskControllers: hyperVGuestBootDiagnostic.hardDiskControllers,
                 bootDeviceTypes: hyperVGuestBootDiagnostic.bootDeviceTypes,
             } : null;
         } catch {
