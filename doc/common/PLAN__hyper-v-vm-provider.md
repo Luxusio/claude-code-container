@@ -476,9 +476,18 @@ Real-provider tests:
   `Default Switch` only for the Azure datasource's mandatory bootstrap DHCP
   discovery. A second NIC uses the CCC NAT switch, and cloud-init matches that
   NIC by its owner-assigned static MAC before applying the deterministic CCC IP.
+  The local OVF datasource config disables Azure IMDS network replacement,
+  hostname bounce, and ready reporting so the downloaded Azure image retains
+  the deterministic CCC network instead of waiting on unavailable Azure
+  infrastructure.
+  After SSH succeeds through that address, the broker removes the named
+  `Default Switch` adapter using the owner-fenced VM identity.
   Broker compatibility requires both `hyper-v-azure-ovf-seed-v2` and
-  `hyper-v-azure-bootstrap-dhcp-v1`, preventing same-version daemons with the
-  old single-NIC startup deadlock from being reused.
+  `hyper-v-azure-bootstrap-dhcp-v1`, `hyper-v-azure-local-ovf-v1`, and
+  `hyper-v-bootstrap-nic-cleanup-v1`,
+  preventing same-version daemons with the old single-NIC startup deadlock or
+  persistent bootstrap route from being reused. First-boot readiness requests
+  are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the removable answer file during its actual first configuration pass and

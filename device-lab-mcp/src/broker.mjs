@@ -83,6 +83,8 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-azure-ovf-seed-v1",
     "hyper-v-azure-ovf-seed-v2",
     "hyper-v-azure-bootstrap-dhcp-v1",
+    "hyper-v-azure-local-ovf-v1",
+    "hyper-v-bootstrap-nic-cleanup-v1",
     "hyper-v-windows-specialize-seed-v1",
     "hyper-v-windows-specialize-account-v1",
 ];

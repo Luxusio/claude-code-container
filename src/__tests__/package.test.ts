@@ -461,6 +461,11 @@ describe("npm package contents", () => {
         })).toBe(1365000);
         expect(realMcpToolRequestTimeoutMs("device_reboot", {
             backend: "linux-vm",
+            waitForBoot: true,
+            bootTimeoutMs: Number.MAX_SAFE_INTEGER,
+        })).toBe(1965000);
+        expect(realMcpToolRequestTimeoutMs("device_reboot", {
+            backend: "linux-vm",
             rpcTimeoutMs: Number.MAX_SAFE_INTEGER,
         })).toBe(1065000);
         expect(realMcpToolRequestTimeoutMs("device_start", {

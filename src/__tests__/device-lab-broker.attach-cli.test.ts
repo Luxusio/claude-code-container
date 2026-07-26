@@ -1423,7 +1423,7 @@ describe("device-lab host broker physical attach and CLI", () => {
         }));
 
         expect(await devicesCliAsync([
-            "reboot", "linux-dev", "--force", "--start-if-stopped", "--wait-for-boot", "--boot-timeout-ms", "120000",
+            "reboot", "linux-dev", "--force", "--start-if-stopped", "--wait-for-boot", "--boot-timeout-ms", "1200000",
         ], cwd, undefined, { invokeOwnerRpc })).toBe(0);
         expect(invokeOwnerRpc).toHaveBeenCalledWith("broker.command.invoke", expect.objectContaining({
             backend: "linux-vm",
@@ -1432,9 +1432,11 @@ describe("device-lab host broker physical attach and CLI", () => {
             force: true,
             startIfStopped: true,
             waitForBoot: true,
-            bootTimeoutMs: 120000,
+            bootTimeoutMs: 1200000,
             incarnationId,
-        }), expect.any(Object));
+        }), expect.objectContaining({
+            rpcTimeoutMs: 10 * 60 * 1000 + 120000 + 1200000 + 15000,
+        }));
 
         expect(await devicesCliAsync(["stop", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);
         expect(invokeOwnerRpc).toHaveBeenLastCalledWith("broker.command.invoke", expect.objectContaining({

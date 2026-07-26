@@ -18,6 +18,7 @@ const HYPER_V_MAX_CLIENT_TIMEOUT_MS = HYPER_V_MAX_SERVER_RPC_TIMEOUT_MS + 30000;
 const HYPER_V_HOST_LOCK_WAIT_MS = 600000;
 const HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 120000;
 const HYPER_V_LIFECYCLE_RPC_BUFFER_MS = 15000;
+const HYPER_V_MAX_BOOT_TIMEOUT_MS = 1200000;
 const REAL_MCP_CLIENT_RPC_BUFFER_MS = 30000;
 const HYPER_V_LIFECYCLE_TOOLS = new Set([
     "device_create",
@@ -37,7 +38,7 @@ export function realMcpToolRequestTimeoutMs(name: string, args: Record<string, a
         const bootTimeoutMs = args?.waitForBoot === false
             ? 0
             : Number.isFinite(args?.bootTimeoutMs)
-                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
+                ? Math.min(HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(args.bootTimeoutMs)))
                 : 5 * 60 * 1000;
         const automaticRpcTimeoutMs = HYPER_V_HOST_LOCK_WAIT_MS
             + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS

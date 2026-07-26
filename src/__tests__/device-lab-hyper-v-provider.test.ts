@@ -5,6 +5,7 @@ import { join } from "path";
 import { describe, expect, it } from "vitest";
 import {
     hyperVAcquireBaseImageCommand,
+    hyperVBootstrapNetworkCleanupCommand,
     hyperVCleanupNetworkCommand,
     hyperVCreateCommand,
     hyperVDeleteCommand,
@@ -36,6 +37,7 @@ import {
     parseHyperVReadiness,
     parseHyperVRecoveryObservation,
     parseHyperVBaseImageObservation,
+    parseHyperVBootstrapNetworkCleanupObservation,
     parseHyperVDeleteObservation,
     parseHyperVGuestExecObservation,
     parseHyperVGuestBootDiagnosticObservation,
@@ -656,8 +658,37 @@ describe("Hyper-V provider adapter", () => {
         }));
         expect(linuxScript).toContain("Get-VMSwitch -Name 'Default Switch'");
         expect(linuxScript).toContain("hyper-v-bootstrap-dhcp-switch-unavailable");
+        expect(linuxScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");
         expect(linuxScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
         expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
+    });
+
+    it("removes only the owner-fenced Default Switch bootstrap adapter", () => {
+        const cleanup = hyperVBootstrapNetworkCleanupCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId: "linux-ci-01",
+            incarnationId,
+            vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
+            vmId,
+        });
+        const script = scriptOf(cleanup);
+        expect(script).toContain("Get-VM -Id $ExpectedId");
+        expect(script).toContain(`$ExpectedMarker = 'ccc-device-lab:${ownerId}:linux-ci-01:${incarnationId}'`);
+        expect(script).toContain("$_.Name -eq 'CCC Bootstrap DHCP'");
+        expect(script).toContain("[string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch'");
+        expect(script).toContain("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]");
+        expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":true,"alreadyMissing":false}')).toEqual({
+            ok: true,
+            removed: true,
+            alreadyMissing: false,
+        });
+        expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":false,"alreadyMissing":true}')).toEqual({
+            ok: true,
+            removed: false,
+            alreadyMissing: true,
+        });
+        expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":"yes","alreadyMissing":false}')).toBeNull();
     });
 
     it("provisions a fenced cloud-init seed and owner-scoped SSH transport for Linux guests", () => {
@@ -735,7 +766,17 @@ describe("Hyper-V provider adapter", () => {
         const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
         expect(networkConfig).toContain("macaddress: '02:11:22:33:44:66'");
         expect(networkConfig).not.toContain("name: 'e*'");
-        expect(seedScript).not.toContain("<ns1:dscfg>");
+        expect(seedScript).toContain("('<ns1:dscfg>' + $AzureDataSourceConfigBase64 + '</ns1:dscfg>')");
+        const azureConfigBase64 = seedScript.match(/\$AzureDataSourceConfigBase64 = '([^']+)'/)?.[1];
+        expect(azureConfigBase64).toBeTruthy();
+        expect(Buffer.from(azureConfigBase64!, "base64").toString("utf8")).toBe([
+            "apply_network_config: false",
+            "set_hostname: false",
+            "experimental_skip_ready_report: true",
+            "hostname_bounce:",
+            "  policy: false",
+            "",
+        ].join("\n"));
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
         expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");
@@ -1203,6 +1244,19 @@ describe("Hyper-V provider adapter", () => {
             .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "C:\\secret", attempts: 150 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: `hyper-v-${"x".repeat(121)}`, attempts: 150 }))).toBeNull();
+        const cappedCommand = hyperVGuestReadyCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            deviceRoot,
+            credentialPath,
+            provisioningMediaPath,
+            timeoutMs: Number.MAX_SAFE_INTEGER,
+        });
+        expect(scriptOf(cappedCommand)).toContain("[DateTime]::UtcNow.AddMilliseconds(1200000)");
         expect(() => hyperVGuestReadyCommand({
             executable: "powershell.exe",
             ownerId,

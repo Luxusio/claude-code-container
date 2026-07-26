@@ -168,6 +168,12 @@ export type HyperVRecoveryObservation = {
     removedDisk: boolean;
 };
 
+export type HyperVBootstrapNetworkCleanupObservation = {
+    ok: boolean;
+    removed: boolean;
+    alreadyMissing: boolean;
+};
+
 type HyperVCommandOptions = {
     executable: string;
     ownerId: string;
@@ -286,6 +292,8 @@ type HyperVLinuxSshOptions = {
     networkAddress: string;
     timeoutMs?: number;
 };
+
+type HyperVBootstrapNetworkCleanupOptions = HyperVCommandOptions;
 
 export type HyperVNetworkOptions = {
     executable: string;
@@ -1226,6 +1234,9 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  $CreatedVm = New-VM @VmArgs -ErrorAction Stop",
         "  $ManagedAdapter = $null",
         "  if ($BootstrapSwitch) {",
+        "    $BootstrapAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop)",
+        "    if ($BootstrapAdapters.Count -ne 1) { throw 'hyper-v-bootstrap-network-adapter-unavailable' }",
+        "    Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP' -ErrorAction Stop",
         "    Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network' -ErrorAction Stop",
         "    $ManagedAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Device Network' })",
         "    if ($ManagedAdapters.Count -ne 1) { throw 'hyper-v-managed-network-adapter-unavailable' }",
@@ -1296,6 +1307,14 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         `    nameservers: { addresses: [${dnsServers.join(", ")}] }`,
         "",
     ].join("\n");
+    const azureDataSourceConfig = [
+        "apply_network_config: false",
+        "set_hostname: false",
+        "experimental_skip_ready_report: true",
+        "hostname_bounce:",
+        "  policy: false",
+        "",
+    ].join("\n");
     return command(options.executable, jsonScript([
         "function Set-CccProvisionStage([string]$Stage) {",
         "  $script:CccProvisionStage = $Stage",
@@ -1314,6 +1333,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         `$MediaSourceRoot = ${psQuote(mediaSourceRoot)}`,
         `$MetadataBase64 = ${psQuote(Buffer.from(metadata, "utf8").toString("base64"))}`,
         `$NetworkBase64 = ${psQuote(Buffer.from(network, "utf8").toString("base64"))}`,
+        `$AzureDataSourceConfigBase64 = ${psQuote(Buffer.from(azureDataSourceConfig, "utf8").toString("base64"))}`,
         `$GuestUsername = ${psQuote(username)}`,
         "Set-CccProvisionStage 'vm-state'",
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-linux-seed-requires-stopped-vm' }",
@@ -1367,7 +1387,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
         "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetworkBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
-        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
+        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), ('<ns1:dscfg>' + $AzureDataSourceConfigBase64 + '</ns1:dscfg>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
         "$OvfEnvironmentBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($OvfEnvironment))",
         "Set-CccProvisionStage 'media-check'",
         "$ExistingAttachment = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $SeedDisk })",
@@ -1403,6 +1423,22 @@ export function hyperVLinuxSshReadyCommand(options: HyperVLinuxSshOptions): Hype
         executable: options.executable,
         args: [...sshBaseArgs(options), "printf 'ccc-hyper-v-linux-ready\\n'"],
     };
+}
+
+export function hyperVBootstrapNetworkCleanupCommand(options: HyperVBootstrapNetworkCleanupOptions): HyperVProviderCommand {
+    return command(options.executable, jsonScript([
+        ...ownedVmPrelude(options),
+        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' })",
+        "if ($BootstrapAdapters.Count -gt 1) { throw 'hyper-v-bootstrap-network-adapter-ambiguous' }",
+        "$Removed = $false",
+        "if ($BootstrapAdapters.Count -eq 1) {",
+        "  if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') { throw 'hyper-v-bootstrap-network-adapter-identity-mismatch' }",
+        "  Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -Confirm:$false -ErrorAction Stop",
+        "  $Removed = $true",
+        "}",
+        "$Result = [ordered]@{ ok = $true; removed = $Removed; alreadyMissing = (-not $Removed) }",
+        "$Result | ConvertTo-Json -Compress -Depth 4",
+    ]));
 }
 
 export function hyperVLinuxSshExecCommand(options: HyperVLinuxSshOptions & { guestCommand: string }): HyperVProviderCommand {
@@ -1711,7 +1747,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
     const provisioningMediaPath = options.provisioningMediaPath
         ? assertPathInside(options.deviceRoot, options.provisioningMediaPath, "guest-provisioning-media-path")
         : "";
-    const timeoutMs = Math.min(10 * 60 * 1000, Math.max(1000, Math.floor(options.timeoutMs)));
+    const timeoutMs = Math.min(20 * 60 * 1000, Math.max(1000, Math.floor(options.timeoutMs)));
     const expectedNetworkAddress = options.expectedNetworkAddress ? String(options.expectedNetworkAddress) : "";
     if (expectedNetworkAddress && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedNetworkAddress)) throw new Error("hyper-v-guest-network-address-invalid");
     return command(options.executable, jsonScript([
@@ -2294,6 +2330,12 @@ export function parseHyperVRecoveryObservation(stdout: string): HyperVRecoveryOb
     const parsed = parseLastJsonObject(stdout);
     if (!parsed || parsed.ok !== true || typeof parsed.recoveredVm !== "boolean" || typeof parsed.removedDisk !== "boolean") return null;
     return parsed as HyperVRecoveryObservation;
+}
+
+export function parseHyperVBootstrapNetworkCleanupObservation(stdout: string): HyperVBootstrapNetworkCleanupObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed || parsed.ok !== true || typeof parsed.removed !== "boolean" || typeof parsed.alreadyMissing !== "boolean") return null;
+    return parsed as HyperVBootstrapNetworkCleanupObservation;
 }
 
 export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | null {

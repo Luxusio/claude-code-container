@@ -10,6 +10,7 @@ import {
     HYPER_V_CREATE_RPC_TIMEOUT_MS,
     HYPER_V_HOST_LOCK_WAIT_MS,
     HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+    HYPER_V_MAX_BOOT_TIMEOUT_MS,
     HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS,
     brokerDeviceToolExecutionTimeout,
     brokerLifecycleExecutionTimeout,
@@ -24,6 +25,7 @@ import {
     DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS,
     DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,
     DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS,
+    DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,
     deviceBrokerBackendToolTimeoutMs,
 } from "../device-lab-broker.js";
 
@@ -60,7 +62,11 @@ describe("device-lab public timeout bounds", () => {
 
         expect(toolProperty("device_start", "bootTimeoutMs")).toEqual(expect.objectContaining({
             minimum: 1,
-            maximum: MAX_DEVICE_OPERATION_TIMEOUT_MS,
+            maximum: HYPER_V_MAX_BOOT_TIMEOUT_MS,
+        }));
+        expect(toolProperty("device_reboot", "bootTimeoutMs")).toEqual(expect.objectContaining({
+            minimum: 1,
+            maximum: HYPER_V_MAX_BOOT_TIMEOUT_MS,
         }));
         for (const tool of ["mobile_wait_for_text", "mobile_wait_for_app"]) {
             expect(toolProperty(tool, "timeoutMs"), tool).toEqual(expect.objectContaining({
@@ -124,16 +130,23 @@ describe("device-lab public timeout bounds", () => {
         expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_start" })).toEqual({
             rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
-        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_reboot", bootTimeoutMs: 600000 })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + 600000 + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_reboot", bootTimeoutMs: HYPER_V_MAX_BOOT_TIMEOUT_MS })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "linux-vm",
             command: "device_reboot",
-            bootTimeoutMs: 600000,
+            bootTimeoutMs: HYPER_V_MAX_BOOT_TIMEOUT_MS,
             rpcTimeoutMs: 30000,
         })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + 600000 + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+        });
+        expect(brokerLifecycleExecutionTimeout({
+            backend: "windows-vm",
+            command: "device_start",
+            bootTimeoutMs: Number.MAX_SAFE_INTEGER,
+        })).toEqual({
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "linux-vm",
@@ -158,6 +171,7 @@ describe("device-lab public timeout bounds", () => {
     it("caps host broker child deadlines independently of the MCP server", () => {
         expect(DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS).toBe(MAX_DEVICE_HELPER_TIMEOUT_MS);
         expect(DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS).toBe(MAX_DEVICE_OPERATION_TIMEOUT_MS);
+        expect(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS).toBe(HYPER_V_MAX_BOOT_TIMEOUT_MS);
         expect(deviceBrokerBackendToolTimeoutMs("device_exec", { helperTimeoutMs: Number.MAX_SAFE_INTEGER })).toBe(DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS + 15000);
         expect(deviceBrokerBackendToolTimeoutMs("mobile_wait_for_app", { timeoutMs: Number.MAX_SAFE_INTEGER })).toBe(DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS + 15000);
         expect(deviceBrokerBackendToolTimeoutMs("device_exec", { timeoutMs: Number.MAX_SAFE_INTEGER })).toBe(30000);

@@ -17,7 +17,7 @@ import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness,
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
 import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "./device-lab-safe-cleanup.js";
 import { HYPER_V_IMAGE_CATALOG, readHyperVWindowsEvaluationReceipt } from "./device-lab/hyper-v-images.js";
-import { hyperVAcquireBaseImageCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
+import { hyperVAcquireBaseImageCommand, hyperVBootstrapNetworkCleanupCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -41,6 +41,7 @@ const DEVICE_BROKER_DEVICE_TOOL_TIMEOUT_BUFFER_MS = 15000;
 export const DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS = 300000;
 export const DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS = 600000;
 export const DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS = 10 * 60 * 1000;
+export const DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS = 20 * 60 * 1000;
 export const DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS = DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS + 15000;
 export const DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -79,7 +80,7 @@ function hyperVLifecycleOperationTimeoutMs(parsed: CommandParamSuccess): number 
         return DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS;
     }
     const bootTimeoutMs = Number.isFinite(parsed.bootTimeoutMs)
-        ? Math.min(10 * 60 * 1000, Math.max(1000, Number(parsed.bootTimeoutMs)))
+        ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.bootTimeoutMs)))
         : 5 * 60 * 1000;
     return DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + bootTimeoutMs;
 }
@@ -184,6 +185,8 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-gu
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF = "hyper-v-azure-local-ovf-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED = "hyper-v-windows-specialize-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT = "hyper-v-windows-specialize-account-v1";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
@@ -262,6 +265,8 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED,
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2,
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
 ];
@@ -2632,6 +2637,8 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED,
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2,
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
             DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE,
@@ -12451,7 +12458,7 @@ async function lifecycleCommandInvokeUnlocked(
     if (success && parsed.backend === "windows-vm" && (parsed.command === "device_start" || parsed.command === "device_reboot") && parsed.waitForBoot !== false) {
         const device = payload.result?.device as Record<string, unknown>;
         const timeoutMs = Number.isFinite(parsed.bootTimeoutMs)
-            ? Math.min(10 * 60 * 1000, Math.max(1000, Number(parsed.bootTimeoutMs)))
+            ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.bootTimeoutMs)))
             : 5 * 60 * 1000;
         try {
             const privateRoot = field(device, "privateRoot") || "";
@@ -12499,7 +12506,7 @@ async function lifecycleCommandInvokeUnlocked(
     if (success && parsed.backend === "linux-vm" && (parsed.command === "device_start" || parsed.command === "device_reboot") && parsed.waitForBoot !== false) {
         const device = payload.result?.device as Record<string, unknown>;
         const timeoutMs = Number.isFinite(parsed.bootTimeoutMs)
-            ? Math.min(10 * 60 * 1000, Math.max(1000, Number(parsed.bootTimeoutMs)))
+            ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.bootTimeoutMs)))
             : 5 * 60 * 1000;
         const ssh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
         if (!ssh) {
@@ -12546,6 +12553,31 @@ async function lifecycleCommandInvokeUnlocked(
                     attempts,
                     networkAddress: field(device, "networkAddress") || undefined,
                 } : null;
+                if (success) {
+                    const cleanupCommand = hyperVBootstrapNetworkCleanupCommand({
+                        executable: providerCommand.executable || "powershell.exe",
+                        ownerId,
+                        deviceId: parsed.deviceId,
+                        incarnationId: hyperVDeviceIncarnationId(device) || "",
+                        vmName: field(device, "vmName") || "",
+                        vmId: field(device, "vmId"),
+                    });
+                    const cleanupExecution = await hyperVProviderCommandRunner(normalized, cleanupCommand, {
+                        timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 30000),
+                        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                    });
+                    const cleanupObservation = commandSucceeded(cleanupExecution)
+                        ? parseHyperVBootstrapNetworkCleanupObservation(cleanupExecution.stdout || "")
+                        : null;
+                    if (!cleanupObservation) {
+                        hyperVGuestReadyExecution = {
+                            ...cleanupExecution,
+                            error: "hyper-v-bootstrap-network-cleanup-failed",
+                        };
+                        hyperVGuestReady = null;
+                        success = false;
+                    }
+                }
             } catch (error) {
                 hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: error instanceof Error ? error.message : String(error) };
                 success = false;

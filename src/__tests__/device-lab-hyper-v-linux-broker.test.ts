@@ -1448,6 +1448,7 @@ describe("device-lab Hyper-V broker", () => {
         let standardNetworkCommand: { args?: string[]; input?: string } | null = null;
         let elevatedNetworkSetups = 0;
         let elevatedNetworkCleanups = 0;
+        let bootstrapNetworkCleanups = 0;
 
         const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
             if (command.provider === "hyper-v-ssh") {
@@ -1468,6 +1469,10 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 0, stdout: "", stderr: "" };
             }
             const script = providerScript(command);
+            if (script.includes("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]")) {
+                bootstrapNetworkCleanups += 1;
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, removed: bootstrapNetworkCleanups === 1, alreadyMissing: bootstrapNetworkCleanups > 1 }), stderr: "" };
+            }
             if (script.includes("CccHyperVNetworkPipeNative")) {
                 expect(pendingElevatedNetwork).not.toBeNull();
                 if (pendingElevatedNetwork === "setup") {
@@ -1569,6 +1574,7 @@ describe("device-lab Hyper-V broker", () => {
                 .find((script) => script.includes("New-VM @VmArgs"));
             expect(vmCreateScript).toContain("$BootstrapDhcp = $true");
             expect(vmCreateScript).toContain("Get-VMSwitch -Name 'Default Switch'");
+            expect(vmCreateScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");
             expect(vmCreateScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
             const seedScript = commandRunner.mock.calls
                 .map(([command]) => providerScript(command))
@@ -1639,6 +1645,7 @@ describe("device-lab Hyper-V broker", () => {
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            expect(bootstrapNetworkCleanups).toBe(1);
 
             sshFailure = true;
             const failedExec = await tool("device_exec", { command: "uname -a" });
@@ -1649,6 +1656,7 @@ describe("device-lab Hyper-V broker", () => {
             const rebooted = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(rebooted.status, JSON.stringify(await rebooted.clone().json())).toBe(200);
             expect(await rebooted.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            expect(bootstrapNetworkCleanups).toBe(2);
             const transferRoot = join(privateRoot, "transfers");
             scpFailure = "upload";
             const failedUpload = await tool("device_upload", { localPath: uploadPath, remotePath: "/tmp/upload.txt" });

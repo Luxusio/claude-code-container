@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from "util";
 import {
     deviceBrokerCli,
     deviceBrokerCliAsync,
+    DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,
     invokeHostDeviceBrokerOwnerRpc,
     type HostDeviceBrokerOwnerRpcResult,
 } from "./device-lab-broker.js";
@@ -2451,7 +2452,7 @@ export async function devicesCliAsync(
             && (parsed.action === "start" || parsed.action === "reboot")
             && parsed.params.waitForBoot !== false
             ? Number.isFinite(parsed.params.bootTimeoutMs)
-                ? Math.min(600000, Math.max(1000, Number(parsed.params.bootTimeoutMs)))
+                ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.params.bootTimeoutMs)))
                 : 5 * 60 * 1000
             : 0;
         const result = await invoke("broker.command.invoke", {

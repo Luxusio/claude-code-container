@@ -231,10 +231,10 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             assert.ok(Array.isArray(inventory.devices) && inventory.devices.some((device: any) => device.id === deviceId));
 
             currentStep = "start and wait for PowerShell Direct";
-            const started = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 600000 })), "device_start");
+            const started = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
             assert.strictEqual(started.status, "running");
             assert.strictEqual(started.bootReady, true);
-            const startedAgain = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 600000 })), "device_start");
+            const startedAgain = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
             assert.strictEqual(startedAgain.status, "running");
 
             currentStep = "verify static guest address and NAT connectivity";
@@ -259,7 +259,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             assert.match(executed.stdout || "", /ccc-hyper-v-e2e-ok/);
 
             currentStep = "reboot VM and wait for PowerShell Direct";
-            const rebooted = lifecycleDevice(payload(await callTool("device_reboot", { ...direct, waitForBoot: true, bootTimeoutMs: 600000 })), "device_reboot");
+            const rebooted = lifecycleDevice(payload(await callTool("device_reboot", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_reboot");
             assert.strictEqual(rebooted.status, "running");
             assert.strictEqual(rebooted.bootReady, true);
             const afterReboot = resultValue(payload(await callTool("device_exec", { ...direct, command: "Write-Output ccc-hyper-v-reboot-ok" })));

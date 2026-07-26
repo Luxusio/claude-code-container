@@ -111,6 +111,7 @@ export const HYPER_V_LIFECYCLE_RPC_BUFFER_MS = 15000;
 export const HYPER_V_CREATE_RPC_TIMEOUT_MS = HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
 export const HYPER_V_HOST_LOCK_WAIT_MS = 10 * 60 * 1000;
 export const HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 120000;
+export const HYPER_V_MAX_BOOT_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_BROKER_PHYSICAL_RPC_TIMEOUT_MS = 30000;
 export const MAX_DEVICE_HELPER_TIMEOUT_MS = 300000;
 export const MAX_DEVICE_OPERATION_TIMEOUT_MS = 600000;
@@ -338,7 +339,7 @@ export function brokerLifecycleExecutionTimeout(args) {
             && args?.waitForBoot !== false;
         const bootTimeoutMs = waitsForBoot
             ? Number.isFinite(args?.bootTimeoutMs)
-                ? Math.min(600000, Math.max(1000, Number(args.bootTimeoutMs)))
+                ? Math.min(HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(args.bootTimeoutMs)))
                 : 5 * 60 * 1000
             : 0;
         const automaticRpcTimeoutMs = HYPER_V_HOST_LOCK_WAIT_MS
