@@ -174,6 +174,11 @@ export type HyperVBootstrapNetworkCleanupObservation = {
     alreadyMissing: boolean;
 };
 
+export type HyperVBootstrapNetworkObservation = {
+    ok: boolean;
+    addresses: string[];
+};
+
 type HyperVCommandOptions = {
     executable: string;
     ownerId: string;
@@ -290,10 +295,20 @@ type HyperVLinuxSshOptions = {
     knownHostsPath: string;
     guestUsername: string;
     networkAddress: string;
+    hostKeyAlias?: string;
     timeoutMs?: number;
 };
 
 type HyperVBootstrapNetworkCleanupOptions = HyperVCommandOptions;
+type HyperVBootstrapNetworkOptions = HyperVCommandOptions;
+
+type HyperVLinuxNetworkFinalizeOptions = HyperVLinuxSshOptions & {
+    managedMacAddress: string;
+    managedNetworkAddress: string;
+    networkGateway: string;
+    networkPrefixLength: number;
+    dnsServers?: string[];
+};
 
 export type HyperVNetworkOptions = {
     executable: string;
@@ -760,6 +775,9 @@ function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
     const knownHostsPath = assertPathInside(privateRoot, options.knownHostsPath, "linux-ssh-known-hosts");
     const username = assertLinuxUsername(options.guestUsername);
     const address = assertIpv4(options.networkAddress, "linux-network-address");
+    const hostKeyAlias = options.hostKeyAlias
+        ? assertIpv4(options.hostKeyAlias, "linux-host-key-alias")
+        : "";
     const timeoutSec = Math.min(30, Math.max(1, Math.ceil((options.timeoutMs || 30000) / 1000)));
     return [
         "-F", "NUL",
@@ -768,6 +786,7 @@ function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",
         "-o", `UserKnownHostsFile=${knownHostsPath}`,
+        ...(hostKeyAlias ? ["-o", `HostKeyAlias=${hostKeyAlias}`] : []),
         "-o", `ConnectTimeout=${timeoutSec}`,
         "-o", "ConnectionAttempts=1",
         `${username}@${address}`,
@@ -1295,7 +1314,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
     const dnsServers = (options.dnsServers?.length ? options.dnsServers : ["1.1.1.1", "8.8.8.8"])
         .map((server) => assertIpv4(server, "linux-dns-server"));
     const metadata = `instance-id: ${options.ownerId}-${options.deviceId}\nlocal-hostname: ${options.vmName}\n`;
-    const network = [
+    const networkConfig = [
         "version: 2",
         "ethernets:",
         "  ccc0:",
@@ -1306,6 +1325,10 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         `    gateway4: ${gateway}`,
         `    nameservers: { addresses: [${dnsServers.join(", ")}] }`,
         "",
+    ].join("\n");
+    const netplanConfig = [
+        "network:",
+        ...networkConfig.split("\n").map((line) => line ? `  ${line}` : line),
     ].join("\n");
     return command(options.executable, jsonScript([
         "function Set-CccProvisionStage([string]$Stage) {",
@@ -1324,7 +1347,8 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         `$KnownHosts = ${psQuote(knownHostsPath)}`,
         `$MediaSourceRoot = ${psQuote(mediaSourceRoot)}`,
         `$MetadataBase64 = ${psQuote(Buffer.from(metadata, "utf8").toString("base64"))}`,
-        `$NetworkBase64 = ${psQuote(Buffer.from(network, "utf8").toString("base64"))}`,
+        `$NetworkBase64 = ${psQuote(Buffer.from(networkConfig, "utf8").toString("base64"))}`,
+        `$NetplanBase64 = ${psQuote(Buffer.from(netplanConfig, "utf8").toString("base64"))}`,
         `$GuestUsername = ${psQuote(username)}`,
         "Set-CccProvisionStage 'vm-state'",
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-linux-seed-requires-stopped-vm' }",
@@ -1376,9 +1400,10 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "$HostPrivateKeyBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($HostPrivateKeyText + [Environment]::NewLine))",
         "$HostPublicKeyBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($HostPublicKeyText + [Environment]::NewLine))",
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
-        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetworkBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
+        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetplanBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
-        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
+        "$PublicKeyXml = [Security.SecurityElement]::Escape($PublicKeyText)",
+        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '<ns1:SSH><ns1:PublicKeys><ns1:PublicKey><ns1:Path>/home/' + $GuestUsername + '/.ssh/authorized_keys</ns1:Path><ns1:Value>' + $PublicKeyXml + '</ns1:Value></ns1:PublicKey></ns1:PublicKeys></ns1:SSH>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
         "$OvfEnvironmentBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($OvfEnvironment))",
         "Set-CccProvisionStage 'media-check'",
         "$ExistingAttachment = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $SeedDisk })",
@@ -1414,6 +1439,50 @@ export function hyperVLinuxSshReadyCommand(options: HyperVLinuxSshOptions): Hype
         executable: options.executable,
         args: [...sshBaseArgs(options), "printf 'ccc-hyper-v-linux-ready\\n'"],
     };
+}
+
+export function hyperVBootstrapNetworkCommand(options: HyperVBootstrapNetworkOptions): HyperVProviderCommand {
+    return command(options.executable, jsonScript([
+        ...ownedVmPrelude(options),
+        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' })",
+        "if ($BootstrapAdapters.Count -gt 1) { throw 'hyper-v-bootstrap-network-adapter-ambiguous' }",
+        "$Addresses = @()",
+        "if ($BootstrapAdapters.Count -eq 1) {",
+        "  if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') { throw 'hyper-v-bootstrap-network-adapter-identity-mismatch' }",
+        "  $Addresses = @($BootstrapAdapters[0].IPAddresses | Where-Object { $_ -match '^\\d{1,3}(?:\\.\\d{1,3}){3}$' -and $_ -notmatch '^(?:0\\.|127\\.|169\\.254\\.)' } | Sort-Object -Unique | Select-Object -First 8)",
+        "}",
+        "$Result = [ordered]@{ ok = $true; addresses = $Addresses }",
+        "$Result | ConvertTo-Json -Compress -Depth 4",
+    ]));
+}
+
+export function hyperVLinuxNetworkFinalizeCommand(options: HyperVLinuxNetworkFinalizeOptions): HyperVProviderCommand {
+    const macAddress = String(options.managedMacAddress || "").toLowerCase();
+    if (!/^02(?::[0-9a-f]{2}){5}$/.test(macAddress)) throw new Error("hyper-v-mac-address-invalid");
+    const address = assertIpv4(options.managedNetworkAddress, "linux-managed-network-address");
+    const gateway = assertIpv4(options.networkGateway, "linux-network-gateway");
+    const prefixLength = boundedInteger(options.networkPrefixLength, 8, 30, "linux-network-prefix");
+    const dnsServers = (options.dnsServers || ["1.1.1.1", "8.8.8.8"]).map((candidate) => assertIpv4(candidate, "linux-dns-address"));
+    const network = [
+        "network:",
+        "  version: 2",
+        "  ethernets:",
+        "    ccc0:",
+        "      match:",
+        `        macaddress: '${macAddress}'`,
+        "      set-name: ccc0",
+        `      addresses: [${address}/${prefixLength}]`,
+        `      routes: [{ to: default, via: ${gateway} }]`,
+        `      nameservers: { addresses: [${dnsServers.join(", ")}] }`,
+        "",
+    ].join("\n");
+    const encoded = Buffer.from(network, "utf8").toString("base64");
+    const guestCommand = [
+        `printf %s ${encoded} | base64 -d | sudo tee /etc/netplan/99-ccc-static.yaml >/dev/null`,
+        "sudo chmod 600 /etc/netplan/99-ccc-static.yaml",
+        "nohup sudo sh -c 'sleep 1; netplan apply; systemctl restart ssh' >/tmp/ccc-netplan.log 2>&1 &",
+    ].join(" && ");
+    return hyperVLinuxSshExecCommand({ ...options, guestCommand });
 }
 
 export function hyperVBootstrapNetworkCleanupCommand(options: HyperVBootstrapNetworkCleanupOptions): HyperVProviderCommand {
@@ -2120,6 +2189,33 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot",
         "  $IsoFiles = $null",
         "  $UnattendBytes = $null",
+        "  Set-CccProvisionStage 'offline-unattend'",
+        "  Assert-NoReparsePath $DiskPath",
+        "  $MountedVhd = $null",
+        "  try {",
+        "    $MountedVhd = Mount-VHD -Path $DiskPath -Passthru -ErrorAction Stop",
+        "    $MountedDisk = $MountedVhd | Get-Disk -ErrorAction Stop",
+        "    $WindowsRoots = @()",
+        "    foreach ($Partition in @(Get-Partition -DiskNumber $MountedDisk.Number -ErrorAction Stop)) {",
+        "      $Volume = Get-Volume -Partition $Partition -ErrorAction SilentlyContinue",
+        "      if ($Volume -and $Volume.DriveLetter) {",
+        "        $Root = ([string]$Volume.DriveLetter + ':\\')",
+        "        if (Test-Path -LiteralPath (Join-Path $Root 'Windows\\System32\\Config\\SYSTEM') -PathType Leaf) { $WindowsRoots += $Root }",
+        "      }",
+        "    }",
+        "    if ($WindowsRoots.Count -ne 1) { throw 'hyper-v-guest-windows-volume-unavailable' }",
+        "    $PantherDirectory = Join-Path $WindowsRoots[0] 'Windows\\Panther'",
+        "    $OfflineUnattendDirectory = Join-Path $PantherDirectory 'Unattend'",
+        "    New-Item -ItemType Directory -Path $OfflineUnattendDirectory -Force | Out-Null",
+        "    $OfflineUnattendPaths = @((Join-Path $PantherDirectory 'unattend.xml'), (Join-Path $OfflineUnattendDirectory 'Unattend.xml'))",
+        "    $ExpectedUnattendBytes = [long]([Text.Encoding]::UTF8.GetByteCount($Unattend))",
+        "    foreach ($OfflineUnattendPath in $OfflineUnattendPaths) {",
+        "      [IO.File]::WriteAllText($OfflineUnattendPath, $Unattend, [Text.UTF8Encoding]::new($false))",
+        "      if (-not (Test-Path -LiteralPath $OfflineUnattendPath -PathType Leaf) -or [long](Get-Item -LiteralPath $OfflineUnattendPath -Force).Length -ne $ExpectedUnattendBytes) { throw 'hyper-v-guest-offline-unattend-write-failed' }",
+        "    }",
+        "  } finally {",
+        "    if ($MountedVhd) { Dismount-VHD -Path $DiskPath -ErrorAction Stop }",
+        "  }",
         "  Set-CccProvisionStage 'media-attach'",
         "  try { Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia -ErrorAction Stop | Out-Null } catch { throw 'hyper-v-guest-provisioning-media-attach-failed' }",
         "} catch {",
@@ -2327,6 +2423,22 @@ export function parseHyperVBootstrapNetworkCleanupObservation(stdout: string): H
     const parsed = parseLastJsonObject(stdout);
     if (!parsed || parsed.ok !== true || typeof parsed.removed !== "boolean" || typeof parsed.alreadyMissing !== "boolean") return null;
     return parsed as HyperVBootstrapNetworkCleanupObservation;
+}
+
+export function parseHyperVBootstrapNetworkObservation(stdout: string): HyperVBootstrapNetworkObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed || parsed.ok !== true || !Array.isArray(parsed.addresses)) return null;
+    const addresses = parsed.addresses.filter((candidate): candidate is string => {
+        if (typeof candidate !== "string") return false;
+        try {
+            return assertIpv4(candidate, "linux-bootstrap-network-address") === candidate
+                && !/^(?:0\.|127\.|169\.254\.)/.test(candidate);
+        } catch {
+            return false;
+        }
+    });
+    if (addresses.length !== parsed.addresses.length || addresses.length > 8 || new Set(addresses).size !== addresses.length) return null;
+    return { ok: true, addresses };
 }
 
 export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | null {

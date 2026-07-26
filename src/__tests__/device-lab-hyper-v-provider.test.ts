@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
     hyperVAcquireBaseImageCommand,
     hyperVBootstrapNetworkCleanupCommand,
+    hyperVBootstrapNetworkCommand,
     hyperVCleanupNetworkCommand,
     hyperVCreateCommand,
     hyperVDeleteCommand,
@@ -18,6 +19,7 @@ import {
     hyperVGuestUploadCommand,
     hyperVLinuxScpDownloadCommand,
     hyperVLinuxScpUploadCommand,
+    hyperVLinuxNetworkFinalizeCommand,
     hyperVLinuxSeedCommand,
     hyperVLinuxSshExecCommand,
     hyperVLinuxSshReadyCommand,
@@ -38,6 +40,7 @@ import {
     parseHyperVRecoveryObservation,
     parseHyperVBaseImageObservation,
     parseHyperVBootstrapNetworkCleanupObservation,
+    parseHyperVBootstrapNetworkObservation,
     parseHyperVDeleteObservation,
     parseHyperVGuestExecObservation,
     parseHyperVGuestBootDiagnosticObservation,
@@ -769,10 +772,20 @@ describe("Hyper-V provider adapter", () => {
         expect(networkConfig).toContain("set-name: ccc0");
         expect(networkConfig).not.toContain("set-name: eth0");
         expect(networkConfig).not.toContain("name: 'e*'");
+        expect(networkConfig.startsWith("version: 2\n")).toBe(true);
+        const netplanBase64 = seedScript.match(/\$NetplanBase64 = '([^']+)'/)?.[1];
+        expect(netplanBase64).toBeTruthy();
+        const netplanConfig = Buffer.from(netplanBase64!, "base64").toString("utf8");
+        expect(netplanConfig.startsWith("network:\n  version: 2\n")).toBe(true);
+        expect(seedScript).toContain("('    content: ' + $NetplanBase64)");
+        expect(seedScript).not.toContain("('    content: ' + $NetworkBase64)");
         expect(seedScript).not.toContain("<ns1:dscfg>");
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
         expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");
+        expect(seedScript).toContain("<ns1:SSH><ns1:PublicKeys><ns1:PublicKey>");
+        expect(seedScript).toContain("<ns1:Path>/home/' + $GuestUsername + '/.ssh/authorized_keys</ns1:Path>");
+        expect(seedScript).toContain("<ns1:Value>' + $PublicKeyXml + '</ns1:Value>");
         expect(seedScript).toContain("<ns1:PlatformSettingsSection>");
         expect(seedScript).toContain("<ns1:PlatformSettings>");
         expect(seedScript).toContain("<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>");
@@ -811,6 +824,36 @@ describe("Hyper-V provider adapter", () => {
         const ssh = { executable: "ssh.exe", deviceRoot, privateRoot, sshPrivateKeyPath, knownHostsPath, guestUsername: "ccc01234567", networkAddress: "172.29.0.10" };
         expect(hyperVLinuxSshReadyCommand(ssh)).toMatchObject({ provider: "hyper-v-ssh", executable: "ssh.exe" });
         expect(hyperVLinuxSshReadyCommand(ssh).args).toContain("StrictHostKeyChecking=yes");
+        expect(hyperVLinuxSshReadyCommand({ ...ssh, networkAddress: "172.20.1.8", hostKeyAlias: "172.29.0.10" }).args)
+            .toContain("HostKeyAlias=172.29.0.10");
+        const bootstrapNetwork = hyperVBootstrapNetworkCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId: linuxDeviceId,
+            incarnationId,
+            vmName,
+            vmId,
+        });
+        expect(scriptOf(bootstrapNetwork)).toContain("$BootstrapAdapters[0].IPAddresses");
+        expect(scriptOf(bootstrapNetwork)).toContain("[string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch'");
+        expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":["172.20.1.8"]}')).toEqual({
+            ok: true,
+            addresses: ["172.20.1.8"],
+        });
+        expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":["169.254.1.8"]}')).toBeNull();
+        const finalize = hyperVLinuxNetworkFinalizeCommand({
+            ...ssh,
+            networkAddress: "172.20.1.8",
+            hostKeyAlias: "172.29.0.10",
+            managedMacAddress: "02:11:22:33:44:66",
+            managedNetworkAddress: "172.29.0.10",
+            networkGateway: "172.29.0.1",
+            networkPrefixLength: 24,
+        });
+        expect(finalize.args).toContain("HostKeyAlias=172.29.0.10");
+        const finalizePayload = finalize.args.at(-1)?.match(/^printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| bash$/)?.[1];
+        expect(finalizePayload).toBeTruthy();
+        expect(Buffer.from(finalizePayload || "", "base64").toString("utf8")).toContain("netplan apply");
         expect(hyperVLinuxSshExecCommand({ ...ssh, guestCommand: "uname -a" }).args.at(-1)).toContain("base64 -d | bash");
         expect(hyperVLinuxScpUploadCommand({ ...ssh, executable: "scp.exe", localPath: `${deviceRoot}/uploads/in.txt`, remotePath: "/tmp/in.txt" }).args.at(-1)).toBe("ccc01234567@172.29.0.10:/tmp/in.txt");
         expect(hyperVLinuxScpDownloadCommand({ ...ssh, executable: "scp.exe", remotePath: "/tmp/out.txt", localPath: `${deviceRoot}/downloads/out.txt` }).args.at(-2)).toBe("ccc01234567@172.29.0.10:/tmp/out.txt");
@@ -1407,7 +1450,14 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("input.Read(");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).not.toContain("$ProvisioningSource");
-        expect(script).not.toContain("Mount-VHD");
+        expect(script).toContain("Mount-VHD -Path $DiskPath -Passthru");
+        expect(script).toContain("$MountedDisk = $MountedVhd | Get-Disk");
+        expect(script).toContain("Get-Partition -DiskNumber $MountedDisk.Number");
+        expect(script).toContain("$PantherDirectory = Join-Path $WindowsRoots[0] 'Windows\\Panther'");
+        expect(script).toContain("Join-Path $PantherDirectory 'unattend.xml'");
+        expect(script).toContain("Join-Path $OfflineUnattendDirectory 'Unattend.xml'");
+        expect(script).toContain("foreach ($OfflineUnattendPath in $OfflineUnattendPaths)");
+        expect(script).toContain("Dismount-VHD -Path $DiskPath");
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");
         expect(script).toContain("Remove CCC bootstrap secrets");
@@ -1418,6 +1468,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Set-CccProvisionStage 'media-check'");
         expect(script).toContain("Set-CccProvisionStage 'media-content'");
         expect(script).toContain("Set-CccProvisionStage 'media-build'");
+        expect(script).toContain("Set-CccProvisionStage 'offline-unattend'");
         expect(script).toContain("Set-CccProvisionStage 'media-attach'");
         expect(script).toContain("[Console]::Out.WriteLine(('hyper-v-guest-provision-' + $Stage + '-command-failed'))");
         expect(script).toContain("hyper-v-guest-provision-' + $CccProvisionStage + '-command-failed");

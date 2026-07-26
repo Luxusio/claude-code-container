@@ -17,7 +17,7 @@ import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness,
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
 import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "./device-lab-safe-cleanup.js";
 import { HYPER_V_IMAGE_CATALOG, readHyperVWindowsEvaluationReceipt } from "./device-lab/hyper-v-images.js";
-import { hyperVAcquireBaseImageCommand, hyperVBootstrapNetworkCleanupCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
+import { hyperVAcquireBaseImageCommand, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -187,8 +187,10 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-se
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF = "hyper-v-azure-local-ovf-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED = "hyper-v-windows-specialize-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT = "hyper-v-windows-specialize-account-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND = "hyper-v-windows-offline-unattend-v1";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
@@ -267,8 +269,10 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF,
     DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND,
 ];
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
@@ -2639,8 +2643,10 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_LOCAL_OVF,
             DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_OFFLINE_UNATTEND,
             DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP,
@@ -12521,6 +12527,9 @@ async function lifecycleCommandInvokeUnlocked(
                 const hostPublicKeyPath = field(device, "sshHostPublicKeyPath") || "";
                 const knownHostsPath = field(device, "sshKnownHostsPath") || "";
                 const networkAddress = field(device, "networkAddress") || "";
+                const managedMacAddress = field(device, "macAddress") || "";
+                const networkGateway = field(device, "networkGateway") || "";
+                const networkPrefix = field(device, "networkPrefix") || "";
                 const fingerprint = field(device, "sshHostKeyFingerprint") || "";
                 assertHyperVPrivateDeviceRoot(ownerId, "linux-vm", parsed.deviceId, privateRoot);
                 if (privateRoot !== expectedPrivateRoot
@@ -12528,20 +12537,78 @@ async function lifecycleCommandInvokeUnlocked(
                     || !validateHyperVLinuxSshHostIdentity(ownerId, parsed.deviceId, hostPublicKeyPath, knownHostsPath, networkAddress, fingerprint)) {
                     throw new Error("hyper-v-linux-ssh-host-identity-invalid");
                 }
-                const readyCommand = hyperVLinuxSshReadyCommand({
+                const sshOptions = {
                     executable: ssh,
                     deviceRoot: field(device, "deviceRoot") || "",
                     privateRoot,
                     sshPrivateKeyPath: field(device, "sshPrivateKeyPath") || "",
                     knownHostsPath,
                     guestUsername: field(device, "guestUsername") || "",
-                    networkAddress,
-                    timeoutMs: Math.min(timeoutMs, 30000),
-                });
+                };
+                let bootstrapFinalizationAttempted = false;
                 do {
                     attempts += 1;
+                    const readyCommand = hyperVLinuxSshReadyCommand({
+                        ...sshOptions,
+                        networkAddress,
+                        timeoutMs: Math.min(timeoutMs, 30000),
+                    });
                     hyperVGuestReadyExecution = await hyperVProviderCommandRunner(normalized, readyCommand, { timeoutMs: hyperVRemainingTimeout(deadline, 35000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
                     if (commandSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) break;
+                    if (!bootstrapFinalizationAttempted && Date.now() < deadline) {
+                        const bootstrapCommand = hyperVBootstrapNetworkCommand({
+                            executable: providerCommand.executable || "powershell.exe",
+                            ownerId,
+                            deviceId: parsed.deviceId,
+                            incarnationId: hyperVDeviceIncarnationId(device) || "",
+                            vmName: field(device, "vmName") || "",
+                            vmId: field(device, "vmId"),
+                        });
+                        const bootstrapExecution = await hyperVProviderCommandRunner(normalized, bootstrapCommand, {
+                            timeoutMs: hyperVRemainingTimeout(deadline, 15000),
+                            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                        });
+                        const bootstrap = commandSucceeded(bootstrapExecution)
+                            ? parseHyperVBootstrapNetworkObservation(bootstrapExecution.stdout || "")
+                            : null;
+                        for (const bootstrapAddress of bootstrap?.addresses || []) {
+                            const bootstrapReadyCommand = hyperVLinuxSshReadyCommand({
+                                ...sshOptions,
+                                networkAddress: bootstrapAddress,
+                                hostKeyAlias: networkAddress,
+                                timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
+                            });
+                            const bootstrapReadyExecution = await hyperVProviderCommandRunner(normalized, bootstrapReadyCommand, {
+                                timeoutMs: hyperVRemainingTimeout(deadline, 15000),
+                                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                            });
+                            if (!commandSucceeded(bootstrapReadyExecution)
+                                || !String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) continue;
+                            const finalizeCommand = hyperVLinuxNetworkFinalizeCommand({
+                                ...sshOptions,
+                                networkAddress: bootstrapAddress,
+                                hostKeyAlias: networkAddress,
+                                timeoutMs: 10000,
+                                managedMacAddress,
+                                managedNetworkAddress: networkAddress,
+                                networkGateway,
+                                networkPrefixLength: Number(networkPrefix.split("/")[1]),
+                            });
+                            const finalizeExecution = await hyperVProviderCommandRunner(normalized, finalizeCommand, {
+                                timeoutMs: hyperVRemainingTimeout(deadline, 15000),
+                                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                            });
+                            if (!commandSucceeded(finalizeExecution)) {
+                                hyperVGuestReadyExecution = {
+                                    ...finalizeExecution,
+                                    error: "hyper-v-bootstrap-network-finalize-failed",
+                                };
+                                break;
+                            }
+                            bootstrapFinalizationAttempted = true;
+                            break;
+                        }
+                    }
                     if (Date.now() < deadline) await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
                 } while (Date.now() < deadline);
                 success = Boolean(hyperVGuestReadyExecution && commandSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready"));

@@ -1443,6 +1443,9 @@ describe("device-lab Hyper-V broker", () => {
         let snapshotExists = false;
         let sshFailure = false;
         let readinessFailure = false;
+        let managedReadinessFailure = false;
+        let bootstrapAddressAvailable = false;
+        let bootstrapNetworkFinalizations = 0;
         let scpFailure: "upload" | "download" | null = null;
         let pendingElevatedNetwork: "setup" | "cleanup" | null = null;
         let standardNetworkCommand: { args?: string[]; input?: string } | null = null;
@@ -1453,10 +1456,21 @@ describe("device-lab Hyper-V broker", () => {
         const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
             if (command.provider === "hyper-v-ssh") {
                 const ready = command.args?.at(-1)?.includes("ccc-hyper-v-linux-ready");
+                const target = command.args?.at(-2) || "";
                 const encodedCommand = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| bash/.exec(command.args?.at(-1) || "")?.[1];
                 const guestCommand = encodedCommand ? Buffer.from(encodedCommand, "base64").toString("utf8") : "";
                 const download = guestCommand.includes("head -c") && guestCommand.includes("base64 -w0");
-                if (sshFailure || (ready && readinessFailure) || (download && scpFailure === "download")) {
+                if (guestCommand.includes("/etc/netplan/99-ccc-static.yaml")) {
+                    expect(command.args).toContain(`HostKeyAlias=${expectedNetworkAddress}`);
+                    expect(target).toMatch(/@172\.20\.1\.8$/);
+                    expect(guestCommand).toContain("netplan apply");
+                    bootstrapNetworkFinalizations += 1;
+                    managedReadinessFailure = false;
+                }
+                if (sshFailure
+                    || (ready && readinessFailure)
+                    || (ready && managedReadinessFailure && target.endsWith(`@${expectedNetworkAddress}`))
+                    || (download && scpFailure === "download")) {
                     return { ...command, status: 255, stdout: "", stderr: "ssh failed" };
                 }
                 return { ...command, status: 0, stdout: ready ? "ccc-hyper-v-linux-ready\n" : download ? Buffer.from("output").toString("base64") : "linux-exec-ok\n", stderr: "" };
@@ -1469,6 +1483,9 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 0, stdout: "", stderr: "" };
             }
             const script = providerScript(command);
+            if (script.includes("$BootstrapAdapters[0].IPAddresses")) {
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, addresses: bootstrapAddressAvailable ? ["172.20.1.8"] : [] }), stderr: "" };
+            }
             if (script.includes("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]")) {
                 bootstrapNetworkCleanups += 1;
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, removed: bootstrapNetworkCleanups === 1, alreadyMissing: bootstrapNetworkCleanups > 1 }), stderr: "" };
@@ -1586,6 +1603,9 @@ describe("device-lab Hyper-V broker", () => {
             expect(networkConfig).toContain("set-name: ccc0");
             expect(networkConfig).not.toContain("set-name: eth0");
             expect(networkConfig).toContain(`macaddress: '${allocatedMac}'`);
+            const netplanBase64 = seedScript?.match(/\$NetplanBase64 = '([^']+)'/)?.[1];
+            expect(netplanBase64).toBeTruthy();
+            expect(Buffer.from(netplanBase64!, "base64").toString("utf8")).toMatch(/^network:\n  version: 2\n/);
             expect(createdBody.result.device).not.toHaveProperty("privateRoot");
             expect(createdBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');
@@ -1646,9 +1666,12 @@ describe("device-lab Hyper-V broker", () => {
             readinessFailure = false;
             bootDiagnosticState = null;
 
+            bootstrapAddressAvailable = true;
+            managedReadinessFailure = true;
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            expect(bootstrapNetworkFinalizations).toBe(1);
             expect(bootstrapNetworkCleanups).toBe(1);
 
             sshFailure = true;
