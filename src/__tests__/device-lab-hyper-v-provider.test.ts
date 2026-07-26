@@ -1278,6 +1278,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot");
         expect(script).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(script).toContain("$Image.FileSystemsToCreate = 7");
+        expect(script).toContain("<settings pass=\"specialize\">");
+        expect(script).toContain("<ComputerName>*</ComputerName>");
+        expect(script.indexOf("<settings pass=\"specialize\">")).toBeLessThan(script.indexOf("<settings pass=\"oobeSystem\">"));
         expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(script).toContain("hyper-v-provisioning-media-filesystem-selection-failed");

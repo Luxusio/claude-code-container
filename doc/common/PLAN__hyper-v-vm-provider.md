@@ -476,6 +476,11 @@ Real-provider tests:
   owner-assigned static netplan before SSH readiness. Broker compatibility
   requires `hyper-v-azure-ovf-seed-v1`, preventing a same-version daemon with
   the old NoCloud-only seed path from being reused.
+- Windows provisioning media contains both `specialize` and `oobeSystem`
+  passes. The first pass makes a generalized evaluation VHD accept and cache
+  the removable answer file during its actual first configuration pass; the
+  second creates the disposable local administrator used by PowerShell Direct.
+  Broker compatibility requires `hyper-v-windows-specialize-seed-v1`.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
