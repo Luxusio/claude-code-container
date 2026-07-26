@@ -1885,6 +1885,34 @@ describe("createWorkspace (unified mode)", () => {
         }
     });
 
+    it("does not mutate an ignored nested repository that is itself a worktree", () => {
+        const externalRepo = join(dirname(tmpDir), `${basename(tmpDir)}-source-worktree`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "nested/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore nested"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            initRepo(externalRepo);
+            const nestedRepo = join(tmpDir, "nested");
+            const added = spawnSync(
+                "git",
+                ["worktree", "add", "-b", "nested-source", nestedRepo],
+                { cwd: externalRepo, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(added.status, added.stderr).toBe(0);
+
+            expect(() => createWorkspace(tmpDir, "external-worktree"))
+                .toThrow("metadata is not owned");
+            expect(branchExistsInRepo(externalRepo, "external-worktree"))
+                .toBe("none");
+        } finally {
+            rmSync(externalRepo, { recursive: true, force: true });
+        }
+    });
+
     it("supports repository chains deeper than twenty levels", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "level-01/\n");

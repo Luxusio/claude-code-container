@@ -923,7 +923,7 @@ function branchRepositories(
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
         const nestedRepositories = scanUnifiedNestedRepositories(
             workspacePath,
-            { strict: true },
+            { strict: true, allowRegisteredWorktrees: true },
         );
         for (const entry of nestedRepositories) {
             if (!entry.isGitRepo) continue;
@@ -985,7 +985,7 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         }
         const destinationRepositories = scanUnifiedNestedRepositories(
             workspacePath,
-            { strict: true },
+            { strict: true, allowRegisteredWorktrees: true },
         );
         for (const destination of destinationRepositories) {
             const source = sourceRepositories.get(destination.name);
@@ -1194,6 +1194,7 @@ function nestedRepositoryCandidateIsSafe(
     candidateName: string,
     candidatePath: string,
     strict: boolean,
+    allowRegisteredWorktrees: boolean,
 ): boolean {
     try {
         const candidate = lstatSync(candidatePath);
@@ -1216,7 +1217,7 @@ function nestedRepositoryCandidateIsSafe(
         if (gitMetadata.isDirectory()) return true;
         if (!gitMetadata.isFile()) return false;
         const kind = gitLinkKind(join(candidatePath, ".git"));
-        if (kind === "worktree") return true;
+        if (kind === "worktree" && allowRegisteredWorktrees) return true;
         if (kind === "gitlink"
             && isTrackedGitlink(parentRepository, candidateName)) return true;
         throw new Error(
@@ -1244,7 +1245,10 @@ function nestedRepositoryCandidateIsSafe(
  */
 function scanUnifiedNestedRepositories(
     repositoryPath: string,
-    options: { strict?: boolean } = {},
+    options: {
+        strict?: boolean;
+        allowRegisteredWorktrees?: boolean;
+    } = {},
 ): WorkspaceEntry[] {
     const root = resolve(repositoryPath);
     const repositories = new Map<string, WorkspaceEntry>();
@@ -1318,6 +1322,7 @@ function scanUnifiedNestedRepositories(
                 candidate.name,
                 candidate.path,
                 options.strict === true,
+                options.allowRegisteredWorktrees === true,
             )) continue;
             const name = relativePrefix
                 ? `${relativePrefix}/${candidate.name}`
@@ -3820,7 +3825,10 @@ export function getWorktreeGitMounts(
         }
     }
     const nestedRepositories = hasGitMetadata(resolved)
-        ? scanUnifiedNestedRepositories(resolved, { strict: required })
+        ? scanUnifiedNestedRepositories(
+            resolved,
+            { strict: required, allowRegisteredWorktrees: true },
+        )
         : scanDirectory(resolved, { strict: required });
     for (const entry of nestedRepositories) {
         if (!entry.isGitRepo) continue;
