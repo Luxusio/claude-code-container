@@ -33,9 +33,9 @@ export const HYPER_V_IMAGE_CATALOG = {
         secureBootTemplate: "MicrosoftWindows",
     },
     "ubuntu-lts": {
-        catalogId: "canonical-ubuntu-24.04-lts-azure-vhd",
-        sourceUrl: "https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz",
-        sourceFormat: "vhd-tar-gz",
+        catalogId: "canonical-ubuntu-24.04-lts-hyper-v-vhdx-20260724",
+        sourceUrl: "https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip",
+        sourceFormat: "vhdx-zip",
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
     },

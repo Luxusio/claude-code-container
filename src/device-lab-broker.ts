@@ -5021,6 +5021,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
             profile,
             baseImagePath: typeof create.image === "string" ? create.image : create.sourceImage,
             baseImageSha256: typeof create.baseImageSha256 === "string" ? create.baseImageSha256 : undefined,
+            ...((create.baseImageGeneration === 1 || create.baseImageGeneration === 2) ? { baseImageGeneration: create.baseImageGeneration } : {}),
             ...(typeof create.sourceImage === "string" ? { sourceImage: create.sourceImage } : {}),
             deviceRoot,
             privateRoot,
@@ -6553,6 +6554,7 @@ function createCommandParams(backend: string, input: Record<string, unknown>): R
         image: optionalString(input, "image"),
         sourceImage: optionalString(input, "sourceImage"),
         baseImageSha256: optionalString(input, "baseImageSha256"),
+        baseImageGeneration: optionalNumber(input, "baseImageGeneration"),
         profile: optionalString(input, "profile"),
         switchName: optionalString(input, "switchName"),
         networkAddress: optionalString(input, "networkAddress"),
@@ -8807,9 +8809,9 @@ type HyperVImageManifest = {
     profile: HyperVImageProfile;
     catalogId: string;
     sourceUrl: string | null;
-    sourceFormat: "vhdx" | "vhd-tar-gz";
+    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip";
     licenseId: string | null;
-    generation: 2;
+    generation: 1 | 2;
     secureBootTemplate: "MicrosoftWindows" | "MicrosoftUEFICertificateAuthority";
     preparationVersion: 1;
     imagePath: string;
@@ -9023,7 +9025,7 @@ function hyperVImageManifest(
         sourceUrl: automatic && catalog ? catalog.sourceUrl : null,
         sourceFormat: automatic && catalog ? catalog.sourceFormat : "vhdx",
         licenseId: automatic && catalog ? catalog.licenseId : null,
-        generation: 2,
+        generation: observation.generation,
         secureBootTemplate: profile === "ubuntu-lts" ? "MicrosoftUEFICertificateAuthority" : "MicrosoftWindows",
         preparationVersion: 1,
         imagePath,
@@ -9048,9 +9050,9 @@ function readHyperVImageManifestMetadata(
             || value.profile !== profile
             || typeof value.catalogId !== "string"
             || (value.sourceUrl !== null && typeof value.sourceUrl !== "string")
-            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz")
+            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip")
             || (value.licenseId !== null && typeof value.licenseId !== "string")
-            || value.generation !== 2
+            || (value.generation !== 1 && value.generation !== 2)
             || (value.secureBootTemplate !== "MicrosoftWindows" && value.secureBootTemplate !== "MicrosoftUEFICertificateAuthority")
             || value.preparationVersion !== 1
             || typeof value.imagePath !== "string"
@@ -9120,7 +9122,7 @@ async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParam
                     ? await readHyperVImageManifest(profile, hyperVImageProfileRoot(profile), false, deadlineAt)
                     : (() => { throw new Error("hyper-v-base-image-manifest-path-mismatch"); })();
             if (resolve(create.image) !== resolve(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
-            return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
+            return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
         } catch (error) {
             if (error instanceof HyperVOperationDeadlineError) throw error;
             return { ok: false, status: 409, error: "hyper-v-base-image-not-prepared", detail: error instanceof Error ? error.message : String(error), remedy: "import the generalized VHDX with --source-image" };
@@ -9146,7 +9148,7 @@ async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParam
             }
             return {
                 ok: true,
-                params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, diskMaxBytes: manifest.virtualSizeBytes },
+                params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes },
                 imagePath: manifest.imagePath,
                 prepared: false,
             };
@@ -9194,7 +9196,7 @@ async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParam
                     }
                     return {
                         ok: true as const,
-                        params: { ...input, profile, image: cachedManifest.imagePath, baseImageSha256: cachedManifest.sha256, diskMaxBytes: cachedManifest.virtualSizeBytes },
+                        params: { ...input, profile, image: cachedManifest.imagePath, baseImageSha256: cachedManifest.sha256, baseImageGeneration: cachedManifest.generation, diskMaxBytes: cachedManifest.virtualSizeBytes },
                         imagePath: cachedManifest.imagePath,
                         prepared: false,
                     };
@@ -9239,7 +9241,7 @@ async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParam
                     writeJsonFileAtomically(join(hyperVImageProfileRoot(profile), "manifest.json"), manifest);
                     return {
                         ok: true as const,
-                        params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, diskMaxBytes: observation.virtualSizeBytes },
+                        params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
                         imagePath,
                         prepared: !observation.reused,
                     };
@@ -9296,7 +9298,7 @@ async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParam
                 writeJsonFileAtomically(join(profileRoot, "manifest.json"), manifest);
                 return {
                     ok: true as const,
-                    params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, diskMaxBytes: observation.virtualSizeBytes },
+                    params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
                     imagePath,
                     prepared: !observation.reused,
                 };
@@ -9362,6 +9364,8 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
         if (!image) return { error: "hyper-v-base-image-not-prepared", missing: ["prepared image or sourceImage VHDX"] };
         const baseImageSha256 = typeof create.baseImageSha256 === "string" ? create.baseImageSha256 : null;
         if (!baseImageSha256) return { error: "hyper-v-base-image-hash-missing", missing: ["verified base image SHA-256"] };
+        const baseImageGeneration = create.baseImageGeneration === 1 || create.baseImageGeneration === 2 ? create.baseImageGeneration : null;
+        if (!baseImageGeneration) return { error: "hyper-v-base-image-generation-missing", missing: ["verified base image generation"] };
         const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
         if (!powershell) return { error: "missing-provider-command", missing: ["powershell"] };
         const globalBaseImageRoot = hyperVImageRoot();
@@ -9402,6 +9406,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
                         : (() => { throw new Error("hyper-v-incarnation-id-invalid"); })()),
                 baseImagePath: image,
                 baseImageSha256,
+                baseImageGeneration,
                 baseImageRoot: baseImageRoot!,
                 deviceRoot,
                 diskPath,
@@ -11881,7 +11886,10 @@ async function lifecycleCommandInvokeUnlocked(
             const deviceRoot = hyperVDeviceRoot(ownerId, "linux-vm", parsed.deviceId);
             const privateRoot = hyperVPrivateDeviceRoot(ownerId, "linux-vm", parsed.deviceId);
             const expectedDiskPath = join(deviceRoot, "disks", "root.vhdx");
-            if (!observation || observation.vmName !== expectedVmName || resolve(observation.diskPath || "") !== resolve(expectedDiskPath)) {
+            if (!observation
+                || observation.vmName !== expectedVmName
+                || resolve(observation.diskPath || "") !== resolve(expectedDiskPath)
+                || observation.generation !== parsed.create?.baseImageGeneration) {
                 const rollback = await reconcileHyperVCreateResidue(ownerId, parsed.backend, parsed.deviceId, normalized, hyperVCleanupDeadlineAt, parsed.create?.incarnationId as string | undefined);
                 return { status: 502, payload: { ok: false, error: "hyper-v-create-invalid-result", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, rollback } };
             }
@@ -11965,7 +11973,10 @@ async function lifecycleCommandInvokeUnlocked(
             const observation = parseHyperVVmObservation(execution.stdout || "");
             const expectedVmName = hyperVVmName(ownerId, parsed.deviceId, String(parsed.create?.incarnationId || ""));
             const expectedDiskPath = join(hyperVDeviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "root.vhdx");
-            if (!observation || observation.vmName !== expectedVmName || resolve(observation.diskPath || "") !== resolve(expectedDiskPath)) {
+            if (!observation
+                || observation.vmName !== expectedVmName
+                || resolve(observation.diskPath || "") !== resolve(expectedDiskPath)
+                || observation.generation !== parsed.create?.baseImageGeneration) {
                 const rollback = await reconcileHyperVCreateResidue(ownerId, parsed.backend, parsed.deviceId, normalized, hyperVCleanupDeadlineAt, parsed.create?.incarnationId as string | undefined);
                 return {
                     status: 502,

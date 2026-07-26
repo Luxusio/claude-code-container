@@ -511,7 +511,7 @@ describe("device-lab Hyper-V broker", () => {
                 mkdirSync(dirname(diskPath), { recursive: true });
                 writeFileSync(diskPath, "partial-root-vhdx");
                 now += DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", vmName, diskPath, switchName: "CCC Device Lab" }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", vmName, generation: 2, diskPath, switchName: "CCC Device Lab" }), stderr: "" };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -675,7 +675,7 @@ describe("device-lab Hyper-V broker", () => {
                 const diskPath = script.match(/\$DiskPath = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 mkdirSync(dirname(diskPath), { recursive: true });
                 writeFileSync(diskPath, "partial-root-vhdx");
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", vmName, diskPath, switchName: "CCC Device Lab" }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", vmName, generation: 2, diskPath, switchName: "CCC Device Lab" }), stderr: "" };
             }
             if (script.includes(provisioningMarker)) {
                 now += DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
@@ -723,7 +723,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(join(profileRoot, "base.partial.vhdx"), "partial");
                 writeFileSync(join(profileRoot, "base.vhdx"), "uncommitted-base");
                 now += DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS + 1;
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath: join(profileRoot, "base.vhdx"), sha256: "a".repeat(64), sizeBytes: 16, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath: join(profileRoot, "base.vhdx"), sha256: "a".repeat(64), sizeBytes: 16, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: 2, reused: false }), stderr: "" };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -772,7 +772,7 @@ describe("device-lab Hyper-V broker", () => {
                 mkdirSync(profileRoot, { recursive: true });
                 writeFileSync(imagePath, imageContents);
                 hashing = true;
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath, sha256: createHash("sha256").update(imageContents).digest("hex"), sizeBytes: imageContents.length, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath, sha256: createHash("sha256").update(imageContents).digest("hex"), sizeBytes: imageContents.length, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: 2, reused: false }), stderr: "" };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -811,6 +811,7 @@ describe("device-lab Hyper-V broker", () => {
                 sizeBytes: Buffer.byteLength(imageContents) + 1,
                 virtualSizeBytes: 32 * 1024 * 1024 * 1024,
                 vhdType: "Dynamic",
+                generation: 2,
                 reused: false,
             }),
             detail: "hyper-v-base-image-size-mismatch",
@@ -888,6 +889,7 @@ describe("device-lab Hyper-V broker", () => {
                         sizeBytes: Buffer.byteLength(imageContents),
                         virtualSizeBytes: 32 * 1024 * 1024 * 1024,
                         vhdType: "Dynamic",
+                        generation: 2,
                         reused: false,
                     }),
                     stderr: "",
@@ -965,6 +967,7 @@ describe("device-lab Hyper-V broker", () => {
                         sizeBytes: Buffer.byteLength(imageContents),
                         virtualSizeBytes: 32 * 1024 * 1024 * 1024,
                         vhdType: "Dynamic",
+                        generation: 2,
                         reused: false,
                     }),
                     stderr: "",
@@ -1092,7 +1095,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("function Save-BoundedDownload")) {
                 mkdirSync(imageProfileRoot, { recursive: true });
                 writeFileSync(imagePath, imageBytes);
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: imageBytes.length, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: imageBytes.length, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: 2, reused: false }), stderr: "" };
             }
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
@@ -1100,7 +1103,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'")) {
                 return { ...command, status: 1, stdout: seedSecretEcho, stderr: `hyper-v-provisioning-media-copy-incomplete: ${seedSecretEcho}` };
             }
-            return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
+            return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, generation: 2, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
         });
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", providerPaths: { "powershell.exe": "/fake/powershell.exe" }, commandRunner });
         const baseUrl = await listen(server);
@@ -1191,7 +1194,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-VM @VmArgs")) {
                 vmName = powerShellString(script, "VmName");
                 const diskPath = powerShellString(script, "DiskPath");
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, generation: 2, state: "Off", status: "Operating normally", diskPath, switchName: "CCC Device Lab" }), stderr: "" };
             }
             if (script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'")) return { ...command, status: 1, stdout: "", stderr: "seed failed" };
             if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) return { ...command, status: 0, stdout: "malformed recovery output", stderr: "" };
@@ -1542,9 +1545,9 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
             const result = bootDiagnostic
-                ? { ok: true, vmId, vmName, state: bootDiagnosticState || vmState, uptimeMs: 1000, generation: 2, secureBootEnabled: true, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["scsi"], bootDeviceTypes: ["hard-disk", "dvd"] }
+                ? { ok: true, vmId, vmName, generation: 2, state: bootDiagnosticState || vmState, uptimeMs: 1000, secureBootEnabled: true, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["scsi"], bootDeviceTypes: ["hard-disk", "dvd"] }
                 : imageSetup
-                ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
+                ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: 2, reused: false }
                 : networkSetup
                     ? hyperVNetworkObservation(command)
                     : recovery
@@ -1553,7 +1556,7 @@ describe("device-lab Hyper-V broker", () => {
                             ? { ok: true, vmId, vmName, seedDiskPath, sshPrivateKeyPath: privateKeyPath, sshPublicKeyPath: publicKeyPath, sshHostPublicKeyPath: hostPublicKeyPath, sshHostKeyFingerprint: hostKeyFingerprint, knownHostsPath, guestUsername: `ccc${ownerId.slice(0, 8)}`, networkAddress }
                             : snapshot
                                 ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(script.includes("Remove-VMSnapshot") ? { deleted: true } : {}) }
-                                : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
+                                : { ok: true, vmId, vmName, generation: 2, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
             return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
         });
         const server = createDeviceBrokerServer({

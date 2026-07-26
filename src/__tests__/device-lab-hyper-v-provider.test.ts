@@ -229,7 +229,7 @@ describe("Hyper-V provider adapter", () => {
         expect(scriptOf(acquire)).toContain("Save-BoundedDownload");
         expect(scriptOf(acquire)).toContain("CCC_HYPER_V_RESULT_B64:");
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(scriptOf(acquire)).toContain("ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
+        expect(scriptOf(acquire)).toContain("ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -334,6 +334,7 @@ describe("Hyper-V provider adapter", () => {
             sizeBytes: 1024,
             virtualSizeBytes: 64 * 1024 * 1024 * 1024,
             vhdType: "Dynamic",
+            generation: 2,
             reused: false,
         };
         const framed = Buffer.from(JSON.stringify(observation), "utf8").toString("base64");
@@ -485,6 +486,7 @@ describe("Hyper-V provider adapter", () => {
             sizeBytes: 1024,
             virtualSizeBytes: 64 * 1024 * 1024 * 1024,
             vhdType: "Dynamic",
+            generation: 2,
             reused: false,
         }))).toEqual({
             ok: true,
@@ -494,6 +496,7 @@ describe("Hyper-V provider adapter", () => {
             sizeBytes: 1024,
             virtualSizeBytes: 64 * 1024 * 1024 * 1024,
             vhdType: "Dynamic",
+            generation: 2,
             reused: false,
         });
         expect(parseHyperVBaseImageObservation('{"ok":true,"profile":"linux"}')).toBeNull();
@@ -534,22 +537,22 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("$SourceUrl =");
     });
 
-    it("builds a fixed checksummed Canonical Ubuntu VHD conversion command", () => {
+    it("builds a fixed checksummed Canonical Ubuntu Hyper-V VHDX acquisition command", () => {
         const command = hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
         });
         const script = scriptOf(command);
-        expect(script).toContain("tar.exe -tzf $ArchivePath");
-        expect(script).toContain("tar.exe -tvzf $ArchivePath");
+        expect(script).toContain("tar.exe -tf $ArchivePath");
+        expect(script).toContain("tar.exe -tvf $ArchivePath");
         expect(script).toContain("hyper-v-base-image-archive-path-invalid");
         expect(script).toContain("hyper-v-base-image-archive-entry-type-invalid");
-        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
-        expect(script).toContain("05b7b5bb6172e5b0dd1248d5598c1bc27927c4625ba4c09c0442d4751725c43f");
+        expect(script).toContain("https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
+        expect(script).toContain("545865cc2bd0ad6a2d16843c914289b601a7d07a6ec4f88c1d202acb180ecf1e");
         expect(script).not.toContain("SHA256SUMS");
-        expect(script).toContain("$UbuntuMaxBytes = [long]2GB");
-        expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com'");
+        expect(script).toContain("$UbuntuMaxBytes = [long]6GB");
+        expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'partner-images.canonical.com'");
         expect(script).toContain("Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256");
         expect(script).toContain("hyper-v-base-image-checksum-mismatch");
         expect(script).toContain("$MaximumArchiveEntries = 64");
@@ -563,10 +566,14 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("[IO.FileAttributes]::ReparsePoint");
         expect(script).toContain("if ($SourceVhds.Count -ne 1)");
         expect(script).toContain("[IO.FileAttributes]::SparseFile");
-        expect(script).toContain("normalized-source.vhd");
+        expect(script).toContain("normalized-source.vhdx");
         expect(script).toContain("$OutputStream.Write($Buffer, 0, $Read)");
         expect(script).toContain("hyper-v-base-image-normalize-attributes-failed");
-        expect(script).toContain("Convert-VHD -Path $SourcePath -DestinationPath $PartialPath -VHDType Dynamic");
+        expect(script).toContain("Move-Item -LiteralPath $SourcePath -Destination $PartialPath");
+        expect(script).not.toContain("Convert-VHD -Path $SourcePath");
+        expect(script).toContain("hyper-v-base-image-archive-vhdx-count-invalid");
+        expect(script).toContain("Get-CccVhdGeneration $ImagePath");
+        expect(script).toContain("hyper-v-base-image-dismount-failed");
         expect(script).toContain("Remove-Item -LiteralPath $WorkPath -Recurse -Force -ErrorAction SilentlyContinue");
     });
 
@@ -594,6 +601,7 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             baseImagePath: "/state/images/hyper-v/windows-11.vhdx",
             baseImageSha256,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
             diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
@@ -608,6 +616,9 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("Mount-VHD -Path $DiskPath -ReadOnly -NoDriveLetter");
         expect(script).toContain("$VmGeneration = switch ([string]$BootDisk.PartitionStyle)");
+        expect(script).toContain("$ExpectedVmGeneration = 2");
+        expect(script).toContain("hyper-v-base-image-generation-mismatch");
+        expect(script).toContain("hyper-v-created-disk-dismount-failed");
         expect(script).toContain("'GPT' { 2 }");
         expect(script).toContain("'MBR' { 1 }");
         expect(script).toContain("Generation = $VmGeneration");
@@ -640,6 +651,7 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             baseImagePath: "/state/images/hyper-v/windows-11.vhdx",
             baseImageSha256,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
             diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
@@ -656,6 +668,7 @@ describe("Hyper-V provider adapter", () => {
             vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
             baseImagePath: "/state/images/hyper-v/ubuntu-lts.vhdx",
             baseImageSha256,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01",
             diskPath: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01/disks/root.vhdx",
@@ -1082,6 +1095,7 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             baseImagePath: "/state/images/hyper-v/windows-11.vhdx",
             baseImageSha256,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
             diskPath: "/state/owners/other/root.vhdx",
@@ -1097,6 +1111,7 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             baseImagePath: "/foreign/windows-11.vhdx",
             baseImageSha256,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
             diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",

@@ -58,6 +58,7 @@ export type HyperVVmObservation = {
     uptimeMs?: number;
     diskPath?: string;
     switchName?: string;
+    generation?: 1 | 2;
     snapshots?: HyperVSnapshotObservation[];
 };
 
@@ -147,6 +148,7 @@ export type HyperVBaseImageObservation = {
     sizeBytes: number;
     virtualSizeBytes: number;
     vhdType: string;
+    generation: 1 | 2;
     reused: boolean;
 };
 
@@ -203,6 +205,7 @@ type HyperVCommandOptions = {
 type HyperVCreateOptions = HyperVCommandOptions & {
     baseImagePath: string;
     baseImageSha256: string;
+    baseImageGeneration: 1 | 2;
     baseImageRoot: string;
     deviceRoot: string;
     memoryMb: number;
@@ -1176,6 +1179,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
     if (!/\.vhdx$/i.test(baseImagePath)) throw new Error("hyper-v-base-image-format-unsupported");
     const baseImageSha256 = String(options.baseImageSha256 || "").toLowerCase();
     if (!/^[a-f0-9]{64}$/.test(baseImageSha256)) throw new Error("hyper-v-base-image-sha256-invalid");
+    if (options.baseImageGeneration !== 1 && options.baseImageGeneration !== 2) throw new Error("hyper-v-base-image-generation-invalid");
     const deviceRoot = assertPlainPath(options.deviceRoot, "device-root");
     const diskPath = assertPathInside(deviceRoot, String(options.diskPath || ""), "disk-path");
     if (!/\.vhdx$/i.test(diskPath)) throw new Error("hyper-v-disk-format-unsupported");
@@ -1193,6 +1197,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         `$Marker = ${psQuote(marker)}`,
         `$BaseImage = ${psQuote(baseImagePath)}`,
         `$ExpectedBaseImageHash = ${psQuote(baseImageSha256)}`,
+        `$ExpectedVmGeneration = ${options.baseImageGeneration}`,
         `$DeviceRoot = ${psQuote(deviceRoot)}`,
         `$DiskPath = ${psQuote(diskPath)}`,
         `$DiskMaxBytes = [long]${diskMaxBytes}`,
@@ -1256,13 +1261,20 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  $BaseImageStream.Dispose()",
         "  $BaseImageStream = $null",
         "  $MountedBootDisk = $null",
+        "  $BootDiskInspectionError = $null",
+        "  $BootDiskDismountError = $null",
         "  try {",
         "    $MountedBootDisk = Mount-VHD -Path $DiskPath -ReadOnly -NoDriveLetter -Passthru -ErrorAction Stop",
         "    $BootDisk = $MountedBootDisk | Get-Disk -ErrorAction Stop",
         "    $VmGeneration = switch ([string]$BootDisk.PartitionStyle) { 'GPT' { 2 } 'MBR' { 1 } default { throw 'hyper-v-base-image-partition-style-unsupported' } }",
+        "  } catch {",
+        "    $BootDiskInspectionError = $_",
         "  } finally {",
-        "    if ($MountedBootDisk) { Dismount-VHD -Path $DiskPath -ErrorAction Stop }",
+        "    if ($MountedBootDisk) { try { Dismount-VHD -Path $DiskPath -ErrorAction Stop } catch { $BootDiskDismountError = $_ } }",
         "  }",
+        "  if ($BootDiskDismountError) { throw 'hyper-v-created-disk-dismount-failed' }",
+        "  if ($BootDiskInspectionError) { throw $BootDiskInspectionError }",
+        "  if ($VmGeneration -ne $ExpectedVmGeneration) { throw 'hyper-v-base-image-generation-mismatch' }",
         "  $BaseImageStream = [IO.File]::Open($BaseImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)",
         "  $BaseImageStream.Position = 0",
         "  $Hasher = [Security.Cryptography.SHA256]::Create()",
@@ -1429,7 +1441,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "$HostPrivateKeyBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($HostPrivateKeyText + [Environment]::NewLine))",
         "$HostPublicKeyBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($HostPublicKeyText + [Environment]::NewLine))",
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
-        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetplanBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
+        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'packages:', '  - openssh-server', 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetplanBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, enable, --now, ssh]', 'package_update: true', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
         "$PublicKeyXml = [Security.SecurityElement]::Escape($PublicKeyText)",
         "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '<ns1:SSH><ns1:PublicKeys><ns1:PublicKey><ns1:Path>/home/' + $GuestUsername + '/.ssh/authorized_keys</ns1:Path><ns1:Value>' + $PublicKeyXml + '</ns1:Value></ns1:PublicKey></ns1:PublicKeys></ns1:SSH>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
@@ -1592,6 +1604,22 @@ export function hyperVPrepareBaseImageCommand(options: HyperVBaseImageOptions): 
         "Assert-NoReparsePath $SourceImage",
         "Assert-NoReparsePath $ImagePath",
         "Assert-NoReparsePath $TempPath",
+        "function Get-CccVhdGeneration([string]$Path) {",
+        "  $Mounted = $null",
+        "  $Generation = $null",
+        "  $InspectionError = $null",
+        "  $DismountError = $null",
+        "  try {",
+        "    $Mounted = Mount-VHD -Path $Path -ReadOnly -NoDriveLetter -Passthru -ErrorAction Stop",
+        "    $Disk = $Mounted | Get-Disk -ErrorAction Stop",
+        "    $Generation = switch ([string]$Disk.PartitionStyle) { 'GPT' { 2 } 'MBR' { 1 } default { throw 'hyper-v-base-image-partition-style-unsupported' } }",
+        "  } catch { $InspectionError = $_ } finally {",
+        "    if ($Mounted) { try { Dismount-VHD -Path $Path -ErrorAction Stop } catch { $DismountError = $_ } }",
+        "  }",
+        "  if ($DismountError) { throw 'hyper-v-base-image-dismount-failed' }",
+        "  if ($InspectionError) { throw $InspectionError }",
+        "  return $Generation",
+        "}",
         "if (-not (Test-Path -LiteralPath $SourceImage -PathType Leaf)) { throw 'hyper-v-base-image-source-not-found' }",
         "$SourceHash = (Get-FileHash -LiteralPath $SourceImage -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
         "if (Test-Path -LiteralPath $ImagePath -PathType Leaf) {",
@@ -1599,7 +1627,8 @@ export function hyperVPrepareBaseImageCommand(options: HyperVBaseImageOptions): 
         "  if ($ExistingHash -ne $SourceHash) { throw 'hyper-v-base-image-profile-conflict' }",
         "  $ExistingVhd = Get-VHD -Path $ImagePath -ErrorAction Stop",
         "  if ([string]$ExistingVhd.VhdFormat -ne 'VHDX' -or [string]$ExistingVhd.VhdType -eq 'Differencing' -or $ExistingVhd.ParentPath) { throw 'hyper-v-base-image-invalid-parent' }",
-        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $ExistingHash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath).Length; virtualSizeBytes = [long]$ExistingVhd.Size; vhdType = [string]$ExistingVhd.VhdType; reused = $true }",
+        "  $Generation = Get-CccVhdGeneration $ImagePath",
+        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $ExistingHash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath).Length; virtualSizeBytes = [long]$ExistingVhd.Size; vhdType = [string]$ExistingVhd.VhdType; generation = $Generation; reused = $true }",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "  exit 0",
         "}",
@@ -1615,7 +1644,8 @@ export function hyperVPrepareBaseImageCommand(options: HyperVBaseImageOptions): 
         "  Assert-NoReparsePath $TempPath",
         "  Assert-NoReparsePath $ImagePath",
         "  Move-Item -LiteralPath $TempPath -Destination $ImagePath -ErrorAction Stop",
-        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $CopiedHash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath).Length; virtualSizeBytes = [long]$Vhd.Size; vhdType = [string]$Vhd.VhdType; reused = $false }",
+        "  $Generation = Get-CccVhdGeneration $ImagePath",
+        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $CopiedHash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath).Length; virtualSizeBytes = [long]$Vhd.Size; vhdType = [string]$Vhd.VhdType; generation = $Generation; reused = $false }",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "} finally {",
         "  Assert-NoReparsePath $TempPath",
@@ -1647,19 +1677,36 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "Assert-NoReparsePath $PartialPath",
         "Assert-NoReparsePath $WorkPath",
         "$WindowsUrl = 'https://go.microsoft.com/fwlink/?clcid=0x409&country=us&culture=en-us&linkid=2345826'",
-        "$UbuntuArchiveUrl = 'https://cloud-images.ubuntu.com/releases/noble/release-20260705/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz'",
-        "$UbuntuArchiveSha256 = '05b7b5bb6172e5b0dd1248d5598c1bc27927c4625ba4c09c0442d4751725c43f'",
+        "$UbuntuArchiveUrl = 'https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip'",
+        "$UbuntuArchiveSha256 = '545865cc2bd0ad6a2d16843c914289b601a7d07a6ec4f88c1d202acb180ecf1e'",
         "$WindowsMaxBytes = [long]16GB",
-        "$UbuntuMaxBytes = [long]2GB",
+        "$UbuntuMaxBytes = [long]6GB",
         "Add-Type -AssemblyName System.Net.Http -ErrorAction Stop",
         "function Assert-BaseVhd([string]$Path) {",
         "  $Vhd = Get-VHD -Path $Path -ErrorAction Stop",
         "  if ([string]$Vhd.VhdFormat -ne 'VHDX' -or [string]$Vhd.VhdType -eq 'Differencing' -or $Vhd.ParentPath) { throw 'hyper-v-base-image-invalid-parent' }",
         "  return $Vhd",
         "}",
+        "function Get-CccVhdGeneration([string]$Path) {",
+        "  $Mounted = $null",
+        "  $Generation = $null",
+        "  $InspectionError = $null",
+        "  $DismountError = $null",
+        "  try {",
+        "    $Mounted = Mount-VHD -Path $Path -ReadOnly -NoDriveLetter -Passthru -ErrorAction Stop",
+        "    $Disk = $Mounted | Get-Disk -ErrorAction Stop",
+        "    $Generation = switch ([string]$Disk.PartitionStyle) { 'GPT' { 2 } 'MBR' { 1 } default { throw 'hyper-v-base-image-partition-style-unsupported' } }",
+        "  } catch { $InspectionError = $_ } finally {",
+        "    if ($Mounted) { try { Dismount-VHD -Path $Path -ErrorAction Stop } catch { $DismountError = $_ } }",
+        "  }",
+        "  if ($DismountError) { throw 'hyper-v-base-image-dismount-failed' }",
+        "  if ($InspectionError) { throw $InspectionError }",
+        "  return $Generation",
+        "}",
         "function Write-BaseObservation([object]$Vhd, [bool]$Reused) {",
         "  $Hash = (Get-FileHash -LiteralPath $ImagePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
-        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $Hash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath -ErrorAction Stop).Length; virtualSizeBytes = [long]$Vhd.Size; vhdType = [string]$Vhd.VhdType; reused = $Reused }",
+        "  $Generation = Get-CccVhdGeneration $ImagePath",
+        "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $Hash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath -ErrorAction Stop).Length; virtualSizeBytes = [long]$Vhd.Size; vhdType = [string]$Vhd.VhdType; generation = $Generation; reused = $Reused }",
         "  $Json = $Result | ConvertTo-Json -Compress -Depth 5",
         `  [Console]::Out.WriteLine('${HYPER_V_RESULT_MARKER}' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Json)))`,
         "}",
@@ -1720,23 +1767,23 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    Save-BoundedDownload $WindowsUrl $PartialPath $WindowsMaxBytes $ValidateMicrosoftHop $ValidateMicrosoftVhdx",
         "  } else {",
         "    New-Item -ItemType Directory -Path $WorkPath -Force | Out-Null",
-        "    $ArchivePath = Join-Path $WorkPath 'ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz'",
+        "    $ArchivePath = Join-Path $WorkPath 'ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip'",
         "    $ExtractPath = Join-Path $WorkPath 'extract'",
-        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com') }",
+        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'partner-images.canonical.com') }",
         "    Save-BoundedDownload $UbuntuArchiveUrl $ArchivePath $UbuntuMaxBytes $ValidateCanonical $ValidateCanonical",
         "    $ActualHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
         "    if ($ActualHash -ne $UbuntuArchiveSha256) { throw 'hyper-v-base-image-checksum-mismatch' }",
-        "    $ArchiveEntries = @(& tar.exe -tzf $ArchivePath)",
+        "    $ArchiveEntries = @(& tar.exe -tf $ArchivePath)",
         "    $MaximumArchiveEntries = 64",
         "    $MaximumRegularFiles = 8",
         "    $MaximumExtractedBytes = [long]64GB",
         "    if ($LASTEXITCODE -ne 0 -or $ArchiveEntries.Count -eq 0 -or $ArchiveEntries.Count -gt $MaximumArchiveEntries) { throw 'hyper-v-base-image-archive-list-invalid' }",
-        "    $ArchiveTypes = @(& tar.exe -tvzf $ArchivePath)",
+        "    $ArchiveTypes = @(& tar.exe -tvf $ArchivePath)",
         "    if ($LASTEXITCODE -ne 0 -or $ArchiveTypes.Count -ne $ArchiveEntries.Count) { throw 'hyper-v-base-image-archive-list-invalid' }",
         "    $SeenEntries = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)",
         "    $RegularFileCount = 0",
         "    $TotalExtractedBytes = [long]0",
-        "    $ExpectedVhdBytes = [long]-1",
+        "    $ExpectedVhdxBytes = [long]-1",
         "    for ($Index = 0; $Index -lt $ArchiveEntries.Count; $Index++) {",
         "      $Entry = [string]$ArchiveEntries[$Index]",
         "      $NormalizedEntry = $Entry.Replace('\\', '/')",
@@ -1753,15 +1800,15 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "        $EntryBytes = [long]::Parse($SizeText, [Globalization.CultureInfo]::InvariantCulture)",
         "        if ($EntryBytes -lt 0 -or $EntryBytes -gt $MaximumExtractedBytes -or $TotalExtractedBytes -gt ($MaximumExtractedBytes - $EntryBytes)) { throw 'hyper-v-base-image-archive-size-rejected' }",
         "        $TotalExtractedBytes += $EntryBytes",
-        "        if ($NormalizedEntry.EndsWith('.vhd', [StringComparison]::OrdinalIgnoreCase)) {",
-        "          if ($ExpectedVhdBytes -ge 0) { throw 'hyper-v-base-image-archive-vhd-count-invalid' }",
-        "          $ExpectedVhdBytes = $EntryBytes",
+        "        if ($NormalizedEntry.EndsWith('.vhdx', [StringComparison]::OrdinalIgnoreCase)) {",
+        "          if ($ExpectedVhdxBytes -ge 0) { throw 'hyper-v-base-image-archive-vhdx-count-invalid' }",
+        "          $ExpectedVhdxBytes = $EntryBytes",
         "        }",
         "      }",
         "    }",
-        "    if ($ExpectedVhdBytes -le 0) { throw 'hyper-v-base-image-archive-vhd-count-invalid' }",
+        "    if ($ExpectedVhdxBytes -le 0) { throw 'hyper-v-base-image-archive-vhdx-count-invalid' }",
         "    New-Item -ItemType Directory -Path $ExtractPath -Force | Out-Null",
-        "    & tar.exe -xzf $ArchivePath -C $ExtractPath --no-same-owner --no-same-permissions",
+        "    & tar.exe -xf $ArchivePath -C $ExtractPath --no-same-owner --no-same-permissions",
         "    if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-extract-failed' }",
         "    $ExtractedFiles = @(Get-ChildItem -LiteralPath $ExtractPath -Recurse -File -Force -ErrorAction Stop)",
         "    if ($ExtractedFiles.Count -ne $RegularFileCount) { throw 'hyper-v-base-image-archive-file-count-mismatch' }",
@@ -1773,14 +1820,14 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "      $ActualExtractedBytes += $ExtractedBytes",
         "    }",
         "    if ($ActualExtractedBytes -ne $TotalExtractedBytes) { throw 'hyper-v-base-image-archive-total-size-mismatch' }",
-        "    $SourceVhds = @($ExtractedFiles | Where-Object { $_.Extension -eq '.vhd' })",
-        "    if ($SourceVhds.Count -ne 1) { throw 'hyper-v-base-image-archive-vhd-count-invalid' }",
-        "    if ([long]$SourceVhds[0].Length -ne $ExpectedVhdBytes -or [long]$SourceVhds[0].Length -gt $MaximumExtractedBytes) { throw 'hyper-v-base-image-archive-size-mismatch' }",
+        "    $SourceVhds = @($ExtractedFiles | Where-Object { $_.Extension -eq '.vhdx' })",
+        "    if ($SourceVhds.Count -ne 1) { throw 'hyper-v-base-image-archive-vhdx-count-invalid' }",
+        "    if ([long]$SourceVhds[0].Length -ne $ExpectedVhdxBytes -or [long]$SourceVhds[0].Length -gt $MaximumExtractedBytes) { throw 'hyper-v-base-image-archive-size-mismatch' }",
         "    $SourcePath = $SourceVhds[0].FullName",
         "    $UnsupportedVhdAttributes = [IO.FileAttributes]::SparseFile -bor [IO.FileAttributes]::Compressed -bor [IO.FileAttributes]::Encrypted",
         "    $SourceAttributes = [IO.File]::GetAttributes($SourcePath)",
         "    if (($SourceAttributes -band $UnsupportedVhdAttributes) -ne 0) {",
-        "      $NormalizedSourcePath = Join-Path $WorkPath 'normalized-source.vhd'",
+        "      $NormalizedSourcePath = Join-Path $WorkPath 'normalized-source.vhdx'",
         "      Assert-NoReparsePath $NormalizedSourcePath",
         "      $InputStream = $null",
         "      $OutputStream = $null",
@@ -1799,12 +1846,12 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "      if (($NormalizedAttributes -band [IO.FileAttributes]::Encrypted) -ne 0) { & cipher.exe /D $NormalizedSourcePath | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-normalize-encryption-failed' } }",
         "      $NormalizedAttributes = [IO.File]::GetAttributes($NormalizedSourcePath)",
         "      if (($NormalizedAttributes -band $UnsupportedVhdAttributes) -ne 0) { throw 'hyper-v-base-image-normalize-attributes-failed' }",
-        "      if ([long](Get-Item -LiteralPath $NormalizedSourcePath -Force).Length -ne $ExpectedVhdBytes) { throw 'hyper-v-base-image-normalize-size-mismatch' }",
+        "      if ([long](Get-Item -LiteralPath $NormalizedSourcePath -Force).Length -ne $ExpectedVhdxBytes) { throw 'hyper-v-base-image-normalize-size-mismatch' }",
         "      $SourcePath = $NormalizedSourcePath",
         "    }",
         "    $SourceVhd = Get-VHD -Path $SourcePath -ErrorAction Stop",
         "    if ([string]$SourceVhd.VhdType -eq 'Differencing' -or $SourceVhd.ParentPath) { throw 'hyper-v-base-image-invalid-parent' }",
-        "    Convert-VHD -Path $SourcePath -DestinationPath $PartialPath -VHDType Dynamic -ErrorAction Stop",
+        "    Move-Item -LiteralPath $SourcePath -Destination $PartialPath -ErrorAction Stop",
         "  }",
         "  $Vhd = Assert-BaseVhd $PartialPath",
         "  Assert-NoReparsePath $PartialPath",
@@ -2436,7 +2483,7 @@ export function parseHyperVSetupObservation(stdout: string): HyperVSetupObservat
 
 export function parseHyperVBaseImageObservation(stdout: string): HyperVBaseImageObservation | null {
     const parsed = parseMarkedJsonObject(stdout) || parseLastJsonObject(stdout);
-    if (!parsed || parsed.ok !== true || (parsed.profile !== "windows-11" && parsed.profile !== "windows-server" && parsed.profile !== "ubuntu-lts") || typeof parsed.imagePath !== "string" || typeof parsed.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(parsed.sha256) || typeof parsed.sizeBytes !== "number" || !Number.isSafeInteger(parsed.sizeBytes) || parsed.sizeBytes <= 0 || typeof parsed.virtualSizeBytes !== "number" || !Number.isSafeInteger(parsed.virtualSizeBytes) || parsed.virtualSizeBytes < parsed.sizeBytes || (parsed.vhdType !== "Dynamic" && parsed.vhdType !== "Fixed") || typeof parsed.reused !== "boolean") return null;
+    if (!parsed || parsed.ok !== true || (parsed.profile !== "windows-11" && parsed.profile !== "windows-server" && parsed.profile !== "ubuntu-lts") || typeof parsed.imagePath !== "string" || typeof parsed.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(parsed.sha256) || typeof parsed.sizeBytes !== "number" || !Number.isSafeInteger(parsed.sizeBytes) || parsed.sizeBytes <= 0 || typeof parsed.virtualSizeBytes !== "number" || !Number.isSafeInteger(parsed.virtualSizeBytes) || parsed.virtualSizeBytes < parsed.sizeBytes || (parsed.vhdType !== "Dynamic" && parsed.vhdType !== "Fixed") || (parsed.generation !== 1 && parsed.generation !== 2) || typeof parsed.reused !== "boolean") return null;
     return {
         ok: true,
         profile: parsed.profile,
@@ -2445,6 +2492,7 @@ export function parseHyperVBaseImageObservation(stdout: string): HyperVBaseImage
         sizeBytes: parsed.sizeBytes,
         virtualSizeBytes: parsed.virtualSizeBytes,
         vhdType: parsed.vhdType,
+        generation: parsed.generation,
         reused: parsed.reused,
     };
 }
@@ -2520,6 +2568,7 @@ export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | 
         ...(typeof parsed.uptimeMs === "number" && Number.isFinite(parsed.uptimeMs) ? { uptimeMs: parsed.uptimeMs } : {}),
         ...(typeof parsed.diskPath === "string" ? { diskPath: parsed.diskPath } : {}),
         ...(typeof parsed.switchName === "string" ? { switchName: parsed.switchName } : {}),
+        ...((parsed.generation === 1 || parsed.generation === 2) ? { generation: parsed.generation } : {}),
         ...(Array.isArray(parsed.snapshots) ? {
             snapshots: parsed.snapshots.flatMap((snapshot) => {
                 if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return [];
