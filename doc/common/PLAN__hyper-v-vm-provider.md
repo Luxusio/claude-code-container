@@ -470,6 +470,12 @@ Real-provider tests:
   device types. They never expose VM names, disk paths, credentials, raw
   PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
   the observed VM state instead of assuming a started VM remained running.
+- The automatic Ubuntu profile uses Canonical's Azure VHD, so its provisioning
+  media includes an Azure-compatible UDF `ovf-env.xml` with base64 cloud-config
+  in addition to the generic NoCloud files. The guest writes and applies the
+  owner-assigned static netplan before SSH readiness. Broker compatibility
+  requires `hyper-v-azure-ovf-seed-v1`, preventing a same-version daemon with
+  the old NoCloud-only seed path from being reused.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - Unsupported hosts return short, categorized readiness diagnostics.
 

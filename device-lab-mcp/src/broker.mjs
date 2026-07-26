@@ -80,6 +80,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-vm-managed-auto-images-v15",
     "hyper-v-setup-network-v3",
     "hyper-v-guest-readiness-diagnostics-v1",
+    "hyper-v-azure-ovf-seed-v1",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 const MAX_RPC_TIMEOUT_MS = 21615000;

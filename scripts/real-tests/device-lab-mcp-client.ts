@@ -389,30 +389,30 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? JSON.stringify({
             provider: typeof boot.provider === "string" ? boot.provider : undefined,
             error: typeof boot.error === "string" ? boot.error : undefined,
-            diagnosticAvailable: boot.diagnosticAvailable === true,
-            vm: bootObservation ? {
-                state: typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
-                uptimeMs: Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
-                heartbeatEnabled: typeof bootObservation.heartbeatEnabled === "boolean" ? bootObservation.heartbeatEnabled : null,
-                heartbeatPrimaryStatus: Number.isSafeInteger(bootObservation.heartbeatPrimaryStatus) ? bootObservation.heartbeatPrimaryStatus : null,
-                heartbeatSecondaryStatus: Number.isSafeInteger(bootObservation.heartbeatSecondaryStatus) ? bootObservation.heartbeatSecondaryStatus : null,
-                hardDiskCount: Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
-                dvdCount: Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
-                bootDeviceTypes: Array.isArray(bootObservation.bootDeviceTypes)
+            state: bootObservation && typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
+            uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
+            heartbeat: bootObservation && typeof bootObservation.heartbeatEnabled === "boolean" ? bootObservation.heartbeatEnabled : null,
+            heartbeatStatus: bootObservation ? [
+                Number.isSafeInteger(bootObservation.heartbeatPrimaryStatus) ? bootObservation.heartbeatPrimaryStatus : null,
+                Number.isSafeInteger(bootObservation.heartbeatSecondaryStatus) ? bootObservation.heartbeatSecondaryStatus : null,
+            ] : undefined,
+            disks: bootObservation && Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
+            dvds: bootObservation && Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
+            boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
                     ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 8)
                     : undefined,
-            } : undefined,
         })
         : "";
-    const message = [
+    const parts = [
         value?.error,
         value?.detail,
         body?.error,
         body?.detail,
-        bootDiagnostic,
+        bootDiagnostic ? `boot=${bootDiagnostic}` : "",
         diagnostic,
         transportDiagnostic,
-    ].filter(Boolean).join(": ") || fallback;
+    ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
+    const message = [...new Set(parts)].join(": ") || fallback;
     return message.slice(0, 4095);
 }
 

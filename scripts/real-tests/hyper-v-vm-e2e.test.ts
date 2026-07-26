@@ -317,12 +317,13 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain("hyper-v-guest-not-ready");
         expect(message).toContain('"error":"ssh-connection-refused"');
         expect(message).toContain('"state":"Running"');
-        expect(message).toContain('"bootDeviceTypes":["hard-disk","dvd"]');
+        expect(message).toContain('"heartbeat":true');
+        expect(message).toContain('"boot":["hard-disk","dvd"]');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");
         expect(message).not.toContain("C:\\Users");
-        expect(message.length).toBeLessThan(1024);
+        expect(message.length).toBeLessThan(300);
     });
 
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {

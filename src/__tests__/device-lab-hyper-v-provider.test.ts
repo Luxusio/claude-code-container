@@ -670,7 +670,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
-        expect(seedScript).toContain("$Image.FileSystemsToCreate = 3");
+        expect(seedScript).toContain("$Image.FileSystemsToCreate = 7");
         expect(seedScript).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(seedScript).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(seedScript).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
@@ -704,6 +704,12 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("$ImageRoot.AddFile(");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
+        expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
+        expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
+        expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");
+        expect(seedScript).toContain("apply_network_config: false");
+        expect(seedScript).toContain("/etc/netplan/99-ccc-static.yaml");
+        expect(seedScript).toContain("'  - [netplan, apply]'");
         expect(seedScript).toContain("ssh-keygen.exe");
         expect(seedScript).toContain("function New-CccSshKey");
         expect(seedScript).toContain("$StartInfo.Arguments = '-q -t ed25519 -N \"\"");
@@ -1186,7 +1192,7 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("Get-VMIntegrationService -VM $Vm");
         expect(script).toContain("84eaae65-2f2e-45f5-9bb5-0e857dc8eb47");
-        expect(script).toContain("([string]$_.Id).ToLowerInvariant()");
+        expect(script).toContain("([string]$_.Id).Trim('{}').ToLowerInvariant()");
         expect(script).not.toContain("$_.Name -eq 'Heartbeat'");
         expect(script).toContain("Get-VMFirmware -VM $Vm");
         expect(script).toContain("$BootType = [string]$_.BootType");
@@ -1271,7 +1277,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot");
         expect(script).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
-        expect(script).toContain("$Image.FileSystemsToCreate = 3");
+        expect(script).toContain("$Image.FileSystemsToCreate = 7");
         expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(script).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
