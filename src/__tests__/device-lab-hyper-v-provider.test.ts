@@ -286,6 +286,7 @@ describe("Hyper-V provider adapter", () => {
                 networkAddress: "172.29.0.10",
                 networkGateway: "172.29.0.1",
                 networkPrefixLength: 24,
+                macAddress: "02:11:22:33:44:66",
             });
             const generated = scriptOf(seed);
             const functionStart = generated.indexOf("function New-CccSshKey");
@@ -610,7 +611,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("CheckpointType ProductionOnly");
         expect(script).toContain("EnableSecureBoot On");
         expect(script).toContain("Get-VMSwitch -Name $SwitchName");
-        expect(script).toContain("Set-VMNetworkAdapter -VM $CreatedVm -StaticMacAddress");
+        expect(script).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
         expect(script).toContain("02:11:22:33:44:55");
         expect(script).toContain("hyper-v-network-switch-unavailable");
         expect(script).toContain("$DiskReserveBytes = 10GB");
@@ -633,6 +634,30 @@ describe("Hyper-V provider adapter", () => {
             memoryMb: 512,
             cpus: 2,
         })).toThrow("hyper-v-memory-mb-invalid");
+
+        const linuxScript = scriptOf(hyperVCreateCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId: "linux-ci-01",
+            incarnationId,
+            vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
+            baseImagePath: "/state/images/hyper-v/ubuntu-lts.vhdx",
+            baseImageSha256,
+            baseImageRoot: "/state/images/hyper-v",
+            deviceRoot: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01",
+            diskPath: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01/disks/root.vhdx",
+            diskMaxBytes: 64 * 1024 * 1024 * 1024,
+            memoryMb: 4096,
+            cpus: 2,
+            switchName: "CCC Device Lab",
+            macAddress: "02:11:22:33:44:66",
+            bootstrapDhcp: true,
+            secureBootTemplate: "MicrosoftUEFICertificateAuthority",
+        }));
+        expect(linuxScript).toContain("Get-VMSwitch -Name 'Default Switch'");
+        expect(linuxScript).toContain("hyper-v-bootstrap-dhcp-switch-unavailable");
+        expect(linuxScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
+        expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
     });
 
     it("provisions a fenced cloud-init seed and owner-scoped SSH transport for Linux guests", () => {
@@ -665,6 +690,7 @@ describe("Hyper-V provider adapter", () => {
             networkAddress: "172.29.0.10",
             networkGateway: "172.29.0.1",
             networkPrefixLength: 24,
+            macAddress: "02:11:22:33:44:66",
         });
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
@@ -704,6 +730,12 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("$ImageRoot.AddFile(");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
+        const networkBase64 = seedScript.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
+        expect(networkBase64).toBeTruthy();
+        const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
+        expect(networkConfig).toContain("macaddress: '02:11:22:33:44:66'");
+        expect(networkConfig).not.toContain("name: 'e*'");
+        expect(seedScript).not.toContain("<ns1:dscfg>");
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
         expect(seedScript).toContain("('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>')");
@@ -714,7 +746,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("<ns1:PreprovisionedVMType xsi:nil=\"true\" />");
         expect(seedScript.indexOf("</ns1:ProvisioningSection>")).toBeLessThan(seedScript.indexOf("<ns1:PlatformSettingsSection>"));
         expect(seedScript.indexOf("</ns1:PlatformSettingsSection>")).toBeLessThan(seedScript.indexOf("</ns0:Environment>"));
-        expect(seedScript).toContain("apply_network_config: false");
+        expect(seedScript).not.toContain("apply_network_config: false");
         expect(seedScript).toContain("/etc/netplan/99-ccc-static.yaml");
         expect(seedScript).toContain("'  - [netplan, apply]'");
         expect(seedScript).toContain("ssh-keygen.exe");
@@ -1287,6 +1319,10 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Image.FileSystemsToCreate = 7");
         expect(script).toContain("<settings pass=\"specialize\">");
         expect(script).toContain("<ComputerName>*</ComputerName>");
+        expect(script).toContain("Microsoft-Windows-Deployment");
+        expect(script).toContain("Create CCC PowerShell Direct account");
+        expect(script).toContain("Get-LocalGroup -SID 'S-1-5-32-544'");
+        expect(script).not.toContain("<UserAccounts>");
         expect(script.indexOf("<settings pass=\"specialize\">")).toBeLessThan(script.indexOf("<settings pass=\"oobeSystem\">"));
         expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");

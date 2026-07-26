@@ -191,6 +191,7 @@ type HyperVCreateOptions = HyperVCommandOptions & {
     switchName?: string | null;
     macAddress?: string | null;
     networking?: boolean;
+    bootstrapDhcp?: boolean;
     secureBootTemplate?: "MicrosoftWindows" | "MicrosoftUEFICertificateAuthority";
 };
 
@@ -271,6 +272,7 @@ type HyperVLinuxSeedOptions = HyperVCommandOptions & {
     networkAddress: string;
     networkGateway: string;
     networkPrefixLength: number;
+    macAddress: string;
     dnsServers?: string[];
 };
 
@@ -1161,6 +1163,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         `$SwitchName = ${psQuote(switchName)}`,
         `$MacAddress = ${psQuote(macAddress)}`,
         `$Networking = ${options.networking === false ? "$false" : "$true"}`,
+        `$BootstrapDhcp = ${options.bootstrapDhcp === true ? "$true" : "$false"}`,
         "$ComputerInfo = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop",
         "$TotalMemoryMb = [Math]::Floor([double]$ComputerInfo.TotalPhysicalMemory / 1MB)",
         "$MemoryReserveMb = [Math]::Max(2048, [Math]::Floor($TotalMemoryMb * 0.10))",
@@ -1182,6 +1185,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "$BaseImageStream = $null",
         "try {",
         "  $ResolvedSwitch = $null",
+        "  $BootstrapSwitch = $null",
         "  if ($Networking) {",
         "    if ($SwitchName) {",
         "      $SwitchMatches = @(Get-VMSwitch -Name $SwitchName -ErrorAction SilentlyContinue)",
@@ -1192,6 +1196,13 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "      if (-not $ResolvedSwitch) { $ResolvedSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object { $_.SwitchType -eq 'External' } | Sort-Object Name | Select-Object -First 1 }",
         "      if (-not $ResolvedSwitch) { $ResolvedSwitch = Get-VMSwitch -ErrorAction Stop | Where-Object { $_.SwitchType -eq 'Internal' } | Sort-Object Name | Select-Object -First 1 }",
         "      if (-not $ResolvedSwitch) { throw 'hyper-v-network-switch-unavailable' }",
+        "    }",
+        "    if ($BootstrapDhcp) {",
+        "      if (-not $SwitchName) { throw 'hyper-v-bootstrap-network-switch-required' }",
+        "      $BootstrapSwitches = @(Get-VMSwitch -Name 'Default Switch' -ErrorAction SilentlyContinue)",
+        "      if ($BootstrapSwitches.Count -ne 1) { throw 'hyper-v-bootstrap-dhcp-switch-unavailable' }",
+        "      $BootstrapSwitch = $BootstrapSwitches[0]",
+        "      if ([string]$BootstrapSwitch.Id -eq [string]$ResolvedSwitch.Id) { throw 'hyper-v-bootstrap-network-switch-conflict' }",
         "    }",
         "  }",
         "  Assert-NoReparsePath $BaseImage",
@@ -1211,9 +1222,22 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  try { $BaseImageHashAfterCreate = ([BitConverter]::ToString($Hasher.ComputeHash($BaseImageStream))).Replace('-', '').ToLowerInvariant() } finally { $Hasher.Dispose() }",
         "  if ($BaseImageHashAfterCreate -ne $ExpectedBaseImageHash) { throw 'hyper-v-base-image-hash-mismatch' }",
         `  $VmArgs = @{ Name = $VmName; Generation = 2; MemoryStartupBytes = ${memoryMb}MB; VHDPath = $DiskPath }`,
-        "  if ($ResolvedSwitch) { $VmArgs.SwitchName = $ResolvedSwitch.Name }",
+        "  if ($BootstrapSwitch) { $VmArgs.SwitchName = $BootstrapSwitch.Name } elseif ($ResolvedSwitch) { $VmArgs.SwitchName = $ResolvedSwitch.Name }",
         "  $CreatedVm = New-VM @VmArgs -ErrorAction Stop",
-        "  if ($MacAddress) { Set-VMNetworkAdapter -VM $CreatedVm -StaticMacAddress ($MacAddress.Replace(':', '')) -ErrorAction Stop }",
+        "  $ManagedAdapter = $null",
+        "  if ($BootstrapSwitch) {",
+        "    Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network' -ErrorAction Stop",
+        "    $ManagedAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Device Network' })",
+        "    if ($ManagedAdapters.Count -ne 1) { throw 'hyper-v-managed-network-adapter-unavailable' }",
+        "    $ManagedAdapter = $ManagedAdapters[0]",
+        "  } else {",
+        "    $ManagedAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop)",
+        "    if ($ManagedAdapters.Count -eq 1) { $ManagedAdapter = $ManagedAdapters[0] }",
+        "  }",
+        "  if ($MacAddress) {",
+        "    if (-not $ManagedAdapter) { throw 'hyper-v-managed-network-adapter-unavailable' }",
+        "    Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress ($MacAddress.Replace(':', '')) -ErrorAction Stop",
+        "  }",
         `  Set-VMProcessor -VM $CreatedVm -Count ${cpus} -ErrorAction Stop`,
         "  Set-VM -VM $CreatedVm -AutomaticCheckpointsEnabled $false -CheckpointType ProductionOnly -Notes $Marker -ErrorAction Stop",
         `  Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -ErrorAction Stop`,
@@ -1255,6 +1279,8 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
     const address = assertIpv4(options.networkAddress, "linux-network-address");
     const gateway = assertIpv4(options.networkGateway, "linux-network-gateway");
     const prefixLength = boundedInteger(options.networkPrefixLength, 16, 30, "linux-network-prefix-length");
+    const macAddress = String(options.macAddress || "").toLowerCase();
+    if (!/^02(?::[0-9a-f]{2}){5}$/.test(macAddress)) throw new Error("hyper-v-mac-address-invalid");
     const dnsServers = (options.dnsServers?.length ? options.dnsServers : ["1.1.1.1", "8.8.8.8"])
         .map((server) => assertIpv4(server, "linux-dns-server"));
     const metadata = `instance-id: ${options.ownerId}-${options.deviceId}\nlocal-hostname: ${options.vmName}\n`;
@@ -1263,7 +1289,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "ethernets:",
         "  eth0:",
         "    match:",
-        "      name: 'e*'",
+        `      macaddress: '${macAddress}'`,
         "    set-name: eth0",
         `    addresses: [${address}/${prefixLength}]`,
         `    gateway4: ${gateway}`,
@@ -1341,9 +1367,7 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
         "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/ssh/ssh_host_ed25519_key', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $HostPrivateKeyBase64), '  - path: /etc/ssh/ssh_host_ed25519_key.pub', '    owner: root:root', \"    permissions: '0644'\", '    encoding: b64', ('    content: ' + $HostPublicKeyBase64), '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetworkBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, restart, ssh]', 'package_update: false', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
-        "$AzureDataSourceConfig = \"datasource:`n  Azure:`n    apply_network_config: false`n\"",
-        "$AzureDataSourceConfigBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($AzureDataSourceConfig))",
-        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), ('<ns1:dscfg>' + $AzureDataSourceConfigBase64 + '</ns1:dscfg>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
+        "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
         "$OvfEnvironmentBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($OvfEnvironment))",
         "Set-CccProvisionStage 'media-check'",
         "$ExistingAttachment = @(Get-VMDvdDrive -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $SeedDisk })",
@@ -2027,6 +2051,21 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  Set-CccProvisionStage 'media-content'",
         "  $PasswordXml = [Security.SecurityElement]::Escape($PlainPassword)",
         "  $UsernameXml = [Security.SecurityElement]::Escape($ExpectedUsername)",
+        "  $UsernameBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($ExpectedUsername))",
+        "  $PasswordBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PlainPassword))",
+        "  $SpecializeTemplate = @'",
+        "$ErrorActionPreference = 'Stop'",
+        "$u = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__CCC_USERNAME__'))",
+        "$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__CCC_PASSWORD__'))",
+        "$s = ConvertTo-SecureString $p -AsPlainText -Force",
+        "$existing = Get-LocalUser -Name $u -ErrorAction SilentlyContinue",
+        "if ($existing) { Set-LocalUser -Name $u -Password $s } else { New-LocalUser -Name $u -Password $s -AccountNeverExpires -PasswordNeverExpires | Out-Null }",
+        "$existing = Get-LocalUser -Name $u -ErrorAction Stop",
+        "$group = Get-LocalGroup -SID 'S-1-5-32-544'",
+        "if (-not (Get-LocalGroupMember -Group $group -ErrorAction SilentlyContinue | Where-Object { [string]$_.SID -eq [string]$existing.SID })) { Add-LocalGroupMember -Group $group -Member $existing }",
+        "'@",
+        "  $SpecializeScript = $SpecializeTemplate.Replace('__CCC_USERNAME__', $UsernameBase64).Replace('__CCC_PASSWORD__', $PasswordBase64)",
+        "  $SpecializeEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($SpecializeScript))",
         "  $Unattend = @\"",
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
         "<unattend xmlns=\"urn:schemas-microsoft-com:unattend\">",
@@ -2034,11 +2073,13 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "    <component name=\"Microsoft-Windows-Shell-Setup\" processorArchitecture=\"amd64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\">",
         "      <ComputerName>*</ComputerName>",
         "    </component>",
+        "    <component name=\"Microsoft-Windows-Deployment\" processorArchitecture=\"amd64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\" xmlns:wcm=\"http://schemas.microsoft.com/WMIConfig/2002/State\">",
+        "      <RunSynchronous><RunSynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Create CCC PowerShell Direct account</Description><Path>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $SpecializeEncoded</Path><WillReboot>Never</WillReboot></RunSynchronousCommand></RunSynchronous>",
+        "    </component>",
         "  </settings>",
         "  <settings pass=\"oobeSystem\">",
         "    <component name=\"Microsoft-Windows-Shell-Setup\" processorArchitecture=\"amd64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\" xmlns:wcm=\"http://schemas.microsoft.com/WMIConfig/2002/State\">",
         "      <OOBE><HideEULAPage>true</HideEULAPage><ProtectYourPC>3</ProtectYourPC><SkipMachineOOBE>true</SkipMachineOOBE><SkipUserOOBE>true</SkipUserOOBE></OOBE>",
-        "      <UserAccounts><LocalAccounts><LocalAccount wcm:action=\"add\"><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><Description>CCC disposable guest</Description><DisplayName>CCC</DisplayName><Group>Administrators</Group><Name>$UsernameXml</Name></LocalAccount></LocalAccounts></UserAccounts>",
         "      <AutoLogon><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>$UsernameXml</Username></AutoLogon>",
         "      <FirstLogonCommands><SynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Remove CCC bootstrap secrets</Description><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $FirstLogonEncoded</CommandLine></SynchronousCommand></FirstLogonCommands>",
         "    </component>",
@@ -2061,6 +2102,10 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  throw",
         "} finally {",
         "  $PlainPassword = $null",
+        "  $PasswordBase64 = $null",
+        "  $SpecializeTemplate = $null",
+        "  $SpecializeScript = $null",
+        "  $SpecializeEncoded = $null",
         "  $Provisioning = $null",
         "  $RawInput = $null",
         "}",

@@ -1562,7 +1562,20 @@ describe("device-lab Hyper-V broker", () => {
             const createdBody = await created.json();
             activeIncarnationId = createdBody.result.device.incarnationId as string;
             const allocatedAddress = createdBody.result.device.networkAddress as string;
+            const allocatedMac = createdBody.result.device.macAddress as string;
             expect(createdBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ backend: "linux-vm", platform: "linux", provider: "hyper-v", guestProvisioned: true, guestTransport: "ssh", seedDiskPath, sshHostPublicKeyPath: hostPublicKeyPath, sshHostKeyFingerprint: hostKeyFingerprint, sshKnownHostsPath: knownHostsPath, networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/) }) }) }));
+            const vmCreateScript = commandRunner.mock.calls
+                .map(([command]) => providerScript(command))
+                .find((script) => script.includes("New-VM @VmArgs"));
+            expect(vmCreateScript).toContain("$BootstrapDhcp = $true");
+            expect(vmCreateScript).toContain("Get-VMSwitch -Name 'Default Switch'");
+            expect(vmCreateScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
+            const seedScript = commandRunner.mock.calls
+                .map(([command]) => providerScript(command))
+                .find((script) => script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'"));
+            const networkBase64 = seedScript?.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
+            expect(networkBase64).toBeTruthy();
+            expect(Buffer.from(networkBase64!, "base64").toString("utf8")).toContain(`macaddress: '${allocatedMac}'`);
             expect(createdBody.result.device).not.toHaveProperty("privateRoot");
             expect(createdBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');

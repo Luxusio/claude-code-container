@@ -300,7 +300,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             heartbeatSecondaryStatus: 0,
                             hardDiskCount: 1,
                             dvdCount: 1,
-                            bootDeviceTypes: ["hard-disk", "dvd"],
+                            bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
                             diskPath: "C:\\Users\\Luxus\\private\\root.vhdx",
                         },
                     },
@@ -318,7 +318,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain('"error":"ssh-connection-refused"');
         expect(message).toContain('"state":"Running"');
         expect(message).toContain('"heartbeat":true');
-        expect(message).toContain('"boot":["hard-disk","dvd"]');
+        expect(message).toContain('"boot":["hard-disk","dvd","network"]');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");
@@ -346,7 +346,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             heartbeatSecondaryStatus: 0,
                             hardDiskCount: 1,
                             dvdCount: 1,
-                            bootDeviceTypes: ["hard-disk", "dvd"],
+                            bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
                         },
                     },
                 },
@@ -354,9 +354,10 @@ describe("Hyper-V E2E zero-config image selection", () => {
         }, "fallback");
         expect(message.slice(0, 300)).toContain('boot={"provider":"hyper-v-powershell-direct"');
         expect(message.slice(0, 300)).toContain('"heartbeat":true');
-        expect(message.slice(0, 300)).toContain('"boot":["hard-disk","dvd"]');
+        expect(message.slice(0, 300)).toContain('"boot":["hard-disk","dvd","network"]');
         expect(message).not.toContain("outerouter");
         expect(message).not.toContain("innerinner");
+        expect(message.length).toBeLessThan(300);
     });
 
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {

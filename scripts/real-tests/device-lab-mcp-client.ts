@@ -399,7 +399,7 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             disks: bootObservation && Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
             dvds: bootObservation && Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
             boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
-                    ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 8)
+                    ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
                     : undefined,
         })
         : "";
@@ -413,8 +413,8 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         value?.error,
         body?.error,
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",
-        boundedDetail(value?.detail),
-        boundedDetail(body?.detail),
+        bootDiagnostic ? "" : boundedDetail(value?.detail),
+        bootDiagnostic ? "" : boundedDetail(body?.detail),
         diagnostic,
         transportDiagnostic,
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);

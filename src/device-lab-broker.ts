@@ -183,7 +183,9 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3
 const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED = "hyper-v-windows-specialize-seed-v1";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT = "hyper-v-windows-specialize-account-v1";
 const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
@@ -259,7 +261,9 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS,
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED,
     DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
     DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
+    DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
 ];
 const DEVICE_BROKER_DETACHED_READY_MS = 150;
 const DEVICE_BROKER_RECORDING_STOP_TIMEOUT_MS = 3000;
@@ -2627,7 +2631,9 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS,
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED,
             DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP,
             DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED,
+            DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT,
             DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE,
             DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP,
@@ -9389,6 +9395,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
                 switchName: typeof create.switchName === "string" ? create.switchName : null,
                 macAddress: typeof create.macAddress === "string" ? create.macAddress : null,
                 networking: create.networking !== false,
+                bootstrapDhcp: linuxGuest,
                 secureBootTemplate: linuxGuest || create.secureBootTemplate === "MicrosoftUEFICertificateAuthority"
                     ? "MicrosoftUEFICertificateAuthority"
                     : "MicrosoftWindows",
@@ -11896,6 +11903,7 @@ async function lifecycleCommandInvokeUnlocked(
                     networkAddress: String(parsed.create?.networkAddress || ""),
                     networkGateway: String(parsed.create?.networkGateway || ""),
                     networkPrefixLength: typeof parsed.create?.networkPrefix === "string" ? Number(parsed.create.networkPrefix.split("/")[1]) : 24,
+                    macAddress: String(parsed.create?.macAddress || ""),
                 });
             } catch (error) {
                 const rollback = await rollbackProvisioning();

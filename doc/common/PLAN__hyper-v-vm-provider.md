@@ -472,16 +472,20 @@ Real-provider tests:
   the observed VM state instead of assuming a started VM remained running.
 - The automatic Ubuntu profile uses Canonical's Azure VHD, so its provisioning
   media includes an Azure-compatible UDF `ovf-env.xml` with base64 cloud-config
-  in addition to the generic NoCloud files. The guest writes and applies the
-  owner-assigned static netplan before SSH readiness. Broker compatibility
-  requires `hyper-v-azure-ovf-seed-v2`, preventing same-version daemons with
-  either the old NoCloud-only media or an incomplete Azure OVF document from
-  being reused.
+  in addition to the generic NoCloud files. Its first NIC uses Hyper-V's
+  `Default Switch` only for the Azure datasource's mandatory bootstrap DHCP
+  discovery. A second NIC uses the CCC NAT switch, and cloud-init matches that
+  NIC by its owner-assigned static MAC before applying the deterministic CCC IP.
+  Broker compatibility requires both `hyper-v-azure-ovf-seed-v2` and
+  `hyper-v-azure-bootstrap-dhcp-v1`, preventing same-version daemons with the
+  old single-NIC startup deadlock from being reused.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
-  the removable answer file during its actual first configuration pass; the
-  second creates the disposable local administrator used by PowerShell Direct.
-  Broker compatibility requires `hyper-v-windows-specialize-seed-v1`.
+  the removable answer file during its actual first configuration pass and
+  creates the disposable local administrator before PowerShell Direct probes
+  begin. The second pass performs automatic login and secret cleanup. Broker
+  compatibility requires `hyper-v-windows-specialize-seed-v1` and
+  `hyper-v-windows-specialize-account-v1`.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
