@@ -1857,6 +1857,71 @@ describe("createWorkspace (unified mode)", () => {
             rmSync(externalRepo, { recursive: true, force: true });
         }
     });
+
+    it("rejects ignored repositories whose git file points at unrelated metadata", () => {
+        const externalRepo = join(dirname(tmpDir), `${basename(tmpDir)}-external-gitfile`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "nested/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore nested"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            initRepo(externalRepo);
+            const nestedRepo = join(tmpDir, "nested");
+            mkdirSync(nestedRepo);
+            writeFileSync(
+                join(nestedRepo, ".git"),
+                `gitdir: ${join(externalRepo, ".git")}\n`,
+            );
+
+            expect(() => createWorkspace(tmpDir, "external-gitfile"))
+                .toThrow("metadata is not owned");
+            expect(branchExistsInRepo(externalRepo, "external-gitfile"))
+                .toBe("none");
+        } finally {
+            rmSync(externalRepo, { recursive: true, force: true });
+        }
+    });
+
+    it("supports repository chains deeper than twenty levels", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "level-01/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore deep chain"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+
+        let repository = tmpDir;
+        const names: string[] = [];
+        for (let depth = 1; depth <= 21; depth += 1) {
+            const name = `level-${String(depth).padStart(2, "0")}`;
+            repository = join(repository, name);
+            names.push(name);
+            initRepo(repository);
+            if (depth < 21) {
+                const next = `level-${String(depth + 1).padStart(2, "0")}`;
+                writeFileSync(join(repository, ".gitignore"), `${next}/\n`);
+                spawnSync("git", ["add", ".gitignore"], {
+                    cwd: repository,
+                    stdio: "pipe",
+                });
+                spawnSync("git", ["commit", "-m", `ignore ${next}`], {
+                    cwd: repository,
+                    stdio: "pipe",
+                });
+            }
+        }
+
+        const result = createWorkspace(tmpDir, "deep-chain");
+        const deepestName = names.join("/");
+        const deepestWorktree = join(result.workspacePath, ...names);
+
+        expect(result.created.map(({ name }) => name)).toContain(deepestName);
+        expect(isValidWorktree(deepestWorktree, repository)).toBe(true);
+    });
 });
 
 describe("repairWorkspace", () => {
@@ -3008,6 +3073,146 @@ describe("fixBrokenWorktree", () => {
 
         expect(result).not.toBeNull();
         expect(readFileSync(join(legacyBackup, "foreign.txt"), "utf-8")).toBe("foreign");
+    });
+
+    it("refuses deep repair through a symlinked workspace parent", () => {
+        const external = join(dirname(tmpDir), `${basename(tmpDir)}-repair-external`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "services/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore services"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            const nestedRepo = join(tmpDir, "services", "private", "api");
+            initRepo(nestedRepo);
+            const wsResult = createWorkspace(tmpDir, "repair-parent-link");
+            const nestedWorktree = join(
+                wsResult.workspacePath,
+                "services",
+                "private",
+                "api",
+            );
+            spawnSync("git", ["worktree", "remove", "--force", nestedWorktree], {
+                cwd: nestedRepo,
+                stdio: "pipe",
+            });
+            rmSync(join(wsResult.workspacePath, "services"), {
+                recursive: true,
+                force: true,
+            });
+            mkdirSync(join(external, "private", "api"), { recursive: true });
+            writeFileSync(join(external, "private", "api", "preserve.txt"), "external");
+            symlinkSync(
+                external,
+                join(wsResult.workspacePath, "services"),
+                process.platform === "win32" ? "junction" : "dir",
+            );
+
+            expect(() => fixBrokenWorktree(
+                tmpDir,
+                wsResult.workspacePath,
+                "services/private/api",
+                "repair-parent-link",
+                true,
+            )).toThrow("parent is not a safe directory");
+            expect(readFileSync(
+                join(external, "private", "api", "preserve.txt"),
+                "utf-8",
+            )).toBe("external");
+        } finally {
+            rmSync(external, { recursive: true, force: true });
+        }
+    });
+
+    it("initializes nested submodules while replacing broken content", () => {
+        const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-repair-submodule`);
+        try {
+            initRepo(tmpDir);
+            writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
+            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "ignore vendor"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            initRepo(submoduleOrigin);
+            writeFileSync(join(submoduleOrigin, "child.txt"), "child");
+            spawnSync("git", ["add", "child.txt"], {
+                cwd: submoduleOrigin,
+                stdio: "pipe",
+            });
+            spawnSync("git", ["commit", "-m", "add child"], {
+                cwd: submoduleOrigin,
+                stdio: "pipe",
+            });
+            const nestedRepo = join(tmpDir, "vendor", "platform");
+            initRepo(nestedRepo);
+            const added = spawnSync(
+                "git",
+                [
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    submoduleOrigin,
+                    "modules/child",
+                ],
+                { cwd: nestedRepo, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(added.status, added.stderr).toBe(0);
+            spawnSync("git", ["commit", "-am", "add child submodule"], {
+                cwd: nestedRepo,
+                stdio: "pipe",
+            });
+            const previousAllowedProtocol = process.env.GIT_ALLOW_PROTOCOL;
+            process.env.GIT_ALLOW_PROTOCOL = "file";
+            try {
+                const wsResult = createWorkspace(tmpDir, "repair-submodule");
+                const nestedWorktree = join(wsResult.workspacePath, "vendor", "platform");
+                spawnSync("git", ["worktree", "remove", "--force", nestedWorktree], {
+                    cwd: nestedRepo,
+                    stdio: "pipe",
+                });
+                mkdirSync(nestedWorktree, { recursive: true });
+                writeFileSync(join(nestedWorktree, "preserve.txt"), "preserve");
+                mkdirSync(join(nestedWorktree, "modules", "child"), {
+                    recursive: true,
+                });
+                writeFileSync(
+                    join(nestedWorktree, "modules", "child", ".git"),
+                    "gitdir: /unowned/stale/metadata\n",
+                );
+
+                const fixed = fixBrokenWorktree(
+                    tmpDir,
+                    wsResult.workspacePath,
+                    "vendor/platform",
+                    "repair-submodule",
+                    true,
+                );
+
+                expect(fixed).not.toBeNull();
+                expect(readFileSync(
+                    join(nestedWorktree, "modules", "child", "child.txt"),
+                    "utf-8",
+                )).toBe("child");
+                expect(readFileSync(join(nestedWorktree, "preserve.txt"), "utf-8"))
+                    .toBe("preserve");
+                expect(readFileSync(
+                    join(nestedWorktree, "modules", "child", ".git"),
+                    "utf-8",
+                )).not.toContain("/unowned/stale/metadata");
+            } finally {
+                if (previousAllowedProtocol === undefined) {
+                    delete process.env.GIT_ALLOW_PROTOCOL;
+                } else {
+                    process.env.GIT_ALLOW_PROTOCOL = previousAllowedProtocol;
+                }
+            }
+        } finally {
+            rmSync(submoduleOrigin, { recursive: true, force: true });
+        }
     });
 });
 
