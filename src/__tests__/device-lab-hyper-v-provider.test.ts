@@ -836,6 +836,9 @@ describe("Hyper-V provider adapter", () => {
         });
         expect(scriptOf(bootstrapNetwork)).toContain("$BootstrapAdapters[0].IPAddresses");
         expect(scriptOf(bootstrapNetwork)).toContain("[string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch'");
+        expect(scriptOf(bootstrapNetwork)).toContain("Get-VMNetworkAdapter -ManagementOS -SwitchName 'Default Switch'");
+        expect(scriptOf(bootstrapNetwork)).toContain("Get-NetIPAddress -AddressFamily IPv4");
+        expect(scriptOf(bootstrapNetwork)).toContain("Test-CccSamePrefix $Candidate");
         expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":["172.20.1.8"]}')).toEqual({
             ok: true,
             addresses: ["172.20.1.8"],
@@ -1451,6 +1454,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).not.toContain("$ProvisioningSource");
         expect(script).toContain("Mount-VHD -Path $DiskPath -Passthru");
+        expect(script).toContain("Get-VMHardDiskDrive -VM $Vm");
+        expect(script).toContain("$AttachedDisks.Count -ne 1");
+        expect(script.indexOf("$AttachedDisks.Count -ne 1")).toBeLessThan(script.indexOf("Mount-VHD -Path $DiskPath"));
         expect(script).toContain("$MountedDisk = $MountedVhd | Get-Disk");
         expect(script).toContain("Get-Partition -DiskNumber $MountedDisk.Number");
         expect(script).toContain("$PantherDirectory = Join-Path $WindowsRoots[0] 'Windows\\Panther'");
