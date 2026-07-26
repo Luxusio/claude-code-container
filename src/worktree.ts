@@ -21,7 +21,16 @@ import {
     realpathSync,
     unlinkSync,
 } from "fs";
-import { basename, dirname, join, posix, relative, resolve, win32 } from "path";
+import {
+    basename,
+    dirname,
+    isAbsolute,
+    join,
+    posix,
+    relative,
+    resolve,
+    win32,
+} from "path";
 
 /** Recursive directory copy (Node 14 compatible replacement for cpSync) */
 function copyDirRecursive(src: string, dest: string, depth: number = 0): void {
@@ -866,7 +875,7 @@ function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
                 && registryContainsWorktree(sourcePath, workspacePath)) {
                 registered.push(workspacePath);
             }
-            for (const entry of scanDirectory(sourcePath, { strict: true })) {
+            for (const entry of scanUnifiedNestedRepositories(sourcePath, { strict: true })) {
                 if (entry.isGitRepo
                     && registryContainsWorktree(
                         entry.path,
@@ -904,7 +913,7 @@ function branchRepositories(
     }
     if (hasRootGit) {
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
-        for (const entry of scanDirectory(workspacePath, { strict: true })) {
+        for (const entry of scanUnifiedNestedRepositories(workspacePath, { strict: true })) {
             if (!entry.isGitRepo) continue;
             const kind = gitLinkKind(join(entry.path, ".git"));
             if (kind === "worktree") {
@@ -939,7 +948,7 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
     if (hasGitMetadata(resolvedSource)) {
         assertWorkspaceRootOwnership(workspacePath, resolvedSource);
         const sourceRepositories = new Map(
-            scanDirectory(resolvedSource, { strict: true })
+            scanUnifiedNestedRepositories(resolvedSource, { strict: true })
                 .filter((entry) => entry.isGitRepo)
                 .map((entry) => [entry.name, entry]),
         );
@@ -952,7 +961,7 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
                 );
             }
         }
-        for (const destination of scanDirectory(workspacePath, { strict: true }).filter((entry) => entry.isGitRepo)) {
+        for (const destination of scanUnifiedNestedRepositories(workspacePath, { strict: true })) {
             const source = sourceRepositories.get(destination.name);
             if (!source) {
                 throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
@@ -1003,7 +1012,7 @@ export function detectWorktreeWorkspaceBranch(
     let repositories: Array<{ name: string; path: string }>;
     if (pathExistsStrict(rootGit)) {
         if (gitLinkKind(rootGit) !== "worktree") {
-            const nestedKinds = scanDirectory(workspacePath, { strict: true })
+            const nestedKinds = scanUnifiedNestedRepositories(workspacePath, { strict: true })
                 .filter((entry) => entry.isGitRepo)
                 .map((entry) => gitLinkKind(join(entry.path, ".git")));
             if (nestedKinds.some((kind) => kind === "worktree")
@@ -1130,6 +1139,184 @@ export function scanDirectory(
     }
 
     return entries;
+}
+
+function normalizeNestedRepositoryName(rawName: string): string | null {
+    const normalized = rawName.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!normalized) return null;
+    const segments = normalized.split("/");
+    if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+        return null;
+    }
+    if (segments.some((segment) => segment.includes(":"))) return null;
+    return segments.join("/");
+}
+
+function relativePathEscapesRoot(relativePath: string): boolean {
+    return isAbsolute(relativePath)
+        || relativePath === ".."
+        || relativePath.split(/[\\/]/)[0] === "..";
+}
+
+/**
+ * Find repositories nested below a unified Git root, including repositories
+ * hidden beneath ignored or untracked parent directories. Git reports embedded
+ * repository boundaries without requiring an unrestricted filesystem walk.
+ */
+function scanUnifiedNestedRepositories(
+    repositoryPath: string,
+    options: { strict?: boolean } = {},
+): WorkspaceEntry[] {
+    const root = resolve(repositoryPath);
+    const repositories = new Map<string, WorkspaceEntry>();
+
+    const collect = (
+        currentRepository: string,
+        relativePrefix: string,
+        depth: number,
+    ): void => {
+        if (depth > 20) {
+            throw new Error(
+                `Nested Git repository depth exceeds the supported limit at '${currentRepository}'.`,
+            );
+        }
+
+        const candidates = new Map<string, WorkspaceEntry>();
+        for (const entry of scanDirectory(currentRepository, options)) {
+            if (!entry.isGitRepo) continue;
+            candidates.set(entry.name, entry);
+        }
+
+        const candidateCommands = [
+            [
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ":(glob)**/.git",
+                ":(glob)**/.git/**",
+            ],
+            [
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ":(glob)**/.git",
+                ":(glob)**/.git/**",
+            ],
+        ];
+        for (const args of candidateCommands) {
+            const listed = spawnSync(
+                "git",
+                args,
+                {
+                    cwd: currentRepository,
+                    encoding: "utf-8",
+                    stdio: ["pipe", "pipe", "pipe"],
+                },
+            );
+            if (listed.error || listed.status !== 0) {
+                if (!options.strict) continue;
+                const detail = (listed.stderr ?? "").trim()
+                    || listed.error?.message
+                    || `git exited with status ${String(listed.status)}`;
+                throw new Error(
+                    `Unable to inspect nested Git repositories in '${currentRepository}': ${detail}`,
+                );
+            }
+            for (const rawName of (listed.stdout ?? "").split("\0")) {
+                const name = normalizeNestedRepositoryName(rawName);
+                if (!name || candidates.has(name)) continue;
+                const candidatePath = join(currentRepository, ...name.split("/"));
+                try {
+                    const candidate = lstatSync(candidatePath);
+                    if (!candidate.isDirectory() || candidate.isSymbolicLink()) {
+                        continue;
+                    }
+                    const relativeCandidate = relative(
+                        realpathSync(currentRepository),
+                        realpathSync(candidatePath),
+                    );
+                    if (relativePathEscapesRoot(relativeCandidate)) {
+                        throw new Error(
+                            `Nested Git repository escapes its parent repository: ${candidatePath}`,
+                        );
+                    }
+                    const gitMetadata = lstatSync(join(candidatePath, ".git"));
+                    if (gitMetadata.isSymbolicLink()
+                        || (!gitMetadata.isDirectory() && !gitMetadata.isFile())) {
+                        continue;
+                    }
+                } catch (error) {
+                    if (["ENOENT", "ENOTDIR"].includes(
+                        (error as NodeJS.ErrnoException).code ?? "",
+                    )) continue;
+                    if (!options.strict) continue;
+                    throw new Error(
+                        `Unable to inspect nested Git repository '${candidatePath}'.`,
+                        { cause: error },
+                    );
+                }
+                candidates.set(name, {
+                    name,
+                    path: candidatePath,
+                    isGitRepo: true,
+                });
+            }
+        }
+
+        for (const candidate of [...candidates.values()]
+            .sort((left, right) => left.name.localeCompare(right.name))) {
+            const name = relativePrefix
+                ? `${relativePrefix}/${candidate.name}`
+                : candidate.name;
+            const key = process.platform === "win32" ? name.toLowerCase() : name;
+            if (repositories.has(key)) continue;
+            const nested = { ...candidate, name };
+            repositories.set(key, nested);
+            collect(candidate.path, name, depth + 1);
+        }
+    };
+
+    collect(root, "", 0);
+    return [...repositories.values()].sort((left, right) => (
+        left.name.split("/").length - right.name.split("/").length
+        || left.name.localeCompare(right.name)
+    ));
+}
+
+function ensureNestedWorktreeParent(
+    workspacePath: string,
+    destinationPath: string,
+    createdParents: Map<string, DirectoryIdentity>,
+): void {
+    const workspaceRoot = realpathSync(workspacePath);
+    const relativeDestination = relative(workspacePath, destinationPath);
+    const segments = relativeDestination.split(/[\\/]/);
+    if (!relativeDestination || relativePathEscapesRoot(relativeDestination)
+        || segments.some((segment) => !segment || segment === "." || segment === "..")) {
+        throw new Error(`Nested worktree destination escapes its workspace: ${destinationPath}`);
+    }
+
+    let current = workspacePath;
+    for (const segment of segments.slice(0, -1)) {
+        current = join(current, segment);
+        if (!pathExistsStrict(current)) {
+            mkdirSync(current);
+            createdParents.set(current, captureDirectoryIdentity(current));
+        }
+        const observed = lstatSync(current);
+        if (!observed.isDirectory() || observed.isSymbolicLink()) {
+            throw new Error(`Nested worktree parent is not a safe directory: ${current}`);
+        }
+        const relativeObserved = relative(workspaceRoot, realpathSync(current));
+        if (relativePathEscapesRoot(relativeObserved)) {
+            throw new Error(`Nested worktree parent escapes its workspace: ${current}`);
+        }
+    }
 }
 
 /**
@@ -2977,7 +3164,8 @@ export function repairWorkspace(
     const rollbackOids = new Map<string, BranchCreationFence | null>();
     const registrationFences = new Map<string, WorktreeRegistrationFence>();
     const removedEmptyDestinations: string[] = [];
-    const sourceEntries = scanDirectory(resolved, { strict: true });
+    const createdParentDirectories = new Map<string, DirectoryIdentity>();
+    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
 
     function rollbackNestedCreation(error: unknown): never {
         const rollbackErrors: string[] = [];
@@ -3021,10 +3209,23 @@ export function repairWorkspace(
         for (const destination of removedEmptyDestinations) {
             if (pathExistsStrict(destination)) continue;
             try {
-                mkdirSync(destination);
+                mkdirSync(destination, { recursive: true });
             } catch (rollbackError) {
                 rollbackErrors.push(
                     `${basename(destination)}: failed to restore empty directory: ${(rollbackError as Error).message}`,
+                );
+            }
+        }
+        for (const [parent, identity] of [...createdParentDirectories.entries()].reverse()) {
+            if (!pathExistsStrict(parent)) continue;
+            try {
+                assertDirectoryIdentity(parent, identity);
+                if (readdirSync(parent).length === 0) {
+                    removeDirectoryByQuarantine(parent, identity, dirname(parent), true);
+                }
+            } catch (rollbackError) {
+                rollbackErrors.push(
+                    `${parent}: failed to remove created parent: ${(rollbackError as Error).message}`,
                 );
             }
         }
@@ -3041,6 +3242,15 @@ export function repairWorkspace(
         if (!entry.isGitRepo) continue;
 
         const destPath = join(wsPath, entry.name);
+        try {
+            ensureNestedWorktreeParent(
+                wsPath,
+                destPath,
+                createdParentDirectories,
+            );
+        } catch (error) {
+            rollbackNestedCreation(error);
+        }
 
         // Check existing directory
         if (pathExistsStrict(destPath)) {
@@ -3202,7 +3412,10 @@ export function getWorktreeGitMounts(
             throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
         }
     }
-    for (const entry of scanDirectory(resolved, { strict: required })) {
+    const nestedRepositories = hasGitMetadata(resolved)
+        ? scanUnifiedNestedRepositories(resolved, { strict: required })
+        : scanDirectory(resolved, { strict: required });
+    for (const entry of nestedRepositories) {
         if (!entry.isGitRepo) continue;
         const nestedGit = join(entry.path, ".git");
         if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
@@ -3410,7 +3623,7 @@ export function detectBrokenWorktrees(
     }
 
     const broken: BrokenWorktreeEntry[] = [];
-    const sourceEntries = scanDirectory(resolved, { strict: true });
+    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
@@ -3463,13 +3676,13 @@ export function fixBrokenWorktree(
         throw new Error("Explicit confirmation is required to replace broken worktree content.");
     }
     const resolved = resolve(sourcePath);
-    const destPath = join(wsPath, repoName);
     assertWorkspaceRootOwnership(wsPath, resolved);
 
     // Find the source repo
-    const sourceEntries = scanDirectory(resolved, { strict: true });
+    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
     const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
     if (!sourceRepo) return null;
+    const destPath = join(wsPath, ...sourceRepo.name.split("/"));
     const staleRegistrationFence = captureMissingWorktreeRegistrationFence(
         sourceRepo.path,
         destPath,
@@ -3731,8 +3944,8 @@ function removeUnifiedWorkspace(
 
     // Remove nested worktrees before removing the parent.
     // These are worktrees created for nested git repos (non-submodule).
-    const sourceEntries = scanDirectory(resolved, { strict: true });
-    for (const entry of sourceEntries) {
+    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
+    for (const entry of [...sourceEntries].reverse()) {
         if (!entry.isGitRepo) continue;
 
         const nestedPath = join(wsPath, entry.name);

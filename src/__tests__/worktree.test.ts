@@ -1660,6 +1660,18 @@ describe("createWorkspace (unified mode)", () => {
         expect(
             existsSync(join(result.workspacePath, "backend", "server.ts")),
         ).toBe(true);
+        expect(lstatSync(join(result.workspacePath, "frontend", ".git")).isFile())
+            .toBe(true);
+        expect(lstatSync(join(result.workspacePath, "backend", ".git")).isFile())
+            .toBe(true);
+        expect(isValidWorktree(
+            join(result.workspacePath, "frontend"),
+            join(tmpDir, "frontend"),
+        )).toBe(true);
+        expect(isValidWorktree(
+            join(result.workspacePath, "backend"),
+            join(tmpDir, "backend"),
+        )).toBe(true);
 
         // Should report nested repos in created list
         const createdNames = result.created.map((c) => c.name).sort();
@@ -1668,6 +1680,88 @@ describe("createWorkspace (unified mode)", () => {
         expect(branchExistsInRepo(tmpDir, "feature")).toBe("local");
         expect(branchExistsInRepo(join(tmpDir, "frontend"), "feature")).toBe("local");
         expect(branchExistsInRepo(join(tmpDir, "backend"), "feature")).toBe("local");
+    });
+
+    it("creates real worktrees for deeply nested ignored git repositories", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+
+        const nestedRepo = join(tmpDir, "services", "private", "api");
+        initRepo(nestedRepo);
+        writeFileSync(join(nestedRepo, "server.ts"), "export const api = true;");
+        spawnSync("git", ["add", "."], { cwd: nestedRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "add api"], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+
+        const result = createWorkspace(tmpDir, "deep-feature");
+        const nestedWorktree = join(result.workspacePath, "services", "private", "api");
+
+        expect(result.created.map(({ name }) => name))
+            .toContain("services/private/api");
+        expect(readFileSync(join(nestedWorktree, "server.ts"), "utf-8"))
+            .toBe("export const api = true;");
+        expect(lstatSync(join(nestedWorktree, ".git")).isFile()).toBe(true);
+        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(listed.status).toBe(0);
+        expect(listed.stdout).toContain(`worktree ${nestedWorktree}`);
+        expect(detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toBe("deep-feature");
+
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/deep-feature",
+        );
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === join(nestedRepo, ".git")
+        ))).toBe(true);
+    });
+
+    it("creates linked worktrees for repositories nested inside ignored repositories", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore vendor"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const outerRepo = join(tmpDir, "vendor", "platform");
+        initRepo(outerRepo);
+        writeFileSync(join(outerRepo, ".gitignore"), "plugins/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: outerRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore plugins"], {
+            cwd: outerRepo,
+            stdio: "pipe",
+        });
+        const innerRepo = join(outerRepo, "plugins", "tool");
+        initRepo(innerRepo);
+
+        const result = createWorkspace(tmpDir, "recursive-feature");
+        const outerWorktree = join(result.workspacePath, "vendor", "platform");
+        const innerWorktree = join(outerWorktree, "plugins", "tool");
+
+        expect(result.created.map(({ name }) => name)).toEqual([
+            basename(tmpDir),
+            "vendor/platform",
+            "vendor/platform/plugins/tool",
+        ]);
+        expect(isValidWorktree(outerWorktree, outerRepo)).toBe(true);
+        expect(isValidWorktree(innerWorktree, innerRepo)).toBe(true);
+        expect(detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toBe("recursive-feature");
     });
 });
 
@@ -1712,6 +1806,35 @@ describe("repairWorkspace", () => {
 
         // backend files should now exist
         expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(true);
+    });
+
+    it("repairs a deeply nested ignored repository added after workspace creation", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const wsResult = createWorkspace(tmpDir, "deep-repair");
+        const nestedRepo = join(tmpDir, "services", "private", "api");
+        initRepo(nestedRepo);
+
+        const repaired = repairWorkspace(
+            tmpDir,
+            wsResult.workspacePath,
+            "deep-repair",
+        );
+        const nestedWorktree = join(
+            wsResult.workspacePath,
+            "services",
+            "private",
+            "api",
+        );
+
+        expect(repaired.map(({ name }) => name))
+            .toContain("services/private/api");
+        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
     });
 
     it("rolls back nested worktrees created earlier in the same repair", () => {
@@ -2325,6 +2448,47 @@ describe("detectBrokenWorktrees", () => {
         expect(broken).toHaveLength(0);
     });
 
+    it("detects and fixes a deeply nested ignored worktree", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const nestedRepo = join(tmpDir, "services", "private", "api");
+        initRepo(nestedRepo);
+        const wsResult = createWorkspace(tmpDir, "deep-broken");
+        const nestedWorktree = join(
+            wsResult.workspacePath,
+            "services",
+            "private",
+            "api",
+        );
+        spawnSync("git", ["worktree", "remove", "--force", nestedWorktree], {
+            cwd: nestedRepo,
+            stdio: "pipe",
+        });
+        mkdirSync(nestedWorktree);
+        writeFileSync(join(nestedWorktree, "preserve.txt"), "preserve");
+
+        const broken = detectBrokenWorktrees(tmpDir, wsResult.workspacePath);
+
+        expect(broken.map(({ name }) => name))
+            .toEqual(["services/private/api"]);
+        const fixed = fixBrokenWorktree(
+            tmpDir,
+            wsResult.workspacePath,
+            "services/private/api",
+            "deep-broken",
+            true,
+        );
+        expect(fixed?.name).toBe("services/private/api");
+        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+        expect(readFileSync(join(nestedWorktree, "preserve.txt"), "utf-8"))
+            .toBe("preserve");
+    });
+
     it("returns empty for non-git-repo source", () => {
         mkdirSync(join(tmpDir, "ws"));
         expect(detectBrokenWorktrees(tmpDir, join(tmpDir, "ws"))).toEqual([]);
@@ -2714,6 +2878,69 @@ describe("removeWorkspace (unified mode)", () => {
         const removeResult = removeWorkspace(tmpDir, "nested-rm");
         expect(removeResult.errors).toHaveLength(0);
         expect(removeResult.removed).toContain("frontend");
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+
+    it("removes unified worktrees for deeply nested ignored repositories", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore nested services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const nestedRepo = join(tmpDir, "services", "private", "api");
+        initRepo(nestedRepo);
+
+        const wsResult = createWorkspace(tmpDir, "deep-nested-rm");
+        const nestedWorktree = join(
+            wsResult.workspacePath,
+            "services",
+            "private",
+            "api",
+        );
+        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+
+        const removeResult = removeWorkspace(tmpDir, "deep-nested-rm");
+
+        expect(removeResult.errors).toHaveLength(0);
+        expect(removeResult.removed).toContain("services/private/api");
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
+        const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: nestedRepo,
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(listed.stdout).not.toContain(nestedWorktree);
+    });
+
+    it("removes nested repository worktrees from the deepest repository first", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore vendor"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const outerRepo = join(tmpDir, "vendor", "platform");
+        initRepo(outerRepo);
+        writeFileSync(join(outerRepo, ".gitignore"), "plugins/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: outerRepo, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore plugins"], {
+            cwd: outerRepo,
+            stdio: "pipe",
+        });
+        const innerRepo = join(outerRepo, "plugins", "tool");
+        initRepo(innerRepo);
+        const wsResult = createWorkspace(tmpDir, "recursive-remove");
+
+        const removeResult = removeWorkspace(tmpDir, "recursive-remove");
+
+        expect(removeResult.errors).toEqual([]);
+        expect(removeResult.removed.slice(0, 2)).toEqual([
+            "vendor/platform/plugins/tool",
+            "vendor/platform",
+        ]);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 });
