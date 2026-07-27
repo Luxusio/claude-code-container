@@ -8,6 +8,7 @@ import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { resolveAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
+import { removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -454,6 +455,27 @@ function isSafeProvisionedAvdName(avdName) {
         && new RegExp(`^${ownerAvdPrefix()}[A-Za-z0-9._-]+$`).test(avdName);
 }
 
+function deleteOwnedAndroidAvd(avdmanager, avdName) {
+    const result = run(avdmanager, ["delete", "avd", "--name", avdName]);
+    try {
+        const artifacts = removeOwnedAndroidAvdArtifacts(avdName, ownerId());
+        return {
+            ok: result.status === 0 || artifacts.removed > 0,
+            result,
+            artifacts,
+            ...(result.status === 0 || artifacts.removed > 0
+                ? {}
+                : { error: result.stderr || result.stdout || "avdmanager delete failed" }),
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            result,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
 function isSafeSystemImage(systemImage) {
     return typeof systemImage === "string"
         && systemImage.length <= 256
@@ -802,9 +824,9 @@ async function handleAndroidToolUnlocked(name, args) {
             } catch (error) {
                 if (shouldCreateAvd) {
                     const discovery = androidDiscovery();
-                    const rollback = run(discovery.avdmanager, ["delete", "avd", "--name", resolvedAvdName]);
-                    if (rollback.status !== 0) {
-                        return textResult(false, `Owner device state update failed; Android AVD rollback failed: ${rollback.stderr || rollback.stdout}`);
+                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName);
+                    if (!rollback.ok) {
+                        return textResult(false, `Owner device state update failed; Android AVD rollback failed: ${rollback.error}`);
                     }
                 }
                 throw error;
@@ -812,9 +834,9 @@ async function handleAndroidToolUnlocked(name, args) {
             if (!claim.ok) {
                 if (shouldCreateAvd && claim.existing?.avdName !== resolvedAvdName) {
                     const discovery = androidDiscovery();
-                    const rollback = run(discovery.avdmanager, ["delete", "avd", "--name", resolvedAvdName]);
-                    if (rollback.status !== 0) {
-                        return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); Android AVD rollback failed: ${rollback.stderr || rollback.stdout}`);
+                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName);
+                    if (!rollback.ok) {
+                        return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); Android AVD rollback failed: ${rollback.error}`);
                     }
                 }
                 return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
@@ -896,10 +918,10 @@ async function handleAndroidToolUnlocked(name, args) {
                 }
             }
             if (deleteAvd) {
-                const r = run(discovery.avdmanager, ["delete", "avd", "--name", device.avdName]);
-                if (r.status !== 0) {
+                const deletion = deleteOwnedAndroidAvd(discovery.avdmanager, device.avdName);
+                if (!deletion.ok) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
-                    return fail(r);
+                    return textResult(false, `Android AVD artifact cleanup failed: ${deletion.error}`);
                 }
             }
             const current = deleteCurrent || currentAndroidLifecycleDevice(deviceId, claim.lifecycle);

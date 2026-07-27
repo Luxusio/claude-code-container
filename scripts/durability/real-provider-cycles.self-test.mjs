@@ -1,10 +1,15 @@
 import assert from "assert/strict";
 import { spawn } from "child_process";
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import test from "node:test";
+import {
+    androidAvdHome,
+    listOwnedAndroidAvdArtifacts,
+    removeOwnedAndroidAvdArtifacts,
+} from "../../device-lab-mcp/src/state/android-avd-storage.mjs";
 import {
     androidAvdManagerInventoryInvocation,
     cleanupTestTempArtifacts,
@@ -15,6 +20,7 @@ import {
     recoverHyperVPrivateResidue,
     assertHyperVHostIdentityUnchanged,
     listAndroidAvdNames,
+    listAndroidE2EAvdArtifactNames,
     listHyperVNetworkInventory,
     listHyperVVmInventory,
     parseHyperVNetworkInventory,
@@ -34,6 +40,67 @@ import {
     verifySuccessfulProcessTree,
     writeResidueDiagnostic,
 } from "./real-provider-cycles.mjs";
+
+test("resolves Android AVD storage using Android SDK environment precedence", () => {
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), "/avds");
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_USER_HOME: "/android-user" } }), "/android-user/avd");
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_SDK_HOME: "/legacy" } }), "/legacy/.android/avd");
+    assert.equal(androidAvdHome({ home: "/home/test", env: {} }), "/home/test/.android/avd");
+});
+
+test("removes only exact owner-scoped Android AVD artifacts", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-storage-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-stale`;
+    const foreign = "ccc-fedcba9876543210-real-android-e2e-stale";
+    try {
+        mkdirSync(join(avdRoot, `${owned}.avd`), { recursive: true });
+        writeFileSync(join(avdRoot, `${owned}.avd`, "userdata-qemu.img"), "owned");
+        writeFileSync(join(avdRoot, `${owned}.ini`), "path=owned");
+        mkdirSync(join(avdRoot, `${foreign}.avd`));
+        writeFileSync(join(avdRoot, `${foreign}.ini`), "path=foreign");
+        mkdirSync(join(avdRoot, "Pixel_User.avd"));
+        writeFileSync(join(avdRoot, "Pixel_User.ini"), "path=user");
+
+        assert.deepEqual(
+            listOwnedAndroidAvdArtifacts(owner, { home }).map((artifact) => artifact.name),
+            [owned],
+        );
+        assert.deepEqual(removeOwnedAndroidAvdArtifacts(owned, owner, { home }), {
+            name: owned,
+            root: avdRoot,
+            removed: 2,
+        });
+        assert.equal(existsSync(join(avdRoot, `${owned}.avd`)), false);
+        assert.equal(existsSync(join(avdRoot, `${owned}.ini`)), false);
+        assert.equal(existsSync(join(avdRoot, `${foreign}.avd`)), true);
+        assert.equal(existsSync(join(avdRoot, "Pixel_User.avd")), true);
+        assert.throws(
+            () => removeOwnedAndroidAvdArtifacts("../../Pixel_User", owner, { home }),
+            /refusing non-owned/,
+        );
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("fails closed on symbolic Android AVD artifacts", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-symlink-"));
+    const outside = mkdtempSync(join(tmpdir(), "ccc-avd-outside-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-link`;
+    try {
+        mkdirSync(avdRoot, { recursive: true });
+        symlinkSync(outside, join(avdRoot, `${owned}.avd`), "dir");
+        assert.throws(() => listOwnedAndroidAvdArtifacts(owner, { home }), /refusing symbolic/);
+        assert.equal(existsSync(outside), true);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(outside, { recursive: true, force: true });
+    }
+});
 
 function successfulCycle(overrides = {}) {
     return {
@@ -289,17 +356,21 @@ test("Windows Android AVD inventory invokes avdmanager batch files through cmd.e
 
 test("Windows Android AVD deletion invokes avdmanager batch files through cmd.exe", () => {
     const avdmanager = "C:\\Android SDK\\avdmanager.bat";
+    const owner = "0123456789abcdef";
+    const avdName = `ccc-${owner}-real-android-e2e-stale`;
     let invocation;
-    deleteAndroidAvdName("ccc-owner-real-android-e2e-stale", {
+    deleteAndroidAvdName(avdName, {
         avdmanager,
+        owner,
         platform: "win32",
+        removeAndroidAvdArtifacts: () => ({ removed: 0 }),
         spawnSyncImpl: (command, args) => {
             invocation = { command, args };
             return { status: 0, stdout: "", stderr: "" };
         },
     });
     assert.equal(invocation.command, "cmd.exe");
-    assert.match(invocation.args.at(-1), /delete avd --name ccc-owner-real-android-e2e-stale/);
+    assert.match(invocation.args.at(-1), new RegExp(`delete avd --name ${avdName}`));
 });
 
 test("lists live Android emulator AVD identities and fails closed on identity errors", () => {
@@ -506,6 +577,67 @@ test("detects a test-created AVD that is absent from CCC state", () => {
             ],
         });
         assert.deepEqual(residue, ["sdk-avd:ccc-0123456789abcdef-real-android-e2e-123"]);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("detects and recovers an owner-scoped AVD directory omitted by avdmanager", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-real-cycle-avd-directory-"));
+    const owner = "0123456789abcdef";
+    const avdName = `ccc-${owner}-real-android-e2e-unregistered`;
+    const avdRoot = join(home, ".android", "avd");
+    try {
+        mkdirSync(join(avdRoot, `${avdName}.avd`), { recursive: true });
+        writeFileSync(join(avdRoot, `${avdName}.avd`, "userdata-qemu.img"), "large-image-placeholder");
+        assert.deepEqual(listAndroidE2EAvdArtifactNames({ home, owner }), [avdName]);
+        assert.deepEqual(inspectTestOwnedResidue("android-emulator", {
+            home,
+            owner,
+            listAndroidAvds: () => [],
+        }), [`sdk-avd-artifact:${avdName}`]);
+
+        const deleted = [];
+        const result = await recoverAndroidEmulatorResidue({
+            home,
+            owner,
+            listAndroidAvds: () => [],
+            listRunningAndroidAvds: () => [],
+            deleteAndroidAvd: (name) => {
+                deleted.push(name);
+                removeOwnedAndroidAvdArtifacts(name, owner, { home });
+            },
+            snapshotTempArtifacts: () => new Set(),
+        });
+        assert.deepEqual(deleted, [avdName]);
+        assert.equal(existsSync(join(avdRoot, `${avdName}.avd`)), false);
+        assert.deepEqual(result, { devices: 0, avds: 1, ownerArtifacts: 0, tempArtifacts: 0 });
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("treats avdmanager partial deletion as successful only after owned artifacts are removed", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-partial-delete-"));
+    const owner = "0123456789abcdef";
+    const avdName = `ccc-${owner}-real-android-e2e-partial`;
+    const avdRoot = join(home, ".android", "avd");
+    try {
+        mkdirSync(join(avdRoot, `${avdName}.avd`), { recursive: true });
+        const result = deleteAndroidAvdName(avdName, {
+            home,
+            owner,
+            avdmanager: "avdmanager",
+            spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "registration missing" }),
+        });
+        assert.deepEqual(result, { commandStatus: 1, artifactsRemoved: 1 });
+        assert.equal(existsSync(join(avdRoot, `${avdName}.avd`)), false);
+        assert.throws(() => deleteAndroidAvdName(avdName, {
+            home,
+            owner,
+            avdmanager: "avdmanager",
+            spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "permission denied" }),
+        }), /permission denied/);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }

@@ -112,6 +112,11 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             provisioned: true,
             status: "stopped",
         }));
+        const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
+        const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
+        mkdirSync(avdDataPath, { recursive: true });
+        writeFileSync(join(avdDataPath, "userdata-qemu.img"), "owned-avd-data");
+        writeFileSync(avdIniPath, `path=${avdDataPath}`);
 
         const start = await client.callTool({
             name: "device_start",
@@ -645,6 +650,8 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             avdDeleted: boolean;
         };
         expect(deletedPayload).toEqual({ deleted: "android-pixel-owned", avdDeleted: true });
+        expect(existsSync(avdDataPath)).toBe(false);
+        expect(existsSync(avdIniPath)).toBe(false);
 
         const log = readFileSync(logPath, "utf-8");
         expect(log).toContain(`avdmanager create avd --name ${avdName} --package system-images;android-35;google_apis;x86_64 --force --device pixel_6`);

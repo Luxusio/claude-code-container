@@ -2367,6 +2367,71 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    it("removes owner-scoped Android AVD disk artifacts after broker deletion", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-android-avd-artifact-cleanup-test");
+        const avdName = `ccc-${ownerId}-cleanup`;
+        const avdHome = mkdtempSync(join(tmpdir(), "ccc-broker-avd-home-"));
+        const avdDataPath = join(avdHome, `${avdName}.avd`);
+        const avdIniPath = join(avdHome, `${avdName}.ini`);
+        const previousAvdHome = process.env.ANDROID_AVD_HOME;
+        process.env.ANDROID_AVD_HOME = avdHome;
+        mkdirSync(avdDataPath);
+        writeFileSync(join(avdDataPath, "userdata-qemu.img"), "owned-avd-data");
+        writeFileSync(avdIniPath, `path=${avdDataPath}`);
+        writeBrokerDevices(ownerId, "android", [{
+            id: "android-cleanup",
+            backend: "android-emulator",
+            status: "stopped",
+            avdName,
+            port: 5582,
+        }]);
+        const commandRunner = vi.fn((command) => ({
+            mode: command.mode,
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args,
+            status: 0,
+            stdout: "",
+            stderr: "",
+        }));
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-android-avd-artifact-cleanup-test",
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { avdmanager: "/fake/avdmanager" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: {
+                        backend: "android-emulator",
+                        command: "device_delete",
+                        deviceId: "android-cleanup",
+                        deleteAvd: true,
+                    },
+                }),
+            });
+            expect(response.status).toBe(200);
+            expect(existsSync(avdDataPath)).toBe(false);
+            expect(existsSync(avdIniPath)).toBe(false);
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                provider: "avdmanager",
+                args: ["delete", "avd", "--name", avdName],
+            }), expect.any(Object));
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+            rmSync(avdHome, { recursive: true, force: true });
+            if (previousAvdHome === undefined) delete process.env.ANDROID_AVD_HOME;
+            else process.env.ANDROID_AVD_HOME = previousAvdHome;
+        }
+    });
+
     it("rejects an explicitly requested Android emulator port allocated to another project", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-port-conflict-test");
         const foreignOwnerId = "6364656667686970";

@@ -7,6 +7,7 @@ import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolv
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
 import { Worker } from "worker_threads";
+import { removeOwnedAndroidAvdArtifacts } from "../device-lab-mcp/src/state/android-avd-storage.mjs";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId as canonicalDeviceLabOwnerId, deviceLabProjectMountPath } from "./device-lab-owner.js";
 import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
@@ -5114,13 +5115,25 @@ async function rollbackProviderCreateAfterConflict(
     }
     if (parsed.backend === "android-emulator") {
         if (existing?.avdName === device.avdName) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
+        const rollbackOwnerId = field(device, "ownerId");
+        if (!rollbackOwnerId) return { attempted: false, ok: false, reason: "created-avd-owner-id-missing" };
         const result = normalized.commandRunner({
             mode: "exec",
             provider: "avdmanager",
             executable: providerCommand.executable,
             args: ["delete", "avd", "--name", String(device.avdName)],
         }, { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-        return { attempted: true, ok: commandSucceeded(result), result };
+        try {
+            const cleanup = removeOwnedAndroidAvdArtifacts(String(device.avdName), rollbackOwnerId);
+            return { attempted: true, ok: commandSucceeded(result) || cleanup.removed > 0, result };
+        } catch {
+            return {
+                attempted: true,
+                ok: false,
+                result,
+                reason: "android-avd-artifact-cleanup-failed",
+            };
+        }
     }
     if (parsed.backend === "ios-simulator") {
         if (existing?.udid === device.udid) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
@@ -11590,6 +11603,41 @@ async function lifecycleCommandInvokeUnlocked(
     let success = commandSucceeded(execution)
         || commandToleratesMissingMacosVmDelete(parsed, execution)
         || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution);
+    if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
+        const avdName = field(payload.result?.device, "avdName");
+        try {
+            if (!avdName) throw new Error("missing-provider-metadata: avdName");
+            const cleanup = removeOwnedAndroidAvdArtifacts(avdName, ownerId);
+            if (cleanup.removed > 0) success = true;
+        } catch {
+            return {
+                status: 502,
+                payload: {
+                    ok: false,
+                    error: "android-avd-artifact-cleanup-failed",
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                    result: {
+                        ...(payload.result || {}),
+                        invoked: true,
+                        dryRun: false,
+                        execution: {
+                            mode: execution.mode,
+                            providerExecution: "executed",
+                            mutatesHost: true,
+                            command: {
+                                mode: execution.mode,
+                                provider: execution.provider,
+                                status: execution.status,
+                                signal: execution.signal,
+                            },
+                        },
+                    },
+                },
+            };
+        }
+    }
     if (success && isHyperVBackend(parsed.backend)) {
         const observation = parsed.command === "device_delete"
             ? parseHyperVDeleteObservation(execution.stdout || "")

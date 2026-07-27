@@ -9,6 +9,7 @@ import { fileURLToPath } from "url";
 import { androidDiscovery, handleAndroidTool } from "../../device-lab-mcp/src/backends/android.mjs";
 import { handleAndroidRealTool } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
+import { listOwnedAndroidAvdArtifacts, removeOwnedAndroidAvdArtifacts } from "../../device-lab-mcp/src/state/android-avd-storage.mjs";
 import { readPhysicalLeases, releaseOwnedPhysicalLeaseResidue } from "../../device-lab-mcp/src/state/physical-lease-store.mjs";
 import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.ts";
 import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.ts";
@@ -239,6 +240,14 @@ export function listAndroidAvdNames(options = {}) {
         throw new Error(`Android AVD inventory failed: ${cleanupCommandError(result)}`);
     }
     return String(result.stdout || "").split(/\r?\n/).map((name) => name.trim()).filter(Boolean);
+}
+
+export function listAndroidE2EAvdArtifactNames(options = {}) {
+    const owner = options.owner || currentOwnerId();
+    return listOwnedAndroidAvdArtifacts(owner, {
+        ...options,
+        suffixPattern: "real-android-e2e-[A-Za-z0-9._-]+",
+    }).map((artifact) => artifact.name);
 }
 
 export function parseAndroidPhysicalDeviceInventory(text) {
@@ -623,6 +632,14 @@ export function inspectTestOwnedResidue(target, options = {}) {
         for (const name of names) {
             if (name.startsWith(testAvdPrefix)) residue.push(`sdk-avd:${name}`);
         }
+        const artifactNames = (options.listAndroidAvdArtifacts || listAndroidE2EAvdArtifactNames)({
+            ...(options.androidAvdArtifactOptions || {}),
+            home,
+            owner,
+        });
+        for (const name of artifactNames) {
+            if (name.startsWith(testAvdPrefix) && !names.includes(name)) residue.push(`sdk-avd-artifact:${name}`);
+        }
     }
     if (hyperVTarget) {
         const inventory = (options.listHyperVVms || listHyperVVmInventory)(options.hyperVOptions || {});
@@ -941,13 +958,26 @@ export function deleteAndroidAvdName(name, options = {}) {
         timeout: 60_000,
         maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.status !== 0) throw new Error(`Android AVD deletion failed for ${name}: ${cleanupCommandError(result)}`);
+    const cleanup = (options.removeAndroidAvdArtifacts || removeOwnedAndroidAvdArtifacts)(
+        name,
+        options.owner || currentOwnerId(),
+        options,
+    );
+    if (result.status !== 0 && cleanup.removed === 0) {
+        throw new Error(`Android AVD deletion failed for ${name}: ${cleanupCommandError(result)}`);
+    }
+    return { commandStatus: result.status, artifactsRemoved: cleanup.removed };
 }
 
 export async function recoverAndroidEmulatorResidue(options = {}) {
     const initial = androidRecoveryState(options);
     const deleteStateDevice = options.deleteStateDevice || deleteAndroidRecoveryStateDevice;
     const listAvds = options.listAndroidAvds || (() => listAndroidAvdNames(options.androidAvdOptions || {}));
+    const listArtifactAvds = options.listAndroidAvdArtifacts || (() => listAndroidE2EAvdArtifactNames({
+        ...(options.androidAvdArtifactOptions || {}),
+        home: initial.home,
+        owner: initial.owner,
+    }));
     const listRunningAvds = options.listRunningAndroidAvds || (() => listRunningAndroidAvdNames(options.androidRuntimeOptions || {}));
     const deleteAvd = options.deleteAndroidAvd || ((name) => deleteAndroidAvdName(name, options.androidAvdOptions || {}));
     for (const device of initial.devices) {
@@ -965,14 +995,20 @@ export async function recoverAndroidEmulatorResidue(options = {}) {
     if (afterStateDelete.devices.length > 0) {
         throw new Error(`Android recovery device state remained: ${afterStateDelete.devices.map((device) => device.id).join(", ")}`);
     }
-    const orphanAvds = listAvds().filter((name) => name.startsWith(initial.avdPrefix));
+    const orphanAvds = [...new Set([
+        ...listAvds(),
+        ...listArtifactAvds(),
+    ])].filter((name) => name.startsWith(initial.avdPrefix));
     if (orphanAvds.length > 0) {
         const running = new Set(listRunningAvds());
         const active = orphanAvds.filter((name) => running.has(name));
         if (active.length > 0) throw new Error(`refusing to delete active orphan Android test AVDs: ${active.join(", ")}`);
         for (const name of orphanAvds) deleteAvd(name);
     }
-    const remainingAvds = listAvds().filter((name) => name.startsWith(initial.avdPrefix));
+    const remainingAvds = [...new Set([
+        ...listAvds(),
+        ...listArtifactAvds(),
+    ])].filter((name) => name.startsWith(initial.avdPrefix));
     if (remainingAvds.length > 0) throw new Error(`Android recovery AVDs remained: ${remainingAvds.join(", ")}`);
 
     const artifacts = matchingEntries(initial.backendRoot, initial.devicePrefix);
