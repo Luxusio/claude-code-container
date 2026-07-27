@@ -4240,7 +4240,21 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         const execution = await hyperVProviderCommandRunner(normalized, providerCommand, { timeoutMs, outputLimit });
         if (!commandSucceeded(execution)) {
             if (stagingPath) rmSync(stagingPath, { force: true });
-            return { status: 502, payload: { ok: false, error: "hyper-v-linux-guest-provider-failed", ownerId, backend: match.backend, deviceId, execution } };
+            return {
+                status: 502,
+                payload: {
+                    ok: false,
+                    error: "hyper-v-linux-guest-provider-failed",
+                    ownerId,
+                    backend: match.backend,
+                    deviceId,
+                    execution: redactProviderCommandInput(
+                        execution,
+                        true,
+                        "hyper-v-linux-guest-provider-failed",
+                    ),
+                },
+            };
         }
         let bytes = sourceBytes;
         if (parsed.tool === "device_download" && localPath) {
@@ -4321,7 +4335,21 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         const execution = await hyperVProviderCommandRunner(normalized, providerCommand, { timeoutMs, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
         if (!commandSucceeded(execution)) {
             if (transferStagingPath) rmSync(transferStagingPath, { force: true });
-            return { status: 502, payload: { ok: false, error: "hyper-v-guest-provider-failed", ownerId, backend: match.backend, deviceId, execution } };
+            return {
+                status: 502,
+                payload: {
+                    ok: false,
+                    error: "hyper-v-guest-provider-failed",
+                    ownerId,
+                    backend: match.backend,
+                    deviceId,
+                    execution: redactProviderCommandInput(
+                        execution,
+                        true,
+                        "hyper-v-guest-provider-failed",
+                    ),
+                },
+            };
         }
         const observation = parsed.tool === "device_exec"
             ? parseHyperVGuestExecObservation(execution.stdout || "")

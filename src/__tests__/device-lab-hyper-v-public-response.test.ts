@@ -96,4 +96,20 @@ describe("Hyper-V public response projection", () => {
             },
         });
     });
+
+    it("bounds rollback errors instead of forwarding provider details", () => {
+        expect(redactHyperVResultSecrets({
+            rollback: {
+                ok: false,
+                preserved: true,
+                error: "C:\\private\\secret.txt",
+            },
+        })).toEqual({
+            rollback: {
+                ok: false,
+                preserved: true,
+                error: "hyper-v-rollback-failed",
+            },
+        });
+    });
 });

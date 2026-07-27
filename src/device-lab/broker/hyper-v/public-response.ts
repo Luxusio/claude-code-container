@@ -419,10 +419,18 @@ export function redactHyperVResultSecrets(
     if (execution) publicResult.execution = execution;
     if (record.rollback && typeof record.rollback === "object"
         && !Array.isArray(record.rollback)) {
-        publicResult.rollback = pickPublicFields(
-            record.rollback as Record<string, unknown>,
-            ["ok", "removed", "preserved", "error"],
-        );
+        const rollback = record.rollback as Record<string, unknown>;
+        publicResult.rollback = {
+            ...pickPublicFields(rollback, ["ok", "removed", "preserved"]),
+            ...(typeof rollback.error === "string"
+                ? {
+                    error: hyperVBoundedErrorCode(
+                        rollback.error,
+                        "hyper-v-rollback-failed",
+                    ),
+                }
+                : {}),
+        };
     }
     return publicResult;
 }

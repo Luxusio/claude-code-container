@@ -1782,7 +1782,18 @@ describe("device-lab Hyper-V broker", () => {
             sshFailure = true;
             const failedExec = await tool("device_exec", { command: "uname -a" });
             expect(failedExec.status).toBe(502);
-            expect(await failedExec.json()).toEqual(expect.objectContaining({ error: "hyper-v-linux-guest-provider-failed" }));
+            const failedExecBody = await failedExec.json();
+            expect(failedExecBody).toEqual(expect.objectContaining({
+                error: "hyper-v-linux-guest-provider-failed",
+                execution: expect.objectContaining({
+                    provider: "hyper-v-ssh",
+                    status: 255,
+                    outputRedacted: true,
+                    stderrPresent: true,
+                }),
+            }));
+            expect(failedExecBody.execution).not.toHaveProperty("args");
+            expect(failedExecBody.execution).not.toHaveProperty("stderr");
             sshFailure = false;
             expect((await tool("device_exec", { command: "uname -a" })).status).toBe(200);
             const rebooted = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
