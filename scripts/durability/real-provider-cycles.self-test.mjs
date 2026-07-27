@@ -125,6 +125,58 @@ test("fails closed when the Android AVD storage root traverses a symbolic path",
     }
 });
 
+test("preserves a same-name Android AVD generation recreated during cleanup", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-recreated-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-recreated`;
+    const dataPath = join(avdRoot, `${owned}.avd`);
+    try {
+        mkdirSync(dataPath, { recursive: true });
+        writeFileSync(join(dataPath, "userdata-qemu.img"), "old-generation");
+        let recreated = false;
+        assert.throws(() => removeOwnedAndroidAvdArtifacts(owned, owner, {
+            home,
+            onArtifactQuarantined: ({ originalPath }) => {
+                if (recreated || originalPath !== dataPath) return;
+                recreated = true;
+                mkdirSync(dataPath);
+                writeFileSync(join(dataPath, "userdata-qemu.img"), "new-generation");
+            },
+        }), /reappeared after cleanup/);
+        assert.equal(readFileSync(join(dataPath, "userdata-qemu.img"), "utf8"), "new-generation");
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
+test("recovers owner-scoped Android AVD quarantine left by an interrupted cleanup", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-quarantine-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-interrupted`;
+    const quarantine = join(avdRoot, `.ccc-avd-delete-${owned}-${"a".repeat(32)}`);
+    try {
+        mkdirSync(quarantine, { recursive: true });
+        writeFileSync(join(quarantine, "userdata-qemu.img"), "stale");
+
+        assert.deepEqual(
+            listOwnedAndroidAvdArtifacts(owner, {
+                home,
+                suffixPattern: "real-android-e2e-[A-Za-z0-9._-]+",
+            }).map((artifact) => artifact.name),
+            [owned],
+        );
+        assert.equal(removeOwnedAndroidAvdArtifacts(owned, owner, {
+            home,
+            suffixPattern: "real-android-e2e-[A-Za-z0-9._-]+",
+        }).removed, 1);
+        assert.equal(existsSync(quarantine), false);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
 function successfulCycle(overrides = {}) {
     return {
         code: 0,
@@ -377,23 +429,35 @@ test("Windows Android AVD inventory invokes avdmanager batch files through cmd.e
     assert.notEqual(invocation.command, avdmanager);
 });
 
-test("Windows Android AVD deletion invokes avdmanager batch files through cmd.exe", () => {
-    const avdmanager = "C:\\Android SDK\\avdmanager.bat";
+test("Android E2E AVD deletion uses identity-fenced artifacts without invoking avdmanager", () => {
     const owner = "0123456789abcdef";
     const avdName = `ccc-${owner}-real-android-e2e-stale`;
-    let invocation;
-    deleteAndroidAvdName(avdName, {
-        avdmanager,
+    let invoked = false;
+    const result = deleteAndroidAvdName(avdName, {
         owner,
         platform: "win32",
-        removeAndroidAvdArtifacts: () => ({ removed: 0 }),
-        spawnSyncImpl: (command, args) => {
-            invocation = { command, args };
+        removeAndroidAvdArtifacts: () => ({ removed: 2 }),
+        spawnSyncImpl: () => {
+            invoked = true;
             return { status: 0, stdout: "", stderr: "" };
         },
     });
-    assert.equal(invocation.command, "cmd.exe");
-    assert.match(invocation.args.at(-1), new RegExp(`delete avd --name ${avdName}`));
+    assert.deepEqual(result, { artifactsRemoved: 2 });
+    assert.equal(invoked, false);
+});
+
+test("rejects non-E2E Android AVD names before invoking avdmanager", () => {
+    const owner = "0123456789abcdef";
+    let invoked = false;
+    assert.throws(() => deleteAndroidAvdName(`ccc-${owner}-%PATH%`, {
+        owner,
+        avdmanager: "avdmanager",
+        spawnSyncImpl: () => {
+            invoked = true;
+            return { status: 0, stdout: "", stderr: "" };
+        },
+    }), /refusing non-owned Android E2E AVD deletion/);
+    assert.equal(invoked, false);
 });
 
 test("lists live Android emulator AVD identities and fails closed on identity errors", () => {
@@ -640,7 +704,7 @@ test("detects and recovers an owner-scoped AVD directory omitted by avdmanager",
     }
 });
 
-test("treats avdmanager partial deletion as successful only after owned artifacts are removed", () => {
+test("removes Android E2E AVD artifacts without provider registration state", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-avd-partial-delete-"));
     const owner = "0123456789abcdef";
     const avdName = `ccc-${owner}-real-android-e2e-partial`;
@@ -650,17 +714,9 @@ test("treats avdmanager partial deletion as successful only after owned artifact
         const result = deleteAndroidAvdName(avdName, {
             home,
             owner,
-            avdmanager: "avdmanager",
-            spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "registration missing" }),
         });
-        assert.deepEqual(result, { commandStatus: 1, artifactsRemoved: 1 });
+        assert.deepEqual(result, { artifactsRemoved: 1 });
         assert.equal(existsSync(join(avdRoot, `${avdName}.avd`)), false);
-        assert.throws(() => deleteAndroidAvdName(avdName, {
-            home,
-            owner,
-            avdmanager: "avdmanager",
-            spawnSyncImpl: () => ({ status: 1, stdout: "", stderr: "permission denied" }),
-        }), /permission denied/);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }

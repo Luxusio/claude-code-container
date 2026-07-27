@@ -886,36 +886,32 @@ function submoduleDeclarations(
     repositoryPath: string,
     strict: boolean,
 ): SubmoduleDeclaration[] {
-    const workingTreeConfig = pathExistsStrict(join(repositoryPath, ".gitmodules"));
-    if (!workingTreeConfig) {
-        const tracked = spawnSync(
-            "git",
-            ["ls-files", "--error-unmatch", "--", ".gitmodules"],
-            {
-                cwd: repositoryPath,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-            },
+    const tracked = spawnSync(
+        "git",
+        ["ls-files", "--error-unmatch", "--", ".gitmodules"],
+        {
+            cwd: repositoryPath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        },
+    );
+    if (tracked.status === 1) return [];
+    if (tracked.error || tracked.status !== 0) {
+        if (!strict) return [];
+        const detail = (tracked.stderr ?? "").trim()
+            || tracked.error?.message
+            || `git exited with status ${String(tracked.status)}`;
+        throw new Error(
+            `Unable to inspect tracked submodule configuration in '${repositoryPath}': ${detail}`,
         );
-        if (tracked.status === 1) return [];
-        if (tracked.error || tracked.status !== 0) {
-            if (!strict) return [];
-            const detail = (tracked.stderr ?? "").trim()
-                || tracked.error?.message
-                || `git exited with status ${String(tracked.status)}`;
-            throw new Error(
-                `Unable to inspect tracked submodule configuration in '${repositoryPath}': ${detail}`,
-            );
-        }
     }
     const configured = spawnSync(
         "git",
         [
             "config",
             "--null",
-            ...(workingTreeConfig
-                ? ["--file", ".gitmodules"]
-                : ["--blob", ":.gitmodules"]),
+            "--blob",
+            ":.gitmodules",
             "--get-regexp",
             "^submodule\\..*\\.path$",
         ],

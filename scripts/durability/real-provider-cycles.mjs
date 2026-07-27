@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import { androidDiscovery, handleAndroidTool } from "../../device-lab-mcp/src/backends/android.mjs";
 import { handleAndroidRealTool } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
-import { listOwnedAndroidAvdArtifacts, removeOwnedAndroidAvdArtifacts } from "../../device-lab-mcp/src/state/android-avd-storage.mjs";
+import { listOwnedAndroidAvdArtifacts, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "../../device-lab-mcp/src/state/android-avd-storage.mjs";
 import { readPhysicalLeases, releaseOwnedPhysicalLeaseResidue } from "../../device-lab-mcp/src/state/physical-lease-store.mjs";
 import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.ts";
 import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.ts";
@@ -949,24 +949,16 @@ export function listRunningAndroidAvdNames(options = {}) {
 }
 
 export function deleteAndroidAvdName(name, options = {}) {
-    const avdmanager = options.avdmanager || androidDiscovery().avdmanager;
-    if (!avdmanager) throw new Error("Android AVD deletion unavailable: missing avdmanager");
-    const invocation = androidAvdManagerInvocation(avdmanager, ["delete", "avd", "--name", name], options.platform || process.platform);
-    const result = (options.spawnSyncImpl || spawnSync)(invocation.command, invocation.args, {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 60_000,
-        maxBuffer: 4 * 1024 * 1024,
-    });
+    const owner = options.owner || currentOwnerId();
+    if (!ownedAndroidAvdName(name, owner, "real-android-e2e-[A-Za-z0-9._-]+")) {
+        throw new Error(`refusing non-owned Android E2E AVD deletion: ${name}`);
+    }
     const cleanup = (options.removeAndroidAvdArtifacts || removeOwnedAndroidAvdArtifacts)(
         name,
-        options.owner || currentOwnerId(),
+        owner,
         options,
     );
-    if (result.status !== 0 && cleanup.removed === 0) {
-        throw new Error(`Android AVD deletion failed for ${name}: ${cleanupCommandError(result)}`);
-    }
-    return { commandStatus: result.status, artifactsRemoved: cleanup.removed };
+    return { artifactsRemoved: cleanup.removed };
 }
 
 export async function recoverAndroidEmulatorResidue(options = {}) {

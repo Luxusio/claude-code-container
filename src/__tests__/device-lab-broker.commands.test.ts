@@ -2331,7 +2331,7 @@ describe("device-lab host broker lifecycle commands", () => {
             cwd: "/project/broker-android-corrupt-port-inventory-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { avdmanager: "/fake/avdmanager" },
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2403,7 +2403,7 @@ describe("device-lab host broker lifecycle commands", () => {
             cwd: "/project/broker-android-avd-artifact-cleanup-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { avdmanager: "/fake/avdmanager" },
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2430,8 +2430,8 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(join(replacementAvdHome, `${avdName}.avd`))).toBe(true);
             expect(existsSync(join(replacementAvdHome, `${avdName}.ini`))).toBe(true);
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
-                provider: "avdmanager",
-                args: ["delete", "avd", "--name", avdName],
+                mode: "noop",
+                provider: "host-broker-state",
             }), expect.any(Object));
         } finally {
             await close(server);
@@ -2495,7 +2495,23 @@ describe("device-lab host broker lifecycle commands", () => {
                 id: "android-preflight",
                 backend: "android-emulator",
                 status: "stopped",
+                avdName: `ccc-${ownerId}-legacy`,
+                port: 5582,
+            }]);
+            const unpinned = await invokeDelete();
+            expect(unpinned.status).toBe(409);
+            expect(await unpinned.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "android-avd-root-unavailable",
+            }));
+            expect(commandRunner).not.toHaveBeenCalled();
+
+            writeBrokerDevices(ownerId, "android", [{
+                id: "android-preflight",
+                backend: "android-emulator",
+                status: "stopped",
                 avdName: `ccc-${ownerId}-live`,
+                avdRoot: process.env.ANDROID_AVD_HOME || join(process.env.HOME!, ".android", "avd"),
                 port: 5582,
             }]);
             const live = await invokeDelete();
@@ -2528,7 +2544,7 @@ describe("device-lab host broker lifecycle commands", () => {
             cwd: "/project/broker-android-port-conflict-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { avdmanager: "/fake/avdmanager" },
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2840,7 +2856,7 @@ describe("device-lab host broker lifecycle commands", () => {
             cwd: "/project/broker-android-create-conflict-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { avdmanager: "/fake/avdmanager" },
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2872,11 +2888,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 existing: expect.objectContaining({ id: deviceId, avdName: winner.avdName }),
                 rollback: expect.objectContaining({ attempted: true, ok: true }),
             }));
-            expect(commandRunner).toHaveBeenNthCalledWith(2, expect.objectContaining({
-                provider: "avdmanager",
-                executable: "/fake/avdmanager",
-                args: ["delete", "avd", "--name", `ccc-${ownerId}-broker-loser`],
-            }), expect.objectContaining({ timeoutMs: 120000 }));
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                provider: "adb",
+                args: ["devices", "-l"],
+            }), expect.any(Object));
+            expect(commandRunner.mock.calls.some(([command]) => (
+                command.provider === "avdmanager" && command.args?.[0] === "delete"
+            ))).toBe(false);
             const state = JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")) as { devices: unknown[] };
             expect(state.devices).toEqual([winner]);
         } finally {
@@ -2910,7 +2928,7 @@ describe("device-lab host broker lifecycle commands", () => {
             cwd: "/project/broker-android-create-state-limit-test",
             host: "127.0.0.1",
             port: 0,
-            providerPaths: { avdmanager: "/fake/avdmanager" },
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2937,10 +2955,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 error: "owner-devices-file-too-large",
                 rollback: expect.objectContaining({ attempted: true, ok: true }),
             }));
-            expect(commandRunner).toHaveBeenNthCalledWith(2, expect.objectContaining({
-                provider: "avdmanager",
-                args: ["delete", "avd", "--name", `ccc-${ownerId}-state-limit-loser`],
-            }), expect.objectContaining({ timeoutMs: 120000 }));
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                provider: "adb",
+                args: ["devices", "-l"],
+            }), expect.any(Object));
+            expect(commandRunner.mock.calls.some(([command]) => (
+                command.provider === "avdmanager" && command.args?.[0] === "delete"
+            ))).toBe(false);
             expect(readFileSync(stateFile, "utf8")).toBe(nearLimitState);
         } finally {
             await close(server);

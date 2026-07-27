@@ -5118,22 +5118,34 @@ async function rollbackProviderCreateAfterConflict(
         if (existing?.avdName === device.avdName) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
         const rollbackOwnerId = field(device, "ownerId");
         if (!rollbackOwnerId) return { attempted: false, ok: false, reason: "created-avd-owner-id-missing" };
-        const result = normalized.commandRunner({
-            mode: "exec",
-            provider: "avdmanager",
-            executable: providerCommand.executable,
-            args: ["delete", "avd", "--name", String(device.avdName)],
-        }, { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+        const port = numberField(device, "port");
+        if (!validAndroidEmulatorPort(port)) {
+            return { attempted: false, ok: false, reason: "created-avd-liveness-unverified" };
+        }
+        if (!providerExecutable("adb", normalized)) {
+            return { attempted: false, ok: false, reason: "created-avd-liveness-unverified" };
+        }
+        const live = liveAndroidEmulatorPortsForAllocation(normalized);
+        if (!live.ok || live.ports.has(port)) {
+            return {
+                attempted: false,
+                ok: false,
+                reason: live.ok && live.ports.has(port)
+                    ? "created-avd-active"
+                    : "created-avd-liveness-unverified",
+            };
+        }
+        const avdRoot = field(device, "avdRoot");
+        if (!avdRoot) return { attempted: false, ok: false, reason: "created-avd-root-unavailable" };
         try {
             const cleanup = removeOwnedAndroidAvdArtifacts(String(device.avdName), rollbackOwnerId, {
-                root: field(device, "avdRoot") || undefined,
+                root: avdRoot,
             });
-            return { attempted: true, ok: commandSucceeded(result) || cleanup.removed > 0, result };
+            return { attempted: true, ok: true, cleanup };
         } catch {
             return {
                 attempted: true,
                 ok: false,
-                result,
                 reason: "android-avd-artifact-cleanup-failed",
             };
         }
@@ -8747,7 +8759,6 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
     if (parsed.backend === "android-emulator") {
         const adb = executableFor("adb", normalized);
         const emulator = executableFor("emulator", normalized);
-        const avdmanager = executableFor("avdmanager", normalized);
         const serial = androidSerial(device);
         const avdName = field(device, "avdName");
         if (parsed.command === "device_status") {
@@ -8766,7 +8777,11 @@ function providerCommandFor(ownerId: string, parsed: CommandParamSuccess, device
             if (!ownedAndroidAvdName(avdName, ownerId)) {
                 return { error: "android-avd-name-not-owner-scoped", missing: ["owner-prefixed avdName"] };
             }
-            return { mode: "exec", provider: "avdmanager", executable: avdmanager, args: ["delete", "avd", "--name", avdName] };
+            return {
+                mode: "noop",
+                provider: "host-broker-state",
+                reason: "Owner-scoped Android AVD artifacts are removed through identity-fenced storage cleanup",
+            };
         }
         if (!avdName) return { error: "missing-provider-metadata", missing: ["avdName"] };
         const port = numberField(device, "port");
@@ -10924,6 +10939,11 @@ async function lifecycleCommandInvokeUnlocked(
 ): Promise<BrokerRpcResult> {
     const parsed = validateCommandParams(params);
     if (!parsed.ok) return commandParamError(parsed);
+    const androidCreateAvdRoot = parsed.backend === "android-emulator"
+        && parsed.command === "device_create"
+        && parsed.create?.createAvd === true
+        ? androidAvdHome()
+        : null;
     const plan = lifecycleCommandPlan(ownerId, params, normalized, false);
     if (plan.status !== 200) return plan;
     const payload = plan.payload as { result?: { create?: unknown; device?: unknown; idempotent?: boolean; providerCommand?: ProviderCommand | { error: string; missing: string[] } } };
@@ -11274,6 +11294,21 @@ async function lifecycleCommandInvokeUnlocked(
             };
         }
         const device = createOwnerDeviceRecord(ownerId, persistedParsed) as Record<string, unknown>;
+        if (parsed.backend === "android-emulator" && parsed.create?.createAvd === true) {
+            if (!androidCreateAvdRoot) {
+                return {
+                    status: 502,
+                    payload: {
+                        ok: false,
+                        error: "android-avd-root-unavailable",
+                        ownerId,
+                        backend: parsed.backend,
+                        deviceId: parsed.deviceId,
+                    },
+                };
+            }
+            device.avdRoot = androidCreateAvdRoot;
+        }
         let claim;
         try {
             claim = claimOwnerDevice(ownerId, parsed.stateKey, device, createOwnerDeviceUniqueFields(persistedParsed));
@@ -11462,7 +11497,12 @@ async function lifecycleCommandInvokeUnlocked(
                 missing: providerCommand?.missing || [],
                 plan: isHyperVBackend(parsed.backend)
                     ? redactHyperVResultSecrets(payload.result)
-                    : payload.result || null,
+                    : payload.result
+                        ? {
+                            ...payload.result,
+                            device: redactBrokerDeviceSecrets(payload.result.device),
+                        }
+                        : null,
             },
         };
     }
@@ -11500,6 +11540,31 @@ async function lifecycleCommandInvokeUnlocked(
     }
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
         const port = numberField(payload.result?.device, "port");
+        const avdRoot = field(payload.result?.device, "avdRoot");
+        if (!avdRoot) {
+            return {
+                status: 409,
+                payload: {
+                    ok: false,
+                    error: "android-avd-root-unavailable",
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                },
+            };
+        }
+        if (!providerExecutable("adb", normalized)) {
+            return {
+                status: 409,
+                payload: {
+                    ok: false,
+                    error: "android-avd-liveness-unverified",
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                },
+            };
+        }
         if (!validAndroidEmulatorPort(port)) {
             return {
                 status: 409,
@@ -11540,6 +11605,13 @@ async function lifecycleCommandInvokeUnlocked(
         }
     }
     let effectiveProviderCommand = providerCommand;
+    if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
+        effectiveProviderCommand = {
+            mode: "noop",
+            provider: "host-broker-state",
+            reason: "Android AVD artifacts are removed by identity-fenced storage cleanup",
+        };
+    }
     if (parsed.backend === "windows-sandbox" && parsed.command === "device_start") {
         const lock = claimBrokerWindowsSandboxLock(ownerId, payload.result?.device, providerCommand.sandboxId);
         if (!lock.ok) {
@@ -11632,11 +11704,11 @@ async function lifecycleCommandInvokeUnlocked(
         ? windowsSandboxWindowHandlesFromOutput(windowsSandboxWindowSnapshot.stdout || "")
         : null;
     const execution = isHyperVBackend(parsed.backend)
-        ? await hyperVProviderCommandRunner(normalized, providerCommand, {
+        ? await hyperVProviderCommandRunner(normalized, effectiveProviderCommand, {
             timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000),
             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         })
-        : normalized.commandRunner(providerCommand, {
+        : normalized.commandRunner(effectiveProviderCommand, {
         timeoutMs: parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false
             ? 120000
             : normalized.commandTimeoutMs,
@@ -11653,12 +11725,13 @@ async function lifecycleCommandInvokeUnlocked(
         || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution);
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
         const avdName = field(payload.result?.device, "avdName");
+        const avdRoot = field(payload.result?.device, "avdRoot");
         try {
-            if (!avdName) throw new Error("missing-provider-metadata: avdName");
-            const cleanup = removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
-                root: field(payload.result?.device, "avdRoot") || undefined,
+            if (!avdName || !avdRoot) throw new Error("missing-provider-metadata");
+            removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
+                root: avdRoot,
             });
-            if (cleanup.removed > 0) success = true;
+            success = true;
         } catch {
             return {
                 status: 502,
@@ -11668,22 +11741,6 @@ async function lifecycleCommandInvokeUnlocked(
                     ownerId,
                     backend: parsed.backend,
                     deviceId: parsed.deviceId,
-                    result: {
-                        ...(payload.result || {}),
-                        invoked: true,
-                        dryRun: false,
-                        execution: {
-                            mode: execution.mode,
-                            providerExecution: "executed",
-                            mutatesHost: true,
-                            command: {
-                                mode: execution.mode,
-                                provider: execution.provider,
-                                status: execution.status,
-                                signal: execution.signal,
-                            },
-                        },
-                    },
                 },
             };
         }

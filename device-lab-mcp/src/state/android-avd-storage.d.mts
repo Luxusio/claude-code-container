@@ -4,6 +4,11 @@ export interface AndroidAvdStorageOptions {
     root?: string;
     platform?: NodeJS.Platform;
     suffixPattern?: string;
+    onArtifactQuarantined?: (artifact: {
+        name: string;
+        originalPath: string;
+        quarantinePath: string;
+    }) => void;
 }
 
 export interface AndroidAvdArtifactCleanup {
@@ -22,6 +27,10 @@ export function listOwnedAndroidAvdArtifacts(ownerId: string, options?: AndroidA
     dataIdentity: { dev: number; ino: number } | null;
     iniPath: string | null;
     iniIdentity: { dev: number; ino: number } | null;
+    quarantines: Array<{
+        path: string;
+        identity: { dev: number; ino: number };
+    }>;
 }>;
 export function removeOwnedAndroidAvdArtifacts(
     name: string,

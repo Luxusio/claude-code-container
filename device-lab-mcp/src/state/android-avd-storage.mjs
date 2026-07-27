@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "fs";
+import { randomBytes } from "crypto";
+import { existsSync, lstatSync, readdirSync, realpathSync, renameSync, rmSync } from "fs";
 import { homedir } from "os";
 import { join, relative, resolve, sep } from "path";
 
@@ -64,7 +65,9 @@ export function listOwnedAndroidAvdArtifacts(ownerId, options = {}) {
     const names = new Map();
     for (const entry of readdirSync(root, { withFileTypes: true })) {
         const match = /^(.*?)(\.avd|\.ini)$/.exec(entry.name);
-        if (!match || !ownedAndroidAvdName(match[1], ownerId, options.suffixPattern)) continue;
+        const quarantineMatch = /^\.ccc-avd-delete-(.+)-([a-f0-9]{32})$/.exec(entry.name);
+        const name = match?.[1] || quarantineMatch?.[1];
+        if (!name || !ownedAndroidAvdName(name, ownerId, options.suffixPattern)) continue;
         const path = resolve(root, entry.name);
         if (!pathWithin(root, path) || path === root) {
             throw new Error(`Android AVD artifact escaped its storage root: ${entry.name}`);
@@ -73,30 +76,33 @@ export function listOwnedAndroidAvdArtifacts(ownerId, options = {}) {
         if (metadata.isSymbolicLink()) {
             throw new Error(`refusing symbolic Android AVD artifact: ${path}`);
         }
-        if (match[2] === ".avd" && !metadata.isDirectory()) {
+        if (match?.[2] === ".avd" && !metadata.isDirectory()) {
             throw new Error(`Android AVD data artifact is not a directory: ${path}`);
         }
-        if (match[2] === ".ini" && !metadata.isFile()) {
+        if (match?.[2] === ".ini" && !metadata.isFile()) {
             throw new Error(`Android AVD registration artifact is not a file: ${path}`);
         }
-        const record = names.get(match[1]) || {
-            name: match[1],
+        const record = names.get(name) || {
+            name,
             root,
             rootIdentity,
             dataPath: null,
             dataIdentity: null,
             iniPath: null,
             iniIdentity: null,
+            quarantines: [],
         };
         const identity = { dev: metadata.dev, ino: metadata.ino };
-        if (match[2] === ".avd") {
+        if (quarantineMatch) {
+            record.quarantines.push({ path, identity });
+        } else if (match[2] === ".avd") {
             record.dataPath = path;
             record.dataIdentity = identity;
         } else {
             record.iniPath = path;
             record.iniIdentity = identity;
         }
-        names.set(match[1], record);
+        names.set(name, record);
     }
     return [...names.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -111,6 +117,17 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
         if (!sameIdentity(artifact.root, artifact.rootIdentity)) {
             throw new Error(`Android AVD storage identity changed before cleanup: ${artifact.root}`);
         }
+        for (const quarantine of artifact.quarantines) {
+            if (!sameIdentity(artifact.root, artifact.rootIdentity)
+                || !sameIdentity(quarantine.path, quarantine.identity)) {
+                throw new Error(`Android AVD quarantine identity changed before cleanup: ${quarantine.path}`);
+            }
+            rmSync(quarantine.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+            if (existsSync(quarantine.path)) {
+                throw new Error(`Android AVD quarantine remained after cleanup: ${quarantine.path}`);
+            }
+            removed += 1;
+        }
         for (const [path, identity] of [
             [artifact.iniPath, artifact.iniIdentity],
             [artifact.dataPath, artifact.dataIdentity],
@@ -120,8 +137,35 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
                 || !sameIdentity(path, identity)) {
                 throw new Error(`Android AVD artifact identity changed before cleanup: ${path}`);
             }
-            rmSync(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
-            if (existsSync(path)) throw new Error(`Android AVD artifact remained after cleanup: ${path}`);
+            const quarantine = resolve(
+                artifact.root,
+                `.ccc-avd-delete-${name}-${randomBytes(16).toString("hex")}`,
+            );
+            if (!pathWithin(artifact.root, quarantine) || existsSync(quarantine)) {
+                throw new Error("Android AVD quarantine path is unavailable");
+            }
+            renameSync(path, quarantine);
+            try {
+                if (!sameIdentity(artifact.root, artifact.rootIdentity)
+                    || !sameIdentity(quarantine, identity)) {
+                    throw new Error(`Android AVD artifact identity changed during quarantine: ${path}`);
+                }
+                options.onArtifactQuarantined?.({
+                    name,
+                    originalPath: path,
+                    quarantinePath: quarantine,
+                });
+                rmSync(quarantine, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+            } catch (error) {
+                if (sameIdentity(artifact.root, artifact.rootIdentity)
+                    && !existsSync(path)
+                    && existsSync(quarantine)
+                    && sameIdentity(quarantine, identity)) {
+                    renameSync(quarantine, path);
+                }
+                throw error;
+            }
+            if (existsSync(quarantine)) throw new Error(`Android AVD artifact remained after cleanup: ${path}`);
             removed += 1;
         }
     }

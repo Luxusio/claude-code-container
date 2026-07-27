@@ -716,7 +716,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
         expect(log).toContain("adb -s emulator-5582 uninstall com.example.mobile");
         expect(log).toContain("adb -s emulator-5582 shell am force-stop com.example.mobile");
         expect(log).toContain("adb -s emulator-5582 shell pm clear com.example.mobile");
-        expect(log).toContain(`avdmanager delete avd --name ${avdName}`);
+        expect(log).not.toContain(`avdmanager delete avd --name ${avdName}`);
         expect(log).not.toContain("appium");
     });
 
@@ -971,7 +971,9 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             expect(create.isError).toBe(true);
             expect((create.content as Array<{ text?: string }>)[0].text).toContain(`Device identity already exists for this owner (id: ${deviceId})`);
             expect(JSON.parse(readFileSync(statePath, "utf8"))).toEqual({ devices: [winner] });
-            expect(readFileSync(logPath, "utf8")).toContain(`avdmanager delete avd --name ${losingAvd}`);
+            expect(readFileSync(logPath, "utf8")).not.toContain(`avdmanager delete avd --name ${losingAvd}`);
+            expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.avd`))).toBe(false);
+            expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.ini`))).toBe(false);
         } finally {
             writeFileSync(statePath, JSON.stringify({ devices: [] }));
             rmSync(join(homeDir, "fake-android-create-conflict-state.json"), { force: true });
@@ -1155,6 +1157,7 @@ exec "${realAdbPath}" "$@"
         const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
         const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
         const activeMarker = join(homeDir, `fake-adb-active-emulator-${port}`);
+        const inventoryFailureMarker = join(homeDir, "fake-adb-devices-fail");
         const create = await client.callTool({
             name: "device_create",
             arguments: {
@@ -1190,8 +1193,21 @@ exec "${realAdbPath}" "$@"
                 name: "device_status",
                 arguments: { deviceId },
             })) as { device: Record<string, unknown> }).device).not.toHaveProperty("avdRoot");
+
+            rmSync(activeMarker, { force: true });
+            writeFileSync(inventoryFailureMarker, "fail");
+            const unverified = await client.callTool({
+                name: "device_delete",
+                arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
+            });
+            expect(unverified.isError).toBe(true);
+            expect((unverified.content as Array<{ text?: string }>)[0]?.text)
+                .toContain("android-avd-active-or-liveness-unverified");
+            expect(existsSync(avdDataPath)).toBe(true);
+            expect(existsSync(avdIniPath)).toBe(true);
         } finally {
             rmSync(activeMarker, { force: true });
+            rmSync(inventoryFailureMarker, { force: true });
             const deleted = await client.callTool({
                 name: "device_delete",
                 arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
@@ -1272,7 +1288,7 @@ exec "${realAdbPath}" "$@"
         }
     });
 
-    it.runIf(process.platform !== "win32")("persists stopped state when force-delete stops the emulator before AVD deletion fails", { timeout: TIMEOUT }, async () => {
+    it.runIf(process.platform !== "win32")("force-delete uses identity-fenced storage cleanup without avdmanager deletion", { timeout: TIMEOUT }, async () => {
         const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "android-emulator" } });
         const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
         const deviceId = "android-force-delete-partial-stop";
@@ -1330,21 +1346,10 @@ exec "${realAvdmanagerPath}" "$@"
                 name: "device_delete",
                 arguments: { deviceId, force: true, deleteAvd: true, confirmDestructive: true },
             });
-            expect(deleted.isError).toBe(true);
-            expect((deleted.content as Array<{ text?: string }>)[0]?.text)
-                .toContain("android-avd-delete-command-failed");
-            expect((deleted.content as Array<{ text?: string }>)[0]?.text)
-                .not.toContain("injected AVD delete failure");
-
-            const status = await client.callTool({ name: "device_status", arguments: { deviceId } });
-            const persisted = (parseToolJson(status) as { device: Record<string, unknown> }).device;
-            expect(persisted).toEqual(expect.objectContaining({
-                status: "stopped",
-                pid: null,
-                runtime: null,
-                bootReady: false,
-                lifecycle: null,
-            }));
+            expect(deleted.isError).not.toBe(true);
+            expect(readFileSync(logPath, "utf8")).not.toContain(`avdmanager delete avd --name ${avdName}`);
+            expect(existsSync(join(homeDir, ".android", "avd", `${avdName}.avd`))).toBe(false);
+            expect(existsSync(join(homeDir, ".android", "avd", `${avdName}.ini`))).toBe(false);
         } finally {
             writeFileSync(adbPath, originalAdb);
             writeFileSync(avdmanagerPath, originalAvdmanager);
@@ -1389,7 +1394,9 @@ exec "${realAvdmanagerPath}" "$@"
                 },
             })).rejects.toThrow("owner-devices-file-too-large");
             expect(readFileSync(statePath, "utf8")).toBe(nearLimitState);
-            expect(readFileSync(logPath, "utf8")).toContain(`avdmanager delete avd --name ${losingAvd}`);
+            expect(readFileSync(logPath, "utf8")).not.toContain(`avdmanager delete avd --name ${losingAvd}`);
+            expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.avd`))).toBe(false);
+            expect(existsSync(join(homeDir, ".android", "avd", `${losingAvd}.ini`))).toBe(false);
         } finally {
             writeFileSync(statePath, JSON.stringify({ devices: [] }));
             rmSync(join(homeDir, "fake-android-create-conflict-state.json"), { force: true });
@@ -1447,7 +1454,7 @@ exec "${realAvdmanagerPath}" "$@"
                 deviceId: "android-unsafe-avd-name",
                 avdName: `ccc-${ownerId}-%PATH%`,
                 systemImage: "system-images;android-35;google_apis;x86_64",
-                expected: "AVD name contains unsupported characters",
+                expected: "Refusing to create non-owned Android AVD name",
             },
             {
                 name: "Unsafe System Image",
@@ -1488,6 +1495,39 @@ exec "${realAvdmanagerPath}" "$@"
             },
         });
         expect(metadataOnly.isError).not.toBe(true);
+
+        const unsafeMetadataAvd = `ccc-${ownerId}-%PATH%`;
+        const unsafeMetadata = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Unsafe Foreign Metadata",
+                deviceId: "android-unsafe-foreign-metadata",
+                avdName: unsafeMetadataAvd,
+            },
+        });
+        expect(unsafeMetadata.isError).not.toBe(true);
+        const beforeUnsafeDelete = readFileSync(logPath, "utf8");
+        const unsafeDeleted = await client.callTool({
+            name: "device_delete",
+            arguments: {
+                deviceId: "android-unsafe-foreign-metadata",
+                deleteAvd: true,
+                confirmDestructive: true,
+            },
+        });
+        expect(unsafeDeleted.isError).toBe(true);
+        expect((unsafeDeleted.content as Array<{ text?: string }>)[0]?.text)
+            .toContain("Refusing to delete non-owned Android AVD name");
+        expect(readFileSync(logPath, "utf8").slice(beforeUnsafeDelete.length))
+            .not.toContain("avdmanager delete");
+        expect((await client.callTool({
+            name: "device_delete",
+            arguments: {
+                deviceId: "android-unsafe-foreign-metadata",
+                confirmDestructive: true,
+            },
+        })).isError).not.toBe(true);
 
         const start = await client.callTool({
             name: "device_start",

@@ -7,7 +7,7 @@ import { commandPath, localBinPath, run, runBuffer, runWithInput, runWithTimeout
 import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
-import { resolveAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
+import { resolveAndroidEmulatorPort, validAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
 import { androidAvdHome, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
@@ -452,7 +452,7 @@ function ownerAvdPrefix() {
 }
 
 function isOwnedAvdName(avdName) {
-    return typeof avdName === "string" && avdName.startsWith(ownerAvdPrefix());
+    return isSafeProvisionedAvdName(avdName);
 }
 
 function isSafeProvisionedAvdName(avdName) {
@@ -461,33 +461,30 @@ function isSafeProvisionedAvdName(avdName) {
         && new RegExp(`^${ownerAvdPrefix()}[A-Za-z0-9._-]+$`).test(avdName);
 }
 
-function deleteOwnedAndroidAvd(avdmanager, avdName, options = {}) {
-    const result = run(avdmanager, ["delete", "avd", "--name", avdName]);
+function deleteOwnedAndroidAvd(avdName, options = {}) {
+    if (!isSafeProvisionedAvdName(avdName)) {
+        return { ok: false, error: "android-avd-name-not-owner-scoped" };
+    }
     try {
         const artifacts = removeOwnedAndroidAvdArtifacts(avdName, ownerId(), {
             root: options.avdRoot,
         });
         return {
-            ok: result.status === 0 || artifacts.removed > 0,
-            result,
+            ok: true,
             artifacts,
-            ...(result.status === 0 || artifacts.removed > 0
-                ? {}
-                : { error: "android-avd-delete-command-failed" }),
         };
     } catch {
         return {
             ok: false,
-            result,
             error: "android-avd-artifact-cleanup-failed",
         };
     }
 }
 
 function androidAvdIsInactive(discovery, device) {
-    const serial = androidSerial(device);
-    if (!discovery.adb || !serial) return false;
-    return run(discovery.adb, ["-s", serial, "get-state"]).status !== 0;
+    if (!discovery.adb || !validAndroidEmulatorPort(device?.port)) return false;
+    const live = liveAndroidEmulatorPortsForAllocation();
+    return live.ok && !live.ports.has(device.port);
 }
 
 function isSafeSystemImage(systemImage) {
@@ -791,6 +788,7 @@ async function handleAndroidToolUnlocked(name, args) {
 
             const resolvedAvdName = avdName || `${ownerAvdPrefix()}${slug(deviceName)}`;
             const shouldCreateAvd = Boolean(createAvd);
+            const avdRoot = shouldCreateAvd ? androidAvdHome() : null;
             if (shouldCreateAvd && !isOwnedAvdName(resolvedAvdName)) {
                 return textResult(false, `Refusing to create non-owned Android AVD name: ${resolvedAvdName}`);
             }
@@ -819,7 +817,7 @@ async function handleAndroidToolUnlocked(name, args) {
                 platform: "android",
                 ownerId: ownerId(),
                 avdName: resolvedAvdName,
-                avdRoot: shouldCreateAvd ? androidAvdHome() : null,
+                avdRoot,
                 systemImage: systemImage || null,
                 deviceProfile: deviceProfile || null,
                 provisioned: shouldCreateAvd,
@@ -839,8 +837,11 @@ async function handleAndroidToolUnlocked(name, args) {
             } catch (error) {
                 if (shouldCreateAvd) {
                     const discovery = androidDiscovery();
-                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName, {
-                        avdRoot: androidAvdHome(),
+                    if (!androidAvdIsInactive(discovery, device)) {
+                        return textResult(false, "Owner device state update failed; Android AVD rollback blocked because liveness is unverified");
+                    }
+                    const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
+                        avdRoot,
                     });
                     if (!rollback.ok) {
                         return textResult(false, `Owner device state update failed; Android AVD rollback failed: ${rollback.error}`);
@@ -851,8 +852,11 @@ async function handleAndroidToolUnlocked(name, args) {
             if (!claim.ok) {
                 if (shouldCreateAvd && claim.existing?.avdName !== resolvedAvdName) {
                     const discovery = androidDiscovery();
-                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName, {
-                        avdRoot: androidAvdHome(),
+                    if (!androidAvdIsInactive(discovery, device)) {
+                        return textResult(false, "Device identity conflict for this owner; Android AVD rollback blocked because liveness is unverified");
+                    }
+                    const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
+                        avdRoot,
                     });
                     if (!rollback.ok) {
                         return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); Android AVD rollback failed: ${rollback.error}`);
@@ -877,8 +881,8 @@ async function handleAndroidToolUnlocked(name, args) {
                     return textResult(false, `Refusing to delete non-owned Android AVD name: ${device.avdName}`);
                 }
                 discovery = androidDiscovery();
-                if (!discovery.provisioningAvailable) {
-                    return textResult(false, `Android AVD provisioning missing prerequisites: ${discovery.provisioningMissing.join(", ")}`);
+                if (!discovery.adb) {
+                    return textResult(false, "Android AVD cleanup missing prerequisite: adb");
                 }
             }
             const claim = claimAndroidLifecycle(deviceId, device, "delete");
@@ -941,8 +945,12 @@ async function handleAndroidToolUnlocked(name, args) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                     return textResult(false, "android-avd-active-or-liveness-unverified");
                 }
-                const deletion = deleteOwnedAndroidAvd(discovery.avdmanager, device.avdName, {
-                    avdRoot: device.avdRoot || undefined,
+                if (typeof device.avdRoot !== "string" || !device.avdRoot) {
+                    if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                    return textResult(false, "android-avd-root-unavailable");
+                }
+                const deletion = deleteOwnedAndroidAvd(device.avdName, {
+                    avdRoot: device.avdRoot,
                 });
                 if (!deletion.ok) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);

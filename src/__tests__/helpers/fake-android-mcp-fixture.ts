@@ -75,6 +75,11 @@ if [ "$1" = "devices" ] && [ "$2" = "-l" ]; then
   echo "UNAUTHORIZED unauthorized usb:1-2 model:Pixel_5"
   echo "OFFLINE offline usb:1-3 model:Pixel_4"
   echo "emulator-5554 device product:sdk_gphone"
+  for marker in "$HOME"/fake-adb-active-emulator-*; do
+    [ -e "$marker" ] || continue
+    active_port="\${marker##*-}"
+    [ "$active_port" = "5554" ] || echo "emulator-$active_port device product:sdk_gphone"
+  done
   if [ -f "$HOME/fake-adb-extra-emulator" ]; then
     extra_port="$(/bin/cat "$HOME/fake-adb-extra-emulator")"
     echo "emulator-$extra_port device product:sdk_gphone"
@@ -181,8 +186,12 @@ if [ "$1" = "shell" ]; then
 fi
 exit 0
 `);
-        writeScript("avdmanager", `
+writeScript("avdmanager", `
 echo "avdmanager $*" >> "$FAKE_ANDROID_LOG"
+if [ "$1" = "create" ] && [ "$2" = "avd" ] && [ "$3" = "--name" ] && [ -n "$4" ]; then
+  /bin/mkdir -p "$HOME/.android/avd/$4.avd"
+  printf 'path=%s\\n' "$HOME/.android/avd/$4.avd" > "$HOME/.android/avd/$4.ini"
+fi
 if [ "$1" = "create" ] && [ -f "$HOME/fake-android-create-conflict-state-path" ]; then
   state_path="$(/bin/cat "$HOME/fake-android-create-conflict-state-path")"
   /bin/cp "$HOME/fake-android-create-conflict-state.json" "$state_path" || exit 91

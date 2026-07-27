@@ -4028,9 +4028,9 @@ describe("getWorktreeGitMounts", () => {
             ["switch", baseBranch],
             { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
         ).status).toBe(0);
-        renameSync(
+        writeFileSync(
             join(result.workspacePath, ".gitmodules"),
-            join(result.workspacePath, ".gitmodules.stale"),
+            "[submodule \"stale\"]\n\tpath = services/stale\n\turl = ../stale\n",
         );
 
         const mounts = getWorktreeGitMounts(
