@@ -10,7 +10,7 @@ export default tseslint.config(
         rules: {
             "n/no-unsupported-features/node-builtins": [
                 "error",
-                { version: ">=14.14.0" },
+                { version: ">=20.19.0" },
             ],
         },
     },

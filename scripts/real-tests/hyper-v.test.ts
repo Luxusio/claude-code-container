@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { basename } from "path";
-import { hyperVTestFiles, runHyperVTests } from "./hyper-v.ts";
+import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
 
 describe("Hyper-V Level 3 launcher", () => {
     it("selects both Hyper-V providers by default", () => {
@@ -17,6 +17,40 @@ describe("Hyper-V Level 3 launcher", () => {
 
     it("rejects unknown targets", () => {
         expect(() => hyperVTestFiles("macos")).toThrow(/all, windows, linux/);
+    });
+
+    it("rejects unknown targets before taking the exclusive run lock", async () => {
+        const calls: string[] = [];
+        await expect(runHyperVLevel3(["--target", "macos"], {
+            withExclusiveRealProviderRunImpl: async () => {
+                calls.push("exclusive");
+                return 0;
+            },
+            buildLevel3ArtifactsImpl: () => {
+                calls.push("build");
+                return 0;
+            },
+            ensureHostBrokerReadyImpl: () => {
+                calls.push("broker");
+                return 0;
+            },
+        })).rejects.toThrow("--target must be one of: all, windows, linux");
+        expect(calls).toEqual([]);
+    });
+
+    it("rejects unknown targets before building when invoked directly", async () => {
+        const calls: string[] = [];
+        await expect(runHyperVTests("macos", {
+            buildLevel3ArtifactsImpl: () => {
+                calls.push("build");
+                return 0;
+            },
+            ensureHostBrokerReadyImpl: () => {
+                calls.push("broker");
+                return 0;
+            },
+        })).rejects.toThrow("--target must be one of: all, windows, linux");
+        expect(calls).toEqual([]);
     });
 
     it("builds artifacts and prepares the broker before running the selected provider", async () => {

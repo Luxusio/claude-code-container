@@ -18,6 +18,7 @@ export function hyperVTestFiles(target: string) {
 }
 
 export async function runHyperVTests(target: string, dependencies: any = {}) {
+    const testFiles = hyperVTestFiles(target);
     const env = dependencies.env || process.env;
     const build = dependencies.buildLevel3ArtifactsImpl || buildLevel3Artifacts;
     const ensureBroker = dependencies.ensureHostBrokerReadyImpl || ensureHostBrokerReady;
@@ -27,7 +28,7 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
     const brokerStatus = ensureBroker(repoRoot, { env });
     if (brokerStatus !== 0) return brokerStatus;
     const runner = join(repoRoot, "scripts", "real-tests", "run.ts");
-    const result = await runProcess(process.execPath, [runner, "--compact", ...hyperVTestFiles(target)], {
+    const result = await runProcess(process.execPath, [runner, "--compact", ...testFiles], {
         cwd: repoRoot,
         env,
     });
@@ -37,6 +38,7 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
 export async function runHyperVLevel3(args = process.argv.slice(2), dependencies: any = {}) {
     const targetIndex = args.indexOf("--target");
     const target = targetIndex >= 0 ? String(args[targetIndex + 1] || "") : "all";
+    hyperVTestFiles(target);
     const withExclusive = dependencies.withExclusiveRealProviderRunImpl || withExclusiveRealProviderRun;
     return withExclusive(`test:level3:hyper-v:${target}`, () => runHyperVTests(target, dependencies));
 }
