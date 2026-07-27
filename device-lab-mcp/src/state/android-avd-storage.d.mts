@@ -9,6 +9,7 @@ export interface AndroidAvdStorageOptions {
         originalPath: string;
         quarantinePath: string;
     }) => void;
+    verifyInactive?: (name: string) => boolean;
 }
 
 export interface AndroidAvdArtifactCleanup {

@@ -5118,30 +5118,31 @@ async function rollbackProviderCreateAfterConflict(
         if (existing?.avdName === device.avdName) return { attempted: false, ok: true, reason: "provider-resource-owned-by-existing-device" };
         const rollbackOwnerId = field(device, "ownerId");
         if (!rollbackOwnerId) return { attempted: false, ok: false, reason: "created-avd-owner-id-missing" };
-        const port = numberField(device, "port");
-        if (!validAndroidEmulatorPort(port)) {
-            return { attempted: false, ok: false, reason: "created-avd-liveness-unverified" };
+        const avdName = field(device, "avdName");
+        if (!avdName || !ownedAndroidAvdName(avdName, rollbackOwnerId)) {
+            return { attempted: false, ok: false, reason: "created-avd-identity-unverified" };
         }
-        if (!providerExecutable("adb", normalized)) {
-            return { attempted: false, ok: false, reason: "created-avd-liveness-unverified" };
-        }
-        const live = liveAndroidEmulatorPortsForAllocation(normalized);
-        if (!live.ok || live.ports.has(port)) {
+        const live = liveAndroidAvdNames(normalized);
+        if (!live.ok || live.names.has(avdName)) {
             return {
                 attempted: false,
                 ok: false,
-                reason: live.ok && live.ports.has(port)
+                reason: live.ok && live.names.has(avdName)
                     ? "created-avd-active"
                     : "created-avd-liveness-unverified",
             };
         }
-        const avdRoot = field(device, "avdRoot");
+        const avdRoot = approvedAndroidAvdRoot(field(device, "avdRoot"), normalized.platform);
         if (!avdRoot) return { attempted: false, ok: false, reason: "created-avd-root-unavailable" };
         try {
-            const cleanup = removeOwnedAndroidAvdArtifacts(String(device.avdName), rollbackOwnerId, {
+            const cleanup = removeOwnedAndroidAvdArtifacts(avdName, rollbackOwnerId, {
                 root: avdRoot,
+                verifyInactive: () => {
+                    const current = liveAndroidAvdNames(normalized);
+                    return current.ok && !current.names.has(avdName);
+                },
             });
-            return { attempted: true, ok: true, cleanup };
+            return { attempted: true, ok: true, artifactsRemoved: cleanup.removed };
         } catch {
             return {
                 attempted: true,
@@ -5359,6 +5360,99 @@ function liveAndroidEmulatorPortsForAllocation(normalized: NormalizedBrokerOptio
         };
     }
     return { ok: true, ports: androidEmulatorPortsFromAdbDevices(result.stdout) };
+}
+
+function liveAndroidAvdNames(normalized: NormalizedBrokerOptions):
+    | { ok: true; names: Set<string> }
+    | { ok: false; status: number; error: string; detail: string } {
+    const adb = providerExecutable("adb", normalized);
+    if (!adb) {
+        return {
+            ok: false,
+            status: 503,
+            error: "android-emulator-runtime-inventory-unavailable",
+            detail: "missing-adb",
+        };
+    }
+    const inventory = normalized.commandRunner({
+        mode: "exec",
+        provider: "adb",
+        executable: adb,
+        args: ["devices", "-l"],
+    }, {
+        timeoutMs: 10000,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (!commandSucceeded(inventory)) {
+        return {
+            ok: false,
+            status: 503,
+            error: "android-emulator-runtime-inventory-unavailable",
+            detail: inventory.stderr || inventory.stdout || inventory.error || `adb-exit-${inventory.status ?? "unknown"}`,
+        };
+    }
+    const emulatorLines = String(inventory.stdout || "").split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^emulator-\d+\s+/.test(line));
+    const unavailable = emulatorLines.filter((line) => !/^emulator-\d+\s+device\b/.test(line));
+    if (unavailable.length > 0) {
+        return {
+            ok: false,
+            status: 503,
+            error: "android-emulator-runtime-target-unavailable",
+            detail: unavailable.join(", "),
+        };
+    }
+    const names = new Set<string>();
+    for (const line of emulatorLines) {
+        const serial = /^(emulator-\d+)/.exec(line)?.[1];
+        if (!serial) {
+            return {
+                ok: false,
+                status: 503,
+                error: "android-emulator-runtime-identity-unavailable",
+                detail: "invalid-emulator-serial",
+            };
+        }
+        const result = normalized.commandRunner({
+            mode: "exec",
+            provider: "adb",
+            executable: adb,
+            args: ["-s", serial, "emu", "avd", "name"],
+        }, {
+            timeoutMs: 10000,
+            outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        });
+        if (!commandSucceeded(result)) {
+            return {
+                ok: false,
+                status: 503,
+                error: "android-emulator-runtime-identity-unavailable",
+                detail: result.stderr || result.stdout || result.error || `adb-exit-${result.status ?? "unknown"}`,
+            };
+        }
+        const name = String(result.stdout || "").split(/\r?\n/)
+            .map((value) => value.trim())
+            .find((value) => value && value !== "OK");
+        if (!name) {
+            return {
+                ok: false,
+                status: 503,
+                error: "android-emulator-runtime-identity-unavailable",
+                detail: `missing-avd-name-for-${serial}`,
+            };
+        }
+        names.add(name);
+    }
+    return { ok: true, names };
+}
+
+function approvedAndroidAvdRoot(recordedRoot: unknown, platform: NodeJS.Platform): string | null {
+    if (typeof recordedRoot !== "string" || !recordedRoot) return null;
+    const approved = resolve(androidAvdHome());
+    const recorded = resolve(recordedRoot);
+    const normalize = (value: string) => platform === "win32" ? value.toLowerCase() : value;
+    return normalize(approved) === normalize(recorded) ? approved : null;
 }
 
 function resolveAndroidEmulatorCreatePortForInvoke(
@@ -11043,6 +11137,31 @@ async function lifecycleCommandInvokeUnlocked(
                 const rollback = isHyperVBackend(parsed.backend)
                     ? await reconcileHyperVCreateResidue(ownerId, parsed.backend, parsed.deviceId, normalized, hyperVCleanupDeadlineAt, parsed.create?.incarnationId as string | undefined)
                     : null;
+                let androidRollback: Record<string, unknown> | null = null;
+                if (parsed.backend === "android-emulator" && parsed.command === "device_create" && parsed.create?.createAvd === true) {
+                    const avdName = field(payload.result?.device, "avdName");
+                    const live = liveAndroidAvdNames(normalized);
+                    if (avdName && androidCreateAvdRoot && ownedAndroidAvdName(avdName, ownerId)
+                        && live.ok && !live.names.has(avdName)) {
+                        try {
+                            const cleanup = removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
+                                root: androidCreateAvdRoot,
+                                verifyInactive: () => {
+                                    const current = liveAndroidAvdNames(normalized);
+                                    return current.ok && !current.names.has(avdName);
+                                },
+                            });
+                            androidRollback = { ok: true, artifactsRemoved: cleanup.removed };
+                        } catch {
+                            androidRollback = { ok: false, error: "android-avd-artifact-cleanup-failed" };
+                        }
+                    } else {
+                        androidRollback = {
+                            ok: false,
+                            error: "android-avd-liveness-unverified",
+                        };
+                    }
+                }
                 const hyperVExecution = isHyperVBackend(parsed.backend)
                     ? redactProviderCommandInput(execution, true, "hyper-v-provider-command-failed")
                     : null;
@@ -11053,6 +11172,7 @@ async function lifecycleCommandInvokeUnlocked(
                         error: "provider-command-failed",
                         detail: hyperVExecution?.diagnosticCode || providerFailureDetail(execution),
                         ...(rollback ? { rollback } : {}),
+                        ...(androidRollback ? { rollback: androidRollback } : {}),
                         result: {
                             ...(isHyperVBackend(parsed.backend)
                                 ? redactHyperVResultSecrets(payload.result)
@@ -11539,45 +11659,21 @@ async function lifecycleCommandInvokeUnlocked(
         }
     }
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
-        const port = numberField(payload.result?.device, "port");
-        const avdRoot = field(payload.result?.device, "avdRoot");
-        if (!avdRoot) {
+        const avdName = field(payload.result?.device, "avdName");
+        const avdRoot = approvedAndroidAvdRoot(field(payload.result?.device, "avdRoot"), normalized.platform);
+        if (!avdRoot || !avdName || !ownedAndroidAvdName(avdName, ownerId)) {
             return {
                 status: 409,
                 payload: {
                     ok: false,
-                    error: "android-avd-root-unavailable",
+                    error: !avdRoot ? "android-avd-root-unavailable" : "android-avd-identity-unavailable",
                     ownerId,
                     backend: parsed.backend,
                     deviceId: parsed.deviceId,
                 },
             };
         }
-        if (!providerExecutable("adb", normalized)) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "android-avd-liveness-unverified",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-        if (!validAndroidEmulatorPort(port)) {
-            return {
-                status: 409,
-                payload: {
-                    ok: false,
-                    error: "android-avd-liveness-unverified",
-                    ownerId,
-                    backend: parsed.backend,
-                    deviceId: parsed.deviceId,
-                },
-            };
-        }
-        const live = liveAndroidEmulatorPortsForAllocation(normalized);
+        const live = liveAndroidAvdNames(normalized);
         if (!live.ok) {
             return {
                 status: live.status,
@@ -11591,7 +11687,7 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
-        if (live.ports.has(port)) {
+        if (live.names.has(avdName)) {
             return {
                 status: 409,
                 payload: {
@@ -11725,11 +11821,15 @@ async function lifecycleCommandInvokeUnlocked(
         || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution);
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
         const avdName = field(payload.result?.device, "avdName");
-        const avdRoot = field(payload.result?.device, "avdRoot");
+        const avdRoot = approvedAndroidAvdRoot(field(payload.result?.device, "avdRoot"), normalized.platform);
         try {
             if (!avdName || !avdRoot) throw new Error("missing-provider-metadata");
             removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
                 root: avdRoot,
+                verifyInactive: () => {
+                    const current = liveAndroidAvdNames(normalized);
+                    return current.ok && !current.names.has(avdName);
+                },
             });
             success = true;
         } catch {

@@ -114,6 +114,15 @@ if [ "$1" = "get-state" ]; then
   echo "device"
   exit 0
 fi
+if [ "$1" = "emu" ] && [ "$2" = "avd" ] && [ "$3" = "name" ]; then
+  if [ -f "$HOME/fake-adb-avd-name-$serial" ]; then
+    /bin/cat "$HOME/fake-adb-avd-name-$serial"
+  else
+    echo "host_pixel"
+  fi
+  echo "OK"
+  exit 0
+fi
 if [ "$1" = "emu" ] && [ "$2" = "kill" ]; then
   /bin/rm -f "$HOME/fake-adb-active-$serial"
   exit 0
@@ -191,6 +200,10 @@ echo "avdmanager $*" >> "$FAKE_ANDROID_LOG"
 if [ "$1" = "create" ] && [ "$2" = "avd" ] && [ "$3" = "--name" ] && [ -n "$4" ]; then
   /bin/mkdir -p "$HOME/.android/avd/$4.avd"
   printf 'path=%s\\n' "$HOME/.android/avd/$4.avd" > "$HOME/.android/avd/$4.ini"
+  if [ -f "$HOME/fake-android-avdmanager-create-fail" ]; then
+    echo "injected partial AVD creation failure" >&2
+    exit 17
+  fi
 fi
 if [ "$1" = "create" ] && [ -f "$HOME/fake-android-create-conflict-state-path" ]; then
   state_path="$(/bin/cat "$HOME/fake-android-create-conflict-state-path")"

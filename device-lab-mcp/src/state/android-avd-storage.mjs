@@ -76,6 +76,9 @@ export function listOwnedAndroidAvdArtifacts(ownerId, options = {}) {
         if (metadata.isSymbolicLink()) {
             throw new Error(`refusing symbolic Android AVD artifact: ${path}`);
         }
+        if (metadata.dev !== rootIdentity.dev) {
+            throw new Error(`refusing cross-filesystem Android AVD artifact: ${path}`);
+        }
         if (match?.[2] === ".avd" && !metadata.isDirectory()) {
             throw new Error(`Android AVD data artifact is not a directory: ${path}`);
         }
@@ -122,6 +125,9 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
                 || !sameIdentity(quarantine.path, quarantine.identity)) {
                 throw new Error(`Android AVD quarantine identity changed before cleanup: ${quarantine.path}`);
             }
+            if (options.verifyInactive && options.verifyInactive(name) !== true) {
+                throw new Error(`Android AVD became active before quarantine cleanup: ${name}`);
+            }
             rmSync(quarantine.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             if (existsSync(quarantine.path)) {
                 throw new Error(`Android AVD quarantine remained after cleanup: ${quarantine.path}`);
@@ -155,6 +161,9 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
                     originalPath: path,
                     quarantinePath: quarantine,
                 });
+                if (options.verifyInactive && options.verifyInactive(name) !== true) {
+                    throw new Error(`Android AVD became active during cleanup: ${name}`);
+                }
                 rmSync(quarantine, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             } catch (error) {
                 if (sameIdentity(artifact.root, artifact.rootIdentity)

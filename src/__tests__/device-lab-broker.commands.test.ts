@@ -2278,6 +2278,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 ok: false,
                 error: "provider-command-failed",
                 detail: "error: provider timed out during cleanup\nstderr: bad system image\nstdout: avdmanager progress",
+                rollback: { ok: false, error: "android-avd-liveness-unverified" },
                 result: expect.objectContaining({
                     execution: expect.objectContaining({
                         mutatesHost: false,
@@ -2367,7 +2368,7 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
-    it("removes owner-scoped Android AVD disk artifacts after broker deletion", async () => {
+    it("rejects a persisted Android AVD root that differs from the host-approved root", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-avd-artifact-cleanup-test");
         const avdName = `ccc-${ownerId}-cleanup`;
         const avdHome = mkdtempSync(join(tmpdir(), "ccc-broker-avd-home-"));
@@ -2421,18 +2422,19 @@ describe("device-lab host broker lifecycle commands", () => {
                     },
                 }),
             });
-            expect(response.status).toBe(200);
+            expect(response.status).toBe(409);
             const body = await response.json();
+            expect(body).toEqual(expect.objectContaining({
+                ok: false,
+                error: "android-avd-root-unavailable",
+            }));
             expect(JSON.stringify(body)).not.toContain("avdRoot");
             expect(JSON.stringify(body)).not.toContain(avdHome);
-            expect(existsSync(avdDataPath)).toBe(false);
-            expect(existsSync(avdIniPath)).toBe(false);
+            expect(existsSync(avdDataPath)).toBe(true);
+            expect(existsSync(avdIniPath)).toBe(true);
             expect(existsSync(join(replacementAvdHome, `${avdName}.avd`))).toBe(true);
             expect(existsSync(join(replacementAvdHome, `${avdName}.ini`))).toBe(true);
-            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
-                mode: "noop",
-                provider: "host-broker-state",
-            }), expect.any(Object));
+            expect(commandRunner).not.toHaveBeenCalled();
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -2445,15 +2447,22 @@ describe("device-lab host broker lifecycle commands", () => {
 
     it("rejects foreign and live Android AVD deletion before avdmanager execution", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-avd-preflight-test");
-        const commandRunner = vi.fn((command) => ({
-            mode: command.mode,
-            provider: command.provider,
-            executable: command.executable,
-            args: command.args,
-            status: 0,
-            stdout: command.provider === "adb" ? "List of devices attached\nemulator-5582\tdevice\n" : "",
-            stderr: "",
-        }));
+        const liveAvdName = `ccc-${ownerId}-live`;
+        const commandRunner = vi.fn((command) => {
+            const avdIdentity = command.provider === "adb"
+                && command.args?.slice(-3).join(" ") === "emu avd name";
+            return {
+                mode: command.mode,
+                provider: command.provider,
+                executable: command.executable,
+                args: command.args,
+                status: 0,
+                stdout: command.provider === "adb"
+                    ? avdIdentity ? `${liveAvdName}\nOK\n` : "List of devices attached\nemulator-5582\tdevice\n"
+                    : "",
+                stderr: "",
+            };
+        });
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-android-avd-preflight-test",
             host: "127.0.0.1",
@@ -2510,7 +2519,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 id: "android-preflight",
                 backend: "android-emulator",
                 status: "stopped",
-                avdName: `ccc-${ownerId}-live`,
+                avdName: liveAvdName,
                 avdRoot: process.env.ANDROID_AVD_HOME || join(process.env.HOME!, ".android", "avd"),
                 port: 5582,
             }]);
@@ -2520,7 +2529,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 ok: false,
                 error: "android-avd-active",
             }));
-            expect(commandRunner).toHaveBeenCalledTimes(1);
+            expect(commandRunner).toHaveBeenCalledTimes(2);
             expect(commandRunner.mock.calls[0][0]).toEqual(expect.objectContaining({
                 provider: "adb",
                 args: ["devices", "-l"],

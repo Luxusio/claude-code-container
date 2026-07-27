@@ -177,6 +177,25 @@ test("recovers owner-scoped Android AVD quarantine left by an interrupted cleanu
     }
 });
 
+test("restores a quarantined Android AVD when final liveness verification fails", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-final-liveness-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-became-active`;
+    const dataPath = join(avdRoot, `${owned}.avd`);
+    try {
+        mkdirSync(dataPath, { recursive: true });
+        writeFileSync(join(dataPath, "userdata-qemu.img"), "preserved");
+        assert.throws(() => removeOwnedAndroidAvdArtifacts(owned, owner, {
+            home,
+            verifyInactive: () => false,
+        }), /became active/);
+        assert.equal(readFileSync(join(dataPath, "userdata-qemu.img"), "utf8"), "preserved");
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
 function successfulCycle(overrides = {}) {
     return {
         code: 0,
@@ -714,6 +733,7 @@ test("removes Android E2E AVD artifacts without provider registration state", ()
         const result = deleteAndroidAvdName(avdName, {
             home,
             owner,
+            verifyInactive: () => true,
         });
         assert.deepEqual(result, { artifactsRemoved: 1 });
         assert.equal(existsSync(join(avdRoot, `${avdName}.avd`)), false);

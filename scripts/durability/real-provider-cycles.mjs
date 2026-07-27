@@ -956,7 +956,10 @@ export function deleteAndroidAvdName(name, options = {}) {
     const cleanup = (options.removeAndroidAvdArtifacts || removeOwnedAndroidAvdArtifacts)(
         name,
         owner,
-        options,
+        {
+            ...options,
+            verifyInactive: options.verifyInactive || (() => !listRunningAndroidAvdNames(options).includes(name)),
+        },
     );
     return { artifactsRemoved: cleanup.removed };
 }

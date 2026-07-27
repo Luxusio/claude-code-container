@@ -234,6 +234,35 @@ function liveAndroidEmulatorPortsForAllocation() {
     return { ok: true, ports: androidEmulatorPortsFromAdbDevices(result.stdout) };
 }
 
+function liveAndroidAvdNames(discovery) {
+    if (!discovery.adb) return { ok: false, error: "android-emulator-runtime-inventory-unavailable" };
+    const inventory = run(discovery.adb, ["devices", "-l"]);
+    if (inventory.status !== 0) {
+        return { ok: false, error: "android-emulator-runtime-inventory-unavailable" };
+    }
+    const emulatorLines = String(inventory.stdout || "").split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => /^emulator-\d+\s+/.test(line));
+    if (emulatorLines.some((line) => !/^emulator-\d+\s+device\b/.test(line))) {
+        return { ok: false, error: "android-emulator-runtime-target-unavailable" };
+    }
+    const names = new Set();
+    for (const line of emulatorLines) {
+        const serial = /^(emulator-\d+)/.exec(line)?.[1];
+        if (!serial) return { ok: false, error: "android-emulator-runtime-identity-unavailable" };
+        const result = run(discovery.adb, ["-s", serial, "emu", "avd", "name"]);
+        if (result.status !== 0) {
+            return { ok: false, error: "android-emulator-runtime-identity-unavailable" };
+        }
+        const name = String(result.stdout || "").split(/\r?\n/)
+            .map((value) => value.trim())
+            .find((value) => value && value !== "OK");
+        if (!name) return { ok: false, error: "android-emulator-runtime-identity-unavailable" };
+        names.add(name);
+    }
+    return { ok: true, names };
+}
+
 function androidRecordingDir(device) {
     return join(homedir(), ".ccc/devices/owners", ownerId(), "android", device.id, "recordings");
 }
@@ -468,10 +497,11 @@ function deleteOwnedAndroidAvd(avdName, options = {}) {
     try {
         const artifacts = removeOwnedAndroidAvdArtifacts(avdName, ownerId(), {
             root: options.avdRoot,
+            verifyInactive: options.verifyInactive,
         });
         return {
             ok: true,
-            artifacts,
+            artifactsRemoved: artifacts.removed,
         };
     } catch {
         return {
@@ -481,10 +511,18 @@ function deleteOwnedAndroidAvd(avdName, options = {}) {
     }
 }
 
+function approvedAndroidAvdRoot(recordedRoot) {
+    if (typeof recordedRoot !== "string" || !recordedRoot) return null;
+    const approved = resolve(androidAvdHome());
+    const recorded = resolve(recordedRoot);
+    const normalize = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+    return normalize(approved) === normalize(recorded) ? approved : null;
+}
+
 function androidAvdIsInactive(discovery, device) {
-    if (!discovery.adb || !validAndroidEmulatorPort(device?.port)) return false;
-    const live = liveAndroidEmulatorPortsForAllocation();
-    return live.ok && !live.ports.has(device.port);
+    if (!isSafeProvisionedAvdName(device?.avdName)) return false;
+    const live = liveAndroidAvdNames(discovery);
+    return live.ok && !live.names.has(device.avdName);
 }
 
 function isSafeSystemImage(systemImage) {
@@ -806,7 +844,18 @@ async function handleAndroidToolUnlocked(name, args) {
                 const avdArgs = ["create", "avd", "--name", resolvedAvdName, "--package", systemImage, "--force"];
                 if (deviceProfile) avdArgs.push("--device", deviceProfile);
                 const r = runWithInput(discovery.avdmanager, avdArgs, "no\n", { timeout: 300_000 });
-                if (r.status !== 0) return fail(r);
+                if (r.status !== 0) {
+                    if (androidAvdIsInactive(discovery, { avdName: resolvedAvdName })) {
+                        const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
+                            avdRoot,
+                            verifyInactive: () => androidAvdIsInactive(discovery, { avdName: resolvedAvdName }),
+                        });
+                        if (!rollback.ok) {
+                            return textResult(false, `Android AVD create failed and partial artifact cleanup failed: ${rollback.error}`);
+                        }
+                    }
+                    return fail(r);
+                }
             }
 
             const device = {
@@ -842,6 +891,7 @@ async function handleAndroidToolUnlocked(name, args) {
                     }
                     const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
                         avdRoot,
+                        verifyInactive: () => androidAvdIsInactive(discovery, device),
                     });
                     if (!rollback.ok) {
                         return textResult(false, `Owner device state update failed; Android AVD rollback failed: ${rollback.error}`);
@@ -857,6 +907,7 @@ async function handleAndroidToolUnlocked(name, args) {
                     }
                     const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
                         avdRoot,
+                        verifyInactive: () => androidAvdIsInactive(discovery, device),
                     });
                     if (!rollback.ok) {
                         return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); Android AVD rollback failed: ${rollback.error}`);
@@ -945,12 +996,14 @@ async function handleAndroidToolUnlocked(name, args) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                     return textResult(false, "android-avd-active-or-liveness-unverified");
                 }
-                if (typeof device.avdRoot !== "string" || !device.avdRoot) {
+                const avdRoot = approvedAndroidAvdRoot(device.avdRoot);
+                if (!avdRoot) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                     return textResult(false, "android-avd-root-unavailable");
                 }
                 const deletion = deleteOwnedAndroidAvd(device.avdName, {
-                    avdRoot: device.avdRoot,
+                    avdRoot,
+                    verifyInactive: () => androidAvdIsInactive(discovery, deleteCurrent || device),
                 });
                 if (!deletion.ok) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);

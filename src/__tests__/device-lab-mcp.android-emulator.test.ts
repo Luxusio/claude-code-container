@@ -720,6 +720,36 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
         expect(log).not.toContain("appium");
     });
 
+    it("removes partial owner-scoped AVD artifacts when avdmanager creation fails", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "android-emulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = "android-partial-create-failure";
+        const avdName = `ccc-${ownerId}-partial-create-failure`;
+        const avdRoot = join(homeDir, ".android", "avd");
+        const failureMarker = join(homeDir, "fake-android-avdmanager-create-fail");
+        writeFileSync(failureMarker, "fail");
+        try {
+            const created = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "android-emulator",
+                    name: "Partial Create Failure",
+                    deviceId,
+                    avdName,
+                    systemImage: "system-images;android-35;google_apis;x86_64",
+                    createAvd: true,
+                },
+            });
+            expect(created.isError).toBe(true);
+            expect(existsSync(join(avdRoot, `${avdName}.avd`))).toBe(false);
+            expect(existsSync(join(avdRoot, `${avdName}.ini`))).toBe(false);
+            const status = await client.callTool({ name: "device_status", arguments: { deviceId } });
+            expect(status.isError).toBe(true);
+        } finally {
+            rmSync(failureMarker, { force: true });
+        }
+    });
+
     it("assigns and persists a deterministic direct emulator port when none is requested", { timeout: TIMEOUT }, async () => {
         const create = await client.callTool({
             name: "device_create",
@@ -1154,9 +1184,11 @@ exec "${realAdbPath}" "$@"
         const deviceId = "android-stale-stopped-active-avd";
         const avdName = `ccc-${ownerId}-stale-stopped-active-avd`;
         const port = 5672;
+        const activePort = 5674;
         const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
         const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
-        const activeMarker = join(homeDir, `fake-adb-active-emulator-${port}`);
+        const activeMarker = join(homeDir, `fake-adb-active-emulator-${activePort}`);
+        const activeNameMarker = join(homeDir, `fake-adb-avd-name-emulator-${activePort}`);
         const inventoryFailureMarker = join(homeDir, "fake-adb-devices-fail");
         const create = await client.callTool({
             name: "device_create",
@@ -1175,6 +1207,7 @@ exec "${realAdbPath}" "$@"
         writeFileSync(join(avdDataPath, "userdata-qemu.img"), "active-avd-data");
         writeFileSync(avdIniPath, `path=${avdDataPath}`);
         writeFileSync(activeMarker, "active");
+        writeFileSync(activeNameMarker, `${avdName}\n`);
         const beforeLog = readFileSync(logPath, "utf8");
 
         try {
@@ -1195,6 +1228,7 @@ exec "${realAdbPath}" "$@"
             })) as { device: Record<string, unknown> }).device).not.toHaveProperty("avdRoot");
 
             rmSync(activeMarker, { force: true });
+            rmSync(activeNameMarker, { force: true });
             writeFileSync(inventoryFailureMarker, "fail");
             const unverified = await client.callTool({
                 name: "device_delete",
@@ -1207,12 +1241,19 @@ exec "${realAdbPath}" "$@"
             expect(existsSync(avdIniPath)).toBe(true);
         } finally {
             rmSync(activeMarker, { force: true });
+            rmSync(activeNameMarker, { force: true });
             rmSync(inventoryFailureMarker, { force: true });
-            const deleted = await client.callTool({
-                name: "device_delete",
-                arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
+            const status = await client.callTool({
+                name: "device_status",
+                arguments: { deviceId },
             });
-            expect(deleted.isError).not.toBe(true);
+            if (!status.isError) {
+                const deleted = await client.callTool({
+                    name: "device_delete",
+                    arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
+                });
+                expect(deleted.isError).not.toBe(true);
+            }
         }
     });
 
