@@ -3,6 +3,7 @@ export interface AndroidAvdStorageOptions {
     home?: string;
     root?: string;
     platform?: NodeJS.Platform;
+    mountPoints?: Set<string>;
     suffixPattern?: string;
     onArtifactQuarantined?: (artifact: {
         name: string;

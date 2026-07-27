@@ -8,7 +8,7 @@ import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { resolveAndroidEmulatorPort, validAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
-import { androidAvdHome, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
+import { androidAvdHome, listOwnedAndroidAvdArtifacts, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -261,6 +261,25 @@ function liveAndroidAvdNames(discovery) {
         names.add(name);
     }
     return { ok: true, names };
+}
+
+function androidAvdProcessState(avdName) {
+    if (!isSafeProvisionedAvdName(avdName)) return { ok: false, active: false };
+    const result = process.platform === "win32"
+        ? run("powershell.exe", [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }",
+        ])
+        : run("/bin/ps", ["-eo", "args="]);
+    if (result.status !== 0) return { ok: false, active: false };
+    const escaped = avdName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matcher = new RegExp(`(?:^|\\s)(?:-avd(?:\\s+|=)["']?${escaped}(?=["'\\s]|$)|@${escaped}(?=\\s|$))`);
+    return {
+        ok: true,
+        active: String(result.stdout || "").split(/\r?\n/).some((line) => matcher.test(line)),
+    };
 }
 
 function androidRecordingDir(device) {
@@ -522,7 +541,9 @@ function approvedAndroidAvdRoot(recordedRoot) {
 function androidAvdIsInactive(discovery, device) {
     if (!isSafeProvisionedAvdName(device?.avdName)) return false;
     const live = liveAndroidAvdNames(discovery);
-    return live.ok && !live.names.has(device.avdName);
+    if (!live.ok || live.names.has(device.avdName)) return false;
+    const processState = androidAvdProcessState(device.avdName);
+    return processState.ok && !processState.active;
 }
 
 function isSafeSystemImage(systemImage) {
@@ -841,18 +862,17 @@ async function handleAndroidToolUnlocked(name, args) {
                 if (!systemImage) return textResult(false, "Android AVD provisioning requires systemImage");
                 if (!isSafeSystemImage(systemImage)) return textResult(false, "Android AVD systemImage must be a system-images package identifier");
                 if (deviceProfile && !isSafeDeviceProfile(deviceProfile)) return textResult(false, "Android AVD deviceProfile contains unsupported characters for provider execution");
+                if (listOwnedAndroidAvdArtifacts(ownerId(), { root: avdRoot })
+                    .some((artifact) => artifact.name === resolvedAvdName)) {
+                    return textResult(false, "Refusing Android AVD creation because owner-scoped artifacts already exist");
+                }
                 const avdArgs = ["create", "avd", "--name", resolvedAvdName, "--package", systemImage, "--force"];
                 if (deviceProfile) avdArgs.push("--device", deviceProfile);
                 const r = runWithInput(discovery.avdmanager, avdArgs, "no\n", { timeout: 300_000 });
                 if (r.status !== 0) {
-                    if (androidAvdIsInactive(discovery, { avdName: resolvedAvdName })) {
-                        const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
-                            avdRoot,
-                            verifyInactive: () => androidAvdIsInactive(discovery, { avdName: resolvedAvdName }),
-                        });
-                        if (!rollback.ok) {
-                            return textResult(false, `Android AVD create failed and partial artifact cleanup failed: ${rollback.error}`);
-                        }
+                    const rollback = deleteOwnedAndroidAvd(resolvedAvdName, { avdRoot });
+                    if (!rollback.ok) {
+                        return textResult(false, `Android AVD create failed and partial artifact cleanup failed: ${rollback.error}`);
                     }
                     return fail(r);
                 }

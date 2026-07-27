@@ -7,7 +7,7 @@ import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolv
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
 import { Worker } from "worker_threads";
-import { androidAvdHome, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "../device-lab-mcp/src/state/android-avd-storage.mjs";
+import { androidAvdHome, listOwnedAndroidAvdArtifacts, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "../device-lab-mcp/src/state/android-avd-storage.mjs";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId as canonicalDeviceLabOwnerId, deviceLabProjectMountPath } from "./device-lab-owner.js";
 import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDeviceStateFile } from "./device-lab-owner-state.js";
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
@@ -5132,15 +5132,22 @@ async function rollbackProviderCreateAfterConflict(
                     : "created-avd-liveness-unverified",
             };
         }
+        const processState = androidAvdProcessState(avdName, normalized);
+        if (!processState.ok || processState.active) {
+            return {
+                attempted: false,
+                ok: false,
+                reason: processState.ok && processState.active
+                    ? "created-avd-active"
+                    : "created-avd-liveness-unverified",
+            };
+        }
         const avdRoot = approvedAndroidAvdRoot(field(device, "avdRoot"), normalized.platform);
         if (!avdRoot) return { attempted: false, ok: false, reason: "created-avd-root-unavailable" };
         try {
             const cleanup = removeOwnedAndroidAvdArtifacts(avdName, rollbackOwnerId, {
                 root: avdRoot,
-                verifyInactive: () => {
-                    const current = liveAndroidAvdNames(normalized);
-                    return current.ok && !current.names.has(avdName);
-                },
+                verifyInactive: () => androidAvdIsInactiveForBroker(avdName, normalized),
             });
             return { attempted: true, ok: true, artifactsRemoved: cleanup.removed };
         } catch {
@@ -5453,6 +5460,57 @@ function approvedAndroidAvdRoot(recordedRoot: unknown, platform: NodeJS.Platform
     const recorded = resolve(recordedRoot);
     const normalize = (value: string) => platform === "win32" ? value.toLowerCase() : value;
     return normalize(approved) === normalize(recorded) ? approved : null;
+}
+
+function androidAvdProcessState(avdName: string, normalized: NormalizedBrokerOptions):
+    | { ok: true; active: boolean }
+    | { ok: false; status: number; error: string; detail: string } {
+    if (!ownedAndroidAvdName(avdName, avdName.slice(4, 20))) {
+        return { ok: false, status: 409, error: "android-avd-identity-unavailable", detail: "invalid-avd-name" };
+    }
+    const command: ProviderCommand = normalized.platform === "win32"
+        ? {
+            mode: "exec",
+            provider: "process-inventory",
+            executable: "powershell.exe",
+            args: [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }",
+            ],
+        }
+        : {
+            mode: "exec",
+            provider: "process-inventory",
+            executable: "/bin/ps",
+            args: ["-eo", "args="],
+        };
+    const result = normalized.commandRunner(command, {
+        timeoutMs: 10000,
+        outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+    });
+    if (!commandSucceeded(result)) {
+        return {
+            ok: false,
+            status: 503,
+            error: "android-emulator-process-inventory-unavailable",
+            detail: result.stderr || result.stdout || result.error || `process-inventory-exit-${result.status ?? "unknown"}`,
+        };
+    }
+    const escaped = avdName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matcher = new RegExp(`(?:^|\\s)(?:-avd(?:\\s+|=)["']?${escaped}(?=["'\\s]|$)|@${escaped}(?=\\s|$))`);
+    return {
+        ok: true,
+        active: String(result.stdout || "").split(/\r?\n/).some((line) => matcher.test(line)),
+    };
+}
+
+function androidAvdIsInactiveForBroker(avdName: string, normalized: NormalizedBrokerOptions): boolean {
+    const live = liveAndroidAvdNames(normalized);
+    if (!live.ok || live.names.has(avdName)) return false;
+    const processState = androidAvdProcessState(avdName, normalized);
+    return processState.ok && !processState.active;
 }
 
 function resolveAndroidEmulatorCreatePortForInvoke(
@@ -10909,8 +10967,9 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
             }
             effectiveParsed = { ...parsed, create: { ...(parsed.create || {}), port: allocation.port } };
         }
+        let plannedDevice: unknown;
         try {
-            const plannedDevice = createOwnerDeviceRecord(ownerId, effectiveParsed);
+            plannedDevice = createOwnerDeviceRecord(ownerId, effectiveParsed);
             assertOwnerDeviceStateWritable([...devices, plannedDevice], DEVICE_BROKER_INVENTORY_FILE_LIMIT);
         } catch (error) {
             return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
@@ -10927,6 +10986,9 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
                     deviceId: parsed.deviceId,
                     force: parsed.force,
                     dryRun: parsed.dryRun,
+                    device: redactSecrets
+                        ? redactBrokerDeviceSecrets(plannedDevice)
+                        : plannedDevice,
                     create: redactSecrets && isHyperVBackend(parsed.backend)
                         ? publicHyperVCreateConfiguration(effectiveParsed.create)
                         : redactBrokerCreateSecrets(effectiveParsed.create),
@@ -11092,6 +11154,47 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
+        if (parsed.backend === "android-emulator" && parsed.create?.createAvd === true) {
+            const avdName = field(payload.result?.device, "avdName");
+            if (!avdName || !androidCreateAvdRoot || !ownedAndroidAvdName(avdName, ownerId)) {
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        error: "android-avd-create-identity-unavailable",
+                        ownerId,
+                        backend: parsed.backend,
+                        deviceId: parsed.deviceId,
+                    },
+                };
+            }
+            try {
+                if (listOwnedAndroidAvdArtifacts(ownerId, { root: androidCreateAvdRoot })
+                    .some((artifact) => artifact.name === avdName)) {
+                    return {
+                        status: 409,
+                        payload: {
+                            ok: false,
+                            error: "android-avd-artifacts-already-exist",
+                            ownerId,
+                            backend: parsed.backend,
+                            deviceId: parsed.deviceId,
+                        },
+                    };
+                }
+            } catch {
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        error: "android-avd-storage-preflight-failed",
+                        ownerId,
+                        backend: parsed.backend,
+                        deviceId: parsed.deviceId,
+                    },
+                };
+            }
+        }
         let execution: ProviderCommandResult = { mode: "noop", provider: "host-broker-state", status: 0, stdout: "", stderr: "" };
         let hyperVProvisioningExecution: ReturnType<typeof redactProviderCommandInput> | null = null;
         if (providerCommand && providerCommand.mode !== "noop") {
@@ -11140,16 +11243,10 @@ async function lifecycleCommandInvokeUnlocked(
                 let androidRollback: Record<string, unknown> | null = null;
                 if (parsed.backend === "android-emulator" && parsed.command === "device_create" && parsed.create?.createAvd === true) {
                     const avdName = field(payload.result?.device, "avdName");
-                    const live = liveAndroidAvdNames(normalized);
-                    if (avdName && androidCreateAvdRoot && ownedAndroidAvdName(avdName, ownerId)
-                        && live.ok && !live.names.has(avdName)) {
+                    if (avdName && androidCreateAvdRoot && ownedAndroidAvdName(avdName, ownerId)) {
                         try {
                             const cleanup = removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
                                 root: androidCreateAvdRoot,
-                                verifyInactive: () => {
-                                    const current = liveAndroidAvdNames(normalized);
-                                    return current.ok && !current.names.has(avdName);
-                                },
                             });
                             androidRollback = { ok: true, artifactsRemoved: cleanup.removed };
                         } catch {
@@ -11158,7 +11255,7 @@ async function lifecycleCommandInvokeUnlocked(
                     } else {
                         androidRollback = {
                             ok: false,
-                            error: "android-avd-liveness-unverified",
+                            error: "android-avd-create-identity-unavailable",
                         };
                     }
                 }
@@ -11176,7 +11273,12 @@ async function lifecycleCommandInvokeUnlocked(
                         result: {
                             ...(isHyperVBackend(parsed.backend)
                                 ? redactHyperVResultSecrets(payload.result)
-                                : payload.result || {}),
+                                : payload.result
+                                    ? {
+                                        ...payload.result,
+                                        device: redactBrokerDeviceSecrets(payload.result.device),
+                                    }
+                                    : {}),
                             invoked: true,
                             dryRun: false,
                             execution: {
@@ -11699,6 +11801,32 @@ async function lifecycleCommandInvokeUnlocked(
                 },
             };
         }
+        const processState = androidAvdProcessState(avdName, normalized);
+        if (!processState.ok) {
+            return {
+                status: processState.status,
+                payload: {
+                    ok: false,
+                    error: "android-avd-liveness-unverified",
+                    detail: processState.detail,
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                },
+            };
+        }
+        if (processState.active) {
+            return {
+                status: 409,
+                payload: {
+                    ok: false,
+                    error: "android-avd-active",
+                    ownerId,
+                    backend: parsed.backend,
+                    deviceId: parsed.deviceId,
+                },
+            };
+        }
     }
     let effectiveProviderCommand = providerCommand;
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
@@ -11826,10 +11954,7 @@ async function lifecycleCommandInvokeUnlocked(
             if (!avdName || !avdRoot) throw new Error("missing-provider-metadata");
             removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
                 root: avdRoot,
-                verifyInactive: () => {
-                    const current = liveAndroidAvdNames(normalized);
-                    return current.ok && !current.names.has(avdName);
-                },
+                verifyInactive: () => androidAvdIsInactiveForBroker(avdName, normalized),
             });
             success = true;
         } catch {

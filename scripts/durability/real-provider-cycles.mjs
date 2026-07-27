@@ -948,6 +948,31 @@ export function listRunningAndroidAvdNames(options = {}) {
     return names;
 }
 
+function androidAvdProcessIsActive(name, options = {}) {
+    const platform = options.platform || process.platform;
+    const invocation = platform === "win32"
+        ? {
+            command: "powershell.exe",
+            args: [
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(emulator|qemu-system-.*)\\.exe$' } | ForEach-Object { [string]$_.CommandLine }",
+            ],
+        }
+        : { command: "/bin/ps", args: ["-eo", "args="] };
+    const result = (options.spawnSyncImpl || spawnSync)(invocation.command, invocation.args, {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 30_000,
+        maxBuffer: 4 * 1024 * 1024,
+    });
+    if (result.status !== 0) throw new Error(`Android emulator process inspection failed: ${cleanupCommandError(result)}`);
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const matcher = new RegExp(`(?:^|\\s)(?:-avd(?:\\s+|=)["']?${escaped}(?=["'\\s]|$)|@${escaped}(?=\\s|$))`);
+    return String(result.stdout || "").split(/\r?\n/).some((line) => matcher.test(line));
+}
+
 export function deleteAndroidAvdName(name, options = {}) {
     const owner = options.owner || currentOwnerId();
     if (!ownedAndroidAvdName(name, owner, "real-android-e2e-[A-Za-z0-9._-]+")) {
@@ -958,7 +983,10 @@ export function deleteAndroidAvdName(name, options = {}) {
         owner,
         {
             ...options,
-            verifyInactive: options.verifyInactive || (() => !listRunningAndroidAvdNames(options).includes(name)),
+            verifyInactive: options.verifyInactive || (() => (
+                !listRunningAndroidAvdNames(options).includes(name)
+                && !androidAvdProcessIsActive(name, options)
+            )),
         },
     );
     return { artifactsRemoved: cleanup.removed };

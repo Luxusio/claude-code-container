@@ -103,6 +103,27 @@ test("fails closed on symbolic Android AVD artifacts", () => {
     }
 });
 
+test("fails closed on mounted Android AVD artifacts even on the same filesystem", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-mount-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-mounted`;
+    const dataPath = join(avdRoot, `${owned}.avd`);
+    try {
+        mkdirSync(dataPath, { recursive: true });
+        assert.throws(
+            () => listOwnedAndroidAvdArtifacts(owner, {
+                home,
+                mountPoints: new Set([dataPath]),
+            }),
+            /mounted Android AVD artifact/,
+        );
+        assert.equal(existsSync(dataPath), true);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
 test("fails closed when the Android AVD storage root traverses a symbolic path", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-avd-root-link-"));
     const outside = mkdtempSync(join(tmpdir(), "ccc-avd-root-outside-"));
@@ -183,14 +204,17 @@ test("restores a quarantined Android AVD when final liveness verification fails"
     const owner = "0123456789abcdef";
     const owned = `ccc-${owner}-real-android-e2e-became-active`;
     const dataPath = join(avdRoot, `${owned}.avd`);
+    const iniPath = join(avdRoot, `${owned}.ini`);
     try {
         mkdirSync(dataPath, { recursive: true });
         writeFileSync(join(dataPath, "userdata-qemu.img"), "preserved");
+        writeFileSync(iniPath, `path=${dataPath}`);
         assert.throws(() => removeOwnedAndroidAvdArtifacts(owned, owner, {
             home,
             verifyInactive: () => false,
         }), /became active/);
         assert.equal(readFileSync(join(dataPath, "userdata-qemu.img"), "utf8"), "preserved");
+        assert.equal(readFileSync(iniPath, "utf8"), `path=${dataPath}`);
     } finally {
         rmSync(home, { recursive: true, force: true });
     }

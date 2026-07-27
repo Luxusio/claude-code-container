@@ -416,7 +416,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     },
                 }),
             });
-            expect(created.status).toBe(200);
+            expect(created.status, JSON.stringify(await created.clone().json())).toBe(200);
             const createBody = await created.json() as { result: { device: { id: string; configPath: string; status: string; minimized: boolean } } };
             expect(createBody.result.device).toEqual(expect.objectContaining({
                 id: "windows-broker-win",
@@ -2274,11 +2274,12 @@ describe("device-lab host broker lifecycle commands", () => {
                 }),
             });
             expect(failed.status).toBe(502);
-            expect(await failed.json()).toEqual(expect.objectContaining({
+            const failedBody = await failed.json();
+            expect(failedBody).toEqual(expect.objectContaining({
                 ok: false,
                 error: "provider-command-failed",
                 detail: "error: provider timed out during cleanup\nstderr: bad system image\nstdout: avdmanager progress",
-                rollback: { ok: false, error: "android-avd-liveness-unverified" },
+                rollback: { ok: true, artifactsRemoved: 0 },
                 result: expect.objectContaining({
                     execution: expect.objectContaining({
                         mutatesHost: false,
@@ -2286,6 +2287,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     }),
                 }),
             }));
+            expect(JSON.stringify(failedBody)).not.toContain("avdRoot");
 
             const invalidPort = await fetch(endpoint, {
                 method: "POST",
@@ -2448,6 +2450,8 @@ describe("device-lab host broker lifecycle commands", () => {
     it("rejects foreign and live Android AVD deletion before avdmanager execution", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-avd-preflight-test");
         const liveAvdName = `ccc-${ownerId}-live`;
+        let adbVisible = true;
+        let processVisible = false;
         const commandRunner = vi.fn((command) => {
             const avdIdentity = command.provider === "adb"
                 && command.args?.slice(-3).join(" ") === "emu avd name";
@@ -2457,9 +2461,15 @@ describe("device-lab host broker lifecycle commands", () => {
                 executable: command.executable,
                 args: command.args,
                 status: 0,
-                stdout: command.provider === "adb"
-                    ? avdIdentity ? `${liveAvdName}\nOK\n` : "List of devices attached\nemulator-5582\tdevice\n"
-                    : "",
+                stdout: command.provider === "process-inventory"
+                    ? processVisible ? `emulator -avd ${liveAvdName} -port 5680\n` : ""
+                    : command.provider === "adb"
+                        ? avdIdentity
+                            ? `${liveAvdName}\nOK\n`
+                            : adbVisible
+                                ? "List of devices attached\nemulator-5582\tdevice\n"
+                                : "List of devices attached\n"
+                        : "",
                 stderr: "",
             };
         });
@@ -2534,6 +2544,18 @@ describe("device-lab host broker lifecycle commands", () => {
                 provider: "adb",
                 args: ["devices", "-l"],
             }));
+
+            adbVisible = false;
+            processVisible = true;
+            const preAdb = await invokeDelete();
+            expect(preAdb.status).toBe(409);
+            expect(await preAdb.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "android-avd-active",
+            }));
+            expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
+                provider: "process-inventory",
+            }), expect.any(Object));
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -5617,7 +5639,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 }),
             });
             expect(failed.status).toBe(502);
-            expect(await failed.json()).toEqual(expect.objectContaining({
+            const failedBody = await failed.json();
+            expect(failedBody).toEqual(expect.objectContaining({
                 ok: false,
                 error: "provider-command-failed",
                 result: expect.objectContaining({
@@ -5631,6 +5654,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     }),
                 }),
             }));
+            expect(JSON.stringify(failedBody)).not.toContain("avdRoot");
 
             const loudServer = createDeviceBrokerServer({
                 cwd: "/project/broker-provider-output-test",
