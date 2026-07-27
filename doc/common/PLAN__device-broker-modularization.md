@@ -54,8 +54,12 @@ back into broker transport or mutate unrelated provider state.
   - provider command execution through an injected executable resolver, runner,
     elevation resolver, private state root, and operation limits
   - no broker options, HTTP/RPC DTOs, or imports from `device-lab-broker.ts`
-- `snapshots.ts`
-  - snapshot journals, reconciliation, and state transitions
+- `operation-journal.ts`
+  - lifecycle and snapshot operation journal persistence
+  - journal schema validation, size bounds, path fencing, and clearing
+  - owner-device reads and private roots supplied through a narrow persistence
+    runtime
+  - no command parsing, HTTP/RPC response DTOs, or broker option types
 - `lifecycle.ts`
   - create/start/stop/reboot/delete use cases
   - composes image, network, state, and provider command ports
@@ -82,7 +86,11 @@ back into broker transport or mutate unrelated provider state.
    Keep transport DTO construction in the broker and inject only command
    execution, executable resolution, broker roots, and operation limits.
 3. Extract network allocation and cleanup.
-4. Extract snapshot journals and reconciliation.
+4. Extract lifecycle/snapshot operation journal persistence and validation into
+   `operation-journal.ts`. Keep reconciliation and snapshot state transitions
+   in the broker for this slice: they currently compose provider execution,
+   network cleanup, owner-state mutation, and RPC error projection, so moving
+   them safely requires the later lifecycle orchestration boundary.
 5. Extract lifecycle orchestration.
 
 The image-store slice is behavior-preserving. It does not change public RPC

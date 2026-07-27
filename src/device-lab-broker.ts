@@ -30,6 +30,19 @@ import {
     type HyperVNetworkRuntime,
     type HyperVNetworkStateRuntime,
 } from "./device-lab/broker/hyper-v/network.js";
+import {
+    clearHyperVOperationJournal as clearHyperVOperationJournalFile,
+    clearHyperVSnapshotJournal,
+    hyperVOperationJournalPath as hyperVOperationJournalFilePath,
+    hyperVSnapshotJournalPath as hyperVSnapshotJournalFilePath,
+    readHyperVOperationJournal as readHyperVOperationJournalFile,
+    readHyperVSnapshotJournal as readHyperVSnapshotJournalFile,
+    writeHyperVOperationJournal as writeHyperVOperationJournalFile,
+    writeHyperVSnapshotJournal as writeHyperVSnapshotJournalFile,
+    type HyperVJournalPersistenceRuntime,
+    type HyperVOperationJournal,
+    type HyperVSnapshotJournal,
+} from "./device-lab/broker/hyper-v/operation-journal.js";
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
@@ -3900,53 +3913,45 @@ type HyperVTrackedSnapshot = {
     createdAt?: string;
 };
 
-type HyperVSnapshotJournal = {
-    version: 1;
-    operationId: string;
-    ownerId: string;
-    deviceId: string;
-    incarnationId: string;
-    tool: "device_snapshot_create" | "device_snapshot_restore" | "device_snapshot_delete";
-    snapshotName: string;
-    providerName: string;
-    snapshotId?: string;
-    startedAt: string;
-};
+function hyperVJournalPersistenceRuntime(): HyperVJournalPersistenceRuntime {
+    return {
+        deviceRoot: hyperVDeviceRoot,
+        ensurePrivateDeviceRoot: ensureHyperVPrivateDeviceRoot,
+        readDevices: readOwnerDevices,
+        journalLimitBytes: DEVICE_BROKER_HYPER_V_OPERATION_JOURNAL_LIMIT_BYTES,
+    };
+}
 
 function hyperVSnapshotJournalPath(ownerId: string, backend: string, deviceId: string): string {
-    if (!isHyperVBackend(backend)) throw new Error("hyper-v-backend-invalid");
-    return join(hyperVDeviceRoot(ownerId, backend, deviceId), "snapshot-operation.json");
+    return hyperVSnapshotJournalFilePath(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        backend,
+        deviceId,
+    );
 }
 
 function readHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string): HyperVSnapshotJournal | null {
-    return readDeviceLabStateFile(hyperVSnapshotJournalPath(ownerId, backend, deviceId), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-snapshot-journal-invalid");
-        const value = parsed as Record<string, unknown>;
-        if (value.version !== 1 || !isGuid(value.operationId) || value.ownerId !== ownerId || value.deviceId !== deviceId
-            || !validHyperVIncarnationId(value.incarnationId)
-            || (value.tool !== "device_snapshot_create" && value.tool !== "device_snapshot_restore" && value.tool !== "device_snapshot_delete")
-            || typeof value.snapshotName !== "string" || typeof value.providerName !== "string"
-            || value.providerName !== hyperVSnapshotName(ownerId, value.snapshotName)
-            || (value.tool !== "device_snapshot_create" && (typeof value.snapshotId !== "string" || !isGuid(value.snapshotId)))
-            || typeof value.startedAt !== "string") throw new Error("hyper-v-snapshot-journal-invalid");
-        return value as HyperVSnapshotJournal;
-    }, "hyper-v-snapshot-journal", DEVICE_BROKER_HYPER_V_OPERATION_JOURNAL_LIMIT_BYTES);
+    return readHyperVSnapshotJournalFile(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        backend,
+        deviceId,
+    );
 }
 
 function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, incarnationId: string, tool: HyperVSnapshotJournal["tool"], snapshotName: string, providerName: string, snapshotId?: string): void {
-    if (!validHyperVIncarnationId(incarnationId)) throw new Error("hyper-v-incarnation-id-invalid");
-    writeJsonFileAtomically(hyperVSnapshotJournalPath(ownerId, backend, deviceId), {
-        version: 1,
-        operationId: randomGuid(),
+    writeHyperVSnapshotJournalFile(
+        hyperVJournalPersistenceRuntime(),
         ownerId,
+        backend,
         deviceId,
         incarnationId,
         tool,
         snapshotName,
         providerName,
-        ...(snapshotId ? { snapshotId: snapshotId.toLowerCase() } : {}),
-        startedAt: new Date().toISOString(),
-    } satisfies HyperVSnapshotJournal);
+        snapshotId,
+    );
 }
 
 async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions): Promise<
@@ -4483,7 +4488,12 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         }
         return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, transition);
     }
-    rmSync(hyperVSnapshotJournalPath(ownerId, match.stateKey, deviceId), { force: true });
+    clearHyperVSnapshotJournal(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        match.stateKey,
+        deviceId,
+    );
     return {
         status: 200,
         payload: {
@@ -8429,84 +8439,39 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
     return { ok: true, recoveredVm: observation.recoveredVm, removedDisk: observation.removedDisk, releasedAddress: allocation.released };
 }
 
-type HyperVOperationJournal = {
-    version: 1;
-    operationId: string;
-    ownerId: string;
-    deviceId: string;
-    incarnationId: string;
-    command: "device_start" | "device_stop" | "device_reboot" | "device_delete";
-    vmId: string;
-    vmName: string;
-    diskPath: string;
-    startedAt: string;
-};
-
 function hyperVOperationJournalPath(ownerId: string, backend: string, deviceId: string): string {
-    if (!isHyperVBackend(backend)) throw new Error("hyper-v-backend-invalid");
-    return join(hyperVDeviceRoot(ownerId, backend, deviceId), "operation.json");
+    return hyperVOperationJournalFilePath(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        backend,
+        deviceId,
+    );
 }
 
 function readHyperVOperationJournal(ownerId: string, backend: string, deviceId: string): HyperVOperationJournal | null {
-    return readDeviceLabStateFile(hyperVOperationJournalPath(ownerId, backend, deviceId), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-operation-journal-invalid");
-        const value = parsed as Record<string, unknown>;
-        if (value.version !== 1 || !isGuid(value.operationId)
-            || value.ownerId !== ownerId || value.deviceId !== deviceId
-            || !validHyperVIncarnationId(value.incarnationId)
-            || (value.command !== "device_start" && value.command !== "device_stop" && value.command !== "device_reboot" && value.command !== "device_delete")
-            || !isGuid(value.vmId) || typeof value.vmName !== "string" || value.vmName !== hyperVVmName(ownerId, deviceId, String(value.incarnationId))
-            || typeof value.diskPath !== "string" || typeof value.startedAt !== "string") throw new Error("hyper-v-operation-journal-invalid");
-        const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
-        assertDeviceLabPathWithinRoot(deviceRoot, value.diskPath, "hyper-v-operation-disk");
-        if (resolve(value.diskPath) !== resolve(join(deviceRoot, "disks", "root.vhdx"))) throw new Error("hyper-v-operation-disk-mismatch");
-        return value as HyperVOperationJournal;
-    }, "hyper-v-operation-journal", DEVICE_BROKER_HYPER_V_OPERATION_JOURNAL_LIMIT_BYTES);
+    return readHyperVOperationJournalFile(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        backend,
+        deviceId,
+    );
 }
 
 function writeHyperVOperationJournal(ownerId: string, parsed: CommandParamSuccess): { ok: true; path: string } | { ok: false; error: string } {
-    if (parsed.command !== "device_start" && parsed.command !== "device_stop" && parsed.command !== "device_reboot" && parsed.command !== "device_delete") return { ok: false, error: "hyper-v-operation-command-invalid" };
-    try {
-        const devices = readOwnerDevices(ownerId, parsed.stateKey);
-        const device = devices.find((candidate) => candidate && typeof candidate === "object" && (candidate as Record<string, unknown>).id === parsed.deviceId) as Record<string, unknown> | undefined;
-        if (!device) throw new Error("hyper-v-operation-device-missing");
-        const vmId = field(device, "vmId");
-        const vmName = field(device, "vmName");
-        const diskPath = field(device, "diskPath");
-        const incarnationId = hyperVDeviceIncarnationId(device);
-        if (!vmId || !isGuid(vmId) || !incarnationId || vmName !== hyperVVmName(ownerId, parsed.deviceId, incarnationId) || !diskPath) throw new Error("hyper-v-operation-device-metadata-invalid");
-        const journal: HyperVOperationJournal = {
-            version: 1,
-            operationId: randomGuid(),
-            ownerId,
-            deviceId: parsed.deviceId,
-            incarnationId,
-            command: parsed.command,
-            vmId: vmId.toLowerCase(),
-            vmName,
-            diskPath,
-            startedAt: new Date().toISOString(),
-        };
-        const path = hyperVOperationJournalPath(ownerId, parsed.backend, parsed.deviceId);
-        const privateRoot = ensureHyperVPrivateDeviceRoot(ownerId, parsed.backend, parsed.deviceId);
-        const journalRoot = dirname(path);
-        assertDeviceLabPathWithinRoot(privateRoot, journalRoot, "hyper-v-operation-journal-root");
-        mkdirSync(journalRoot, { recursive: true, mode: 0o700 });
-        writeJsonFileAtomically(path, journal);
-        return { ok: true, path };
-    } catch (error) {
-        return {
-            ok: false,
-            error: hyperVBoundedErrorCode(
-                error,
-                "hyper-v-operation-journal-write-failed",
-            ),
-        };
-    }
+    return writeHyperVOperationJournalFile(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        parsed,
+    );
 }
 
 function clearHyperVOperationJournal(ownerId: string, backend: string, deviceId: string): void {
-    rmSync(hyperVOperationJournalPath(ownerId, backend, deviceId), { force: true });
+    clearHyperVOperationJournalFile(
+        hyperVJournalPersistenceRuntime(),
+        ownerId,
+        backend,
+        deviceId,
+    );
 }
 
 async function reconcileHyperVOperation(ownerId: string, backend: string, deviceId: string, normalized: NormalizedBrokerOptions, deadlineAt = Number.POSITIVE_INFINITY): Promise<
