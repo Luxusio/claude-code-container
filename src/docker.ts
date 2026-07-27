@@ -1432,8 +1432,11 @@ function containerRunContractIsSafeToDefer(
         if (!bindSourcePathsEquivalent(mountedProject.Source, expectedProjectSource)) {
             return unsafe(`bind source changed for ${projectMount.containerPath}`);
         }
+        const mountedDestinations = new Set(mounts.map((mount) => mount.Destination));
         const identityMounts = requiredMounts.filter((mount) => (
-            mount.type === "bind" && mount.expectedIdentity
+            mount.type === "bind"
+            && mount.expectedIdentity
+            && mountedDestinations.has(mount.containerPath)
         ));
         if (typeof inspected.Id !== "string"
             || identityMounts.length === 0
@@ -1453,6 +1456,13 @@ function containerRunContractIsSafeToDefer(
         }
         for (const required of requiredMounts) {
             if (required === projectMount) continue;
+            const mounted = mounts.find((mount) => mount.Destination === required.containerPath);
+            if (!mounted) {
+                if (required.containerPath === "/var/run/docker.sock") {
+                    return unsafe(`missing mount ${required.containerPath}`);
+                }
+                continue;
+            }
             if (required.expectedIdentity) {
                 try {
                     assertBindMountSourceIdentity(
@@ -1463,13 +1473,6 @@ function containerRunContractIsSafeToDefer(
                     return unsafe(`bind source identity changed for ${required.containerPath}`);
                 }
             }
-            const mounted = mounts.find((mount) => mount.Destination === required.containerPath);
-            if (!mounted) {
-                if (required.containerPath === "/var/run/docker.sock") {
-                    return unsafe(`missing mount ${required.containerPath}`);
-                }
-                continue;
-            }
             if (required.type !== undefined && mounted.Type !== required.type) {
                 return unsafe(`mount type changed for ${required.containerPath}`);
             }
@@ -1479,7 +1482,7 @@ function containerRunContractIsSafeToDefer(
             if (required.type === "volume" && !namedVolumeMatches(mounted, required.hostPath)) {
                 return unsafe(`volume source changed for ${required.containerPath}`);
             }
-            if (required.verifySource && required.containerPath !== "/var/run/docker.sock") {
+            if (required.verifySource) {
                 if (mounted.Type !== "bind" || !mounted.Source) {
                     return unsafe(`bind source missing for ${required.containerPath}`);
                 }

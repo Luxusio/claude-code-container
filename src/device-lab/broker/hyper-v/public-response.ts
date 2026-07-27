@@ -259,8 +259,13 @@ function publicHyperVBootCheck(value: unknown): Record<string, unknown> | null {
         "provider",
         "computerName",
         "attempts",
-        "error",
     ]);
+    if (record.error !== undefined) {
+        result.error = hyperVBoundedErrorCode(
+            record.error,
+            "hyper-v-guest-not-ready",
+        );
+    }
     const diagnostic = record.diagnostic;
     if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) {
         const publicDiagnostic = pickPublicFields(

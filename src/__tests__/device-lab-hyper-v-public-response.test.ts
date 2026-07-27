@@ -112,4 +112,27 @@ describe("Hyper-V public response projection", () => {
             },
         });
     });
+
+    it("bounds persisted boot-check errors instead of forwarding host details", () => {
+        expect(redactHyperVDeviceSecrets({
+            id: "windows-vm-1",
+            backend: "windows-vm",
+            provider: "hyper-v",
+            lastBootCheck: {
+                ready: false,
+                provider: "hyper-v-powershell-direct",
+                error: "C:\\Users\\Luxus\\secret.txt",
+            },
+        })).toEqual({
+            id: "windows-vm-1",
+            backend: "windows-vm",
+            provider: "hyper-v",
+            snapshots: [],
+            lastBootCheck: {
+                ready: false,
+                provider: "hyper-v-powershell-direct",
+                error: "hyper-v-guest-not-ready",
+            },
+        });
+    });
 });

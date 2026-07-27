@@ -2136,6 +2136,38 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it("defers a new identity-fenced worktree metadata file mount for a running older container", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const compatibilityMount = {
+                hostPath: "/host/repo/.git/worktrees/topic/.ccc-container-gitdir",
+                containerPath: "/project/repo/.git/worktrees/topic/gitdir",
+            };
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            expect(startProjectContainer(
+                projectPath,
+                ensureDirs,
+                [compatibilityMount],
+                undefined,
+                undefined,
+                undefined,
+                () => false,
+            )).toBe(getContainerName(projectPath));
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(
+                `missing mount ${compatibilityMount.containerPath}`,
+            ));
+            expectNoContainerReplacement();
+        });
+
         it.each([
             ["Windows Docker Desktop", "C:\\ProgramData\\Docker\\volumes\\ccc-mise-cache\\_data"],
             ["Linux Docker Engine", "/var/lib/docker/volumes/ccc-mise-cache/_data"],
@@ -2239,13 +2271,14 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
-        it.each([
-            ["native Docker", { runtime: "docker" as const, flavor: "docker-native" as const, remote: false, dockerDesktop: false }, "/var/run/docker.sock.raw"],
-            ["WSL2 NAT native Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
-            ["remote Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
-            ["Docker Desktop foreign socket", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: true }, "/foreign/docker.sock"],
-            ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true, dockerDesktop: false }, "/var/run/docker.sock.raw"],
-        ])("joins without replacement when %s reports a different socket source", (_name, runtime, source) => {
+        it("rejects a running container with a foreign container-manager socket source", () => {
+            const runtime = {
+                runtime: "docker" as const,
+                flavor: "docker-desktop" as const,
+                remote: true,
+                dockerDesktop: true,
+            };
+            const source = "/foreign/docker.sock";
             _setRuntimeInfoForTest(runtime);
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported",
@@ -2265,12 +2298,9 @@ describe("docker.ts module exports", () => {
                 return makeResult(0);
             });
 
-            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-            expect(startProjectContainer(
+            expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
-            )).toBe(getContainerName(projectPath));
-            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            )).toThrow("contract failed safety validation");
             expectNoContainerReplacement();
         });
 
