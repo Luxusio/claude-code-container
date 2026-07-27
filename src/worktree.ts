@@ -1487,9 +1487,10 @@ function nestedRepositoryCandidateIsSafe(
 }
 
 /**
- * Find repositories nested below a unified Git root, including repositories
- * hidden beneath ignored or untracked parent directories. Git reports embedded
- * repository boundaries without requiring an unrestricted filesystem walk.
+ * Find managed repositories nested below a unified Git root. Tracked
+ * submodules are read from .gitmodules; non-ignored untracked repositories are
+ * reported by Git without an unrestricted filesystem walk. Ignored paths are
+ * deliberately outside CCC worktree management.
  */
 function scanUnifiedNestedRepositories(
     repositoryPath: string,
@@ -1506,58 +1507,22 @@ function scanUnifiedNestedRepositories(
         relativePrefix: string,
     ): void => {
         const candidates = new Map<string, WorkspaceEntry>();
+        const declarations = submoduleDeclarations(
+            currentRepository,
+            options.strict === true,
+        );
+        const declaredPaths = new Set(declarations.map(({ path }) => path));
         for (const entry of scanDirectory(currentRepository, options)) {
             if (!entry.isGitRepo) continue;
-            candidates.set(entry.name, entry);
-        }
-
-        const gitmodulesPath = join(currentRepository, ".gitmodules");
-        if (pathExistsStrict(gitmodulesPath)) {
-            const configured = spawnSync(
-                "git",
-                [
-                    "config",
-                    "--null",
-                    "--file",
-                    ".gitmodules",
-                    "--get-regexp",
-                    "^submodule\\..*\\.path$",
-                ],
-                {
-                    cwd: currentRepository,
-                    encoding: "utf-8",
-                    stdio: ["pipe", "pipe", "pipe"],
-                },
-            );
-            const declaredNames = configured.status === 0
-                ? (configured.stdout ?? "")
-                    .split("\0")
-                    .map((record) => {
-                        const separator = record.indexOf("\n");
-                        return separator < 0
-                            ? null
-                            : normalizeNestedRepositoryName(record.slice(separator + 1));
-                    })
-                    .filter((name): name is string => Boolean(name))
-                : [];
-            if (configured.error || (configured.status !== 0 && configured.status !== 1)) {
-                if (options.strict) {
-                    const detail = (configured.stderr ?? "").trim()
-                        || configured.error?.message
-                        || `git exited with status ${String(configured.status)}`;
-                    throw new Error(
-                        `Unable to inspect submodule configuration in '${currentRepository}': ${detail}`,
-                    );
-                }
-            } else if (declaredNames.length > 0) {
-                const tracked = spawnSync(
+            if (!declaredPaths.has(entry.name)) {
+                const ignored = spawnSync(
                     "git",
                     [
-                        "ls-files",
-                        "--stage",
-                        "-z",
+                        "check-ignore",
+                        "--quiet",
+                        "--no-index",
                         "--",
-                        ...declaredNames.map((name) => `:(literal)${name}`),
+                        entry.name,
                     ],
                     {
                         cwd: currentRepository,
@@ -1565,64 +1530,84 @@ function scanUnifiedNestedRepositories(
                         stdio: ["pipe", "pipe", "pipe"],
                     },
                 );
-                if (tracked.error || tracked.status !== 0) {
+                if (ignored.error || ![0, 1].includes(ignored.status ?? -1)) {
                     if (options.strict) {
-                        const detail = (tracked.stderr ?? "").trim()
-                            || tracked.error?.message
-                            || `git exited with status ${String(tracked.status)}`;
+                        const detail = (ignored.stderr ?? "").trim()
+                            || ignored.error?.message
+                            || `git exited with status ${String(ignored.status)}`;
                         throw new Error(
-                            `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
+                            `Unable to inspect ignored repository path '${entry.path}': ${detail}`,
                         );
                     }
-                } else {
-                    for (const record of (tracked.stdout ?? "").split("\0")) {
-                        if (!record.startsWith("160000 ")) continue;
-                        const separator = record.indexOf("\t");
-                        if (separator < 0) continue;
-                        const name = normalizeNestedRepositoryName(
-                            record.slice(separator + 1),
-                        );
-                        if (!name || candidates.has(name)) continue;
-                        const candidatePath = join(currentRepository, ...name.split("/"));
-                        if (!pathExistsStrict(join(candidatePath, ".git"))) {
-                            if (options.strict) {
-                                throw new Error(
-                                    `Tracked submodule repository is not initialized: ${candidatePath}`,
-                                );
-                            }
-                            continue;
+                    continue;
+                }
+                if (ignored.status === 0) continue;
+            }
+            candidates.set(entry.name, entry);
+        }
+
+        const declaredNames = declarations.map(({ path }) => path);
+        if (declaredNames.length > 0) {
+            const tracked = spawnSync(
+                "git",
+                [
+                    "ls-files",
+                    "--stage",
+                    "-z",
+                    "--",
+                    ...declaredNames.map((name) => `:(literal)${name}`),
+                ],
+                {
+                    cwd: currentRepository,
+                    encoding: "utf-8",
+                    stdio: ["pipe", "pipe", "pipe"],
+                },
+            );
+            if (tracked.error || tracked.status !== 0) {
+                if (options.strict) {
+                    const detail = (tracked.stderr ?? "").trim()
+                        || tracked.error?.message
+                        || `git exited with status ${String(tracked.status)}`;
+                    throw new Error(
+                        `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
+                    );
+                }
+            } else {
+                for (const record of (tracked.stdout ?? "").split("\0")) {
+                    if (!record.startsWith("160000 ")) continue;
+                    const separator = record.indexOf("\t");
+                    if (separator < 0) continue;
+                    const name = normalizeNestedRepositoryName(
+                        record.slice(separator + 1),
+                    );
+                    if (!name || candidates.has(name)) continue;
+                    const candidatePath = join(currentRepository, ...name.split("/"));
+                    if (!pathExistsStrict(join(candidatePath, ".git"))) {
+                        if (options.strict) {
+                            throw new Error(
+                                `Tracked submodule repository is not initialized: ${candidatePath}`,
+                            );
                         }
-                        candidates.set(name, {
-                            name,
-                            path: candidatePath,
-                            isGitRepo: true,
-                        });
+                        continue;
                     }
+                    candidates.set(name, {
+                        name,
+                        path: candidatePath,
+                        isGitRepo: true,
+                    });
                 }
             }
         }
 
-        const candidateCommands = [
-            [
-                "ls-files",
-                "--others",
-                "--exclude-standard",
-                "-z",
-                "--",
-                ":(glob)**/.git",
-                ":(glob)**/.git/**",
-            ],
-            [
-                "ls-files",
-                "--others",
-                "--ignored",
-                "--exclude-standard",
-                "-z",
-                "--",
-                ":(glob)**/.git",
-                ":(glob)**/.git/**",
-            ],
-        ];
+        const candidateCommands = [[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ":(glob)**/.git",
+            ":(glob)**/.git/**",
+        ]];
         for (const args of candidateCommands) {
             const listed = spawnSync(
                 "git",
@@ -3782,8 +3767,9 @@ export function repairWorkspace(
     assertWorkspaceRootOwnership(wsPath, resolved);
 
     // In unified mode, the root worktree does not populate nested repositories.
-    // Initialized submodules and ignored nested repositories both receive linked
-    // worktrees so the source checkout is never reset by a submodule update.
+    // Initialized tracked submodules receive linked worktrees so the source
+    // checkout is never reset by a submodule update. Ignored repositories are
+    // intentionally outside the managed inventory.
     const created: WorktreeRepoResult[] = [];
     const rollbackOids = new Map<string, BranchCreationFence | null>();
     const registrationFences = new Map<string, WorktreeRegistrationFence>();
@@ -4830,6 +4816,19 @@ function removeUnifiedWorkspace(
         ],
         { cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
+    const inspectIgnoredRootStatus = (path = wsPath) => spawnSync(
+        "git",
+        [
+            "status",
+            "--porcelain=v1",
+            "--ignored",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ...sourceEntries.map(({ name }) => `:(exclude,literal)${name}`),
+        ],
+        { cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
     const rootStatus = inspectRootStatus();
     if (rootStatus.error || rootStatus.status !== 0) {
         return {
@@ -4846,6 +4845,25 @@ function removeUnifiedWorkspace(
             removed,
             errors: [
                 "root worktree contains modified or untracked files, use --force to delete it",
+            ],
+        };
+    }
+    const ignoredRootStatus = inspectIgnoredRootStatus();
+    if (ignoredRootStatus.error || ignoredRootStatus.status !== 0) {
+        return {
+            removed,
+            errors: [
+                (ignoredRootStatus.stderr ?? "").trim()
+                || ignoredRootStatus.error?.message
+                || "unable to inspect ignored root worktree content",
+            ],
+        };
+    }
+    if (opts?.force !== true && (ignoredRootStatus.stdout ?? "").trim()) {
+        return {
+            removed,
+            errors: [
+                "root worktree contains ignored files, use --force to delete it",
             ],
         };
     }
@@ -4998,6 +5016,28 @@ function removeUnifiedWorkspace(
             ],
         };
     }
+    const finalIgnoredRootStatus = inspectIgnoredRootStatus();
+    if (finalIgnoredRootStatus.error || finalIgnoredRootStatus.status !== 0) {
+        return {
+            removed,
+            errors: [
+                (finalIgnoredRootStatus.stderr ?? "").trim()
+                || finalIgnoredRootStatus.error?.message
+                || "unable to re-inspect ignored root worktree content",
+            ],
+        };
+    }
+    if (
+        opts?.force !== true
+        && (finalIgnoredRootStatus.stdout ?? "").trim()
+    ) {
+        return {
+            removed,
+            errors: [
+                "root worktree gained ignored files during removal, use --force to delete it",
+            ],
+        };
+    }
     try {
         const registrationFence = captureExistingWorktreeRegistrationFence(
             resolved,
@@ -5031,6 +5071,24 @@ function removeUnifiedWorkspace(
                     if ((quarantinedStatus.stdout ?? "").trim()) {
                         throw new Error(
                             "root worktree changed during removal, use --force to delete it",
+                        );
+                    }
+                    const quarantinedIgnoredStatus = inspectIgnoredRootStatus(
+                        quarantinedPath,
+                    );
+                    if (
+                        quarantinedIgnoredStatus.error
+                        || quarantinedIgnoredStatus.status !== 0
+                    ) {
+                        throw new Error(
+                            (quarantinedIgnoredStatus.stderr ?? "").trim()
+                            || quarantinedIgnoredStatus.error?.message
+                            || "unable to inspect quarantined ignored root worktree content",
+                        );
+                    }
+                    if ((quarantinedIgnoredStatus.stdout ?? "").trim()) {
+                        throw new Error(
+                            "root worktree gained ignored files during removal, use --force to delete it",
                         );
                     }
                 },

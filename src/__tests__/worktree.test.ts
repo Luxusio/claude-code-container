@@ -1868,7 +1868,7 @@ describe("createWorkspace (unified mode)", () => {
             .toBe(false);
     });
 
-    it("creates worktrees for nested git repos not managed as submodules", () => {
+    it("leaves ignored nested git repositories unmanaged", () => {
         // Top-level is a git repo
         initRepo(tmpDir);
 
@@ -1894,36 +1894,17 @@ describe("createWorkspace (unified mode)", () => {
 
         expect(existsSync(result.workspacePath)).toBe(true);
 
-        // Nested repos should have worktrees created
-        expect(
-            existsSync(join(result.workspacePath, "frontend", "app.ts")),
-        ).toBe(true);
-        expect(
-            existsSync(join(result.workspacePath, "backend", "server.ts")),
-        ).toBe(true);
-        expect(lstatSync(join(result.workspacePath, "frontend", ".git")).isFile())
-            .toBe(true);
-        expect(lstatSync(join(result.workspacePath, "backend", ".git")).isFile())
-            .toBe(true);
-        expect(isValidWorktree(
-            join(result.workspacePath, "frontend"),
-            join(tmpDir, "frontend"),
-        )).toBe(true);
-        expect(isValidWorktree(
-            join(result.workspacePath, "backend"),
-            join(tmpDir, "backend"),
-        )).toBe(true);
-
-        // Should report nested repos in created list
         const createdNames = result.created.map((c) => c.name).sort();
-        expect(createdNames).toContain("frontend");
-        expect(createdNames).toContain("backend");
+        expect(createdNames).not.toContain("frontend");
+        expect(createdNames).not.toContain("backend");
+        expect(existsSync(join(result.workspacePath, "frontend"))).toBe(false);
+        expect(existsSync(join(result.workspacePath, "backend"))).toBe(false);
         expect(branchExistsInRepo(tmpDir, "feature")).toBe("local");
-        expect(branchExistsInRepo(join(tmpDir, "frontend"), "feature")).toBe("local");
-        expect(branchExistsInRepo(join(tmpDir, "backend"), "feature")).toBe("local");
+        expect(branchExistsInRepo(join(tmpDir, "frontend"), "feature")).toBe("none");
+        expect(branchExistsInRepo(join(tmpDir, "backend"), "feature")).toBe("none");
     });
 
-    it("creates real worktrees for deeply nested ignored git repositories", () => {
+    it("does not discover deeply nested ignored Git repositories", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -1945,11 +1926,8 @@ describe("createWorkspace (unified mode)", () => {
         const nestedWorktree = join(result.workspacePath, "services", "private", "api");
 
         expect(result.created.map(({ name }) => name))
-            .toContain("services/private/api");
-        expect(readFileSync(join(nestedWorktree, "server.ts"), "utf-8"))
-            .toBe("export const api = true;");
-        expect(lstatSync(join(nestedWorktree, ".git")).isFile()).toBe(true);
-        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+            .not.toContain("services/private/api");
+        expect(existsSync(nestedWorktree)).toBe(false);
 
         const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
             cwd: nestedRepo,
@@ -1957,7 +1935,7 @@ describe("createWorkspace (unified mode)", () => {
             stdio: "pipe",
         });
         expect(listed.status).toBe(0);
-        expect(listed.stdout).toContain(`worktree ${nestedWorktree}`);
+        expect(listed.stdout).not.toContain(`worktree ${nestedWorktree}`);
         expect(detectWorktreeWorkspaceBranch(result.workspacePath))
             .toBe("deep-feature");
 
@@ -1968,10 +1946,10 @@ describe("createWorkspace (unified mode)", () => {
         );
         expect(mounts.some(({ hostPath }) => (
             hostPath === join(nestedRepo, ".git")
-        ))).toBe(true);
+        ))).toBe(false);
     });
 
-    it("creates linked worktrees for repositories nested inside ignored repositories", () => {
+    it("does not recurse into ignored repositories", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -1996,16 +1974,16 @@ describe("createWorkspace (unified mode)", () => {
 
         expect(result.created.map(({ name }) => name)).toEqual([
             basename(tmpDir),
-            "vendor/platform",
-            "vendor/platform/plugins/tool",
         ]);
-        expect(isValidWorktree(outerWorktree, outerRepo)).toBe(true);
-        expect(isValidWorktree(innerWorktree, innerRepo)).toBe(true);
+        expect(existsSync(outerWorktree)).toBe(false);
+        expect(existsSync(innerWorktree)).toBe(false);
+        expect(branchExistsInRepo(outerRepo, "recursive-feature")).toBe("none");
+        expect(branchExistsInRepo(innerRepo, "recursive-feature")).toBe("none");
         expect(detectWorktreeWorkspaceBranch(result.workspacePath))
             .toBe("recursive-feature");
     });
 
-    it("creates linked worktrees for submodules owned by an ignored repository", () => {
+    it("does not manage submodules owned only by an ignored repository", () => {
         const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-submodule-origin`);
         try {
             initRepo(tmpDir);
@@ -2080,16 +2058,11 @@ describe("createWorkspace (unified mode)", () => {
                 "modules",
                 "child",
             );
-            expect(readFileSync(join(childWorktree, "child.txt"), "utf-8"))
-                .toBe("child");
-            expect(isValidWorktree(childWorktree, childSource)).toBe(true);
-            expect(spawnSync(
-                "git",
-                ["rev-parse", "--abbrev-ref", "HEAD"],
-                { cwd: childWorktree, encoding: "utf-8", stdio: "pipe" },
-            ).stdout.trim()).toBe("nested-submodule");
+            expect(existsSync(childWorktree)).toBe(false);
             expect(result.created.map(({ name }) => name))
-                .toContain("vendor/platform/modules/child");
+                .not.toContain("vendor/platform/modules/child");
+            expect(branchExistsInRepo(childSource, "nested-submodule"))
+                .toBe("none");
             expect(spawnSync(
                 "git",
                 ["rev-parse", "--abbrev-ref", "HEAD"],
@@ -2129,7 +2102,7 @@ describe("createWorkspace (unified mode)", () => {
         }
     });
 
-    it("rejects ignored repositories whose git file points at unrelated metadata", () => {
+    it("does not inspect ignored repositories whose git file points elsewhere", () => {
         const externalRepo = join(dirname(tmpDir), `${basename(tmpDir)}-external-gitfile`);
         try {
             initRepo(tmpDir);
@@ -2147,8 +2120,8 @@ describe("createWorkspace (unified mode)", () => {
                 `gitdir: ${join(externalRepo, ".git")}\n`,
             );
 
-            expect(() => createWorkspace(tmpDir, "external-gitfile"))
-                .toThrow("metadata is not owned");
+            const result = createWorkspace(tmpDir, "external-gitfile");
+            expect(existsSync(join(result.workspacePath, "nested"))).toBe(false);
             expect(branchExistsInRepo(externalRepo, "external-gitfile"))
                 .toBe("none");
         } finally {
@@ -2175,8 +2148,8 @@ describe("createWorkspace (unified mode)", () => {
             );
             expect(added.status, added.stderr).toBe(0);
 
-            expect(() => createWorkspace(tmpDir, "external-worktree"))
-                .toThrow("metadata is not owned");
+            const result = createWorkspace(tmpDir, "external-worktree");
+            expect(existsSync(join(result.workspacePath, "nested"))).toBe(false);
             expect(branchExistsInRepo(externalRepo, "external-worktree"))
                 .toBe("none");
         } finally {
@@ -2184,7 +2157,7 @@ describe("createWorkspace (unified mode)", () => {
         }
     });
 
-    it("supports repository chains deeper than twenty levels", () => {
+    it("does not traverse deep repository chains below an ignored root", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "level-01/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -2218,8 +2191,9 @@ describe("createWorkspace (unified mode)", () => {
         const deepestName = names.join("/");
         const deepestWorktree = join(result.workspacePath, ...names);
 
-        expect(result.created.map(({ name }) => name)).toContain(deepestName);
-        expect(isValidWorktree(deepestWorktree, repository)).toBe(true);
+        expect(result.created.map(({ name }) => name)).not.toContain(deepestName);
+        expect(existsSync(deepestWorktree)).toBe(false);
+        expect(branchExistsInRepo(repository, "deep-chain")).toBe("none");
     });
 });
 
@@ -2266,7 +2240,7 @@ describe("repairWorkspace", () => {
         expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(true);
     });
 
-    it("repairs a deeply nested ignored repository added after workspace creation", () => {
+    it("does not repair a repository added beneath an ignored path", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -2291,8 +2265,9 @@ describe("repairWorkspace", () => {
         );
 
         expect(repaired.map(({ name }) => name))
-            .toContain("services/private/api");
-        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+            .not.toContain("services/private/api");
+        expect(existsSync(nestedWorktree)).toBe(false);
+        expect(branchExistsInRepo(nestedRepo, "deep-repair")).toBe("none");
     });
 
     it("does not create descendants beneath a broken nested repository", () => {
@@ -2339,7 +2314,7 @@ describe("repairWorkspace", () => {
         expect(existsSync(innerWorktree)).toBe(false);
     });
 
-    it("rejects a nested destination whose parent is a symlink", () => {
+    it("does not enter a symlinked destination for an ignored repository", () => {
         const external = join(dirname(tmpDir), `${basename(tmpDir)}-destination`);
         try {
             initRepo(tmpDir);
@@ -2358,11 +2333,11 @@ describe("repairWorkspace", () => {
             );
             initRepo(join(tmpDir, "services", "private", "api"));
 
-            expect(() => repairWorkspace(
+            expect(repairWorkspace(
                 tmpDir,
                 wsResult.workspacePath,
                 "parent-symlink",
-            )).toThrow("not a safe directory");
+            )).toEqual([]);
             expect(readdirSync(external)).toEqual([]);
         } finally {
             rmSync(external, { recursive: true, force: true });
@@ -2980,7 +2955,7 @@ describe("detectBrokenWorktrees", () => {
         expect(broken).toHaveLength(0);
     });
 
-    it("detects and fixes a deeply nested ignored worktree", () => {
+    it("does not detect or fix ignored repositories", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -2997,17 +2972,9 @@ describe("detectBrokenWorktrees", () => {
             "private",
             "api",
         );
-        spawnSync("git", ["worktree", "remove", "--force", nestedWorktree], {
-            cwd: nestedRepo,
-            stdio: "pipe",
-        });
-        mkdirSync(nestedWorktree);
-        writeFileSync(join(nestedWorktree, "preserve.txt"), "preserve");
-
         const broken = detectBrokenWorktrees(tmpDir, wsResult.workspacePath);
 
-        expect(broken.map(({ name }) => name))
-            .toEqual(["services/private/api"]);
+        expect(broken).toEqual([]);
         const fixed = fixBrokenWorktree(
             tmpDir,
             wsResult.workspacePath,
@@ -3015,10 +2982,9 @@ describe("detectBrokenWorktrees", () => {
             "deep-broken",
             true,
         );
-        expect(fixed?.name).toBe("services/private/api");
-        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
-        expect(readFileSync(join(nestedWorktree, "preserve.txt"), "utf-8"))
-            .toBe("preserve");
+        expect(fixed).toBeNull();
+        expect(existsSync(nestedWorktree)).toBe(false);
+        expect(branchExistsInRepo(nestedRepo, "deep-broken")).toBe("none");
     });
 
     it("returns empty for non-git-repo source", () => {
@@ -3374,7 +3340,7 @@ describe("fixBrokenWorktree", () => {
         expect(readFileSync(join(legacyBackup, "foreign.txt"), "utf-8")).toBe("foreign");
     });
 
-    it("refuses deep repair through a symlinked workspace parent", () => {
+    it("ignores deep repair requests beneath an ignored symlinked parent", () => {
         const external = join(dirname(tmpDir), `${basename(tmpDir)}-repair-external`);
         try {
             initRepo(tmpDir);
@@ -3409,13 +3375,13 @@ describe("fixBrokenWorktree", () => {
                 process.platform === "win32" ? "junction" : "dir",
             );
 
-            expect(() => fixBrokenWorktree(
+            expect(fixBrokenWorktree(
                 tmpDir,
                 wsResult.workspacePath,
                 "services/private/api",
                 "repair-parent-link",
                 true,
-            )).toThrow("parent is not a safe directory");
+            )).toBeNull();
             expect(readFileSync(
                 join(external, "private", "api", "preserve.txt"),
                 "utf-8",
@@ -3429,12 +3395,6 @@ describe("fixBrokenWorktree", () => {
         const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-repair-submodule`);
         try {
             initRepo(tmpDir);
-            writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
-            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
-            spawnSync("git", ["commit", "-m", "ignore vendor"], {
-                cwd: tmpDir,
-                stdio: "pipe",
-            });
             initRepo(submoduleOrigin);
             writeFileSync(join(submoduleOrigin, "child.txt"), "child");
             spawnSync("git", ["add", "child.txt"], {
@@ -3445,7 +3405,7 @@ describe("fixBrokenWorktree", () => {
                 cwd: submoduleOrigin,
                 stdio: "pipe",
             });
-            const nestedRepo = join(tmpDir, "vendor", "platform");
+            const nestedRepo = join(tmpDir, "platform");
             initRepo(nestedRepo);
             const added = spawnSync(
                 "git",
@@ -3468,7 +3428,7 @@ describe("fixBrokenWorktree", () => {
             process.env.GIT_ALLOW_PROTOCOL = "file";
             try {
                 const wsResult = createWorkspace(tmpDir, "repair-submodule");
-                const nestedWorktree = join(wsResult.workspacePath, "vendor", "platform");
+                const nestedWorktree = join(wsResult.workspacePath, "platform");
                 const childSource = join(nestedRepo, "modules", "child");
                 const childWorktree = join(nestedWorktree, "modules", "child");
                 spawnSync("git", ["worktree", "remove", "--force", childWorktree], {
@@ -3492,14 +3452,14 @@ describe("fixBrokenWorktree", () => {
                 const fixed = fixBrokenWorktree(
                     tmpDir,
                     wsResult.workspacePath,
-                    "vendor/platform",
+                    "platform",
                     "repair-submodule",
                     true,
                 );
                 const fixedChild = fixBrokenWorktree(
                     tmpDir,
                     wsResult.workspacePath,
-                    "vendor/platform/modules/child",
+                    "platform/modules/child",
                     "repair-submodule",
                     true,
                 );
@@ -3617,7 +3577,7 @@ describe("removeWorkspace (unified mode)", () => {
         expect(existsSync(workspace)).toBe(false);
     });
 
-    it("removes unified worktrees for deeply nested ignored repositories", () => {
+    it("removes only the root workspace when ignored repositories exist", () => {
         initRepo(tmpDir);
         writeFileSync(join(tmpDir, ".gitignore"), "services/private/\n");
         spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
@@ -3635,12 +3595,12 @@ describe("removeWorkspace (unified mode)", () => {
             "private",
             "api",
         );
-        expect(isValidWorktree(nestedWorktree, nestedRepo)).toBe(true);
+        expect(existsSync(nestedWorktree)).toBe(false);
 
         const removeResult = removeWorkspace(tmpDir, "deep-nested-rm");
 
         expect(removeResult.errors, removeResult.errors.join("; ")).toHaveLength(0);
-        expect(removeResult.removed).toContain("services/private/api");
+        expect(removeResult.removed).not.toContain("services/private/api");
         expect(existsSync(wsResult.workspacePath)).toBe(false);
         const listed = spawnSync("git", ["worktree", "list", "--porcelain"], {
             cwd: nestedRepo,
@@ -3648,25 +3608,14 @@ describe("removeWorkspace (unified mode)", () => {
             stdio: "pipe",
         });
         expect(listed.stdout).not.toContain(nestedWorktree);
+        expect(branchExistsInRepo(nestedRepo, "deep-nested-rm")).toBe("none");
     });
 
     it("removes nested repository worktrees from the deepest repository first", () => {
         initRepo(tmpDir);
-        writeFileSync(join(tmpDir, ".gitignore"), "vendor/\n");
-        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
-        spawnSync("git", ["commit", "-m", "ignore vendor"], {
-            cwd: tmpDir,
-            stdio: "pipe",
-        });
-        const outerRepo = join(tmpDir, "vendor", "platform");
+        const outerRepo = join(tmpDir, "platform");
         initRepo(outerRepo);
-        writeFileSync(join(outerRepo, ".gitignore"), "plugins/\n");
-        spawnSync("git", ["add", ".gitignore"], { cwd: outerRepo, stdio: "pipe" });
-        spawnSync("git", ["commit", "-m", "ignore plugins"], {
-            cwd: outerRepo,
-            stdio: "pipe",
-        });
-        const innerRepo = join(outerRepo, "plugins", "tool");
+        const innerRepo = join(outerRepo, "tool");
         initRepo(innerRepo);
         const wsResult = createWorkspace(tmpDir, "recursive-remove");
 
@@ -3674,60 +3623,72 @@ describe("removeWorkspace (unified mode)", () => {
 
         expect(removeResult.errors).toEqual([]);
         expect(removeResult.removed.slice(0, 2)).toEqual([
-            "vendor/platform/plugins/tool",
-            "vendor/platform",
+            "platform/tool",
+            "platform",
         ]);
         expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 
-    it("does not remove an external worktree through a symlinked parent", () => {
-        const external = join(dirname(tmpDir), `${basename(tmpDir)}-remove-external`);
-        try {
-            initRepo(tmpDir);
-            writeFileSync(join(tmpDir, ".gitignore"), "services/\n");
-            spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
-            spawnSync("git", ["commit", "-m", "ignore services"], {
-                cwd: tmpDir,
-                stdio: "pipe",
-            });
-            const nestedRepo = join(tmpDir, "services", "private", "api");
-            initRepo(nestedRepo);
-            const wsResult = createWorkspace(tmpDir, "external-remove");
-            const nestedWorktree = join(
-                wsResult.workspacePath,
-                "services",
-                "private",
-                "api",
-            );
-            const externalWorktree = join(external, "private", "api");
-            mkdirSync(dirname(externalWorktree), { recursive: true });
-            renameSync(nestedWorktree, externalWorktree);
-            const repaired = spawnSync(
-                "git",
-                ["worktree", "repair", externalWorktree],
-                { cwd: nestedRepo, encoding: "utf-8", stdio: "pipe" },
-            );
-            expect(repaired.status, repaired.stderr).toBe(0);
-            rmSync(join(wsResult.workspacePath, "services"), {
-                recursive: true,
-                force: true,
-            });
-            symlinkSync(
-                external,
-                join(wsResult.workspacePath, "services"),
-                process.platform === "win32" ? "junction" : "dir",
-            );
+    it("leaves ignored repositories untouched during workspace removal", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const nestedRepo = join(tmpDir, "services", "private", "api");
+        initRepo(nestedRepo);
+        const wsResult = createWorkspace(tmpDir, "external-remove");
+        const nestedWorktree = join(
+            wsResult.workspacePath,
+            "services",
+            "private",
+            "api",
+        );
+        expect(existsSync(nestedWorktree)).toBe(false);
 
-            const removeResult = removeWorkspace(tmpDir, "external-remove", {
-                force: true,
-            });
+        const removeResult = removeWorkspace(tmpDir, "external-remove", {
+            force: true,
+        });
 
-            expect(removeResult.errors.join("; "))
-                .toContain("parent is not a safe directory");
-            expect(isValidWorktree(externalWorktree, nestedRepo)).toBe(true);
-        } finally {
-            rmSync(external, { recursive: true, force: true });
-        }
+        expect(removeResult.errors).toEqual([]);
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
+        expect(branchExistsInRepo(nestedRepo, "external-remove")).toBe("none");
+    });
+
+    it("preserves legacy ignored workspace repositories unless removal is forced", () => {
+        initRepo(tmpDir);
+        writeFileSync(join(tmpDir, ".gitignore"), "services/\n");
+        spawnSync("git", ["add", ".gitignore"], { cwd: tmpDir, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "ignore services"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        });
+        const wsResult = createWorkspace(tmpDir, "legacy-ignored-remove");
+        const legacyRepository = join(
+            wsResult.workspacePath,
+            "services",
+            "private",
+            "api",
+        );
+        initRepo(legacyRepository);
+        writeFileSync(join(legacyRepository, "precious.txt"), "preserve");
+
+        const refused = removeWorkspace(tmpDir, "legacy-ignored-remove");
+
+        expect(refused.errors).toContain(
+            "root worktree contains ignored files, use --force to delete it",
+        );
+        expect(readFileSync(join(legacyRepository, "precious.txt"), "utf-8"))
+            .toBe("preserve");
+        expect(existsSync(wsResult.workspacePath)).toBe(true);
+
+        const forced = removeWorkspace(tmpDir, "legacy-ignored-remove", {
+            force: true,
+        });
+        expect(forced.errors).toEqual([]);
+        expect(existsSync(wsResult.workspacePath)).toBe(false);
     });
 });
 
@@ -3953,26 +3914,17 @@ describe("getWorktreeGitMounts", () => {
     it("uses unique compatibility mounts for deep repositories with the same basename", () => {
         const sourcePath = join(tmpDir, "duplicate-basename-source");
         initRepo(sourcePath);
-        writeFileSync(join(sourcePath, ".gitignore"), "services/\n");
-        spawnSync("git", ["add", ".gitignore"], {
-            cwd: sourcePath,
-            stdio: "pipe",
-        });
-        spawnSync("git", ["commit", "-m", "ignore services"], {
-            cwd: sourcePath,
-            stdio: "pipe",
-        });
-        initRepo(join(sourcePath, "services", "a", "api"));
-        initRepo(join(sourcePath, "services", "b", "api"));
+        initRepo(join(sourcePath, "api"));
+        initRepo(join(sourcePath, "api", "api"));
         const result = createWorkspace(sourcePath, "duplicate-api");
 
         const mounts = getWorktreeGitMounts(result.workspacePath, true);
 
         expect(mounts.some(({ containerPath }) => (
-            containerPath === "/project/services/a/api/.git"
+            containerPath === "/project/api/.git"
         ))).toBe(true);
         expect(mounts.some(({ containerPath }) => (
-            containerPath === "/project/services/b/api/.git"
+            containerPath === "/project/api/api/.git"
         ))).toBe(true);
     });
 
@@ -3995,7 +3947,7 @@ describe("getWorktreeGitMounts", () => {
             .toThrow(/worktree metadata is invalid|ownership could not be verified/i);
     });
 
-    it("includes nested git repo mounts", () => {
+    it("excludes ignored nested git repo mounts", () => {
         const repoPath = join(tmpDir, "parent");
         initRepo(repoPath);
 
@@ -4020,12 +3972,11 @@ describe("getWorktreeGitMounts", () => {
         const parentGitDir = join(repoPath, ".git");
         expect(mounts.some((m) => m.hostPath === parentGitDir)).toBe(true);
 
-        // Should have mounts for nested repo .git
+        // Ignored nested repositories remain outside CCC workspace management.
         const nestedGitDir = join(nestedPath, ".git");
-        expect(mounts.some((m) => m.hostPath === nestedGitDir)).toBe(true);
+        expect(mounts.some((m) => m.hostPath === nestedGitDir)).toBe(false);
 
-        // Should have relative mount for nested repo
-        expect(mounts.some((m) => m.containerPath === "/project/parent/nested-repo/.git")).toBe(true);
+        expect(mounts.some((m) => m.containerPath === "/project/parent/nested-repo/.git")).toBe(false);
         expect(mounts.every((mount) => (
             mount.containerPath.startsWith("/")
             && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
@@ -4037,12 +3988,6 @@ describe("getWorktreeGitMounts", () => {
         initRepo(repoPath);
         const nestedPath = join(repoPath, "same-name");
         initRepo(nestedPath);
-        writeFileSync(join(repoPath, ".gitignore"), "same-name/\n");
-        spawnSync("git", ["add", ".gitignore"], { cwd: repoPath, stdio: "pipe" });
-        spawnSync("git", ["commit", "-m", "ignore nested"], {
-            cwd: repoPath,
-            stdio: "pipe",
-        });
         const wtPath = createWorkspace(repoPath, "mount-conflict").workspacePath;
 
         expect(() => getWorktreeGitMounts(
