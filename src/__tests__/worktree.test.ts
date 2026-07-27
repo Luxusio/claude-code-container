@@ -12,7 +12,7 @@ import {
     statSync,
     chmodSync,
 } from "fs";
-import { join, dirname, basename, resolve } from "path";
+import { join, dirname, basename, posix, resolve } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
@@ -33,6 +33,7 @@ import {
     fixBrokenWorktree,
     getWorktreeGitMounts,
     containerGitSourceMountPath,
+    containerWorktreeBackpointerPath,
     portableWorktreeGitDirectory,
     assertWorkspaceBranch,
     detectWorktreeWorkspaceBranch,
@@ -3854,7 +3855,7 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
     });
 
-    it("returns verified mounts for a tracked submodule linked as a worktree", () => {
+    it("projects a deep tracked submodule worktree without prunable metadata", () => {
         const sourcePath = join(tmpDir, "submodule-source");
         const origin = join(tmpDir, "submodule-origin");
         initRepo(sourcePath);
@@ -3867,7 +3868,7 @@ describe("getWorktreeGitMounts", () => {
                 "submodule",
                 "add",
                 origin,
-                "vendor/repo-a",
+                "services/catchy-api",
             ],
             { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
         );
@@ -3877,11 +3878,11 @@ describe("getWorktreeGitMounts", () => {
             stdio: "pipe",
         });
         const result = createWorkspace(sourcePath, "submodule-mounts");
-        const sourceSubmodule = join(sourcePath, "vendor", "repo-a");
+        const sourceSubmodule = join(sourcePath, "services", "catchy-api");
         const workspaceSubmodule = join(
             result.workspacePath,
-            "vendor",
-            "repo-a",
+            "services",
+            "catchy-api",
         );
 
         expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
@@ -3897,21 +3898,167 @@ describe("getWorktreeGitMounts", () => {
                 },
             ).stdout.trim(),
         );
+        const containerWorkspace = "/project/submodule-source--submodule-mounts";
         const mounts = getWorktreeGitMounts(
             result.workspacePath,
             true,
-            "/project/submodule-source--submodule-mounts",
+            containerWorkspace,
         );
 
         expect(mounts.some(({ hostPath }) => (
             hostPath === commonGitDirectory
         ))).toBe(true);
         expect(mounts.some(({ containerPath }) => (
-            containerPath === "/project/vendor/repo-a/.git"
+            containerPath === "/project/services/catchy-api/.git"
         ))).toBe(true);
+        const workspaceGitFile = join(workspaceSubmodule, ".git");
+        const forwardPointer = readFileSync(workspaceGitFile, "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        expect(forwardPointer).not.toMatch(/^[A-Za-z]:[\\/]/);
+        expect(forwardPointer).not.toMatch(/^\//);
+        const managementDirectory = resolve(workspaceSubmodule, forwardPointer);
+        const backpointer = readFileSync(
+            join(managementDirectory, "gitdir"),
+            "utf-8",
+        ).trim();
+        expect(resolve(backpointer)).toBe(workspaceGitFile);
+
+        const containerGitFileDirectory = posix.join(
+            containerWorkspace,
+            "services/catchy-api",
+        );
+        const registeredContainerGitFile = containerWorktreeBackpointerPath(
+            containerGitFileDirectory,
+            backpointer,
+        );
+        const containerManagementDirectory = posix.resolve(
+            containerGitFileDirectory,
+            forwardPointer.replace(/\\/g, "/"),
+        );
+        const managementRelativeGitFile = containerWorktreeBackpointerPath(
+            containerManagementDirectory,
+            backpointer,
+        );
+        const actualContainerGitFile = posix.join(
+            containerGitFileDirectory,
+            ".git",
+        );
+        expect(
+            registeredContainerGitFile === actualContainerGitFile
+            || mounts.some(({ hostPath, containerPath }) => (
+                hostPath === workspaceSubmodule
+                && containerPath === posix.dirname(registeredContainerGitFile)
+            )),
+        ).toBe(true);
+        expect(
+            managementRelativeGitFile === actualContainerGitFile
+            || mounts.some(({ hostPath, containerPath }) => (
+                hostPath === workspaceSubmodule
+                && containerPath === posix.dirname(managementRelativeGitFile)
+            )),
+        ).toBe(true);
+
+        const listed = spawnSync(
+            "git",
+            ["--git-dir", commonGitDirectory, "worktree", "list", "--porcelain"],
+            { encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(listed.status, listed.stderr).toBe(0);
+        expect(listed.stdout).not.toContain("prunable");
     });
 
-    it("uses unique compatibility mounts for deep repositories with the same basename", () => {
+    it("projects old-form embedded tracked submodule worktree metadata", () => {
+        const sourcePath = join(tmpDir, "old-form-source");
+        const origin = join(tmpDir, "old-form-origin");
+        initRepo(sourcePath);
+        initRepo(origin);
+        const added = spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                origin,
+                "services/catchy-api",
+            ],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        const sourceSubmodule = join(sourcePath, "services", "catchy-api");
+        const absorbedGitFile = join(sourceSubmodule, ".git");
+        const absorbedPointer = readFileSync(absorbedGitFile, "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        const absorbedDirectory = resolve(sourceSubmodule, absorbedPointer);
+        rmSync(absorbedGitFile);
+        renameSync(absorbedDirectory, absorbedGitFile);
+        spawnSync("git", ["config", "--file", join(absorbedGitFile, "config"), "--unset-all", "core.worktree"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+
+        const result = createWorkspace(sourcePath, "old-form-mounts");
+        const workspaceSubmodule = join(
+            result.workspacePath,
+            "services",
+            "catchy-api",
+        );
+        expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/old-form-source--old-form-mounts",
+        );
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === join(sourceSubmodule, ".git")
+        ))).toBe(true);
+        expect(readFileSync(join(workspaceSubmodule, ".git"), "utf-8"))
+            .not.toMatch(/[A-Za-z]:[\\/]/);
+        const managementDirectory = resolve(
+            workspaceSubmodule,
+            readFileSync(join(workspaceSubmodule, ".git"), "utf-8")
+                .trim()
+                .replace(/^gitdir:\s*/, ""),
+        );
+        expect(resolve(
+            readFileSync(join(managementDirectory, "gitdir"), "utf-8").trim(),
+        )).toBe(join(workspaceSubmodule, ".git"));
+    });
+
+    it("normalizes Windows nested worktree forward and back pointers", () => {
+        const workspaceGitDirectory =
+            "C:\\work\\catchy-secrets--kjkim2\\services\\catchy-api";
+        const managementDirectory =
+            "C:\\work\\catchy-secrets\\services\\catchy-api\\.git\\worktrees\\catchy-api";
+
+        const forwardPointer = portableWorktreeGitDirectory(
+            workspaceGitDirectory,
+            managementDirectory,
+            "win32",
+        );
+        const registeredContainerGitFile = containerWorktreeBackpointerPath(
+            "/project/catchy-secrets/services/catchy-api/.git/worktrees/catchy-api",
+            "C:\\Users\\Luxus\\Project\\catchy-secrets--kjkim2\\services\\catchy-api\\.git",
+            "win32",
+        );
+
+        expect(forwardPointer).toBe(
+            "../../../catchy-secrets/services/catchy-api/.git/worktrees/catchy-api",
+        );
+        expect(registeredContainerGitFile).toBe(
+            "/project/catchy-secrets/services/catchy-api/.git/worktrees/catchy-api/C:/Users/Luxus/Project/catchy-secrets--kjkim2/services/catchy-api/.git",
+        );
+        expect(forwardPointer).not.toMatch(/[A-Za-z]:[\\/]/);
+    });
+
+    it("does not mount untracked nested repositories with duplicate basenames", () => {
         const sourcePath = join(tmpDir, "duplicate-basename-source");
         initRepo(sourcePath);
         initRepo(join(sourcePath, "api"));
@@ -3920,12 +4067,10 @@ describe("getWorktreeGitMounts", () => {
 
         const mounts = getWorktreeGitMounts(result.workspacePath, true);
 
-        expect(mounts.some(({ containerPath }) => (
-            containerPath === "/project/api/.git"
-        ))).toBe(true);
-        expect(mounts.some(({ containerPath }) => (
-            containerPath === "/project/api/api/.git"
-        ))).toBe(true);
+        expect(mounts.some(({ hostPath }) => hostPath === join(sourcePath, "api", ".git")))
+            .toBe(false);
+        expect(mounts.some(({ hostPath }) => hostPath === join(sourcePath, "api", "api", ".git")))
+            .toBe(false);
     });
 
     it("rejects mount metadata copied from a different registered worktree", () => {
@@ -3983,18 +4128,20 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
     });
 
-    it("rejects different Git sources targeting the same container path", () => {
+    it("does not consider untracked nested repositories for mount conflicts", () => {
         const repoPath = join(tmpDir, "same-name");
         initRepo(repoPath);
         const nestedPath = join(repoPath, "same-name");
         initRepo(nestedPath);
         const wtPath = createWorkspace(repoPath, "mount-conflict").workspacePath;
 
-        expect(() => getWorktreeGitMounts(
+        const mounts = getWorktreeGitMounts(
             wtPath,
             true,
             "/project/same-name--mount-conflict-id",
-        )).toThrow("Conflicting Git mount sources target '/project/same-name/.git'");
+        );
+        expect(mounts.some(({ hostPath }) => hostPath === join(nestedPath, ".git")))
+            .toBe(false);
     });
 
     it("deduplicates identical mounts", () => {

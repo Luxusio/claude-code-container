@@ -204,71 +204,80 @@ function normalizeWorktreeGitLink(
         resolvedGitDirectory,
     );
     const expectedContent = `gitdir: ${portableGitDirectory}\n`;
-    assertPathIdentity(gitFile, gitFileIdentity);
-    const existingContent = readFileSync(gitFile, "utf-8");
-    assertPathIdentity(gitFile, gitFileIdentity);
+    normalizeWorktreeMetadataFile(gitFile, expectedContent, gitFileIdentity);
+    return portableGitDirectory;
+}
+
+function normalizeWorktreeMetadataFile(
+    metadataFile: string,
+    expectedContent: string,
+    metadataIdentity: DirectoryIdentity,
+): void {
+    assertPathIdentity(metadataFile, metadataIdentity);
+    const existingContent = readFileSync(metadataFile, "utf-8");
+    assertPathIdentity(metadataFile, metadataIdentity);
     if (existingContent === expectedContent) {
-        return portableGitDirectory;
+        return;
     }
-    const parentIdentity = captureDirectoryIdentity(dirname(gitFile));
+    const parentIdentity = captureDirectoryIdentity(dirname(metadataFile));
     const temporary = join(
-        dirname(gitFile),
-        `.${basename(gitFile)}.ccc-${randomBytes(16).toString("hex")}.tmp`,
+        dirname(metadataFile),
+        `.${basename(metadataFile)}.ccc-${randomBytes(16).toString("hex")}.tmp`,
     );
     const backup = join(
-        dirname(gitFile),
-        `.${basename(gitFile)}.ccc-${randomBytes(16).toString("hex")}.backup`,
+        dirname(metadataFile),
+        `.${basename(metadataFile)}.ccc-${randomBytes(16).toString("hex")}.backup`,
     );
     let temporaryIdentity: FileIdentity | null = null;
     try {
         writeFileSync(temporary, expectedContent, { flag: "wx", mode: 0o600 });
         temporaryIdentity = captureFileIdentity(temporary);
-        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
-        assertPathIdentity(gitFile, gitFileIdentity);
-        renameSync(gitFile, backup);
-        assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
-        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
-        linkSync(temporary, gitFile);
-        assertFileIdentity(gitFile, temporaryIdentity);
+        assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
+        assertPathIdentity(metadataFile, metadataIdentity);
+        renameSync(metadataFile, backup);
+        assertQuarantinedIdentity(backup, metadataIdentity, "entry");
+        assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
+        linkSync(temporary, metadataFile);
+        assertFileIdentity(metadataFile, temporaryIdentity);
         rmSync(temporary, { force: true });
-        assertDirectoryIdentity(dirname(gitFile), parentIdentity);
-        assertFileIdentity(gitFile, temporaryIdentity);
-        if (readFileSync(gitFile, "utf-8") !== expectedContent) {
+        assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
+        assertFileIdentity(metadataFile, temporaryIdentity);
+        if (readFileSync(metadataFile, "utf-8") !== expectedContent) {
             throw new Error("normalized worktree metadata changed after installation");
         }
-        assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
+        assertQuarantinedIdentity(backup, metadataIdentity, "entry");
         rmSync(backup);
     } catch (error) {
         rmSync(temporary, { force: true });
         let preservedBackup = false;
         try {
             if (pathExistsStrict(backup)) {
-                assertQuarantinedIdentity(backup, gitFileIdentity, "entry");
-                if (!pathExistsStrict(gitFile)) {
-                    linkSync(backup, gitFile);
+                assertQuarantinedIdentity(backup, metadataIdentity, "entry");
+                if (!pathExistsStrict(metadataFile)) {
+                    linkSync(backup, metadataFile);
                 }
                 if (temporaryIdentity) {
                     try {
-                        assertFileIdentity(gitFile, temporaryIdentity);
-                        if (readFileSync(gitFile, "utf-8") === expectedContent) {
+                        assertFileIdentity(metadataFile, temporaryIdentity);
+                        if (readFileSync(metadataFile, "utf-8") === expectedContent) {
                             rmSync(backup);
-                            return portableGitDirectory;
+                            return;
                         }
                     } catch {
                         // The installed path is not the file CCC staged.
                     }
                 }
-                const restoredIdentity = capturePathIdentity(gitFile);
-                if (restoredIdentity.dev === gitFileIdentity.dev
-                    && restoredIdentity.ino === gitFileIdentity.ino) {
+                const restoredIdentity = capturePathIdentity(metadataFile);
+                if (restoredIdentity.dev === metadataIdentity.dev
+                    && restoredIdentity.ino === metadataIdentity.ino) {
                     rmSync(backup);
                 } else {
                     preservedBackup = true;
                 }
             } else if (temporaryIdentity) {
-                assertFileIdentity(gitFile, temporaryIdentity);
-                if (readFileSync(gitFile, "utf-8") === expectedContent) {
-                    return portableGitDirectory;
+                assertFileIdentity(metadataFile, temporaryIdentity);
+                if (readFileSync(metadataFile, "utf-8") === expectedContent) {
+                    return;
                 }
             }
         } catch {
@@ -278,11 +287,10 @@ function normalizeWorktreeGitLink(
         const preservation = preservedBackup
             ? `; original preserved at ${backup}`
             : "";
-        throw new Error(`Worktree metadata changed during normalization: ${gitFile}${preservation}`, {
+        throw new Error(`Worktree metadata changed during normalization: ${metadataFile}${preservation}`, {
             cause: error,
         });
     }
-    return portableGitDirectory;
 }
 
 function assertQuarantinedIdentity(
@@ -1661,6 +1669,88 @@ function scanUnifiedNestedRepositories(
 
     collect(root, "");
     return [...repositories.values()].sort((left, right) => (
+        left.name.split("/").length - right.name.split("/").length
+        || left.name.localeCompare(right.name)
+    ));
+}
+
+function initializedTrackedSubmodules(
+    repositoryPath: string,
+    strict: boolean,
+): WorkspaceEntry[] {
+    const root = resolve(repositoryPath);
+    const repositories: WorkspaceEntry[] = [];
+
+    const collect = (
+        currentRepository: string,
+        relativePrefix: string,
+    ): void => {
+        const declarations = submoduleDeclarations(currentRepository, strict);
+        if (declarations.length === 0) return;
+        const tracked = spawnSync(
+            "git",
+            [
+                "ls-files",
+                "--stage",
+                "-z",
+                "--",
+                ...declarations.map(({ path }) => `:(literal)${path}`),
+            ],
+            {
+                cwd: currentRepository,
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        if (tracked.error || tracked.status !== 0) {
+            if (!strict) return;
+            const detail = (tracked.stderr ?? "").trim()
+                || tracked.error?.message
+                || `git exited with status ${String(tracked.status)}`;
+            throw new Error(
+                `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
+            );
+        }
+        const trackedPaths = new Set<string>();
+        for (const record of (tracked.stdout ?? "").split("\0")) {
+            const match = record.match(/^160000 [0-9a-f]+ 0\t(.+)$/i);
+            const path = match
+                ? normalizeNestedRepositoryName(match[1])
+                : null;
+            if (path) trackedPaths.add(path);
+        }
+
+        for (const declaration of declarations) {
+            if (!trackedPaths.has(declaration.path)) continue;
+            const candidatePath = join(
+                currentRepository,
+                ...declaration.path.split("/"),
+            );
+            if (!pathExistsStrict(join(candidatePath, ".git"))) {
+                if (strict) {
+                    throw new Error(
+                        `Tracked submodule repository is not initialized: ${candidatePath}`,
+                    );
+                }
+                continue;
+            }
+            if (!nestedRepositoryCandidateIsSafe(
+                currentRepository,
+                declaration.path,
+                candidatePath,
+                strict,
+                true,
+            )) continue;
+            const name = relativePrefix
+                ? `${relativePrefix}/${declaration.path}`
+                : declaration.path;
+            repositories.push({ name, path: candidatePath, isGitRepo: true });
+            collect(candidatePath, name);
+        }
+    };
+
+    collect(root, "");
+    return repositories.sort((left, right) => (
         left.name.split("/").length - right.name.split("/").length
         || left.name.localeCompare(right.name)
     ));
@@ -4094,6 +4184,17 @@ export function containerGitSourceMountPath(
     );
 }
 
+export function containerWorktreeBackpointerPath(
+    containerRepositoryPath: string,
+    rawGitFile: string,
+    platform = process.platform,
+): string {
+    const normalizedGitFile = platform === "win32"
+        ? rawGitFile.replace(/\\/g, "/")
+        : rawGitFile;
+    return posix.resolve(containerRepositoryPath, normalizedGitFile);
+}
+
 /**
  * Get additional Docker volume mounts needed for a worktree workspace.
  *
@@ -4147,10 +4248,7 @@ export function getWorktreeGitMounts(
         }
     }
     const nestedRepositories = hasGitMetadata(resolved)
-        ? scanUnifiedNestedRepositories(
-            resolved,
-            { strict: required, allowRegisteredWorktrees: true },
-        )
+        ? initializedTrackedSubmodules(resolved, required)
         : scanDirectory(resolved, { strict: required });
     for (const entry of nestedRepositories) {
         if (!entry.isGitRepo) continue;
@@ -4219,6 +4317,16 @@ export function getWorktreeGitMounts(
             resolvedGitdir,
             gitFileIdentity,
         );
+        const registrationFile = join(resolvedGitdir, "gitdir");
+        const registrationIdentity = captureFileIdentity(registrationFile);
+        const registrationContent = readFileSync(registrationFile, "utf-8");
+        assertFileIdentity(registrationFile, registrationIdentity);
+        const rawBackpointer = registrationContent.trim();
+        if (!rawBackpointer || !sameObservedPath(rawBackpointer, gitFile)) {
+            throw new Error(
+                `Worktree registration ownership could not be verified: ${registrationFile}`,
+            );
+        }
         const sourceBasename = basename(sourceRepoDir);
         const containerGitFileDirectory = containerWorkspacePath
             ? posix.join(
@@ -4239,7 +4347,40 @@ export function getWorktreeGitMounts(
         if (relMountPath !== sourceContainerPath) {
             addMount(sourceGitDir, relMountPath, sourceIdentity);
         }
-
+        if (containerWorkspacePath) {
+            assertFileIdentity(registrationFile, registrationIdentity);
+            if (readFileSync(registrationFile, "utf-8") !== registrationContent) {
+                throw new Error(
+                    `Worktree registration changed during mount preparation: ${registrationFile}`,
+                );
+            }
+            assertFileIdentity(registrationFile, registrationIdentity);
+            const containerManagementDirectory = posix.resolve(
+                containerGitFileDirectory,
+                portableGitDirectory.replace(/\\/g, "/"),
+            );
+            const actualContainerGitFile = posix.join(
+                containerGitFileDirectory,
+                ".git",
+            );
+            const registrationBases = [
+                containerManagementDirectory,
+                containerGitFileDirectory,
+            ];
+            for (const registrationBase of registrationBases) {
+                const registeredContainerGitFile = containerWorktreeBackpointerPath(
+                    registrationBase,
+                    rawBackpointer,
+                );
+                if (registeredContainerGitFile !== actualContainerGitFile) {
+                    addMount(
+                        dirname(gitFile),
+                        posix.dirname(registeredContainerGitFile),
+                        captureDirectoryIdentity(dirname(gitFile)),
+                    );
+                }
+            }
+        }
     }
 
     return mounts;
