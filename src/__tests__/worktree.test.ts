@@ -3991,11 +3991,21 @@ describe("getWorktreeGitMounts", () => {
         expect(listed.stdout).not.toContain("prunable");
     });
 
-    it("projects tracked submodules from the verified source inventory when workspace discovery is stale", () => {
+    it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
         const sourcePath = join(tmpDir, "source-inventory-root");
         const origin = join(tmpDir, "source-inventory-origin");
         initRepo(sourcePath);
         initRepo(origin);
+        const baseBranch = spawnSync(
+            "git",
+            ["branch", "--show-current"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim();
+        expect(spawnSync(
+            "git",
+            ["switch", "-c", "source-inventory-with-submodule"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
         expect(spawnSync(
             "git",
             [
@@ -4013,6 +4023,11 @@ describe("getWorktreeGitMounts", () => {
             stdio: "pipe",
         });
         const result = createWorkspace(sourcePath, "source-inventory");
+        expect(spawnSync(
+            "git",
+            ["switch", baseBranch],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
         renameSync(
             join(result.workspacePath, ".gitmodules"),
             join(result.workspacePath, ".gitmodules.stale"),

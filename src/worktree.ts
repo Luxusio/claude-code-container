@@ -886,14 +886,36 @@ function submoduleDeclarations(
     repositoryPath: string,
     strict: boolean,
 ): SubmoduleDeclaration[] {
-    if (!pathExistsStrict(join(repositoryPath, ".gitmodules"))) return [];
+    const workingTreeConfig = pathExistsStrict(join(repositoryPath, ".gitmodules"));
+    if (!workingTreeConfig) {
+        const tracked = spawnSync(
+            "git",
+            ["ls-files", "--error-unmatch", "--", ".gitmodules"],
+            {
+                cwd: repositoryPath,
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        if (tracked.status === 1) return [];
+        if (tracked.error || tracked.status !== 0) {
+            if (!strict) return [];
+            const detail = (tracked.stderr ?? "").trim()
+                || tracked.error?.message
+                || `git exited with status ${String(tracked.status)}`;
+            throw new Error(
+                `Unable to inspect tracked submodule configuration in '${repositoryPath}': ${detail}`,
+            );
+        }
+    }
     const configured = spawnSync(
         "git",
         [
             "config",
             "--null",
-            "--file",
-            ".gitmodules",
+            ...(workingTreeConfig
+                ? ["--file", ".gitmodules"]
+                : ["--blob", ":.gitmodules"]),
             "--get-regexp",
             "^submodule\\..*\\.path$",
         ],
@@ -4223,31 +4245,12 @@ export function getWorktreeGitMounts(
             }
         }
     }
-    const nestedRepositories = unifiedSourceRoot
+    const nestedRepositories = hasGitMetadata(resolved)
         ? scanUnifiedNestedRepositories(
-            unifiedSourceRoot,
-            { strict: required },
-        ).flatMap((entry) => {
-            const workspacePath = join(
-                resolved,
-                ...entry.name.split("/"),
-            );
-            if (!pathExistsStrict(join(workspacePath, ".git"))) {
-                if (required) {
-                    throw new Error(
-                        `Required nested worktree metadata is missing: ${workspacePath}`,
-                    );
-                }
-                return [];
-            }
-            return [{ ...entry, path: workspacePath }];
-        })
-        : hasGitMetadata(resolved)
-            ? scanUnifiedNestedRepositories(
-                resolved,
-                { strict: required, allowRegisteredWorktrees: true },
-            )
-            : scanDirectory(resolved, { strict: required });
+            resolved,
+            { strict: required, allowRegisteredWorktrees: true },
+        )
+        : scanDirectory(resolved, { strict: required });
     for (const entry of nestedRepositories) {
         if (!entry.isGitRepo) continue;
         const nestedGit = join(entry.path, ".git");
