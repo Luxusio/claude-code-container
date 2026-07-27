@@ -233,12 +233,55 @@ export function bindSourcePathsEquivalent(actual: string, expected: string): boo
 function requiredBindSourceMatches(
     actualSource: string,
     required: RequiredContainerMount,
+    containerId?: string,
 ): boolean {
     const expectedSource = required.verifySourceCanonical === false
         ? required.hostPath
         : canonicalHostPath(required.hostPath);
-    return [expectedSource, ...(required.equivalentSources ?? [])]
-        .some((candidate) => bindSourcePathsEquivalent(actualSource, candidate));
+    if ([expectedSource, ...(required.equivalentSources ?? [])]
+        .some((candidate) => bindSourcePathsEquivalent(actualSource, candidate))) {
+        return true;
+    }
+    return required.containerPath === "/var/run/docker.sock"
+        && typeof containerId === "string"
+        && containerManagerSocketTargetsCurrentDockerDaemon(containerId);
+}
+
+function dockerDaemonIdentity(result: ReturnType<typeof spawnSync>): string | null {
+    if (result.error || result.status !== 0) return null;
+    const identity = (result.stdout ?? "").toString().trim();
+    return /^[^\s]{1,512}$/.test(identity) ? identity : null;
+}
+
+function containerManagerSocketTargetsCurrentDockerDaemon(containerId: string): boolean {
+    if (getRuntimeInfo().runtime !== "docker") return false;
+    const options = {
+        encoding: "utf-8" as const,
+        stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
+        timeout: 10_000,
+        windowsHide: true,
+    };
+    const hostIdentity = dockerDaemonIdentity(spawnSync(
+        runtimeCli(),
+        ["info", "--format", "{{.ID}}"],
+        options,
+    ));
+    if (!hostIdentity) return false;
+    const mountedIdentity = dockerDaemonIdentity(spawnSync(
+        runtimeCli(),
+        [
+            "exec",
+            containerId,
+            "/usr/bin/docker",
+            "--host",
+            "unix:///var/run/docker.sock",
+            "info",
+            "--format",
+            "{{.ID}}",
+        ],
+        options,
+    ));
+    return mountedIdentity === hostIdentity;
 }
 
 function sameFileIdentity(
@@ -1299,7 +1342,11 @@ function containerMatchesRunContract(
                     // its Source path is not necessarily readable in this process.
                     // The expected source was already resolved and identity-checked
                     // before it entered the contract.
-                    if (!requiredBindSourceMatches(mount.Source, req)) {
+                    if (!requiredBindSourceMatches(
+                        mount.Source,
+                        req,
+                        typeof inspected.Id === "string" ? inspected.Id : undefined,
+                    )) {
                         return failContract(`bind source changed for ${req.containerPath}`);
                     }
                 } catch {
@@ -1487,7 +1534,11 @@ function containerRunContractIsSafeToDefer(
                     return unsafe(`bind source missing for ${required.containerPath}`);
                 }
                 try {
-                    if (!requiredBindSourceMatches(mounted.Source, required)) {
+                    if (!requiredBindSourceMatches(
+                        mounted.Source,
+                        required,
+                        typeof inspected.Id === "string" ? inspected.Id : undefined,
+                    )) {
                         return unsafe(`bind source changed for ${required.containerPath}`);
                     }
                 } catch {

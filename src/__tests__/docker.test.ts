@@ -2271,6 +2271,101 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it.each([
+            ["strict contract", false],
+            ["safe defer after additive mount drift", true],
+        ])("joins a container when an opaque socket bind source targets the current Docker daemon through the %s path", (_name, defer) => {
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                dockerDesktop: false,
+            });
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/opaque/docker.sock";
+            if (defer) {
+                inspected.Mounts = inspected.Mounts.filter(
+                    (item: { Destination: string }) => item.Destination !== "/home/ccc/.claude",
+                );
+            }
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "info" && args[1] === "--format") return makeResult(0, "daemon-current\n");
+                if (
+                    args[0] === "exec"
+                    && args[2] === "/usr/bin/docker"
+                    && args[3] === "--host"
+                    && args[4] === "unix:///var/run/docker.sock"
+                    && args[5] === "info"
+                ) {
+                    return makeResult(0, "daemon-current\n");
+                }
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            if (defer) {
+                expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
+            }
+            expectNoContainerReplacement();
+        });
+
+        it("rejects an opaque socket bind source that targets a different Docker daemon", () => {
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                dockerDesktop: false,
+            });
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/foreign/docker.sock";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "info" && args[1] === "--format") return makeResult(0, "daemon-current\n");
+                if (
+                    args[0] === "exec"
+                    && args[2] === "/usr/bin/docker"
+                    && args[3] === "--host"
+                    && args[4] === "unix:///var/run/docker.sock"
+                    && args[5] === "info"
+                ) {
+                    return makeResult(0, "daemon-foreign\n");
+                }
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+        });
+
         it("rejects a running container with a foreign container-manager socket source", () => {
             const runtime = {
                 runtime: "docker" as const,
