@@ -141,34 +141,54 @@ function assertBindMountSourceIdentity(
     }
 }
 
-function containerSeesCurrentBindDirectory(
+function containerSeesCurrentBindSource(
     containerId: string,
     hostPath: string,
     containerPath: string,
     expected: BindMountSourceIdentity,
 ): boolean {
-    const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
-    const markerPath = join(expected.realpath, markerName);
-    const markerContent = randomBytes(32).toString("hex");
     let verified = false;
+    let markerPath: string | null = null;
     try {
         assertBindMountSourceIdentity(hostPath, expected);
         const observed = lstatSync(expected.realpath);
-        if (!observed.isDirectory() || observed.isSymbolicLink()) return false;
-        writeFileSync(markerPath, markerContent, { flag: "wx", mode: 0o600 });
-        assertBindMountSourceIdentity(hostPath, expected);
-        const result = spawnSync(
-            runtimeCli(),
-            ["exec", containerId, "cat", posix.join(containerPath, markerName)],
-            { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        verified = !result.error
-            && result.status === 0
-            && (result.stdout ?? "") === markerContent;
+        if (observed.isSymbolicLink()) return false;
+        if (typeof observed.isDirectory === "function" && observed.isDirectory()) {
+            const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
+            markerPath = join(expected.realpath, markerName);
+            const markerContent = randomBytes(32).toString("hex");
+            writeFileSync(markerPath, markerContent, { flag: "wx", mode: 0o600 });
+            assertBindMountSourceIdentity(hostPath, expected);
+            const result = spawnSync(
+                runtimeCli(),
+                ["exec", containerId, "cat", posix.join(containerPath, markerName)],
+                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+            );
+            verified = !result.error
+                && result.status === 0
+                && (result.stdout ?? "") === markerContent;
+        } else if (typeof observed.isFile === "function" && observed.isFile()) {
+            if (observed.size > 1024 * 1024) return false;
+            const expectedContent = readFileSync(expected.realpath);
+            assertBindMountSourceIdentity(hostPath, expected);
+            const result = spawnSync(
+                runtimeCli(),
+                ["exec", containerId, "cat", containerPath],
+                {
+                    encoding: null,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    maxBuffer: 1024 * 1024 + 1,
+                },
+            );
+            verified = !result.error
+                && result.status === 0
+                && Buffer.isBuffer(result.stdout)
+                && result.stdout.equals(expectedContent);
+        }
     } catch {
         verified = false;
     } finally {
-        rmSync(markerPath, { force: true });
+        if (markerPath) rmSync(markerPath, { force: true });
         try {
             assertBindMountSourceIdentity(hostPath, expected);
         } catch {
@@ -789,7 +809,7 @@ export function getManagedProjectContainerIdentity(
             if (projectMount?.Type !== "bind"
                 || typeof projectMount.Source !== "string"
                 || !bindSourcePathsEquivalent(projectMount.Source, currentIdentity.realpath)
-                || !containerSeesCurrentBindDirectory(
+                || !containerSeesCurrentBindSource(
                     inspected.Id,
                     projectPath,
                     projectMountPath,
@@ -1117,7 +1137,7 @@ function createdContainerBindMountsMatch(
             return actual?.Type === "bind"
                 && typeof actual.Source === "string"
                 && bindSourcePathsEquivalent(actual.Source, expected.identity.realpath)
-                && containerSeesCurrentBindDirectory(
+                && containerSeesCurrentBindSource(
                     containerId,
                     expected.hostPath,
                     expected.containerPath,
@@ -1294,7 +1314,7 @@ function containerMatchesRunContract(
             || identityMounts.length === 0
             || !identityMounts.every((mount) => (
                 mount.expectedIdentity
-                && containerSeesCurrentBindDirectory(
+                && containerSeesCurrentBindSource(
                     inspected.Id as string,
                     mount.hostPath,
                     mount.containerPath,
@@ -1419,7 +1439,7 @@ function containerRunContractIsSafeToDefer(
             || identityMounts.length === 0
             || !identityMounts.every((mount) => (
                 mount.expectedIdentity
-                && containerSeesCurrentBindDirectory(
+                && containerSeesCurrentBindSource(
                     inspected.Id as string,
                     mount.hostPath,
                     mount.containerPath,

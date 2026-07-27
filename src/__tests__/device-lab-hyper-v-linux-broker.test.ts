@@ -102,7 +102,9 @@ describe("device-lab Hyper-V broker", () => {
             });
             const repeated = await invoke("first.vhdx");
             expect(repeated.status, JSON.stringify(await repeated.clone().json())).toBe(200);
-            expect(await repeated.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true }) }));
+            const repeatedBody = await repeated.json();
+            expect(repeatedBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true }) }));
+            expect(JSON.stringify(repeatedBody)).not.toContain("first.vhdx");
             const conflicting = await invoke("second.vhdx");
             expect(conflicting.status, JSON.stringify(await conflicting.clone().json())).toBe(409);
             expect(await conflicting.json()).toEqual(expect.objectContaining({
@@ -1677,7 +1679,10 @@ describe("device-lab Hyper-V broker", () => {
             activeIncarnationId = createdBody.result.device.incarnationId as string;
             const allocatedAddress = createdBody.result.device.networkAddress as string;
             const allocatedMac = createdBody.result.device.macAddress as string;
-            expect(createdBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ backend: "linux-vm", platform: "linux", provider: "hyper-v", guestProvisioned: true, guestTransport: "ssh", seedDiskPath, sshHostPublicKeyPath: hostPublicKeyPath, sshHostKeyFingerprint: hostKeyFingerprint, sshKnownHostsPath: knownHostsPath, networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/) }) }) }));
+            expect(createdBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ backend: "linux-vm", platform: "linux", provider: "hyper-v", guestProvisioned: true, guestTransport: "ssh", sshHostKeyFingerprint: hostKeyFingerprint, networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/) }) }) }));
+            expect(createdBody.result.device).not.toHaveProperty("seedDiskPath");
+            expect(createdBody.result.device).not.toHaveProperty("sshHostPublicKeyPath");
+            expect(createdBody.result.device).not.toHaveProperty("sshKnownHostsPath");
             const vmCreateScript = commandRunner.mock.calls
                 .map(([command]) => providerScript(command))
                 .find((script) => script.includes("New-VM @VmArgs"));

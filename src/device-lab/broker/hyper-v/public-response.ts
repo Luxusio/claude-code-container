@@ -226,65 +226,203 @@ export function publicHyperVNetworkCleanup(
     };
 }
 
+function pickPublicFields(
+    source: Record<string, unknown>,
+    keys: readonly string[],
+): Record<string, unknown> {
+    return Object.fromEntries(keys.flatMap((key) => (
+        source[key] === undefined ? [] : [[key, source[key]]]
+    )));
+}
+
+function publicHyperVSnapshots(value: unknown): unknown[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((candidate) => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+            return [];
+        }
+        return [pickPublicFields(candidate as Record<string, unknown>, [
+            "id",
+            "name",
+            "providerName",
+            "snapshotType",
+            "createdAt",
+        ])];
+    });
+}
+
+function publicHyperVBootCheck(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const result = pickPublicFields(record, [
+        "ready",
+        "provider",
+        "computerName",
+        "attempts",
+        "error",
+    ]);
+    const diagnostic = record.diagnostic;
+    if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) {
+        const publicDiagnostic = pickPublicFields(
+            diagnostic as Record<string, unknown>,
+            [
+                "state",
+                "uptimeMs",
+                "generation",
+                "secureBootEnabled",
+                "heartbeatEnabled",
+                "heartbeatPrimaryStatus",
+                "heartbeatSecondaryStatus",
+                "hardDiskCount",
+                "dvdCount",
+                "hardDiskControllers",
+                "bootDeviceTypes",
+            ],
+        );
+        const services = (diagnostic as Record<string, unknown>).integrationServices;
+        if (Array.isArray(services)) {
+            publicDiagnostic.integrationServices = services.flatMap((service) => (
+                service && typeof service === "object" && !Array.isArray(service)
+                    ? [pickPublicFields(service as Record<string, unknown>, [
+                        "name",
+                        "enabled",
+                        "primaryStatus",
+                        "secondaryStatus",
+                    ])]
+                    : []
+            ));
+        }
+        result.diagnostic = publicDiagnostic;
+    }
+    return result;
+}
+
 export function redactHyperVDeviceSecrets(device: unknown): unknown {
     if (!device || typeof device !== "object" || Array.isArray(device)) {
         return device;
     }
     const record = device as Record<string, unknown>;
-    const {
-        privateRoot,
-        deviceRoot,
-        diskPath,
-        seedDiskPath,
-        knownHostsPath,
-        sshPrivateKeyPath,
-        sshPublicKeyPath,
-        sshHostPrivateKeyPath,
-        sshHostPublicKeyPath,
-        guestCredentialPath,
-        provisioningMediaPath,
-        unattendPath,
-        ...publicRecord
-    } = record;
-    const ssh = publicRecord.ssh;
-    if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) {
-        return publicRecord;
+    const publicRecord = pickPublicFields(record, [
+        "id",
+        "name",
+        "backend",
+        "kind",
+        "platform",
+        "ownerId",
+        "provider",
+        "incarnationId",
+        "vmName",
+        "vmId",
+        "profile",
+        "baseImageSha256",
+        "baseImageGeneration",
+        "guestTransport",
+        "sshHostKeyFingerprint",
+        "guestUsername",
+        "guestProvisioned",
+        "memoryMb",
+        "cpus",
+        "diskMaxBytes",
+        "networking",
+        "switchName",
+        "networkAddress",
+        "macAddress",
+        "networkGateway",
+        "networkPrefix",
+        "outboundPolicy",
+        "secureBootTemplate",
+        "activeSnapshotId",
+        "status",
+        "runtimeState",
+        "hyperVStatus",
+        "bootReady",
+        "creatable",
+        "createdAt",
+        "updatedAt",
+        "authority",
+    ]);
+    publicRecord.snapshots = publicHyperVSnapshots(record.snapshots);
+    if (record.lastBootCheck !== undefined) {
+        publicRecord.lastBootCheck = publicHyperVBootCheck(record.lastBootCheck);
     }
-    const {
-        password,
-        privateRoot: sshPrivateRoot,
-        sshPrivateKeyPath: nestedPrivateKeyPath,
-        sshHostPrivateKeyPath: nestedHostPrivateKeyPath,
-        guestCredentialPath: nestedCredentialPath,
-        ...publicSsh
-    } = ssh as Record<string, unknown>;
+    return publicRecord;
+}
+
+export function publicHyperVCreateConfiguration(
+    create: unknown,
+): Record<string, unknown> | null {
+    if (!create || typeof create !== "object" || Array.isArray(create)) return null;
+    const record = create as Record<string, unknown>;
     return {
-        ...publicRecord,
-        ssh: {
-            ...publicSsh,
-            ...(password ? { passwordConfigured: true } : {}),
-        },
+        ...pickPublicFields(record, [
+            "name",
+            "profile",
+            "memoryMb",
+            "cpus",
+            "diskMaxBytes",
+            "networking",
+            "secureBootTemplate",
+        ]),
+        ...(typeof record.sourceImage === "string"
+            || typeof record.image === "string"
+            ? { sourceImageConfigured: true }
+            : {}),
+        ...(typeof record.sshPassword === "string"
+            ? { sshPasswordConfigured: true }
+            : {}),
     };
+}
+
+function publicHyperVExecution(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    const execution = pickPublicFields(record, [
+        "mode",
+        "providerExecution",
+        "mutatesHost",
+        "provider",
+        "status",
+    ]);
+    if (record.provisioning && typeof record.provisioning === "object"
+        && !Array.isArray(record.provisioning)) {
+        execution.provisioning = pickPublicFields(
+            record.provisioning as Record<string, unknown>,
+            ["provider", "status"],
+        );
+    }
+    return execution;
 }
 
 export function redactHyperVResultSecrets(
     result: unknown,
 ): Record<string, unknown> {
     if (!result || typeof result !== "object" || Array.isArray(result)) return {};
-    const publicResult = { ...(result as Record<string, unknown>) };
-    delete publicResult.command;
-    delete publicResult.providerCommand;
-    delete publicResult.execution;
-    delete publicResult.provisioning;
-    if ("device" in publicResult) {
-        publicResult.device = redactHyperVDeviceSecrets(publicResult.device);
+    const record = result as Record<string, unknown>;
+    const publicResult = pickPublicFields(record, [
+        "ownerId",
+        "backend",
+        "stateKey",
+        "command",
+        "deviceId",
+        "force",
+        "dryRun",
+        "idempotent",
+        "alreadyMissing",
+        "invoked",
+    ]);
+    if ("device" in record) {
+        publicResult.device = redactHyperVDeviceSecrets(record.device);
     }
-    if (publicResult.create && typeof publicResult.create === "object") {
-        const { sshPassword, ...publicCreate } = publicResult.create as Record<string, unknown>;
-        publicResult.create = {
-            ...publicCreate,
-            ...(sshPassword ? { sshPasswordConfigured: true } : {}),
-        };
+    const create = publicHyperVCreateConfiguration(record.create);
+    if (create) publicResult.create = create;
+    const execution = publicHyperVExecution(record.execution);
+    if (execution) publicResult.execution = execution;
+    if (record.rollback && typeof record.rollback === "object"
+        && !Array.isArray(record.rollback)) {
+        publicResult.rollback = pickPublicFields(
+            record.rollback as Record<string, unknown>,
+            ["ok", "removed", "preserved", "error"],
+        );
     }
     return publicResult;
 }

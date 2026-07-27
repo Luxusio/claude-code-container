@@ -753,9 +753,11 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(staleMarkerPath)).toBe(false);
             expect(createdBody).toEqual(expect.objectContaining({
                 result: expect.objectContaining({
-                    device: expect.objectContaining({ id: deviceId, backend: "windows-vm", provider: "hyper-v", vmId, vmName, diskPath, status: "stopped", guestProvisioned: true, guestUsername: `ccc${ownerId.slice(0, 8)}`, switchName: "CCC Device Lab", networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/), macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/), outboundPolicy: "nat" }),
+                    device: expect.objectContaining({ id: deviceId, backend: "windows-vm", provider: "hyper-v", vmId, vmName, status: "stopped", guestProvisioned: true, guestUsername: `ccc${ownerId.slice(0, 8)}`, switchName: "CCC Device Lab", networkAddress: expect.stringMatching(/^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/), macAddress: expect.stringMatching(/^02(?::[a-f0-9]{2}){5}$/), outboundPolicy: "nat" }),
                 }),
             }));
+            expect(createdBody.result.device).not.toHaveProperty("diskPath");
+            expect(createdBody.result.device).not.toHaveProperty("deviceRoot");
             expect(JSON.stringify(createdBody)).not.toContain("Ccc!7");
             const incarnationId = createdBody.result.device.incarnationId as string;
             activeIncarnationId = incarnationId;

@@ -1674,88 +1674,6 @@ function scanUnifiedNestedRepositories(
     ));
 }
 
-function initializedTrackedSubmodules(
-    repositoryPath: string,
-    strict: boolean,
-): WorkspaceEntry[] {
-    const root = resolve(repositoryPath);
-    const repositories: WorkspaceEntry[] = [];
-
-    const collect = (
-        currentRepository: string,
-        relativePrefix: string,
-    ): void => {
-        const declarations = submoduleDeclarations(currentRepository, strict);
-        if (declarations.length === 0) return;
-        const tracked = spawnSync(
-            "git",
-            [
-                "ls-files",
-                "--stage",
-                "-z",
-                "--",
-                ...declarations.map(({ path }) => `:(literal)${path}`),
-            ],
-            {
-                cwd: currentRepository,
-                encoding: "utf-8",
-                stdio: ["pipe", "pipe", "pipe"],
-            },
-        );
-        if (tracked.error || tracked.status !== 0) {
-            if (!strict) return;
-            const detail = (tracked.stderr ?? "").trim()
-                || tracked.error?.message
-                || `git exited with status ${String(tracked.status)}`;
-            throw new Error(
-                `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
-            );
-        }
-        const trackedPaths = new Set<string>();
-        for (const record of (tracked.stdout ?? "").split("\0")) {
-            const match = record.match(/^160000 [0-9a-f]+ 0\t(.+)$/i);
-            const path = match
-                ? normalizeNestedRepositoryName(match[1])
-                : null;
-            if (path) trackedPaths.add(path);
-        }
-
-        for (const declaration of declarations) {
-            if (!trackedPaths.has(declaration.path)) continue;
-            const candidatePath = join(
-                currentRepository,
-                ...declaration.path.split("/"),
-            );
-            if (!pathExistsStrict(join(candidatePath, ".git"))) {
-                if (strict) {
-                    throw new Error(
-                        `Tracked submodule repository is not initialized: ${candidatePath}`,
-                    );
-                }
-                continue;
-            }
-            if (!nestedRepositoryCandidateIsSafe(
-                currentRepository,
-                declaration.path,
-                candidatePath,
-                strict,
-                true,
-            )) continue;
-            const name = relativePrefix
-                ? `${relativePrefix}/${declaration.path}`
-                : declaration.path;
-            repositories.push({ name, path: candidatePath, isGitRepo: true });
-            collect(candidatePath, name);
-        }
-    };
-
-    collect(root, "");
-    return repositories.sort((left, right) => (
-        left.name.split("/").length - right.name.split("/").length
-        || left.name.localeCompare(right.name)
-    ));
-}
-
 type NestedRepositoryIdentity = {
     directory: DirectoryIdentity;
     gitMetadata: DirectoryIdentity;
@@ -4184,15 +4102,58 @@ export function containerGitSourceMountPath(
     );
 }
 
-export function containerWorktreeBackpointerPath(
-    containerRepositoryPath: string,
-    rawGitFile: string,
-    platform = process.platform,
-): string {
-    const normalizedGitFile = platform === "win32"
-        ? rawGitFile.replace(/\\/g, "/")
-        : rawGitFile;
-    return posix.resolve(containerRepositoryPath, normalizedGitFile);
+function ensureContainerWorktreeBackpointer(
+    managementDirectory: string,
+    containerGitFile: string,
+): { path: string; identity: DirectoryIdentity } {
+    const parentIdentity = captureDirectoryIdentity(managementDirectory);
+    const compatibilityFile = join(
+        managementDirectory,
+        ".ccc-container-gitdir",
+    );
+    const expectedContent = `${containerGitFile}\n`;
+    if (pathExistsStrict(compatibilityFile)) {
+        const observed = lstatSync(compatibilityFile);
+        if (!observed.isFile() || observed.isSymbolicLink()) {
+            throw new Error(
+                `Container worktree backpointer is not a regular file: ${compatibilityFile}`,
+            );
+        }
+        const identity = capturePathIdentity(compatibilityFile);
+        normalizeWorktreeMetadataFile(
+            compatibilityFile,
+            expectedContent,
+            identity,
+        );
+        assertDirectoryIdentity(managementDirectory, parentIdentity);
+        return {
+            path: compatibilityFile,
+            identity: capturePathIdentity(compatibilityFile),
+        };
+    }
+    try {
+        writeFileSync(
+            compatibilityFile,
+            expectedContent,
+            { flag: "wx", mode: 0o600 },
+        );
+        assertDirectoryIdentity(managementDirectory, parentIdentity);
+        const identity = capturePathIdentity(compatibilityFile);
+        if (readFileSync(compatibilityFile, "utf-8") !== expectedContent) {
+            throw new Error(
+                `Container worktree backpointer changed after creation: ${compatibilityFile}`,
+            );
+        }
+        return { path: compatibilityFile, identity };
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            return ensureContainerWorktreeBackpointer(
+                managementDirectory,
+                containerGitFile,
+            );
+        }
+        throw error;
+    }
 }
 
 /**
@@ -4248,7 +4209,10 @@ export function getWorktreeGitMounts(
         }
     }
     const nestedRepositories = hasGitMetadata(resolved)
-        ? initializedTrackedSubmodules(resolved, required)
+        ? scanUnifiedNestedRepositories(
+            resolved,
+            { strict: required, allowRegisteredWorktrees: true },
+        )
         : scanDirectory(resolved, { strict: required });
     for (const entry of nestedRepositories) {
         if (!entry.isGitRepo) continue;
@@ -4363,23 +4327,27 @@ export function getWorktreeGitMounts(
                 containerGitFileDirectory,
                 ".git",
             );
-            const registrationBases = [
+            const managementRelative = posix.relative(
+                sourceContainerPath,
                 containerManagementDirectory,
-                containerGitFileDirectory,
-            ];
-            for (const registrationBase of registrationBases) {
-                const registeredContainerGitFile = containerWorktreeBackpointerPath(
-                    registrationBase,
-                    rawBackpointer,
+            );
+            if (!managementRelative
+                || managementRelative === ".."
+                || managementRelative.startsWith("../")
+                || posix.isAbsolute(managementRelative)) {
+                throw new Error(
+                    `Container worktree management path escapes its Git source mount: ${gitFile}`,
                 );
-                if (registeredContainerGitFile !== actualContainerGitFile) {
-                    addMount(
-                        dirname(gitFile),
-                        posix.dirname(registeredContainerGitFile),
-                        captureDirectoryIdentity(dirname(gitFile)),
-                    );
-                }
             }
+            const compatibility = ensureContainerWorktreeBackpointer(
+                resolvedGitdir,
+                actualContainerGitFile,
+            );
+            addMount(
+                compatibility.path,
+                posix.join(containerManagementDirectory, "gitdir"),
+                compatibility.identity,
+            );
         }
     }
 

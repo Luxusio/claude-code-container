@@ -43,7 +43,7 @@ import {
     type HyperVOperationJournal,
     type HyperVSnapshotJournal,
 } from "./device-lab/broker/hyper-v/operation-journal.js";
-import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
+import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
 import { hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
@@ -10702,7 +10702,7 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
                                 stateKey: parsed.stateKey,
                                 command: parsed.command,
                                 deviceId: parsed.deviceId,
-                                device: redactSecrets ? redactBrokerDeviceSecrets(record) : record,
+                                device: redactSecrets ? redactHyperVDeviceSecrets(record) : record,
                                 idempotent: true,
                                 providerCommand: null,
                                 execution: { mode: "idempotent", providerExecution: "not-required", mutatesHost: false },
@@ -10770,8 +10770,14 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
                     deviceId: parsed.deviceId,
                     force: parsed.force,
                     dryRun: parsed.dryRun,
-                    create: redactBrokerCreateSecrets(effectiveParsed.create),
-                    providerCommand: normalized ? providerCommandForCreate(ownerId, effectiveParsed, normalized) : null,
+                    create: redactSecrets && isHyperVBackend(parsed.backend)
+                        ? publicHyperVCreateConfiguration(effectiveParsed.create)
+                        : redactBrokerCreateSecrets(effectiveParsed.create),
+                    providerCommand: normalized
+                        ? redactSecrets && isHyperVBackend(parsed.backend)
+                            ? { mode: "powershell", provider: "hyper-v" }
+                            : providerCommandForCreate(ownerId, effectiveParsed, normalized)
+                        : null,
                     execution: {
                         mode: "planned",
                         providerExecution: normalized ? "available" : "deferred",
@@ -10842,8 +10848,14 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
                 deviceId: parsed.deviceId,
                 force: parsed.force,
                 dryRun: parsed.dryRun,
-                device: redactSecrets ? redactBrokerDeviceSecrets(device) : device,
-                providerCommand: normalized ? providerCommandFor(ownerId, parsed, device, normalized) : null,
+                device: redactSecrets && isHyperVBackend(parsed.backend)
+                    ? redactHyperVDeviceSecrets(device)
+                    : redactSecrets ? redactBrokerDeviceSecrets(device) : device,
+                providerCommand: normalized
+                    ? redactSecrets && isHyperVBackend(parsed.backend)
+                        ? { mode: "powershell", provider: "hyper-v" }
+                        : providerCommandFor(ownerId, parsed, device, normalized)
+                    : null,
                 execution: {
                     mode: "planned",
                     providerExecution: normalized ? "available" : "deferred",
@@ -10912,7 +10924,9 @@ async function lifecycleCommandInvokeUnlocked(
                     ok: false,
                     error: providerCommand.error,
                     missing: providerCommand.missing || [],
-                    plan: payload.result || null,
+                    plan: isHyperVBackend(parsed.backend)
+                        ? redactHyperVResultSecrets(payload.result)
+                        : payload.result || null,
                 },
             };
         }
@@ -11263,7 +11277,9 @@ async function lifecycleCommandInvokeUnlocked(
                     deviceId: parsed.deviceId,
                     field: claim.field,
                     value: claim.value,
-                    existing: redactBrokerDeviceSecrets(claim.existing),
+                    existing: isHyperVBackend(parsed.backend)
+                        ? redactHyperVDeviceSecrets(claim.existing)
+                        : redactBrokerDeviceSecrets(claim.existing),
                     rollback,
                 },
             };
@@ -11298,7 +11314,9 @@ async function lifecycleCommandInvokeUnlocked(
                     ...(isHyperVBackend(parsed.backend)
                         ? redactHyperVResultSecrets(payload.result)
                         : payload.result || {}),
-                    device: redactBrokerDeviceSecrets(device),
+                    device: isHyperVBackend(parsed.backend)
+                        ? redactHyperVDeviceSecrets(device)
+                        : redactBrokerDeviceSecrets(device),
                     invoked: true,
                     dryRun: false,
                     execution: isHyperVBackend(parsed.backend) ? {
@@ -11394,7 +11412,9 @@ async function lifecycleCommandInvokeUnlocked(
                 ok: false,
                 error: providerCommand?.error || "missing-provider-command",
                 missing: providerCommand?.missing || [],
-                plan: payload.result || null,
+                plan: isHyperVBackend(parsed.backend)
+                    ? redactHyperVResultSecrets(payload.result)
+                    : payload.result || null,
             },
         };
     }
@@ -11456,8 +11476,12 @@ async function lifecycleCommandInvokeUnlocked(
                 ok: false,
                 error: "auxiliary-runtime-cleanup-failed",
                 result: {
-                    ...(payload.result || {}),
-                    device: redactBrokerDeviceSecrets(auxiliaryCleanup.device || payload.result?.device),
+                    ...(isHyperVBackend(parsed.backend)
+                        ? redactHyperVResultSecrets(payload.result)
+                        : payload.result || {}),
+                    device: isHyperVBackend(parsed.backend)
+                        ? redactHyperVDeviceSecrets(auxiliaryCleanup.device || payload.result?.device)
+                        : redactBrokerDeviceSecrets(auxiliaryCleanup.device || payload.result?.device),
                     auxiliaryCleanup: auxiliaryCleanup.result,
                     invoked: false,
                     dryRun: false,

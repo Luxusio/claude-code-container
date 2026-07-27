@@ -33,7 +33,6 @@ import {
     fixBrokenWorktree,
     getWorktreeGitMounts,
     containerGitSourceMountPath,
-    containerWorktreeBackpointerPath,
     portableWorktreeGitDirectory,
     assertWorkspaceBranch,
     detectWorktreeWorkspaceBranch,
@@ -3817,10 +3816,25 @@ describe("getWorktreeGitMounts", () => {
             mount.hostPath === join(repoPath, ".git")
             && mount.containerPath === "/project/portable-source/.git"
         ))).toBe(true);
+        const managementDirectory = resolve(
+            wtPath,
+            gitLink.replace(/^gitdir:\s*/, ""),
+        );
+        const compatibilityMount = mounts.find((mount) => (
+            mount.containerPath
+            === "/project/portable-source/.git/worktrees/portable-source--feat/gitdir"
+        ));
+        expect(compatibilityMount).toBeDefined();
+        expect(readFileSync(compatibilityMount!.hostPath, "utf-8")).toBe(
+            "/project/portable-source--feat-id/.git\n",
+        );
         expect(mounts.every((mount) => (
             mount.containerPath.startsWith("/")
             && !/[A-Za-z]:[\\/]/.test(mount.containerPath)
         ))).toBe(true);
+        expect(compatibilityMount!.hostPath).toBe(
+            join(managementDirectory, ".ccc-container-gitdir"),
+        );
 
         expect(() => getWorktreeGitMounts(
             wtPath,
@@ -3837,6 +3851,29 @@ describe("getWorktreeGitMounts", () => {
             encoding: "utf-8",
         });
         expect(status.status).toBe(0);
+    });
+
+    it("rejects a forged registration backpointer before creating mounts", () => {
+        const repoPath = join(tmpDir, "forged-registration-source");
+        initRepo(repoPath);
+        const wtPath = join(tmpDir, "forged-registration-source--feat");
+        spawnSync("git", ["worktree", "add", "-b", "forged-registration", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const managementDirectory = resolve(
+            wtPath,
+            readFileSync(join(wtPath, ".git"), "utf-8")
+                .trim()
+                .replace(/^gitdir:\s*/, ""),
+        );
+        writeFileSync(join(managementDirectory, "gitdir"), "/etc/passwd\n");
+
+        expect(() => getWorktreeGitMounts(
+            wtPath,
+            true,
+            "/project/forged-registration-source--feat-id",
+        )).toThrow(/worktree metadata is invalid|registration ownership could not be verified/i);
     });
 
     it("returns verified mounts for every repository in a multi-repo workspace", () => {
@@ -3928,36 +3965,22 @@ describe("getWorktreeGitMounts", () => {
             containerWorkspace,
             "services/catchy-api",
         );
-        const registeredContainerGitFile = containerWorktreeBackpointerPath(
-            containerGitFileDirectory,
-            backpointer,
-        );
         const containerManagementDirectory = posix.resolve(
             containerGitFileDirectory,
             forwardPointer.replace(/\\/g, "/"),
-        );
-        const managementRelativeGitFile = containerWorktreeBackpointerPath(
-            containerManagementDirectory,
-            backpointer,
         );
         const actualContainerGitFile = posix.join(
             containerGitFileDirectory,
             ".git",
         );
-        expect(
-            registeredContainerGitFile === actualContainerGitFile
-            || mounts.some(({ hostPath, containerPath }) => (
-                hostPath === workspaceSubmodule
-                && containerPath === posix.dirname(registeredContainerGitFile)
-            )),
-        ).toBe(true);
-        expect(
-            managementRelativeGitFile === actualContainerGitFile
-            || mounts.some(({ hostPath, containerPath }) => (
-                hostPath === workspaceSubmodule
-                && containerPath === posix.dirname(managementRelativeGitFile)
-            )),
-        ).toBe(true);
+        const compatibilityMount = mounts.find(({ containerPath }) => (
+            containerPath === posix.join(containerManagementDirectory, "gitdir")
+        ));
+        expect(compatibilityMount).toBeDefined();
+        expect(readFileSync(compatibilityMount!.hostPath, "utf-8"))
+            .toBe(`${actualContainerGitFile}\n`);
+        expect(compatibilityMount!.hostPath)
+            .toBe(join(managementDirectory, ".ccc-container-gitdir"));
 
         const listed = spawnSync(
             "git",
@@ -4030,9 +4053,15 @@ describe("getWorktreeGitMounts", () => {
         expect(resolve(
             readFileSync(join(managementDirectory, "gitdir"), "utf-8").trim(),
         )).toBe(join(workspaceSubmodule, ".git"));
+        const compatibilityMount = mounts.find(({ hostPath, containerPath }) => (
+            containerPath.endsWith("/gitdir")
+            && readFileSync(hostPath, "utf-8")
+            === "/project/old-form-source--old-form-mounts/services/catchy-api/.git\n"
+        ));
+        expect(compatibilityMount).toBeDefined();
     });
 
-    it("normalizes Windows nested worktree forward and back pointers", () => {
+    it("normalizes Windows nested worktree forward pointers", () => {
         const workspaceGitDirectory =
             "C:\\work\\catchy-secrets--kjkim2\\services\\catchy-api";
         const managementDirectory =
@@ -4043,22 +4072,14 @@ describe("getWorktreeGitMounts", () => {
             managementDirectory,
             "win32",
         );
-        const registeredContainerGitFile = containerWorktreeBackpointerPath(
-            "/project/catchy-secrets/services/catchy-api/.git/worktrees/catchy-api",
-            "C:\\Users\\Luxus\\Project\\catchy-secrets--kjkim2\\services\\catchy-api\\.git",
-            "win32",
-        );
 
         expect(forwardPointer).toBe(
             "../../../catchy-secrets/services/catchy-api/.git/worktrees/catchy-api",
         );
-        expect(registeredContainerGitFile).toBe(
-            "/project/catchy-secrets/services/catchy-api/.git/worktrees/catchy-api/C:/Users/Luxus/Project/catchy-secrets--kjkim2/services/catchy-api/.git",
-        );
         expect(forwardPointer).not.toMatch(/[A-Za-z]:[\\/]/);
     });
 
-    it("does not mount untracked nested repositories with duplicate basenames", () => {
+    it("uses unique compatibility mounts for non-ignored nested repositories with duplicate basenames", () => {
         const sourcePath = join(tmpDir, "duplicate-basename-source");
         initRepo(sourcePath);
         initRepo(join(sourcePath, "api"));
@@ -4067,10 +4088,12 @@ describe("getWorktreeGitMounts", () => {
 
         const mounts = getWorktreeGitMounts(result.workspacePath, true);
 
-        expect(mounts.some(({ hostPath }) => hostPath === join(sourcePath, "api", ".git")))
-            .toBe(false);
-        expect(mounts.some(({ hostPath }) => hostPath === join(sourcePath, "api", "api", ".git")))
-            .toBe(false);
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/api/.git"
+        ))).toBe(true);
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/api/api/.git"
+        ))).toBe(true);
     });
 
     it("rejects mount metadata copied from a different registered worktree", () => {
@@ -4128,20 +4151,18 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
     });
 
-    it("does not consider untracked nested repositories for mount conflicts", () => {
+    it("rejects different non-ignored Git sources targeting the same container path", () => {
         const repoPath = join(tmpDir, "same-name");
         initRepo(repoPath);
         const nestedPath = join(repoPath, "same-name");
         initRepo(nestedPath);
         const wtPath = createWorkspace(repoPath, "mount-conflict").workspacePath;
 
-        const mounts = getWorktreeGitMounts(
+        expect(() => getWorktreeGitMounts(
             wtPath,
             true,
             "/project/same-name--mount-conflict-id",
-        );
-        expect(mounts.some(({ hostPath }) => hostPath === join(nestedPath, ".git")))
-            .toBe(false);
+        )).toThrow("Conflicting Git mount sources target '/project/same-name/.git'");
     });
 
     it("deduplicates identical mounts", () => {
