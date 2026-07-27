@@ -44,6 +44,7 @@ import {
 test("resolves Android AVD storage using Android SDK environment precedence", () => {
     assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), "/avds");
     assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_USER_HOME: "/android-user" } }), "/android-user/avd");
+    assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_EMULATOR_HOME: "/emulator" } }), "/emulator/avd");
     assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_SDK_HOME: "/legacy" } }), "/legacy/.android/avd");
     assert.equal(androidAvdHome({ home: "/home/test", env: {} }), "/home/test/.android/avd");
 });
@@ -96,6 +97,28 @@ test("fails closed on symbolic Android AVD artifacts", () => {
         symlinkSync(outside, join(avdRoot, `${owned}.avd`), "dir");
         assert.throws(() => listOwnedAndroidAvdArtifacts(owner, { home }), /refusing symbolic/);
         assert.equal(existsSync(outside), true);
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(outside, { recursive: true, force: true });
+    }
+});
+
+test("fails closed when the Android AVD storage root traverses a symbolic path", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-root-link-"));
+    const outside = mkdtempSync(join(tmpdir(), "ccc-avd-root-outside-"));
+    const owner = "0123456789abcdef";
+    const owned = `ccc-${owner}-real-android-e2e-root-link`;
+    try {
+        mkdirSync(join(home, ".android"), { recursive: true });
+        mkdirSync(join(outside, `${owned}.avd`));
+        writeFileSync(join(outside, `${owned}.avd`, "userdata-qemu.img"), "outside");
+        symlinkSync(outside, join(home, ".android", "avd"), "dir");
+
+        assert.throws(
+            () => listOwnedAndroidAvdArtifacts(owner, { home }),
+            /stable directory|symbolic or reparse path/,
+        );
+        assert.equal(existsSync(join(outside, `${owned}.avd`, "userdata-qemu.img")), true);
     } finally {
         rmSync(home, { recursive: true, force: true });
         rmSync(outside, { recursive: true, force: true });

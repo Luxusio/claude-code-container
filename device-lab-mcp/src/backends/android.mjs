@@ -8,7 +8,7 @@ import { ownerId, slug } from "../context.mjs";
 import { validateGuestPath, validateLocalOutputPath } from "../policy/files.mjs";
 import { fail, jsonResult, textResult } from "../responses.mjs";
 import { resolveAndroidEmulatorPort, withAndroidEmulatorPortAllocation } from "../state/android-emulator-port-allocation.mjs";
-import { removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
+import { androidAvdHome, removeOwnedAndroidAvdArtifacts } from "../state/android-avd-storage.mjs";
 import { claimAndroidDevice, findAndroidDevice, mutateAndroidDevices, readAndroidDevices, transitionAndroidDevice, updateAndroidDevice } from "../state/android-state.mjs";
 import { withOwnerDeviceOperation } from "../state/device-store.mjs";
 import { requiresOwnerDeviceOperation } from "../state/device-operation-policy.mjs";
@@ -201,6 +201,12 @@ function appiumPortForDevice(id) {
 
 function androidSerial(device) {
     return device.serial || (device.port ? `emulator-${device.port}` : undefined);
+}
+
+function publicAndroidDevice(device) {
+    const publicDevice = { ...withTargetStatus(device) };
+    delete publicDevice.avdRoot;
+    return publicDevice;
 }
 
 export function androidEmulatorPortsFromAdbDevices(output) {
@@ -455,25 +461,33 @@ function isSafeProvisionedAvdName(avdName) {
         && new RegExp(`^${ownerAvdPrefix()}[A-Za-z0-9._-]+$`).test(avdName);
 }
 
-function deleteOwnedAndroidAvd(avdmanager, avdName) {
+function deleteOwnedAndroidAvd(avdmanager, avdName, options = {}) {
     const result = run(avdmanager, ["delete", "avd", "--name", avdName]);
     try {
-        const artifacts = removeOwnedAndroidAvdArtifacts(avdName, ownerId());
+        const artifacts = removeOwnedAndroidAvdArtifacts(avdName, ownerId(), {
+            root: options.avdRoot,
+        });
         return {
             ok: result.status === 0 || artifacts.removed > 0,
             result,
             artifacts,
             ...(result.status === 0 || artifacts.removed > 0
                 ? {}
-                : { error: result.stderr || result.stdout || "avdmanager delete failed" }),
+                : { error: "android-avd-delete-command-failed" }),
         };
-    } catch (error) {
+    } catch {
         return {
             ok: false,
             result,
-            error: error instanceof Error ? error.message : String(error),
+            error: "android-avd-artifact-cleanup-failed",
         };
     }
+}
+
+function androidAvdIsInactive(discovery, device) {
+    const serial = androidSerial(device);
+    if (!discovery.adb || !serial) return false;
+    return run(discovery.adb, ["-s", serial, "get-state"]).status !== 0;
 }
 
 function isSafeSystemImage(systemImage) {
@@ -731,7 +745,7 @@ async function waitForAndroidApp(device, adb, packageName, timeoutMs = 10000, in
 }
 
 export function listAndroidDevices() {
-    return readAndroidDevices().map((device) => withTargetStatus({ ...device, ownerId: ownerId() }));
+    return readAndroidDevices().map((device) => publicAndroidDevice({ ...device, ownerId: ownerId() }));
 }
 
 async function handleAndroidToolUnlocked(name, args) {
@@ -805,6 +819,7 @@ async function handleAndroidToolUnlocked(name, args) {
                 platform: "android",
                 ownerId: ownerId(),
                 avdName: resolvedAvdName,
+                avdRoot: shouldCreateAvd ? androidAvdHome() : null,
                 systemImage: systemImage || null,
                 deviceProfile: deviceProfile || null,
                 provisioned: shouldCreateAvd,
@@ -824,7 +839,9 @@ async function handleAndroidToolUnlocked(name, args) {
             } catch (error) {
                 if (shouldCreateAvd) {
                     const discovery = androidDiscovery();
-                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName);
+                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName, {
+                        avdRoot: androidAvdHome(),
+                    });
                     if (!rollback.ok) {
                         return textResult(false, `Owner device state update failed; Android AVD rollback failed: ${rollback.error}`);
                     }
@@ -834,14 +851,16 @@ async function handleAndroidToolUnlocked(name, args) {
             if (!claim.ok) {
                 if (shouldCreateAvd && claim.existing?.avdName !== resolvedAvdName) {
                     const discovery = androidDiscovery();
-                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName);
+                    const rollback = deleteOwnedAndroidAvd(discovery.avdmanager, resolvedAvdName, {
+                        avdRoot: androidAvdHome(),
+                    });
                     if (!rollback.ok) {
                         return textResult(false, `Device identity conflict for this owner (${claim.field}: ${claim.value}); Android AVD rollback failed: ${rollback.error}`);
                     }
                 }
                 return textResult(false, `Device identity already exists for this owner (${claim.field}: ${claim.value})`);
             }
-            return jsonResult({ device: withTargetStatus(device) });
+            return jsonResult({ device: publicAndroidDevice(device) });
         }
 
         case "device_delete": {
@@ -918,7 +937,13 @@ async function handleAndroidToolUnlocked(name, args) {
                 }
             }
             if (deleteAvd) {
-                const deletion = deleteOwnedAndroidAvd(discovery.avdmanager, device.avdName);
+                if (!androidAvdIsInactive(discovery, deleteCurrent || device)) {
+                    if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
+                    return textResult(false, "android-avd-active-or-liveness-unverified");
+                }
+                const deletion = deleteOwnedAndroidAvd(discovery.avdmanager, device.avdName, {
+                    avdRoot: device.avdRoot || undefined,
+                });
                 if (!deletion.ok) {
                     if (!deleteCurrent) abortAndroidLifecycle(deviceId, claim.lifecycle, device);
                     return textResult(false, `Android AVD artifact cleanup failed: ${deletion.error}`);
@@ -935,7 +960,7 @@ async function handleAndroidToolUnlocked(name, args) {
             const { deviceId } = args;
             const device = findAndroidDevice(deviceId);
             if (!device) return undefined;
-            return jsonResult({ device: withTargetStatus(device), backend: androidBackend(), appium: appiumBackendStatus() });
+            return jsonResult({ device: publicAndroidDevice(device), backend: androidBackend(), appium: appiumBackendStatus() });
         }
 
         case "device_start": {
@@ -1028,7 +1053,7 @@ async function handleAndroidToolUnlocked(name, args) {
                 return androidLifecycleConflict(deviceId, "start-runtime", started, rollback);
             }
 
-            if (!waitForBoot) return jsonResult({ device: withTargetStatus(starting), boot: { ready: false, skipped: true } });
+            if (!waitForBoot) return jsonResult({ device: publicAndroidDevice(starting), boot: { ready: false, skipped: true } });
 
             const boot = await waitForAndroidBoot(discovery, starting, bootTimeoutMs, child);
             if (boot.reason === "emulator-process-exited") {
@@ -1056,7 +1081,7 @@ async function handleAndroidToolUnlocked(name, args) {
                 const rollback = await rollbackStartedAndroidEmulator(discovery, device, runtime);
                 return androidLifecycleConflict(deviceId, "start-complete", transition, rollback);
             }
-            return jsonResult({ device: withTargetStatus(completed), boot });
+            return jsonResult({ device: publicAndroidDevice(completed), boot });
         }
 
         case "device_stop": {
@@ -1112,7 +1137,7 @@ async function handleAndroidToolUnlocked(name, args) {
             };
             const transition = transitionAndroidDevice(deviceId, current, updated);
             if (!transition.matched) return androidLifecycleConflict(deviceId, "stop", transition);
-            return jsonResult({ device: withTargetStatus(updated) });
+            return jsonResult({ device: publicAndroidDevice(updated) });
         }
 
         case "device_exec": {
@@ -1349,7 +1374,7 @@ async function handleAndroidToolUnlocked(name, args) {
             if (!device) return undefined;
             return jsonResult({
                 deviceId,
-                device: withTargetStatus(device),
+                device: publicAndroidDevice(device),
                 provider: "adb",
                 appium: appiumBackendStatus(),
                 session: device.appium || null,

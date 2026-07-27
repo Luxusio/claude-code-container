@@ -2371,6 +2371,7 @@ describe("device-lab host broker lifecycle commands", () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-avd-artifact-cleanup-test");
         const avdName = `ccc-${ownerId}-cleanup`;
         const avdHome = mkdtempSync(join(tmpdir(), "ccc-broker-avd-home-"));
+        const replacementAvdHome = mkdtempSync(join(tmpdir(), "ccc-broker-avd-replacement-"));
         const avdDataPath = join(avdHome, `${avdName}.avd`);
         const avdIniPath = join(avdHome, `${avdName}.ini`);
         const previousAvdHome = process.env.ANDROID_AVD_HOME;
@@ -2383,8 +2384,12 @@ describe("device-lab host broker lifecycle commands", () => {
             backend: "android-emulator",
             status: "stopped",
             avdName,
+            avdRoot: avdHome,
             port: 5582,
         }]);
+        mkdirSync(join(replacementAvdHome, `${avdName}.avd`));
+        writeFileSync(join(replacementAvdHome, `${avdName}.ini`), "replacement");
+        process.env.ANDROID_AVD_HOME = replacementAvdHome;
         const commandRunner = vi.fn((command) => ({
             mode: command.mode,
             provider: command.provider,
@@ -2417,8 +2422,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 }),
             });
             expect(response.status).toBe(200);
+            const body = await response.json();
+            expect(JSON.stringify(body)).not.toContain("avdRoot");
+            expect(JSON.stringify(body)).not.toContain(avdHome);
             expect(existsSync(avdDataPath)).toBe(false);
             expect(existsSync(avdIniPath)).toBe(false);
+            expect(existsSync(join(replacementAvdHome, `${avdName}.avd`))).toBe(true);
+            expect(existsSync(join(replacementAvdHome, `${avdName}.ini`))).toBe(true);
             expect(commandRunner).toHaveBeenCalledWith(expect.objectContaining({
                 provider: "avdmanager",
                 args: ["delete", "avd", "--name", avdName],
@@ -2427,8 +2437,81 @@ describe("device-lab host broker lifecycle commands", () => {
             await close(server);
             cleanupOwner(ownerId);
             rmSync(avdHome, { recursive: true, force: true });
+            rmSync(replacementAvdHome, { recursive: true, force: true });
             if (previousAvdHome === undefined) delete process.env.ANDROID_AVD_HOME;
             else process.env.ANDROID_AVD_HOME = previousAvdHome;
+        }
+    });
+
+    it("rejects foreign and live Android AVD deletion before avdmanager execution", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-android-avd-preflight-test");
+        const commandRunner = vi.fn((command) => ({
+            mode: command.mode,
+            provider: command.provider,
+            executable: command.executable,
+            args: command.args,
+            status: 0,
+            stdout: command.provider === "adb" ? "List of devices attached\nemulator-5582\tdevice\n" : "",
+            stderr: "",
+        }));
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-android-avd-preflight-test",
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        const invokeDelete = () => fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+            method: "POST",
+            headers: ownerRpcHeaders(ownerId),
+            body: JSON.stringify({
+                method: "broker.command.invoke",
+                params: {
+                    backend: "android-emulator",
+                    command: "device_delete",
+                    deviceId: "android-preflight",
+                    deleteAvd: true,
+                },
+            }),
+        });
+        try {
+            writeBrokerDevices(ownerId, "android", [{
+                id: "android-preflight",
+                backend: "android-emulator",
+                status: "stopped",
+                avdName: "Pixel_User",
+                port: 5582,
+            }]);
+            const foreign = await invokeDelete();
+            expect(foreign.status).toBe(400);
+            expect(await foreign.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "android-avd-name-not-owner-scoped",
+            }));
+            expect(commandRunner).not.toHaveBeenCalled();
+
+            writeBrokerDevices(ownerId, "android", [{
+                id: "android-preflight",
+                backend: "android-emulator",
+                status: "stopped",
+                avdName: `ccc-${ownerId}-live`,
+                port: 5582,
+            }]);
+            const live = await invokeDelete();
+            expect(live.status).toBe(409);
+            expect(await live.json()).toEqual(expect.objectContaining({
+                ok: false,
+                error: "android-avd-active",
+            }));
+            expect(commandRunner).toHaveBeenCalledTimes(1);
+            expect(commandRunner.mock.calls[0][0]).toEqual(expect.objectContaining({
+                provider: "adb",
+                args: ["devices", "-l"],
+            }));
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
         }
     });
 

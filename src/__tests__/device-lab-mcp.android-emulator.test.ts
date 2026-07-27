@@ -112,6 +112,7 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             provisioned: true,
             status: "stopped",
         }));
+        expect(created.device).not.toHaveProperty("avdRoot");
         const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
         const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
         mkdirSync(avdDataPath, { recursive: true });
@@ -1125,7 +1126,7 @@ exec "${realAdbPath}" "$@"
         expect(readFileSync(logPath, "utf8").slice(beforeLog.length)).toContain("adb -s emulator-5666 emu kill");
     });
 
-    it("force-deletes a live emulator even when persisted state says stopped", { timeout: TIMEOUT }, async () => {
+    it("force-deletes stale stopped metadata without signaling an absent emulator", { timeout: TIMEOUT }, async () => {
         const deviceId = "android-force-delete-stale-stopped";
         const create = await client.callTool({
             name: "device_create",
@@ -1140,7 +1141,63 @@ exec "${realAdbPath}" "$@"
         });
         expect(deleted.isError).not.toBe(true);
         expect(parseToolJson(deleted)).toEqual(expect.objectContaining({ deleted: deviceId }));
-        expect(readFileSync(logPath, "utf8").slice(beforeLog.length)).toContain("adb -s emulator-5670 emu kill");
+        const addedLog = readFileSync(logPath, "utf8").slice(beforeLog.length);
+        expect(addedLog).toContain("adb -s emulator-5670 get-state");
+        expect(addedLog).not.toContain("adb -s emulator-5670 emu kill");
+    });
+
+    it("preserves a stopped-state AVD while ADB still observes its emulator", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "android-emulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = "android-stale-stopped-active-avd";
+        const avdName = `ccc-${ownerId}-stale-stopped-active-avd`;
+        const port = 5672;
+        const avdDataPath = join(homeDir, ".android", "avd", `${avdName}.avd`);
+        const avdIniPath = join(homeDir, ".android", "avd", `${avdName}.ini`);
+        const activeMarker = join(homeDir, `fake-adb-active-emulator-${port}`);
+        const create = await client.callTool({
+            name: "device_create",
+            arguments: {
+                backend: "android-emulator",
+                name: "Stale Stopped Active AVD",
+                deviceId,
+                avdName,
+                port,
+                systemImage: "system-images;android-35;google_apis;x86_64",
+                createAvd: true,
+            },
+        });
+        expect(create.isError).not.toBe(true);
+        mkdirSync(avdDataPath, { recursive: true });
+        writeFileSync(join(avdDataPath, "userdata-qemu.img"), "active-avd-data");
+        writeFileSync(avdIniPath, `path=${avdDataPath}`);
+        writeFileSync(activeMarker, "active");
+        const beforeLog = readFileSync(logPath, "utf8");
+
+        try {
+            const blocked = await client.callTool({
+                name: "device_delete",
+                arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
+            });
+            expect(blocked.isError).toBe(true);
+            expect((blocked.content as Array<{ text?: string }>)[0]?.text)
+                .toContain("android-avd-active-or-liveness-unverified");
+            expect(existsSync(avdDataPath)).toBe(true);
+            expect(existsSync(avdIniPath)).toBe(true);
+            expect(readFileSync(logPath, "utf8").slice(beforeLog.length))
+                .not.toContain(`avdmanager delete avd --name ${avdName}`);
+            expect((parseToolJson(await client.callTool({
+                name: "device_status",
+                arguments: { deviceId },
+            })) as { device: Record<string, unknown> }).device).not.toHaveProperty("avdRoot");
+        } finally {
+            rmSync(activeMarker, { force: true });
+            const deleted = await client.callTool({
+                name: "device_delete",
+                arguments: { deviceId, deleteAvd: true, confirmDestructive: true },
+            });
+            expect(deleted.isError).not.toBe(true);
+        }
     });
 
     it("preserves running state and the AVD when force-delete cannot terminate the owned process", { timeout: TIMEOUT }, async () => {
@@ -1252,7 +1309,9 @@ exec "${realAdbPath}" "$@"
         writeFileSync(adbPath, `#!/bin/sh
 if [ "$1" = "-s" ] && [ "$3" = "emu" ] && [ "$4" = "kill" ]; then
   /bin/kill "$(/bin/cat "$HOME/fake-force-delete-kill-pid")"
-  exit $?
+  status=$?
+  /bin/rm -f "$HOME/fake-adb-active-$2"
+  exit $status
 fi
 exec "${realAdbPath}" "$@"
 `);
@@ -1272,7 +1331,10 @@ exec "${realAvdmanagerPath}" "$@"
                 arguments: { deviceId, force: true, deleteAvd: true, confirmDestructive: true },
             });
             expect(deleted.isError).toBe(true);
-            expect((deleted.content as Array<{ text?: string }>)[0]?.text).toContain("injected AVD delete failure");
+            expect((deleted.content as Array<{ text?: string }>)[0]?.text)
+                .toContain("android-avd-delete-command-failed");
+            expect((deleted.content as Array<{ text?: string }>)[0]?.text)
+                .not.toContain("injected AVD delete failure");
 
             const status = await client.callTool({ name: "device_status", arguments: { deviceId } });
             const persisted = (parseToolJson(status) as { device: Record<string, unknown> }).device;

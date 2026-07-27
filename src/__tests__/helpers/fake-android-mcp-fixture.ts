@@ -41,11 +41,24 @@ if [ -f "$HOME/fake-android-start-conflict-state-path" ]; then
   /bin/cp "$HOME/fake-android-start-conflict-state.json" "$state_path" || exit 92
   /bin/rm -f "$HOME/fake-android-start-conflict-state-path"
 fi
+emulator_port=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-port" ] && [ "$#" -gt 1 ]; then
+    emulator_port="$2"
+    break
+  fi
+  shift
+done
+if [ -n "$emulator_port" ]; then
+  : > "$HOME/fake-adb-active-emulator-$emulator_port"
+fi
 exec /bin/sleep 20
 `);
         writeScript("adb", `
 echo "adb $*" >> "$FAKE_ANDROID_LOG"
+serial=""
 if [ "$1" = "-s" ]; then
+  serial="$2"
   shift
   shift
 fi
@@ -89,7 +102,15 @@ if [ "$1" = "pair" ]; then
   exit 1
 fi
 if [ "$1" = "get-state" ]; then
+  if [ -z "$serial" ] || [ ! -f "$HOME/fake-adb-active-$serial" ]; then
+    echo "device not found" >&2
+    exit 1
+  fi
   echo "device"
+  exit 0
+fi
+if [ "$1" = "emu" ] && [ "$2" = "kill" ]; then
+  /bin/rm -f "$HOME/fake-adb-active-$serial"
   exit 0
 fi
 if [ "$1" = "shell" ] && [ "$2" = "getprop" ] && [ "$3" = "sys.boot_completed" ]; then
