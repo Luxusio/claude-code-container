@@ -77,8 +77,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 stderr: `guest-secret-error ${diagnosticCode}`,
             }, true, "hyper-v-powershell-execution-failed")).toEqual(expect.objectContaining({
                 status: 1,
-                stdout: "[redacted]",
-                stderr: "[redacted]",
+                stdoutPresent: true,
+                stderrPresent: true,
                 inputConfigured: true,
                 outputRedacted: true,
                 diagnosticCode,
@@ -92,16 +92,44 @@ describe("device-lab host broker lifecycle commands", () => {
             provider: "hyper-v",
             status: 1,
             stdout: [
-                "hyper-v-linux-seed-vm-lookup-command-failed",
-                "hyper-v-linux-seed-media-check-command-failed",
-                "hyper-v-linux-seed-media-build-command-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-linux-seed-vm-lookup-command-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-linux-seed-media-check-command-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-linux-seed-media-build-command-failed",
             ].join("\n"),
             stderr: "hyper-v-powershell-execution-failed",
         }, true, "hyper-v-linux-seed-command-failed")).toEqual(expect.objectContaining({
             diagnosticCode: "hyper-v-linux-seed-media-build-command-failed",
-            stdout: "[redacted]",
-            stderr: "[redacted]",
+            stdoutPresent: true,
+            stderrPresent: true,
         }));
+    });
+
+    it("preserves bounded Hyper-V image and VM creation stages across generic PowerShell failures", () => {
+        for (const diagnosticCode of [
+            "hyper-v-base-image-download-failed",
+            "hyper-v-base-image-hash-failed",
+            "hyper-v-base-image-archive-check-failed",
+            "hyper-v-base-image-extract-failed",
+            "hyper-v-base-image-normalize-failed",
+            "hyper-v-base-image-inspection-failed",
+            "hyper-v-base-image-finalize-failed",
+            "hyper-v-vm-disk-create-failed",
+            "hyper-v-vm-disk-inspection-failed",
+            "hyper-v-vm-create-failed",
+            "hyper-v-vm-configure-failed",
+        ]) {
+            expect(redactProviderCommandInput({
+                mode: "exec",
+                provider: "hyper-v",
+                status: 1,
+                stdout: `earlier-stage\nCCC_HYPER_V_STAGE:${diagnosticCode}`,
+                stderr: "hyper-v-powershell-execution-failed",
+            }, true, "hyper-v-provider-command-failed")).toEqual(expect.objectContaining({
+                diagnosticCode,
+                stdoutPresent: true,
+                stderrPresent: true,
+            }));
+        }
     });
 
     it("preserves the last internal media-build marker across a generic nested PowerShell failure", () => {
@@ -110,15 +138,15 @@ describe("device-lab host broker lifecycle commands", () => {
             provider: "hyper-v",
             status: 1,
             stdout: [
-                "hyper-v-guest-provision-media-build-command-failed",
-                "hyper-v-provisioning-media-add-tree-failed",
-                "hyper-v-provisioning-media-output-open-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-guest-provision-media-build-command-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-provisioning-media-add-tree-failed",
+                "CCC_HYPER_V_STAGE:hyper-v-provisioning-media-output-open-failed",
             ].join("\n"),
             stderr: "hyper-v-powershell-execution-failed",
         }, true, "hyper-v-guest-provision-command-failed")).toEqual(expect.objectContaining({
             diagnosticCode: "hyper-v-provisioning-media-output-open-failed",
-            stdout: "[redacted]",
-            stderr: "[redacted]",
+            stdoutPresent: true,
+            stderrPresent: true,
         }));
     });
 
@@ -132,6 +160,53 @@ describe("device-lab host broker lifecycle commands", () => {
         }, true, "hyper-v-guest-provision-command-failed")).toEqual(expect.objectContaining({
             diagnosticCode: "hyper-v-provisioning-media-output-open-failed",
         }));
+    });
+
+    it("keeps the last specific reported diagnostic ahead of a trailing generic wrapper error", () => {
+        expect(redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            stdout: "CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed",
+            stderr: [
+                "hyper-v-base-image-checksum-mismatch",
+                "hyper-v-powershell-execution-failed",
+            ].join("\n"),
+        }, true, "hyper-v-provider-command-failed")).toEqual(expect.objectContaining({
+            diagnosticCode: "hyper-v-base-image-checksum-mismatch",
+        }));
+    });
+
+    it("accepts only exact stdout marker lines and removes executable diagnostics", () => {
+        const redacted = redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            executable: "C:\\secret\\powershell.exe",
+            args: ["-EncodedCommand", "reversible-secret-program"],
+            input: "secret-input",
+            status: 1,
+            stdout: [
+                "host text mentions hyper-v-vm-create-failed inline",
+                "hyper-v-vm-configure-failed",
+            ].join("\n"),
+            stderr: "localized host failure",
+            error: "spawn C:\\secret\\powershell.exe failed",
+        }, true, "hyper-v-provider-command-failed");
+
+        expect(redacted).toEqual(expect.objectContaining({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            diagnosticCode: "hyper-v-provider-command-failed",
+            stdoutPresent: true,
+            stderrPresent: true,
+            inputConfigured: true,
+            outputRedacted: true,
+        }));
+        expect(redacted).not.toHaveProperty("executable");
+        expect(redacted).not.toHaveProperty("args");
+        expect(redacted).not.toHaveProperty("error");
+        expect(JSON.stringify(redacted)).not.toContain("secret");
     });
 
     let originalHome: string | undefined;
@@ -438,6 +513,7 @@ describe("device-lab host broker lifecycle commands", () => {
         const incarnationId = "1".repeat(32);
         const vmId = "12345678-1234-1234-1234-123456789abc";
         const snapshotId = "87654321-4321-4321-4321-cba987654321";
+        const rollbackSecret = "snapshot-rollback-host-secret";
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
         const deviceRoot = join(privateRoot, "artifacts");
@@ -470,7 +546,15 @@ describe("device-lab host broker lifecycle commands", () => {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, snapshotId, snapshotName: providerName, snapshotType: "Recovery" }), stderr: "" };
             }
             if (script.includes("Remove-VMSnapshot")) {
-                return { ...command, status: 0, stdout: rollbackOutput.replace("placeholder", providerName), stderr: "" };
+                return {
+                    ...command,
+                    executable: `C:\\host-secret\\${rollbackSecret}\\powershell.exe`,
+                    args: ["-EncodedCommand", rollbackSecret],
+                    status: 0,
+                    stdout: rollbackOutput.replace("placeholder", providerName),
+                    stderr: "",
+                    error: `host error at C:\\host-secret\\${rollbackSecret}`,
+                };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -493,10 +577,15 @@ describe("device-lab host broker lifecycle commands", () => {
                 }),
             });
             expect(response.status).toBe(409);
-            expect(await response.json()).toEqual(expect.objectContaining({
+            const body = await response.json();
+            expect(body).toEqual(expect.objectContaining({
                 error: "hyper-v-snapshot-state-conflict",
                 rollback: expect.objectContaining({ confirmed: false, error: "hyper-v-snapshot-rollback-unconfirmed" }),
             }));
+            expect(body.rollback.execution).not.toHaveProperty("executable");
+            expect(body.rollback.execution).not.toHaveProperty("args");
+            expect(body.rollback.execution).not.toHaveProperty("error");
+            expect(JSON.stringify(body)).not.toContain(rollbackSecret);
             expect(existsSync(join(deviceRoot, "snapshot-operation.json"))).toBe(true);
             expect(JSON.parse(readFileSync(stateFile, "utf8")).devices[0]).toEqual(expect.objectContaining({ concurrentMutation: true, snapshots: [] }));
         } finally {
@@ -544,7 +633,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let snapshotExists = false;
         let orphanRecoveryCalls = 0;
         let preparedSourcePath = "";
-        let networkCleanupFailure = false;
+        let networkCleanupFailure: false | "nonzero" | "invalid" = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         const commandRunner = vi.fn((command) => {
@@ -559,8 +648,24 @@ describe("device-lab host broker lifecycle commands", () => {
             if (imagePrepare) preparedSourcePath = script.match(/\$SourceImage = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
             const networkSetup = script.includes("New-NetNat -Name $NatName");
             const networkCleanup = isHyperVNetworkCleanupScript(script);
-            if (networkCleanup && networkCleanupFailure) {
-                return { ...command, status: 1, stdout: "", stderr: "simulated network cleanup failure" };
+            if (networkCleanup && networkCleanupFailure === "nonzero") {
+                return {
+                    ...command,
+                    args: ["-EncodedCommand", "network-cleanup-host-secret"],
+                    status: 1,
+                    stdout: "",
+                    stderr: "simulated network cleanup failure at C:\\network-cleanup-host-secret",
+                    error: "spawn network-cleanup-host-secret",
+                };
+            }
+            if (networkCleanup && networkCleanupFailure === "invalid") {
+                return {
+                    ...command,
+                    args: ["-EncodedCommand", "network-cleanup-invalid-secret"],
+                    status: 0,
+                    stdout: "malformed network cleanup output",
+                    stderr: "host path C:\\network-cleanup-invalid-secret",
+                };
             }
             const orphanRecovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const vmCreate = script.includes("New-VM");
@@ -596,7 +701,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 args: command.args || [],
                 status: 0,
                 stdout: JSON.stringify(imagePrepare
-                    ? { ok: true, profile: "windows-11", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 64 * 1024 * 1024 * 1024, vhdType: "Dynamic", reused: false }
+                    ? { ok: true, profile: "windows-11", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 64 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: 2, reused: false }
                     : networkCleanup
                     ? { ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }
                     : orphanRecovery
@@ -613,8 +718,10 @@ describe("device-lab host broker lifecycle commands", () => {
                         ? { ok: true, localPath: transferLocalPath, remotePath: guestUpload ? "C:\\ccc\\upload.txt" : "C:\\ccc\\download.txt", bytes: 6 }
                     : snapshotOperation
                     ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(script.includes("Remove-VMSnapshot") ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
-                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
-                stderr: "",
+                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
+                stderr: snapshotOperation
+                    ? "host path C:\\snapshot-provider-host-secret"
+                    : "",
             };
         });
         const server = createDeviceBrokerServer({
@@ -731,7 +838,23 @@ describe("device-lab host broker lifecycle commands", () => {
 
             const snapshotCreated = await invokeTool("device_snapshot_create", { snapshotName: "before-install" });
             expect(snapshotCreated.status).toBe(200);
-            expect(await snapshotCreated.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ snapshot: expect.objectContaining({ id: snapshotId, name: "before-install", providerName: `ccc-${ownerId}-before-install` }) }) }));
+            const snapshotCreatedBody = await snapshotCreated.json();
+            expect(snapshotCreatedBody).toEqual(expect.objectContaining({
+                result: expect.objectContaining({
+                    snapshot: expect.objectContaining({
+                        id: snapshotId,
+                        name: "before-install",
+                        providerName: `ccc-${ownerId}-before-install`,
+                    }),
+                    execution: expect.objectContaining({
+                        provider: "hyper-v",
+                        outputRedacted: true,
+                    }),
+                }),
+            }));
+            expect(JSON.stringify(snapshotCreatedBody)).not.toContain(
+                "snapshot-provider-host-secret",
+            );
 
             const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
@@ -785,14 +908,40 @@ describe("device-lab host broker lifecycle commands", () => {
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ id: string }> }).devices).toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
 
             writeFileSync(networkStatePath, validNetworkState);
-            networkCleanupFailure = true;
+            networkCleanupFailure = "nonzero";
             const providerCleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
             expect(providerCleanupFailed.status).toBe(502);
-            expect(await providerCleanupFailed.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-cleanup-failed" }));
+            const providerCleanupFailureBody = await providerCleanupFailed.json();
+            expect(providerCleanupFailureBody).toEqual(expect.objectContaining({
+                error: "hyper-v-delete-reconciliation-cleanup-failed",
+                detail: expect.stringContaining("hyper-v-network-cleanup-failed"),
+            }));
+            expect(JSON.stringify(providerCleanupFailureBody))
+                .not.toContain("network-cleanup-host-secret");
             expect(existsSync(networkStatePath)).toBe(true);
             expect(JSON.parse(readFileSync(networkStatePath, "utf8")).allocations).toEqual(expect.arrayContaining([
                 expect.objectContaining({ ownerId, deviceId, incarnationId }),
             ]));
+            writeFileSync(networkStatePath, validNetworkState);
+            networkCleanupFailure = "invalid";
+            const invalidProviderCleanup = await invoke({
+                backend: "windows-vm",
+                command: "device_delete",
+                deviceId,
+                incarnationId,
+            });
+            expect(invalidProviderCleanup.status).toBe(502);
+            const invalidProviderCleanupBody = await invalidProviderCleanup.json();
+            expect(invalidProviderCleanupBody).toEqual(expect.objectContaining({
+                error: "hyper-v-delete-reconciliation-cleanup-failed",
+                detail: expect.stringContaining(
+                    "hyper-v-network-cleanup-invalid-result",
+                ),
+            }));
+            expect(JSON.stringify(invalidProviderCleanupBody))
+                .not.toContain("network-cleanup-invalid-secret");
+            expect(existsSync(networkStatePath)).toBe(true);
+            writeFileSync(networkStatePath, validNetworkState);
             networkCleanupFailure = false;
             const deleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
             expect(deleted.status).toBe(200);
@@ -827,8 +976,8 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-base-image-profile-conflict"))).toHaveLength(1);
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-orphan-vm-ownership-mismatch"))).toHaveLength(1);
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
-            expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(3);
-            expect(commandRunner).toHaveBeenCalledTimes(32);
+            expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
+            expect(commandRunner).toHaveBeenCalledTimes(34);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -869,6 +1018,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let recoveryCalls = 0;
         let activeVariant: typeof variants[number] | null = null;
         const provisioningSecretEcho = "hyper-v-secret-provider-echo";
+        const rollbackSecretEcho = "hyper-v-rollback-provider-echo";
         const createdVmNames = new Map<string, string>();
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
@@ -880,7 +1030,15 @@ describe("device-lab host broker lifecycle commands", () => {
                 const recoveryVmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
                 expect(script).toContain("if ([string]$Vm.Notes -and [string]$Vm.Notes -cne $ExpectedMarker)");
                 expect(recoveryVmName).toBe(createdVmNames.get(`invalid-create-${activeVariant}`));
-                return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify({ ok: true, recoveredVm: true, removedDisk: true }), stderr: "" };
+                return {
+                    mode: command.mode,
+                    provider: command.provider,
+                    executable: `C:\\host-secret\\${rollbackSecretEcho}\\powershell.exe`,
+                    args: ["-EncodedCommand", rollbackSecretEcho],
+                    status: 0,
+                    stdout: JSON.stringify({ ok: true, recoveredVm: true, removedDisk: true }),
+                    stderr: "",
+                };
             }
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { mode: command.mode, provider: command.provider, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command)), stderr: "" };
@@ -899,6 +1057,8 @@ describe("device-lab host broker lifecycle commands", () => {
                     return {
                         mode: command.mode,
                         provider: command.provider,
+                        executable: `C:\\host-secret\\${provisioningSecretEcho}\\powershell.exe`,
+                        args: ["-EncodedCommand", provisioningSecretEcho],
                         status: 1,
                         stdout: provisioningSecretEcho,
                         stderr: activeVariant === "provision-failure"
@@ -906,6 +1066,7 @@ describe("device-lab host broker lifecycle commands", () => {
                             : activeVariant === "provision-ownership-failure"
                                 ? `hyper-v-vm-ownership-mismatch: ${provisioningSecretEcho}`
                                 : `untagged provisioning failure: ${provisioningSecretEcho}`,
+                        error: `spawn failed at C:\\host-secret\\${provisioningSecretEcho}`,
                     };
                 }
                 const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
@@ -922,7 +1083,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", deviceId);
                 const diskPath = join(privateRoot, "artifacts", "disks", "root.vhdx");
                 if (variant === "nonzero") {
-                    return { mode: command.mode, provider: command.provider, status: 1, stdout: "", stderr: "New-VM failed" };
+                    return {
+                        mode: command.mode,
+                        provider: command.provider,
+                        status: 1,
+                        stdout: "CCC_HYPER_V_STAGE:hyper-v-vm-create-failed",
+                        stderr: "New-VM failed with a host-specific secret",
+                    };
                 }
                 if (variant === "timeout") {
                     return { mode: command.mode, provider: command.provider, status: null, stdout: "", stderr: "", error: "device-lab backend tool timed out", timedOut: true };
@@ -940,7 +1107,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 }
                 const stdout = variant === "malformed" || variant === "artifact-cleanup-failure" || variant === "allocation-cleanup-failure"
                     ? "not-json"
-                    : JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName: variant === "wrong-name" ? "foreign-vm" : vmName, diskPath: variant === "wrong-disk" ? join(cwd, "foreign.vhdx") : diskPath });
+                    : JSON.stringify({ ok: true, vmId: "12345678-1234-1234-1234-123456789abc", vmName: variant === "wrong-name" ? "foreign-vm" : vmName, generation: 2, diskPath: variant === "wrong-disk" ? join(cwd, "foreign.vhdx") : diskPath });
                 return { mode: command.mode, provider: command.provider, status: 0, stdout, stderr: "" };
             }
             throw new Error("unexpected Hyper-V command");
@@ -964,6 +1131,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     body: JSON.stringify({ method: "broker.command.invoke", params: { backend: "windows-vm", command: "device_create", deviceId: `invalid-create-${variant}`, name: "Invalid VM", profile: "windows-11" } }),
                 });
                 const body = await response.json();
+                expect(JSON.stringify(body)).not.toContain(rollbackSecretEcho);
                 expect(response.status, JSON.stringify(body)).toBe(variant === "state-claim-conflict" ? 409 : 502);
                 const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "windows-vm", `invalid-create-${variant}`);
                 const networkStatePath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json");
@@ -985,8 +1153,8 @@ describe("device-lab host broker lifecycle commands", () => {
                     if (variant === "provision-failure" || variant === "provision-ownership-failure" || variant === "provision-untagged-failure") {
                         expect(JSON.stringify(body)).not.toContain(provisioningSecretEcho);
                         expect(body.provisioning).toEqual(expect.objectContaining({
-                            stdout: "[redacted]",
-                            stderr: "[redacted]",
+                            stdoutPresent: true,
+                            stderrPresent: true,
                             outputRedacted: true,
                             diagnosticCode: variant === "provision-failure"
                                 ? "hyper-v-provisioning-media-create-failed"
@@ -1003,6 +1171,10 @@ describe("device-lab host broker lifecycle commands", () => {
                         error: ["nonzero", "timeout", "overflow"].includes(variant) ? "provider-command-failed" : "hyper-v-create-invalid-result",
                         rollback: expect.objectContaining({ ok: true, recoveredVm: true, removedDisk: true }),
                     }));
+                    if (variant === "nonzero") {
+                        expect(body.detail).toBe("hyper-v-vm-create-failed");
+                        expect(JSON.stringify(body)).not.toContain("host-specific secret");
+                    }
                     expect(existsSync(privateRoot)).toBe(false);
                     const allocations = existsSync(networkStatePath) ? JSON.parse(readFileSync(networkStatePath, "utf8")).allocations : [];
                     expect(allocations).not.toEqual(expect.arrayContaining([expect.objectContaining({ ownerId, deviceId: `invalid-create-${variant}` })]));

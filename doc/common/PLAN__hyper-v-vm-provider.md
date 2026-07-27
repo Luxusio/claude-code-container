@@ -464,6 +464,23 @@ Real-provider tests:
 - Transport failures include only the bounded final broker attempt
   (port, status/error code, duration, and timeout). Hosts, endpoints, request bodies,
   owner tokens, and unbounded process output remain excluded.
+- Hyper-V provider failures preserve the last allowlisted operation stage
+  (`download`, `hash`, `archive`, `extract`, `normalize`, `inspect`, `finalize`,
+  VM disk creation/inspection, VM creation, or VM configuration) while
+  redacting raw PowerShell input, stdout, stderr, paths, and host-local error
+  text. Automatic image preparation reports that bounded stage through the
+  broker instead of concatenating localized command output into the public
+  error. Operation stages are accepted only from exact
+  `CCC_HYPER_V_STAGE:<allowlisted-code>` stdout records; incidental text cannot
+  impersonate a stage marker.
+- Public redacted provider results retain only mode, provider, exit status,
+  signal/timeout state, input/output-presence flags, and the bounded diagnostic
+  code. Executable paths, arguments, encoded programs, raw errors, cleanup
+  records, process identity, and stdout/stderr content are not returned;
+  literal `[redacted]` placeholders may preserve the existing response shape.
+- Hyper-V network, recovery, snapshot, delete, and state reconciliation
+  failures use the same bounded diagnostic selection so rollback payloads do
+  not expose localized PowerShell output or host paths.
 - Guest-readiness failures use fixed PowerShell Direct or SSH reason codes and
   include only owner-fenced, bounded Hyper-V observations: VM state and uptime,
   heartbeat numeric status, attached disk/media counts, and categorical boot

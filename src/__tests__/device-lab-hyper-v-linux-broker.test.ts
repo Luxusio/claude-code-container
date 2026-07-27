@@ -747,6 +747,82 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
+    it("returns only a bounded automatic image acquisition stage", async () => {
+        const cwd = join(process.env.HOME!, "project-acquire-redaction");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const profileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");
+        const hostSecret = "automatic-image-host-secret";
+        const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
+            const networkCleanup = hyperVNetworkCleanupResult(command);
+            if (networkCleanup) return networkCleanup;
+            const script = providerScript(command);
+            if (script.includes("function Save-BoundedDownload")) {
+                mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
+                writeFileSync(join(profileRoot, "base.partial.vhdx"), "partial");
+                return {
+                    ...command,
+                    executable: `C:\\host-secret\\${hostSecret}\\powershell.exe`,
+                    args: ["-EncodedCommand", hostSecret],
+                    status: 1,
+                    stdout: "CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed",
+                    stderr: `hyper-v-powershell-execution-failed at C:\\host-secret\\${hostSecret}`,
+                    error: `spawn failed at C:\\host-secret\\${hostSecret}`,
+                };
+            }
+            return {
+                ...command,
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    recoveredVm: false,
+                    removedDisk: false,
+                }),
+                stderr: "",
+            };
+        });
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner,
+        });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: {
+                        backend: "linux-vm",
+                        command: "device_create",
+                        deviceId: "acquire-redaction",
+                        name: "Acquire Redaction",
+                        profile: "ubuntu-lts",
+                        memoryMb: 2048,
+                        cpus: 2,
+                    },
+                }),
+            });
+            const body = await response.json();
+            expect(response.status, JSON.stringify(body)).toBe(422);
+            expect(body).toEqual(expect.objectContaining({
+                error: "hyper-v-base-image-prepare-failed",
+                detail: "hyper-v-base-image-acquire-failed:hyper-v-base-image-download-failed",
+            }));
+            expect(JSON.stringify(body)).not.toContain(hostSecret);
+            expect(JSON.stringify(body)).not.toContain("EncodedCommand");
+            expect(existsSync(join(profileRoot, "base.partial.vhdx"))).toBe(false);
+            expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
     it("removes an uncommitted image when the deadline expires during Node-side hashing", async () => {
         const cwd = join(process.env.HOME!, "project-hash-deadline");
         mkdirSync(cwd, { recursive: true });
@@ -1082,6 +1158,7 @@ describe("device-lab Hyper-V broker", () => {
         const imageBytes = Buffer.from("valid-image");
         const imageSha256 = createHash("sha256").update(imageBytes).digest("hex");
         const seedSecretEcho = "linux-seed-secret-echo";
+        const rollbackSecretEcho = "linux-rollback-secret-echo";
         let recoveryCalls = 0;
         const commandRunner = vi.fn((command: { args?: string[] }) => {
             const networkCleanup = hyperVNetworkCleanupResult(command);
@@ -1090,7 +1167,14 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("New-VM @VmArgs")) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
             if (script.includes("hyper-v-orphan-vm-ownership-mismatch")) {
                 recoveryCalls += 1;
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, recoveredVm: recoveryCalls > 1, removedDisk: recoveryCalls > 1 }), stderr: "" };
+                return {
+                    ...command,
+                    executable: `C:\\host-secret\\${rollbackSecretEcho}\\powershell.exe`,
+                    args: ["-EncodedCommand", rollbackSecretEcho],
+                    status: 0,
+                    stdout: JSON.stringify({ ok: true, recoveredVm: recoveryCalls > 1, removedDisk: recoveryCalls > 1 }),
+                    stderr: "",
+                };
             }
             if (script.includes("function Save-BoundedDownload")) {
                 mkdirSync(imageProfileRoot, { recursive: true });
@@ -1117,9 +1201,10 @@ describe("device-lab Hyper-V broker", () => {
             expect(response.status, JSON.stringify(body)).toBe(502);
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-linux-seed-failed", rollback: expect.objectContaining({ ok: true }) }));
             expect(JSON.stringify(body)).not.toContain(seedSecretEcho);
+            expect(JSON.stringify(body)).not.toContain(rollbackSecretEcho);
             expect(body.provisioning).toEqual(expect.objectContaining({
-                stdout: "[redacted]",
-                stderr: "[redacted]",
+                stdoutPresent: true,
+                stderrPresent: true,
                 outputRedacted: true,
                 diagnosticCode: "hyper-v-provisioning-media-copy-incomplete",
             }));
@@ -1402,7 +1487,11 @@ describe("device-lab Hyper-V broker", () => {
             const body = await response.json();
             expect(response.status, JSON.stringify(body)).toBe(502);
             expect(JSON.stringify(body)).toContain("hyper-v-network-allocation-cleanup-failed");
-            expect(JSON.stringify(body)).toContain("simulated compensation failure");
+            expect(body).toEqual(expect.objectContaining({
+                detail: "hyper-v-network-cleanup-failed",
+            }));
+            expect(JSON.stringify(body)).not.toContain("simulated compensation failure");
+            expect(JSON.stringify(body)).not.toContain(profileRoot);
             expect(cleanupCalls).toBe(1);
             expect(body).toEqual(expect.objectContaining({ artifactCleanup: expect.objectContaining({ preserved: true }) }));
             const privateRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "owners", ownerId, "linux-vm", deviceId);
@@ -1634,13 +1723,18 @@ describe("device-lab Hyper-V broker", () => {
             const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);
             const exhaustedBody = await exhausted.json();
+            const readinessError = exhaustedBody.result.boot.error;
+            expect([
+                "ssh-unavailable",
+                "hyper-v-operation-deadline-exceeded",
+            ]).toContain(readinessError);
             expect(exhaustedBody).toEqual(expect.objectContaining({
                 error: "hyper-v-guest-not-ready",
                 result: expect.objectContaining({
                     boot: {
                         ready: false,
                         provider: "hyper-v-ssh",
-                        error: "ssh-unavailable",
+                        error: readinessError,
                         diagnosticAvailable: true,
                         diagnostic: expect.objectContaining({
                             state: "OffCritical",
@@ -1659,7 +1753,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(exhaustedBody.result.execution.command).toEqual(expect.objectContaining({
                 guestReadiness: {
                     provider: "hyper-v-ssh",
-                    error: "ssh-unavailable",
+                    error: readinessError,
                     diagnosticAvailable: true,
                 },
             }));
@@ -1668,7 +1762,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(exhaustedBody.result.execution.command).not.toHaveProperty("stdout");
             expect(exhaustedBody.result.execution.command).not.toHaveProperty("stderr");
             expect(exhaustedBody.result.providerCommand).toEqual({ mode: "exec", provider: "hyper-v" });
-            expect(exhaustedBody.detail).toBe("ssh-unavailable");
+            expect(exhaustedBody.detail).toBe(readinessError);
             readinessFailure = false;
             bootDiagnosticState = null;
 

@@ -1,7 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { promises as fsPromises } from "fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
@@ -15,9 +14,19 @@ import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from 
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
 import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
-import { quarantineAndRemoveDirectory, type QuarantinedCleanupError } from "./device-lab-safe-cleanup.js";
-import { HYPER_V_IMAGE_CATALOG, readHyperVWindowsEvaluationReceipt } from "./device-lab/hyper-v-images.js";
-import { hyperVAcquireBaseImageCommand, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVPrepareBaseImageCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBaseImageObservation, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
+import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
+import {
+    assertNoSymlinkPathComponents,
+    hyperVImageProfile,
+    hyperVImageRoot as hyperVImageStoreRoot,
+    readHyperVImageManifestMetadata as readHyperVImageManifestMetadataFromStore,
+    resolveHyperVImageForCreate as resolveHyperVImageForCreateFromStore,
+    type HyperVImageProfile,
+} from "./device-lab/broker/hyper-v/image-store.js";
+import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
+export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
+import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
+import { hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCleanupNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVEnsureNetworkCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVNetworkCleanupObservation, parseHyperVNetworkObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./device-lab/providers/hyper-v.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -56,25 +65,6 @@ export const DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 2 * 60 * 1000
 export const DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS = DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS
     + DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS;
 
-class HyperVOperationDeadlineError extends Error {
-    code = "hyper-v-operation-deadline-exceeded" as const;
-
-    constructor() {
-        super("hyper-v-operation-deadline-exceeded");
-    }
-}
-
-function hyperVRemainingTimeout(deadlineAt: number, maximumMs: number): number {
-    if (!Number.isFinite(deadlineAt)) return maximumMs;
-    const remaining = Math.floor(deadlineAt - Date.now());
-    if (remaining <= 0) throw new HyperVOperationDeadlineError();
-    return Math.max(1, Math.min(maximumMs, remaining));
-}
-
-function hyperVOperationDeadlineExpired(deadlineAt: number): boolean {
-    return Number.isFinite(deadlineAt) && Date.now() >= deadlineAt;
-}
-
 function hyperVLifecycleOperationTimeoutMs(parsed: CommandParamSuccess): number {
     if ((parsed.command !== "device_start" && parsed.command !== "device_reboot") || parsed.waitForBoot === false) {
         return DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS;
@@ -83,10 +73,6 @@ function hyperVLifecycleOperationTimeoutMs(parsed: CommandParamSuccess): number 
         ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.bootTimeoutMs)))
         : 5 * 60 * 1000;
     return DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS + bootTimeoutMs;
-}
-
-function assertHyperVOperationDeadline(deadlineAt: number): void {
-    if (Number.isFinite(deadlineAt) && Date.now() >= deadlineAt) throw new HyperVOperationDeadlineError();
 }
 const DEVICE_BROKER_BOUNDED_WAIT_TOOLS = new Set(["mobile_wait_for_text", "mobile_wait_for_app"]);
 const HYPER_V_ELEVATED_TERMINATION_GRACE_MS = 10_000;
@@ -299,9 +285,6 @@ const DEVICE_BROKER_OWNER_REGISTRATION_FILE_LIMIT_BYTES = 16 * 1024;
 const DEVICE_BROKER_RUNTIME_FILE_LIMIT_BYTES = 64 * 1024;
 const DEVICE_BROKER_SERVICE_OWNER_FILE_LIMIT_BYTES = 16 * 1024;
 const DEVICE_BROKER_APPIUM_RUNTIME_MARKER_LIMIT_BYTES = 16 * 1024;
-const DEVICE_BROKER_HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
-const DEVICE_BROKER_HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;
-const DEVICE_BROKER_HYPER_V_IMAGE_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 const DEVICE_BROKER_HYPER_V_NETWORK_SWITCH = "CCC Device Lab";
 const DEVICE_BROKER_HYPER_V_NETWORK_NAT = "CCCDeviceLab";
 const DEVICE_BROKER_HYPER_V_NETWORK_MARKER = "ccc-device-lab:hyper-v-network:v1";
@@ -867,106 +850,6 @@ function brokerRoot(): string {
 
 function brokerPrivateRoot(): string {
     return join(homedir(), ".ccc/device-broker-private");
-}
-
-function hyperVPrivateDeviceRoot(ownerId: string, backend: string, deviceId: string): string {
-    return join(brokerPrivateRoot(), "owners", ownerId, backend, deviceId);
-}
-
-function hyperVDeviceRoot(ownerId: string, backend: string, deviceId: string): string {
-    return join(hyperVPrivateDeviceRoot(ownerId, backend, deviceId), "artifacts");
-}
-
-function assertHyperVPrivateDeviceRoot(ownerId: string, backend: string, deviceId: string, root: string): string {
-    const expected = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
-    if (resolve(root) !== resolve(expected)) throw new Error("hyper-v-private-root-invalid");
-    assertNoSymlinkPathComponents(root, "hyper-v-private-root");
-    const metadata = lstatSync(root);
-    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("hyper-v-private-root-invalid");
-    return root;
-}
-
-function ensureHyperVPrivateDeviceRoot(ownerId: string, backend: string, deviceId: string): string {
-    const root = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
-    mkdirSync(root, { recursive: true, mode: 0o700 });
-    return assertHyperVPrivateDeviceRoot(ownerId, backend, deviceId, root);
-}
-
-type HyperVIncarnationRecord = {
-    version: 1;
-    ownerId: string;
-    backend: "windows-vm" | "linux-vm";
-    deviceId: string;
-    incarnationId: string;
-    createdAt: string;
-};
-
-function hyperVIncarnationPath(ownerId: string, backend: string, deviceId: string): string {
-    return join(hyperVPrivateDeviceRoot(ownerId, backend, deviceId), "incarnation.json");
-}
-
-function validHyperVIncarnationId(value: unknown): value is string {
-    return typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
-}
-
-function readHyperVIncarnationRecord(ownerId: string, backend: string, deviceId: string): HyperVIncarnationRecord | null {
-    if (!isHyperVBackend(backend)) throw new Error("hyper-v-backend-invalid");
-    return readDeviceLabStateFile(hyperVIncarnationPath(ownerId, backend, deviceId), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-incarnation-record-invalid");
-        const value = parsed as Record<string, unknown>;
-        if (value.version !== 1 || value.ownerId !== ownerId || value.backend !== backend || value.deviceId !== deviceId
-            || !validHyperVIncarnationId(value.incarnationId) || typeof value.createdAt !== "string" || Number.isNaN(Date.parse(value.createdAt))) {
-            throw new Error("hyper-v-incarnation-record-invalid");
-        }
-        return value as HyperVIncarnationRecord;
-    }, "hyper-v-incarnation-record", 4096);
-}
-
-function writeHyperVIncarnationRecord(ownerId: string, backend: string, deviceId: string, incarnationId: string): HyperVIncarnationRecord {
-    if (!isHyperVBackend(backend) || !validHyperVIncarnationId(incarnationId)) throw new Error("hyper-v-incarnation-record-invalid");
-    ensureHyperVPrivateDeviceRoot(ownerId, backend, deviceId);
-    const record: HyperVIncarnationRecord = {
-        version: 1,
-        ownerId,
-        backend: backend as "windows-vm" | "linux-vm",
-        deviceId,
-        incarnationId,
-        createdAt: new Date().toISOString(),
-    };
-    writeJsonFileAtomically(hyperVIncarnationPath(ownerId, backend, deviceId), record);
-    return record;
-}
-
-function hyperVDeviceIncarnationId(device: Record<string, unknown>): string | null {
-    return validHyperVIncarnationId(device.incarnationId) ? device.incarnationId : null;
-}
-
-function cleanupHyperVDeviceArtifacts(ownerId: string, backend: string, deviceId: string) {
-    if (!isHyperVBackend(backend)) return { ok: false, removed: false, deviceRoot: "", error: "hyper-v-backend-invalid" };
-    const backendRoot = join(brokerPrivateRoot(), "owners", ownerId, backend);
-    const privateRoot = hyperVPrivateDeviceRoot(ownerId, backend, deviceId);
-    try {
-        if (!existsSync(privateRoot)) return { ok: true, removed: false, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
-        assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
-        assertNoSymlinkPathComponents(privateRoot, "hyper-v-device-artifacts");
-        assertDeviceLabPathWithinRoot(backendRoot, privateRoot, "hyper-v-device-artifacts");
-        quarantineAndRemoveDirectory(privateRoot, (candidate) => {
-            assertNoSymlinkPathComponents(backendRoot, "hyper-v-device-artifacts");
-            assertNoSymlinkPathComponents(candidate, "hyper-v-device-artifacts");
-            assertDeviceLabPathWithinRoot(backendRoot, candidate, "hyper-v-device-artifacts");
-        });
-        return { ok: true, removed: true, deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId), privateRoot };
-    } catch (error) {
-        const quarantineRoot = (error as QuarantinedCleanupError).quarantineRoot;
-        return {
-            ok: false,
-            removed: false,
-            deviceRoot: hyperVDeviceRoot(ownerId, backend, deviceId),
-            privateRoot,
-            ...(quarantineRoot ? { quarantineRoot } : {}),
-            error: error instanceof Error ? error.message : String(error),
-        };
-    }
 }
 
 function brokerRuntimeFile(): string {
@@ -4074,7 +3957,12 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     try {
         journal = readHyperVSnapshotJournal(ownerId, backend, deviceId);
     } catch (error) {
-        return { ok: false, status: 409, error: "hyper-v-snapshot-journal-invalid", detail: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            status: 409,
+            error: "hyper-v-snapshot-journal-invalid",
+            detail: hyperVBoundedErrorCode(error, "hyper-v-snapshot-journal-invalid"),
+        };
     }
     if (!journal) return { ok: true, device, reconciled: false };
     const vmId = field(device, "vmId");
@@ -4083,7 +3971,7 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     const incarnationId = hyperVDeviceIncarnationId(device);
     if (!vmId || !vmName || !diskPath || !incarnationId || incarnationId !== journal.incarnationId) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
     const execution = await hyperVProviderCommandRunner(normalized, hyperVStatusCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath }), { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: execution.stderr || execution.error || String(execution.status) };
+    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-snapshot-reconciliation-failed") };
     const observation = parseHyperVVmObservation(execution.stdout || "");
     if (!observation || observation.vmId !== vmId.toLowerCase() || observation.vmName !== vmName || resolve(observation.diskPath || "") !== resolve(diskPath)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
     const live = (observation.snapshots || []).filter((snapshot) => snapshot.snapshotName === journal!.providerName);
@@ -4158,7 +4046,7 @@ function hyperVSnapshotStateConflict(ownerId: string, backend: string, deviceId:
             backend,
             deviceId,
             found: transition.found,
-            currentDevice: transition.device,
+            currentDevice: redactHyperVDeviceSecrets(transition.device),
             ...(rollback ? { rollback } : {}),
         },
     };
@@ -4209,7 +4097,21 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
     if (parsed.tool === "device_snapshot_list") {
         const execution = await hyperVProviderCommandRunner(normalized, hyperVStatusCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath }), { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
         if (!commandSucceeded(execution)) {
-            return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-list-provider-failed", ownerId, backend: match.backend, deviceId, execution } };
+            return {
+                status: 502,
+                payload: {
+                    ok: false,
+                    error: "hyper-v-snapshot-list-provider-failed",
+                    ownerId,
+                    backend: match.backend,
+                    deviceId,
+                    execution: redactProviderCommandInput(
+                        execution,
+                        true,
+                        "hyper-v-snapshot-list-provider-failed",
+                    ),
+                },
+            };
         }
         const observation = parseHyperVVmObservation(execution.stdout || "");
         if (!observation
@@ -4485,16 +4387,55 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 ? hyperVSnapshotRestoreCommand(options)
                 : hyperVSnapshotDeleteCommand(options);
     } catch (error) {
-        return { status: 400, payload: { ok: false, error: error instanceof Error ? error.message : "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId } };
+        return {
+            status: 400,
+            payload: {
+                ok: false,
+                error: hyperVBoundedErrorCode(
+                    error,
+                    "invalid-hyper-v-snapshot-options",
+                ),
+                ownerId,
+                backend: match.backend,
+                deviceId,
+            },
+        };
     }
     try {
         writeHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool as HyperVSnapshotJournal["tool"], snapshotName, expectedProviderName, tracked?.id);
     } catch (error) {
-        return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-journal-write-failed", ownerId, backend: match.backend, deviceId, detail: error instanceof Error ? error.message : String(error) } };
+        return {
+            status: 409,
+            payload: {
+                ok: false,
+                error: "hyper-v-snapshot-journal-write-failed",
+                ownerId,
+                backend: match.backend,
+                deviceId,
+                detail: hyperVBoundedErrorCode(
+                    error,
+                    "hyper-v-snapshot-journal-write-failed",
+                ),
+            },
+        };
     }
     const execution = await hyperVProviderCommandRunner(normalized, providerCommand, { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     if (!commandSucceeded(execution)) {
-        return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-provider-failed", ownerId, backend: match.backend, deviceId, execution } };
+        return {
+            status: 502,
+            payload: {
+                ok: false,
+                error: "hyper-v-snapshot-provider-failed",
+                ownerId,
+                backend: match.backend,
+                deviceId,
+                execution: redactProviderCommandInput(
+                    execution,
+                    true,
+                    "hyper-v-snapshot-provider-failed",
+                ),
+            },
+        };
     }
     const observation = parsed.tool === "device_snapshot_delete"
         ? parseHyperVSnapshotDeleteObservation(execution.stdout || "")
@@ -4532,7 +4473,11 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 && rollbackObservation.snapshotId.toLowerCase() === snapshot.id.toLowerCase()
                 && rollbackObservation.snapshotName === expectedProviderName);
             return hyperVSnapshotStateConflict(ownerId, String(match.backend), deviceId, transition, {
-                execution: rollback,
+                execution: redactProviderCommandInput(
+                    rollback,
+                    true,
+                    "hyper-v-snapshot-rollback-failed",
+                ),
                 confirmed: rollbackConfirmed,
                 ...(!rollbackConfirmed ? { error: "hyper-v-snapshot-rollback-unconfirmed" } : {}),
             });
@@ -4544,7 +4489,18 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         status: 200,
         payload: {
             ok: true,
-            result: { ownerId, backend: match.backend, stateKey: match.stateKey, deviceId, tool: parsed.tool, provider: "hyper-v", snapshot, device: transition.device, execution, startsDevices: false },
+            result: {
+                ownerId,
+                backend: match.backend,
+                stateKey: match.stateKey,
+                deviceId,
+                tool: parsed.tool,
+                provider: "hyper-v",
+                snapshot,
+                device: redactHyperVDeviceSecrets(transition.device),
+                execution: redactProviderCommandInput(execution, true),
+                startsDevices: false,
+            },
         },
     };
 }
@@ -4667,7 +4623,12 @@ function deviceOperationLockFailure(ownerId: string, backend: string, deviceId: 
             ownerId,
             backend,
             deviceId,
-            detail: error instanceof Error ? error.message : String(error),
+            detail: isHyperVBackend(backend)
+                ? hyperVBoundedErrorCode(
+                    error,
+                    "hyper-v-device-operation-lock-failed",
+                )
+                : "device-operation-lock-failed",
         },
     };
 }
@@ -5158,17 +5119,69 @@ async function rollbackProviderCreateAfterConflict(
                 ],
             });
             const result = await hyperVProviderCommandRunner(normalized, rollbackCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-            if (!commandSucceeded(result)) return { attempted: true, ok: false, result };
+            const publicResult = redactProviderCommandInput(
+                result,
+                true,
+                "hyper-v-rollback-command-failed",
+            );
+            if (!commandSucceeded(result)) {
+                return { attempted: true, ok: false, result: publicResult };
+            }
             const observation = parseHyperVRecoveryObservation(result.stdout || "");
-            if (!observation) return { attempted: true, ok: false, reason: "hyper-v-rollback-invalid-result", result };
+            if (!observation) {
+                return {
+                    attempted: true,
+                    ok: false,
+                    reason: "hyper-v-rollback-invalid-result",
+                    result: publicResult,
+                };
+            }
             const allocation = await releaseHyperVNetworkAllocationAndCleanup(String(device.ownerId), String(device.id), incarnationId, normalized, hyperVDeadlineAt);
             const artifacts = allocation.ok
                 ? cleanupHyperVDeviceArtifacts(String(device.ownerId), parsed.backend, String(device.id))
                 : { ok: false, removed: false, reason: "network-allocation-cleanup-failed" };
-            if (!artifacts.ok || !allocation.ok) return { attempted: true, ok: false, result, artifacts, allocation };
-            return { attempted: true, ok: true, result, observation, artifacts, allocation };
+            if (!artifacts.ok || !allocation.ok) {
+                return {
+                    attempted: true,
+                    ok: false,
+                    result: publicResult,
+                    artifacts: {
+                        ok: artifacts.ok,
+                        removed: artifacts.removed,
+                        ...(!artifacts.ok ? { error: "hyper-v-artifact-cleanup-failed" } : {}),
+                    },
+                    allocation: {
+                        ok: allocation.ok,
+                        released: allocation.released,
+                        ...(!allocation.ok ? {
+                            error: typeof allocation.error === "string"
+                                && /^hyper-v-[a-z0-9-]{3,128}$/.test(allocation.error)
+                                ? allocation.error
+                                : "hyper-v-network-cleanup-failed",
+                        } : {}),
+                    },
+                };
+            }
+            return {
+                attempted: true,
+                ok: true,
+                result: publicResult,
+                observation: {
+                    recoveredVm: observation.recoveredVm,
+                    removedDisk: observation.removedDisk,
+                },
+                artifacts: { ok: true, removed: artifacts.removed },
+                allocation: {
+                    ok: true,
+                    released: allocation.released,
+                },
+            };
         } catch (error) {
-            return { attempted: false, ok: false, reason: error instanceof Error ? error.message : "hyper-v-rollback-plan-failed" };
+            return {
+                attempted: false,
+                ok: false,
+                reason: "hyper-v-rollback-plan-failed",
+            };
         }
     }
     if (parsed.backend === "macos-vm") {
@@ -8232,7 +8245,34 @@ function brokerAndroidAvdName(ownerId: string, create: Record<string, unknown>, 
         : `${brokerAndroidAvdPrefix(ownerId)}${brokerSlug(fallbackName)}`;
 }
 
-type HyperVImageProfile = "windows-11" | "windows-server" | "ubuntu-lts";
+function hyperVImageRoot(): string {
+    return hyperVImageStoreRoot(brokerPrivateRoot());
+}
+
+function readHyperVImageManifestMetadata(profile: HyperVImageProfile) {
+    return readHyperVImageManifestMetadataFromStore(brokerPrivateRoot(), profile);
+}
+
+function resolveHyperVImageForCreate(
+    ownerId: string,
+    parsed: CommandParamSuccess,
+    params: unknown,
+    normalized: NormalizedBrokerOptions,
+    deadlineAt = Number.POSITIVE_INFINITY,
+) {
+    return resolveHyperVImageForCreateFromStore(ownerId, parsed, params, {
+        cwd: normalized.cwd,
+        privateRoot: brokerPrivateRoot(),
+        resolveExecutable: (name) => providerExecutable(name, normalized),
+        run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+        limits: {
+            acquireTimeoutMs: DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,
+            prepareTimeoutMs: DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS,
+            lockWaitMs: DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS,
+            commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        },
+    }, deadlineAt);
+}
 
 type HyperVNetworkAllocation = {
     ownerId: string;
@@ -8432,7 +8472,15 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
             if (!intent) intent = createHyperVNetworkIntent();
         }
     } catch (error) {
-        return { ok: false, status: 409, error: "hyper-v-network-allocation-failed", detail: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-failed",
+            detail: hyperVBoundedErrorCode(
+                error,
+                "hyper-v-network-allocation-failed",
+            ),
+        };
     }
     const networkOptions = {
         executable: powershell,
@@ -8455,7 +8503,7 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
         deadlineAt,
     );
     assertHyperVOperationDeadline(deadlineAt);
-    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-network-setup-failed", detail: execution.stderr || execution.error || String(execution.status), preserveEvidence: true };
+    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-network-setup-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed"), preserveEvidence: true };
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
@@ -8523,20 +8571,29 @@ async function ensureHyperVNetworkAllocation(ownerId: string, deviceId: string, 
                     deadlineAt,
                 );
                 if (!commandSucceeded(cleanupExecution)) {
-                    cleanupFailure = cleanupExecution.stderr || cleanupExecution.error || String(cleanupExecution.status);
+                    cleanupFailure = hyperVProviderDiagnosticCode(
+                        cleanupExecution,
+                        "hyper-v-network-cleanup-failed",
+                    ) || "hyper-v-network-cleanup-failed";
                 } else if (!parseHyperVNetworkCleanupObservation(cleanupExecution.stdout || "")) {
                     cleanupFailure = "hyper-v-network-cleanup-invalid-result";
                 }
             } catch (cleanupError) {
-                cleanupFailure = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+                cleanupFailure = hyperVBoundedErrorCode(
+                    cleanupError,
+                    "hyper-v-network-cleanup-failed",
+                );
             }
         }
-        const allocationDetail = error instanceof Error ? error.message : String(error);
+        const allocationDetail = hyperVBoundedErrorCode(
+            error,
+            "hyper-v-network-allocation-failed",
+        );
         return {
             ok: false,
             status: cleanupFailure ? 502 : 409,
             error: cleanupFailure ? "hyper-v-network-allocation-cleanup-failed" : "hyper-v-network-allocation-failed",
-            detail: cleanupFailure ? `${allocationDetail}; cleanup: ${cleanupFailure}` : allocationDetail,
+            detail: cleanupFailure || allocationDetail,
             ...(cleanupFailure ? { preserveEvidence: true } : {}),
         };
     }
@@ -8556,7 +8613,16 @@ function releaseHyperVNetworkAllocation(ownerId: string, deviceId: string, incar
         writeJsonFileAtomically(hyperVNetworkStateFile(), { ...current, allocations });
         return { ok: true, released: true, statePresent: true, remaining: allocations.length, ...identity };
     } catch (error) {
-        return { ok: false, released: false, statePresent: true, remaining: -1, error: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            released: false,
+            statePresent: true,
+            remaining: -1,
+            error: hyperVBoundedErrorCode(
+                error,
+                "hyper-v-network-state-update-failed",
+            ),
+        };
     }
 }
 
@@ -8587,9 +8653,35 @@ async function releaseHyperVNetworkAllocationAndCleanup(ownerId: string, deviceI
         (elevatedDeadlineUnixMs) => hyperVCleanupNetworkCommand({ ...cleanupOptions, executable: hyperVNetworkElevationExecutable(powershell), elevated: true, elevatedDeadlineUnixMs }),
         deadlineAt,
     );
-    if (!commandSucceeded(execution)) return { ...release, ok: false, error: execution.stderr || execution.error || "hyper-v-network-cleanup-failed", networkCleanup: execution };
+    if (!commandSucceeded(execution)) {
+        const diagnosticCode = hyperVProviderDiagnosticCode(
+            execution,
+            "hyper-v-network-cleanup-failed",
+        );
+        return {
+            ...release,
+            ok: false,
+            error: diagnosticCode,
+            networkCleanup: redactProviderCommandInput(
+                execution,
+                true,
+                diagnosticCode,
+            ),
+        };
+    }
     const observation = parseHyperVNetworkCleanupObservation(execution.stdout || "");
-    if (!observation) return { ...release, ok: false, error: "hyper-v-network-cleanup-invalid-result", networkCleanup: execution };
+    if (!observation) {
+        return {
+            ...release,
+            ok: false,
+            error: "hyper-v-network-cleanup-invalid-result",
+            networkCleanup: redactProviderCommandInput(
+                execution,
+                true,
+                "hyper-v-network-cleanup-invalid-result",
+            ),
+        };
+    }
     rmSync(hyperVNetworkStateFile(), { force: true });
     return { ...release, ok: true, networkCleanup: observation };
 }
@@ -8620,7 +8712,15 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
         try {
             expectedIncarnationId = readHyperVIncarnationRecord(ownerId, backend, deviceId)?.incarnationId || null;
         } catch (error) {
-            return { ok: false, status: 409, error: "hyper-v-incarnation-record-invalid", detail: error instanceof Error ? error.message : String(error) };
+            return {
+                ok: false,
+                status: 409,
+                error: "hyper-v-incarnation-record-invalid",
+                detail: hyperVBoundedErrorCode(
+                    error,
+                    "hyper-v-incarnation-record-invalid",
+                ),
+            };
         }
     }
     if (!expectedIncarnationId) {
@@ -8628,7 +8728,15 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
         const allocation = await releaseHyperVNetworkAllocationAndCleanup(ownerId, deviceId, null, normalized, deadlineAt);
         return allocation.ok
             ? { ok: true, recoveredVm: false, removedDisk: false, releasedAddress: allocation.released }
-            : { ok: false, status: 502, error: "hyper-v-recovery-cleanup-failed", detail: `allocation:${allocation.error}` };
+            : {
+                ok: false,
+                status: 502,
+                error: "hyper-v-recovery-cleanup-failed",
+                detail: typeof allocation.error === "string"
+                    && /^hyper-v-[a-z0-9-]{3,128}$/.test(allocation.error)
+                    ? allocation.error
+                    : "hyper-v-network-cleanup-failed",
+            };
     }
     const deviceRoot = hyperVDeviceRoot(ownerId, backend, deviceId);
     const diskPath = join(deviceRoot, "disks", "root.vhdx");
@@ -8645,11 +8753,19 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
             auxiliaryMediaPaths: [join(deviceRoot, "disks", backend === "linux-vm" ? "cidata.iso" : "autounattend.iso")],
         });
     } catch (error) {
-        return { ok: false, status: 400, error: "hyper-v-recovery-plan-failed", detail: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            status: 400,
+            error: "hyper-v-recovery-plan-failed",
+            detail: hyperVBoundedErrorCode(
+                error,
+                "hyper-v-recovery-plan-failed",
+            ),
+        };
     }
     const execution = await hyperVProviderCommandRunner(normalized, command, { timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     assertHyperVOperationDeadline(deadlineAt);
-    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-recovery-failed", detail: execution.stderr || execution.error || String(execution.status) };
+    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-recovery-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-recovery-failed") };
     const observation = parseHyperVRecoveryObservation(execution.stdout || "");
     if (!observation) return { ok: false, status: 502, error: "hyper-v-recovery-invalid-result" };
     const allocation = await releaseHyperVNetworkAllocationAndCleanup(ownerId, deviceId, expectedIncarnationId, normalized, deadlineAt);
@@ -8661,7 +8777,12 @@ async function reconcileHyperVCreateResidue(ownerId: string, backend: string, de
             ok: false,
             status: 502,
             error: "hyper-v-recovery-cleanup-failed",
-            detail: [artifacts.ok ? null : `artifacts:${artifacts.error}`, allocation.ok ? null : `allocation:${allocation.error}`].filter(Boolean).join("; "),
+            detail: !artifacts.ok
+                ? "hyper-v-artifact-cleanup-failed"
+                : typeof allocation.error === "string"
+                    && /^hyper-v-[a-z0-9-]{3,128}$/.test(allocation.error)
+                    ? allocation.error
+                    : "hyper-v-network-cleanup-failed",
         };
     }
     return { ok: true, recoveredVm: observation.recoveredVm, removedDisk: observation.removedDisk, releasedAddress: allocation.released };
@@ -8733,7 +8854,13 @@ function writeHyperVOperationJournal(ownerId: string, parsed: CommandParamSucces
         writeJsonFileAtomically(path, journal);
         return { ok: true, path };
     } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            error: hyperVBoundedErrorCode(
+                error,
+                "hyper-v-operation-journal-write-failed",
+            ),
+        };
     }
 }
 
@@ -8748,7 +8875,12 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
     try {
         journal = readHyperVOperationJournal(ownerId, backend, deviceId);
     } catch (error) {
-        return { ok: false, status: 409, error: "hyper-v-operation-journal-invalid", detail: error instanceof Error ? error.message : String(error) };
+        return {
+            ok: false,
+            status: 409,
+            error: "hyper-v-operation-journal-invalid",
+            detail: hyperVBoundedErrorCode(error, "hyper-v-operation-journal-invalid"),
+        };
     }
     if (!journal) return { ok: true, reconciled: false };
     const currentDevice = readOwnerDevices(ownerId, backend).find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate) && (candidate as Record<string, unknown>).id === deviceId) as Record<string, unknown> | undefined;
@@ -8771,7 +8903,7 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
     if (journal.command === "device_delete") {
         const execution = await hyperVProviderCommandRunner(normalized, hyperVDeleteCommand(base), { timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
         assertHyperVOperationDeadline(deadlineAt);
-        if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-delete-reconciliation-failed", detail: execution.stderr || execution.error || String(execution.status) };
+        if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-delete-reconciliation-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-delete-reconciliation-failed") };
         const observation = parseHyperVDeleteObservation(execution.stdout || "");
         if (!observation || observation.vmId !== journal.vmId || observation.vmName !== journal.vmName || resolve(observation.diskPath || "") !== resolve(journal.diskPath)) return { ok: false, status: 502, error: "hyper-v-delete-reconciliation-invalid-result" };
         const allocation = await releaseHyperVNetworkAllocationAndCleanup(ownerId, deviceId, journal.incarnationId, normalized, deadlineAt);
@@ -8791,7 +8923,7 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
     }
     const execution = await hyperVProviderCommandRunner(normalized, hyperVStatusCommand(base), { timeoutMs: hyperVRemainingTimeout(deadlineAt, 30000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     assertHyperVOperationDeadline(deadlineAt);
-    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-state-reconciliation-failed", detail: execution.stderr || execution.error || String(execution.status) };
+    if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-state-reconciliation-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-state-reconciliation-failed") };
     const observation = parseHyperVVmObservation(execution.stdout || "");
     if (!observation || observation.vmId !== journal.vmId || observation.vmName !== journal.vmName || resolve(observation.diskPath || "") !== resolve(journal.diskPath)) return { ok: false, status: 502, error: "hyper-v-state-reconciliation-invalid-result" };
     const state = observation.state.toLowerCase();
@@ -8802,536 +8934,6 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
     }));
     clearHyperVOperationJournal(ownerId, backend, deviceId);
     return { ok: true, reconciled: true };
-}
-
-type HyperVImageManifest = {
-    version: 3;
-    profile: HyperVImageProfile;
-    catalogId: string;
-    sourceUrl: string | null;
-    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip";
-    licenseId: string | null;
-    generation: 1 | 2;
-    secureBootTemplate: "MicrosoftWindows" | "MicrosoftUEFICertificateAuthority";
-    preparationVersion: 1;
-    imagePath: string;
-    sha256: string;
-    sizeBytes: number;
-    virtualSizeBytes: number;
-    vhdType: string;
-    preparedAt: string;
-};
-
-type HyperVImageResolution =
-    | { ok: true; params: Record<string, unknown>; imagePath: string; prepared: boolean }
-    | { ok: false; status: number; error: string; detail?: string; remedy?: string };
-
-function hyperVImageProfile(value: unknown): HyperVImageProfile | null {
-    return value === "windows-11" || value === "windows-server" || value === "ubuntu-lts" ? value : null;
-}
-
-function hyperVImageRoot(): string {
-    return join(brokerPrivateRoot(), "images", "hyper-v");
-}
-
-function hyperVImageProfileRoot(profile: HyperVImageProfile): string {
-    return join(hyperVImageRoot(), profile);
-}
-
-function hyperVOwnerImageProfileRoot(ownerId: string, profile: HyperVImageProfile): string {
-    return join(brokerPrivateRoot(), "owners", ownerId, "images", "hyper-v", profile);
-}
-
-function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void {
-    assertNoSymlinkPathComponents(profileRoot, "hyper-v-base-image-cleanup");
-    rmSync(join(profileRoot, "base.partial.vhdx"), { force: true });
-    const acquireWork = join(profileRoot, ".acquire-work");
-    if (existsSync(acquireWork)) {
-        quarantineAndRemoveDirectory(acquireWork, (path) => {
-            assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cleanup");
-            assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
-        });
-    }
-    if (!existsSync(join(profileRoot, "manifest.json"))) rmSync(join(profileRoot, "base.vhdx"), { force: true });
-}
-
-function assertNoSymlinkPathComponents(file: string, label: string): void {
-    const chain: string[] = [];
-    let current = resolve(file);
-    while (true) {
-        chain.push(current);
-        const parent = dirname(current);
-        if (parent === current) break;
-        current = parent;
-    }
-    for (const component of chain.reverse()) {
-        try {
-            if (lstatSync(component).isSymbolicLink()) throw new Error(`${label}-path-symlink-rejected`);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException)?.code === "ENOENT") break;
-            throw error;
-        }
-    }
-}
-
-function inspectLargeRegularFile(root: string, file: string, label: string): { path: string; size: number } {
-    const absolute = resolve(file);
-    assertNoSymlinkPathComponents(root, label);
-    assertNoSymlinkPathComponents(absolute, label);
-    assertDeviceLabPathWithinRoot(root, absolute, label);
-    const pathStat = lstatSync(absolute);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0) throw new Error(`${label}-invalid`);
-    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-    const descriptor = openSync(absolute, fsConstants.O_RDONLY | noFollow);
-    try {
-        const descriptorStat = fstatSync(descriptor);
-        if (!descriptorStat.isFile() || descriptorStat.nlink !== 1
-            || descriptorStat.dev !== pathStat.dev
-            || descriptorStat.ino !== pathStat.ino
-            || descriptorStat.size !== pathStat.size) {
-            throw new Error(`${label}-identity-changed`);
-        }
-        return { path: absolute, size: descriptorStat.size };
-    } finally {
-        closeSync(descriptor);
-    }
-}
-
-async function stageLargeRegularFileFromProject(root: string, file: string, targetRoot: string, label: string, deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
-    const absolute = resolve(file);
-    if (dirname(absolute) !== resolve(root)) throw new Error(`${label}-must-be-project-root-file`);
-    const stagingPath = join(targetRoot, `.source-${randomBytes(12).toString("hex")}.vhdx`);
-    let sourceDescriptor: Awaited<ReturnType<typeof fsPromises.open>> | null = null;
-    let targetDescriptor: Awaited<ReturnType<typeof fsPromises.open>> | null = null;
-    try {
-        assertNoSymlinkPathComponents(root, label);
-        assertNoSymlinkPathComponents(absolute, label);
-        assertDeviceLabPathWithinRoot(root, absolute, label);
-        const pathStat = await fsPromises.lstat(absolute);
-        if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0 || pathStat.size > DEVICE_BROKER_HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES) {
-            throw new Error(`${label}-invalid`);
-        }
-        const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-        sourceDescriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
-        const openedSource = await sourceDescriptor.stat();
-        const currentSource = await fsPromises.lstat(absolute);
-        if (!openedSource.isFile() || openedSource.nlink !== 1
-            || openedSource.dev !== pathStat.dev || openedSource.ino !== pathStat.ino || openedSource.size !== pathStat.size
-            || currentSource.isSymbolicLink() || currentSource.nlink !== 1 || currentSource.dev !== openedSource.dev || currentSource.ino !== openedSource.ino || currentSource.size !== openedSource.size) {
-            throw new Error(`${label}-identity-changed`);
-        }
-        await fsPromises.mkdir(targetRoot, { recursive: true, mode: 0o700 });
-        assertNoSymlinkPathComponents(targetRoot, `${label}-staging`);
-        assertDeviceLabPathWithinRoot(targetRoot, stagingPath, `${label}-staging`);
-        targetDescriptor = await fsPromises.open(stagingPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollow, 0o600);
-        const openedTarget = await targetDescriptor.stat();
-        const targetPathStat = await fsPromises.lstat(stagingPath);
-        if (!openedTarget.isFile() || openedTarget.nlink !== 1
-            || targetPathStat.isSymbolicLink() || targetPathStat.dev !== openedTarget.dev || targetPathStat.ino !== openedTarget.ino) {
-            throw new Error(`${label}-staging-identity-changed`);
-        }
-        const buffer = Buffer.allocUnsafe(1024 * 1024);
-        let copied = 0;
-        while (copied < openedSource.size) {
-            assertHyperVOperationDeadline(deadlineAt);
-            const { bytesRead: count } = await sourceDescriptor.read(buffer, 0, Math.min(buffer.length, openedSource.size - copied), null);
-            if (count <= 0) throw new Error(`${label}-copy-short-read`);
-            let offset = 0;
-            while (offset < count) {
-                const { bytesWritten: written } = await targetDescriptor.write(buffer, offset, count - offset, null);
-                if (written <= 0) throw new Error(`${label}-copy-short-write`);
-                offset += written;
-            }
-            copied += count;
-        }
-        await targetDescriptor.sync();
-        const finalSource = await sourceDescriptor.stat();
-        const finalTarget = await targetDescriptor.stat();
-        const finalSourcePath = await fsPromises.lstat(absolute);
-        if (finalSource.nlink !== 1 || finalSource.dev !== openedSource.dev || finalSource.ino !== openedSource.ino || finalSource.size !== openedSource.size
-            || finalSourcePath.isSymbolicLink() || finalSourcePath.nlink !== 1 || finalSourcePath.dev !== openedSource.dev || finalSourcePath.ino !== openedSource.ino || finalSourcePath.size !== openedSource.size
-            || finalTarget.dev !== openedTarget.dev || finalTarget.ino !== openedTarget.ino || finalTarget.size !== openedSource.size) {
-            throw new Error(`${label}-identity-changed`);
-        }
-        return stagingPath;
-    } catch (error) {
-        if (targetDescriptor !== null) { await targetDescriptor.close(); targetDescriptor = null; }
-        if (sourceDescriptor !== null) { await sourceDescriptor.close(); sourceDescriptor = null; }
-        try { await fsPromises.unlink(stagingPath); } catch { /* preserve the original failure */ }
-        throw error;
-    } finally {
-        if (targetDescriptor !== null) await targetDescriptor.close();
-        if (sourceDescriptor !== null) await sourceDescriptor.close();
-    }
-}
-
-async function sha256LargeRegularFile(root: string, file: string, label: string, deadlineAt = Number.POSITIVE_INFINITY): Promise<string> {
-    const absolute = resolve(file);
-    assertNoSymlinkPathComponents(root, label);
-    assertNoSymlinkPathComponents(absolute, label);
-    assertDeviceLabPathWithinRoot(root, absolute, label);
-    const pathStat = await fsPromises.lstat(absolute);
-    if (!pathStat.isFile() || pathStat.isSymbolicLink() || pathStat.nlink !== 1 || pathStat.size <= 0) throw new Error(`${label}-invalid`);
-    const noFollow = typeof fsConstants.O_NOFOLLOW === "number" ? fsConstants.O_NOFOLLOW : 0;
-    const descriptor = await fsPromises.open(absolute, fsConstants.O_RDONLY | noFollow);
-    const hash = createHash("sha256");
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    try {
-        const openedStat = await descriptor.stat();
-        if (!openedStat.isFile() || openedStat.nlink !== 1
-            || openedStat.dev !== pathStat.dev
-            || openedStat.ino !== pathStat.ino
-            || openedStat.size !== pathStat.size) {
-            throw new Error(`${label}-identity-changed`);
-        }
-        while (true) {
-            assertHyperVOperationDeadline(deadlineAt);
-            const { bytesRead: count } = await descriptor.read(buffer, 0, buffer.length, null);
-            if (count === 0) break;
-            hash.update(buffer.subarray(0, count));
-        }
-        const finalStat = await descriptor.stat();
-        const finalPathStat = await fsPromises.lstat(absolute);
-        if (!finalStat.isFile()
-            || !finalPathStat.isFile()
-            || finalPathStat.isSymbolicLink()
-            || finalStat.nlink !== 1
-            || finalPathStat.nlink !== 1
-            || finalStat.dev !== openedStat.dev
-            || finalStat.ino !== openedStat.ino
-            || finalStat.size !== openedStat.size
-            || finalPathStat.dev !== openedStat.dev
-            || finalPathStat.ino !== openedStat.ino
-            || finalPathStat.size !== openedStat.size) {
-            throw new Error(`${label}-identity-changed`);
-        }
-        return hash.digest("hex");
-    } finally {
-        await descriptor.close();
-    }
-}
-
-function hyperVImageManifest(
-    profile: HyperVImageProfile,
-    imagePath: string,
-    observation: ReturnType<typeof parseHyperVBaseImageObservation> & {},
-    automatic: boolean,
-): HyperVImageManifest {
-    const catalog = profile === "windows-server" || profile === "ubuntu-lts" ? HYPER_V_IMAGE_CATALOG[profile] : null;
-    return {
-        version: 3,
-        profile,
-        catalogId: automatic && catalog ? catalog.catalogId : "user-provided-vhdx",
-        sourceUrl: automatic && catalog ? catalog.sourceUrl : null,
-        sourceFormat: automatic && catalog ? catalog.sourceFormat : "vhdx",
-        licenseId: automatic && catalog ? catalog.licenseId : null,
-        generation: observation.generation,
-        secureBootTemplate: profile === "ubuntu-lts" ? "MicrosoftUEFICertificateAuthority" : "MicrosoftWindows",
-        preparationVersion: 1,
-        imagePath,
-        sha256: observation.sha256,
-        sizeBytes: observation.sizeBytes,
-        virtualSizeBytes: observation.virtualSizeBytes,
-        vhdType: observation.vhdType,
-        preparedAt: new Date().toISOString(),
-    };
-}
-
-function readHyperVImageManifestMetadata(
-    profile: HyperVImageProfile,
-    profileRoot = hyperVImageProfileRoot(profile),
-    allowUserProvided = false,
-): HyperVImageManifest {
-    const expectedImagePath = join(profileRoot, "base.vhdx");
-    const manifest = readDeviceLabStateFile(join(profileRoot, "manifest.json"), (parsed) => {
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("hyper-v-base-image-manifest-invalid");
-        const value = parsed as Record<string, unknown>;
-        if (value.version !== 3
-            || value.profile !== profile
-            || typeof value.catalogId !== "string"
-            || (value.sourceUrl !== null && typeof value.sourceUrl !== "string")
-            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip")
-            || (value.licenseId !== null && typeof value.licenseId !== "string")
-            || (value.generation !== 1 && value.generation !== 2)
-            || (value.secureBootTemplate !== "MicrosoftWindows" && value.secureBootTemplate !== "MicrosoftUEFICertificateAuthority")
-            || value.preparationVersion !== 1
-            || typeof value.imagePath !== "string"
-            || resolve(value.imagePath) !== resolve(expectedImagePath)
-            || typeof value.sha256 !== "string"
-            || !/^[a-f0-9]{64}$/i.test(value.sha256)
-            || typeof value.sizeBytes !== "number"
-            || !Number.isSafeInteger(value.sizeBytes)
-            || value.sizeBytes <= 0
-            || typeof value.virtualSizeBytes !== "number"
-            || !Number.isSafeInteger(value.virtualSizeBytes)
-            || value.virtualSizeBytes < value.sizeBytes
-            || typeof value.vhdType !== "string"
-            || typeof value.preparedAt !== "string") {
-            throw new Error("hyper-v-base-image-manifest-invalid");
-        }
-        return value as HyperVImageManifest;
-    }, "hyper-v-base-image-manifest", DEVICE_BROKER_HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES);
-    if (!manifest) throw new Error("hyper-v-base-image-manifest-missing");
-    const catalog = profile === "windows-server" || profile === "ubuntu-lts" ? HYPER_V_IMAGE_CATALOG[profile] : null;
-    if (manifest.catalogId !== "user-provided-vhdx") {
-        if (!catalog
-            || manifest.catalogId !== catalog.catalogId
-            || manifest.sourceUrl !== catalog.sourceUrl
-            || manifest.sourceFormat !== catalog.sourceFormat
-            || manifest.licenseId !== catalog.licenseId
-            || manifest.secureBootTemplate !== catalog.secureBootTemplate) {
-            throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
-        }
-    } else if (!allowUserProvided || manifest.sourceUrl !== null || manifest.licenseId !== null || manifest.sourceFormat !== "vhdx") {
-        throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
-    }
-    const image = inspectLargeRegularFile(profileRoot, expectedImagePath, "hyper-v-base-image");
-    if (image.size !== manifest.sizeBytes) throw new Error("hyper-v-base-image-size-mismatch");
-    return manifest;
-}
-
-async function readHyperVImageManifest(
-    profile: HyperVImageProfile,
-    profileRoot = hyperVImageProfileRoot(profile),
-    allowUserProvided = false,
-    deadlineAt = Number.POSITIVE_INFINITY,
-): Promise<HyperVImageManifest> {
-    const manifest = readHyperVImageManifestMetadata(profile, profileRoot, allowUserProvided);
-    if (await sha256LargeRegularFile(profileRoot, manifest.imagePath, "hyper-v-base-image", deadlineAt) !== manifest.sha256) {
-        throw new Error("hyper-v-base-image-hash-mismatch");
-    }
-    return manifest;
-}
-
-async function resolveHyperVImageForCreate(ownerId: string, parsed: CommandParamSuccess, params: unknown, normalized: NormalizedBrokerOptions, deadlineAt = Number.POSITIVE_INFINITY): Promise<HyperVImageResolution> {
-    const input = params && typeof params === "object" && !Array.isArray(params) ? params as Record<string, unknown> : {};
-    const create = parsed.create || {};
-    const profile = hyperVImageProfile(create.profile || (parsed.backend === "linux-vm" ? "ubuntu-lts" : "windows-server"));
-    if (!profile) {
-        return { ok: false, status: 400, error: "hyper-v-image-profile-invalid", detail: "profile must be windows-11, windows-server, or ubuntu-lts" };
-    }
-    if (typeof create.image === "string" && create.image) {
-        try {
-            const ownerProfileRoot = hyperVOwnerImageProfileRoot(ownerId, profile);
-            const requestedImage = resolve(create.image);
-            const ownerImage = resolve(join(ownerProfileRoot, "base.vhdx"));
-            const globalImage = resolve(join(hyperVImageProfileRoot(profile), "base.vhdx"));
-            const manifest = requestedImage === ownerImage
-                ? await readHyperVImageManifest(profile, ownerProfileRoot, true, deadlineAt)
-                : requestedImage === globalImage
-                    ? await readHyperVImageManifest(profile, hyperVImageProfileRoot(profile), false, deadlineAt)
-                    : (() => { throw new Error("hyper-v-base-image-manifest-path-mismatch"); })();
-            if (resolve(create.image) !== resolve(manifest.imagePath)) throw new Error("hyper-v-base-image-manifest-path-mismatch");
-            return { ok: true, params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes }, imagePath: manifest.imagePath, prepared: false };
-        } catch (error) {
-            if (error instanceof HyperVOperationDeadlineError) throw error;
-            return { ok: false, status: 409, error: "hyper-v-base-image-not-prepared", detail: error instanceof Error ? error.message : String(error), remedy: "import the generalized VHDX with --source-image" };
-        }
-    }
-
-    const sourceImage = typeof create.sourceImage === "string" && create.sourceImage ? resolve(normalized.cwd, create.sourceImage) : null;
-    if (parsed.dryRun) {
-        if (sourceImage) {
-            return {
-                ok: false,
-                status: 409,
-                error: "hyper-v-base-image-not-prepared",
-                remedy: "run device_create without --dry-run once to import and validate the source image",
-            };
-        }
-        try {
-            let manifest: HyperVImageManifest;
-            try {
-                manifest = await readHyperVImageManifest(profile, hyperVOwnerImageProfileRoot(ownerId, profile), true, deadlineAt);
-            } catch {
-                manifest = await readHyperVImageManifest(profile, hyperVImageProfileRoot(profile), false, deadlineAt);
-            }
-            return {
-                ok: true,
-                params: { ...input, profile, image: manifest.imagePath, baseImageSha256: manifest.sha256, baseImageGeneration: manifest.generation, diskMaxBytes: manifest.virtualSizeBytes },
-                imagePath: manifest.imagePath,
-                prepared: false,
-            };
-        } catch (error) {
-            return {
-                ok: false,
-                status: 409,
-                error: "hyper-v-base-image-not-prepared",
-                detail: error instanceof Error ? error.message : String(error),
-                remedy: "run device_create without --dry-run once to acquire and validate the base image",
-            };
-        }
-    }
-
-    const ownerProfileRoot = hyperVOwnerImageProfileRoot(ownerId, profile);
-    const preparationRoot = sourceImage ? ownerProfileRoot : hyperVImageProfileRoot(profile);
-    try {
-        mkdirSync(preparationRoot, { recursive: true, mode: 0o700 });
-        assertNoSymlinkPathComponents(preparationRoot, "hyper-v-base-image-preparation");
-        const preparationMetadata = lstatSync(preparationRoot);
-        if (!preparationMetadata.isDirectory() || preparationMetadata.isSymbolicLink()) throw new Error("hyper-v-base-image-preparation-root-invalid");
-        return await withSharedMutationLockAsync(join(preparationRoot, "prepare.lock"), async () => {
-            assertHyperVOperationDeadline(deadlineAt);
-            if (!sourceImage) {
-                let cachedManifest: HyperVImageManifest | null = null;
-                try {
-                    cachedManifest = await readHyperVImageManifest(profile, ownerProfileRoot, true, deadlineAt);
-                } catch (cacheError) {
-                    if (cacheError instanceof HyperVOperationDeadlineError) throw cacheError;
-                    try {
-                        cachedManifest = await readHyperVImageManifest(profile, hyperVImageProfileRoot(profile), false, deadlineAt);
-                    } catch (globalCacheError) {
-                        if (globalCacheError instanceof HyperVOperationDeadlineError) throw globalCacheError;
-                        if (profile === "windows-11") {
-                            throw new Error(`hyper-v-base-image-profile-not-automatic:${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
-                        }
-                        assertNoSymlinkPathComponents(hyperVImageProfileRoot(profile), "hyper-v-base-image-cleanup");
-                        rmSync(join(hyperVImageProfileRoot(profile), "base.vhdx"), { force: true });
-                        rmSync(join(hyperVImageProfileRoot(profile), "manifest.json"), { force: true });
-                    }
-                }
-                if (cachedManifest) {
-                    if (cachedManifest.licenseId && !readHyperVWindowsEvaluationReceipt(join(brokerPrivateRoot(), "setup"))) {
-                        throw new Error("hyper-v-windows-evaluation-license-not-accepted");
-                    }
-                    return {
-                        ok: true as const,
-                        params: { ...input, profile, image: cachedManifest.imagePath, baseImageSha256: cachedManifest.sha256, baseImageGeneration: cachedManifest.generation, diskMaxBytes: cachedManifest.virtualSizeBytes },
-                        imagePath: cachedManifest.imagePath,
-                        prepared: false,
-                    };
-                }
-                if (profile === "windows-server" && !readHyperVWindowsEvaluationReceipt(join(brokerPrivateRoot(), "setup"))) {
-                    throw new Error("hyper-v-windows-evaluation-license-not-accepted");
-                }
-                const automaticProfile = profile === "windows-server" || profile === "ubuntu-lts" ? profile : null;
-                if (!automaticProfile) throw new Error("hyper-v-base-image-profile-not-automatic");
-                const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
-                if (!powershell) throw new Error("missing-provider-command:powershell");
-                const imagePath = join(hyperVImageProfileRoot(profile), "base.vhdx");
-                const execution = await hyperVProviderCommandRunner(normalized, hyperVAcquireBaseImageCommand({
-                    executable: powershell,
-                    profile: automaticProfile,
-                    imageRoot: hyperVImageRoot(),
-                }), {
-                    timeoutMs: hyperVRemainingTimeout(deadlineAt, DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS),
-                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                });
-                if (hyperVOperationDeadlineExpired(deadlineAt)) {
-                    cleanupIncompleteHyperVImageArtifacts(hyperVImageProfileRoot(profile));
-                    throw new HyperVOperationDeadlineError();
-                }
-                if (!commandSucceeded(execution)) {
-                    cleanupIncompleteHyperVImageArtifacts(hyperVImageProfileRoot(profile));
-                    throw new Error(`hyper-v-base-image-acquire-failed:${providerFailureDetail(execution)}`);
-                }
-                try {
-                    const observation = parseHyperVBaseImageObservation(execution.stdout || "");
-                    if (!observation
-                        || observation.profile !== profile
-                        || resolve(observation.imagePath) !== resolve(imagePath)) {
-                        throw new Error("hyper-v-base-image-acquire-invalid-result");
-                    }
-                    const image = inspectLargeRegularFile(hyperVImageProfileRoot(profile), imagePath, "hyper-v-base-image");
-                    if (image.size !== observation.sizeBytes) throw new Error("hyper-v-base-image-size-mismatch");
-                    if (await sha256LargeRegularFile(hyperVImageProfileRoot(profile), imagePath, "hyper-v-base-image", deadlineAt) !== observation.sha256) {
-                        throw new Error("hyper-v-base-image-hash-mismatch");
-                    }
-                    const manifest = hyperVImageManifest(profile, imagePath, observation, true);
-                    writeJsonFileAtomically(join(hyperVImageProfileRoot(profile), "manifest.json"), manifest);
-                    return {
-                        ok: true as const,
-                        params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
-                        imagePath,
-                        prepared: !observation.reused,
-                    };
-                } catch (error) {
-                    cleanupIncompleteHyperVImageArtifacts(hyperVImageProfileRoot(profile));
-                    throw error;
-                }
-            }
-
-            if (!/\.vhdx$/i.test(sourceImage)) throw new Error("hyper-v-base-image-format-unsupported");
-            const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
-            if (!powershell) throw new Error("missing-provider-command:powershell");
-            const profileRoot = ownerProfileRoot;
-            const imagePath = join(profileRoot, "base.vhdx");
-            const stagedSource = await stageLargeRegularFileFromProject(resolve(normalized.cwd), sourceImage, profileRoot, "hyper-v-base-image-source", deadlineAt);
-            let execution: ProviderCommandResult;
-            try {
-                const prepareCommand = hyperVPrepareBaseImageCommand({
-                    executable: powershell,
-                    profile,
-                    sourceImagePath: stagedSource,
-                    sourceRoot: profileRoot,
-                    imagePath,
-                    imageRoot: dirname(profileRoot),
-                });
-                execution = await hyperVProviderCommandRunner(normalized, prepareCommand, {
-                    timeoutMs: hyperVRemainingTimeout(deadlineAt, DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS),
-                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                });
-                if (hyperVOperationDeadlineExpired(deadlineAt)) {
-                    cleanupIncompleteHyperVImageArtifacts(profileRoot);
-                    throw new HyperVOperationDeadlineError();
-                }
-            } finally {
-                rmSync(stagedSource, { force: true });
-            }
-            if (!commandSucceeded(execution)) {
-                cleanupIncompleteHyperVImageArtifacts(profileRoot);
-                throw new Error(`hyper-v-base-image-prepare-failed:${providerFailureDetail(execution)}`);
-            }
-            try {
-                const observation = parseHyperVBaseImageObservation(execution.stdout || "");
-                if (!observation
-                    || observation.profile !== profile
-                    || resolve(observation.imagePath) !== resolve(imagePath)) {
-                    throw new Error("hyper-v-base-image-prepare-invalid-result");
-                }
-                const image = inspectLargeRegularFile(profileRoot, imagePath, "hyper-v-base-image");
-                if (image.size !== observation.sizeBytes) throw new Error("hyper-v-base-image-size-mismatch");
-                if (await sha256LargeRegularFile(profileRoot, imagePath, "hyper-v-base-image", deadlineAt) !== observation.sha256) {
-                    throw new Error("hyper-v-base-image-hash-mismatch");
-                }
-                const manifest = hyperVImageManifest(profile, imagePath, observation, false);
-                writeJsonFileAtomically(join(profileRoot, "manifest.json"), manifest);
-                return {
-                    ok: true as const,
-                    params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
-                    imagePath,
-                    prepared: !observation.reused,
-                };
-            } catch (error) {
-                cleanupIncompleteHyperVImageArtifacts(profileRoot);
-                throw error;
-            }
-        }, { waitMs: hyperVRemainingTimeout(deadlineAt, DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS), staleMs: DEVICE_BROKER_HYPER_V_IMAGE_LOCK_STALE_MS });
-    } catch (error) {
-        if (error instanceof HyperVOperationDeadlineError) throw error;
-        const detail = error instanceof Error ? error.message : String(error);
-        const licenseMissing = detail.includes("hyper-v-windows-evaluation-license-not-accepted");
-        const automaticUnsupported = detail.includes("hyper-v-base-image-profile-not-automatic");
-        const notPrepared = !sourceImage && (detail.includes("ENOENT") || detail.includes("not found") || detail.includes("manifest-missing") || automaticUnsupported);
-        const profileConflict = detail.includes("hyper-v-base-image-profile-conflict");
-        return {
-            ok: false,
-            status: licenseMissing || notPrepared || profileConflict ? 409 : 422,
-            error: licenseMissing
-                ? "hyper-v-windows-evaluation-license-not-accepted"
-                : notPrepared
-                ? "hyper-v-base-image-not-prepared"
-                : profileConflict
-                    ? "hyper-v-base-image-profile-conflict"
-                    : "hyper-v-base-image-prepare-failed",
-            detail,
-            remedy: licenseMissing
-                ? "review the Microsoft Windows Server evaluation terms, then run ccc devices setup hyper-v --confirm --accept-windows-evaluation-license"
-                : notPrepared
-                    ? "provide --source-image with a generalized Windows 11 VHDX, or use the automatic windows-server profile"
-                    : undefined,
-        };
-    }
 }
 
 function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, normalized: NormalizedBrokerOptions): ProviderCommand | { error: string; missing: string[] } {
@@ -10861,97 +10463,6 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
     return "ssh-unavailable";
 }
 
-const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
-    "hyper-v-path-reparse-point-rejected",
-    "hyper-v-path-root-invalid",
-    "hyper-v-powershell-execution-failed",
-    "hyper-v-powershell-program-invalid",
-    "hyper-v-powershell-parse-failed",
-    "hyper-v-vm-ownership-mismatch",
-    "hyper-v-guest-provision-credential-command-failed",
-    "hyper-v-guest-provision-input-validation-command-failed",
-    "hyper-v-guest-provision-media-attach-command-failed",
-    "hyper-v-guest-provision-media-build-command-failed",
-    "hyper-v-guest-provision-media-check-command-failed",
-    "hyper-v-guest-provision-media-content-command-failed",
-    "hyper-v-guest-provision-password-invalid",
-    "hyper-v-guest-provision-requires-stopped-vm",
-    "hyper-v-guest-provision-username-mismatch",
-    "hyper-v-guest-provision-vm-lookup-command-failed",
-    "hyper-v-guest-provision-vm-state-command-failed",
-    "hyper-v-provisioning-source-missing",
-    "hyper-v-provisioning-media-create-failed",
-    "hyper-v-provisioning-media-block-invalid",
-    "hyper-v-provisioning-media-stream-invalid",
-    "hyper-v-provisioning-media-output-open-failed",
-    "hyper-v-provisioning-media-copy-incomplete",
-    "hyper-v-provisioning-media-com-unavailable",
-    "hyper-v-provisioning-media-configure-failed",
-    "hyper-v-provisioning-media-filesystem-selection-failed",
-    "hyper-v-provisioning-media-volume-name-invalid",
-    "hyper-v-provisioning-media-volume-name-failed",
-    "hyper-v-provisioning-media-source-entry-invalid",
-    "hyper-v-provisioning-media-source-directory-failed",
-    "hyper-v-provisioning-media-source-file-invalid",
-    "hyper-v-provisioning-media-source-file-failed",
-    "hyper-v-provisioning-media-source-cleanup-failed",
-    "hyper-v-provisioning-media-add-tree-failed",
-    "hyper-v-provisioning-media-result-image-failed",
-    "hyper-v-provisioning-media-invalid",
-    "hyper-v-guest-provisioning-media-already-attached",
-    "hyper-v-guest-provisioning-media-attach-failed",
-    "hyper-v-linux-seed-media-already-attached",
-    "hyper-v-linux-seed-media-attach-failed",
-    "hyper-v-linux-seed-media-attach-command-failed",
-    "hyper-v-linux-seed-media-build-command-failed",
-    "hyper-v-linux-seed-media-check-command-failed",
-    "hyper-v-linux-seed-known-hosts-command-failed",
-    "hyper-v-linux-seed-host-keygen-command-failed",
-    "hyper-v-linux-seed-path-validation-command-failed",
-    "hyper-v-linux-seed-requires-stopped-vm",
-    "hyper-v-linux-seed-user-keygen-command-failed",
-    "hyper-v-linux-seed-vm-lookup-command-failed",
-    "hyper-v-linux-seed-vm-state-command-failed",
-    "hyper-v-linux-ssh-host-keygen-failed",
-    "hyper-v-linux-ssh-host-public-key-invalid",
-    "hyper-v-linux-ssh-keygen-arguments-invalid",
-    "hyper-v-linux-ssh-keygen-failed",
-    "hyper-v-linux-ssh-keygen-start-failed",
-    "hyper-v-linux-ssh-keygen-unavailable",
-    "hyper-v-linux-ssh-public-key-invalid",
-]);
-
-export function redactProviderCommandInput(
-    result: ProviderCommandResult,
-    redactOutput = false,
-    fallbackDiagnosticCode?: string,
-): Omit<ProviderCommandResult, "input"> & { inputConfigured?: boolean; outputRedacted?: boolean; diagnosticCode?: string } {
-    const { input, ...publicResult } = result;
-    const diagnosticCodes = (value: unknown) => String(value || "")
-        .match(/\bhyper-v-[a-z0-9-]{3,128}\b/gi)
-        ?.map((candidate) => candidate.toLowerCase())
-        .filter((candidate) => REDACTED_PROVIDER_DIAGNOSTIC_CODES.has(candidate)) || [];
-    const reportedDiagnosticCodes = diagnosticCodes(`${publicResult.error || ""}\n${publicResult.stderr || ""}`);
-    const stageDiagnosticCodes = diagnosticCodes(publicResult.stdout);
-    const reportedDiagnosticCode = reportedDiagnosticCodes.at(-1);
-    const outputDiagnosticCode = reportedDiagnosticCode && reportedDiagnosticCode !== "hyper-v-powershell-execution-failed"
-        ? reportedDiagnosticCode
-        : stageDiagnosticCodes.at(-1) || reportedDiagnosticCode;
-    const diagnosticCode = redactOutput
-        ? outputDiagnosticCode || fallbackDiagnosticCode
-        : undefined;
-    return {
-        ...publicResult,
-        ...(redactOutput ? {
-            stdout: publicResult.stdout ? "[redacted]" : "",
-            stderr: publicResult.stderr ? "[redacted]" : "",
-            outputRedacted: true,
-            ...(diagnosticCode ? { diagnosticCode } : {}),
-        } : {}),
-        ...(input !== undefined ? { inputConfigured: true } : {}),
-    };
-}
-
 function commandToleratesMissingMacosVmDelete(parsed: CommandParamSuccess, result: ProviderCommandResult) {
     if (parsed.backend !== "macos-vm" || parsed.command !== "device_delete" || !parsed.force) return false;
     if (result.provider !== "tart") return false;
@@ -11525,18 +11036,6 @@ function redactBrokerCreateSecrets(create: unknown) {
     };
 }
 
-function redactBrokerHyperVResultSecrets(result: unknown): Record<string, unknown> {
-    if (!result || typeof result !== "object" || Array.isArray(result)) return {};
-    const publicResult = { ...(result as Record<string, unknown>) };
-    delete publicResult.command;
-    delete publicResult.providerCommand;
-    delete publicResult.execution;
-    delete publicResult.provisioning;
-    if ("device" in publicResult) publicResult.device = redactBrokerDeviceSecrets(publicResult.device);
-    if ("create" in publicResult) publicResult.create = redactBrokerCreateSecrets(publicResult.create);
-    return publicResult;
-}
-
 function hyperVCreateConfigurationConflicts(device: Record<string, unknown>, parsed: CommandParamSuccess): string[] {
     const create = parsed.create || {};
     const linuxGuest = parsed.backend === "linux-vm";
@@ -11769,7 +11268,7 @@ async function lifecycleCommandInvokeUnlocked(
                 ok: true,
                 result: {
                     ...(isHyperVBackend(parsed.backend)
-                        ? redactBrokerHyperVResultSecrets(payload.result)
+                        ? redactHyperVResultSecrets(payload.result)
                         : payload.result || {}),
                     invoked: false,
                     dryRun: true,
@@ -11789,7 +11288,7 @@ async function lifecycleCommandInvokeUnlocked(
                 ok: true,
                 result: {
                     ...(isHyperVBackend(parsed.backend)
-                        ? redactBrokerHyperVResultSecrets(payload.result)
+                        ? redactHyperVResultSecrets(payload.result)
                         : payload.result),
                     invoked: false,
                     dryRun: false,
@@ -11818,7 +11317,20 @@ async function lifecycleCommandInvokeUnlocked(
                 try {
                     ensureHyperVPrivateDeviceRoot(ownerId, parsed.backend, parsed.deviceId);
                 } catch (error) {
-                    return { status: 409, payload: { ok: false, error: "hyper-v-private-root-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error) } };
+                    return {
+                        status: 409,
+                        payload: {
+                            ok: false,
+                            error: "hyper-v-private-root-invalid",
+                            ownerId,
+                            backend: parsed.backend,
+                            deviceId: parsed.deviceId,
+                            detail: hyperVBoundedErrorCode(
+                                error,
+                                "hyper-v-private-root-invalid",
+                            ),
+                        },
+                    };
                 }
             }
             execution = isHyperVBackend(parsed.backend)
@@ -11843,16 +11355,19 @@ async function lifecycleCommandInvokeUnlocked(
                 const rollback = isHyperVBackend(parsed.backend)
                     ? await reconcileHyperVCreateResidue(ownerId, parsed.backend, parsed.deviceId, normalized, hyperVCleanupDeadlineAt, parsed.create?.incarnationId as string | undefined)
                     : null;
+                const hyperVExecution = isHyperVBackend(parsed.backend)
+                    ? redactProviderCommandInput(execution, true, "hyper-v-provider-command-failed")
+                    : null;
                 return {
                     status: 502,
                     payload: {
                         ok: false,
                         error: "provider-command-failed",
-                        detail: isHyperVBackend(parsed.backend) ? "hyper-v-provider-command-failed" : providerFailureDetail(execution),
+                        detail: hyperVExecution?.diagnosticCode || providerFailureDetail(execution),
                         ...(rollback ? { rollback } : {}),
                         result: {
                             ...(isHyperVBackend(parsed.backend)
-                                ? redactBrokerHyperVResultSecrets(payload.result)
+                                ? redactHyperVResultSecrets(payload.result)
                                 : payload.result || {}),
                             invoked: true,
                             dryRun: false,
@@ -11932,7 +11447,20 @@ async function lifecycleCommandInvokeUnlocked(
                 });
             } catch (error) {
                 const rollback = await rollbackProvisioning();
-                return { status: rollback.ok ? 500 : 502, payload: { ok: false, error: "hyper-v-linux-seed-plan-failed", ownerId, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error), rollback } };
+                return {
+                    status: rollback.ok ? 500 : 502,
+                    payload: {
+                        ok: false,
+                        error: "hyper-v-linux-seed-plan-failed",
+                        ownerId,
+                        deviceId: parsed.deviceId,
+                        detail: hyperVBoundedErrorCode(
+                            error,
+                            "hyper-v-linux-seed-plan-failed",
+                        ),
+                        rollback,
+                    },
+                };
             }
             const seedExecution = await hyperVProviderCommandRunner(normalized, seedCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 180000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
             hyperVProvisioningExecution = redactProviderCommandInput(
@@ -12019,7 +11547,20 @@ async function lifecycleCommandInvokeUnlocked(
                 });
             } catch (error) {
                 const rollback = await rollbackProvisioning();
-                return { status: rollback.ok ? 500 : 502, payload: { ok: false, error: "hyper-v-guest-provision-plan-failed", ownerId, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error), rollback } };
+                return {
+                    status: rollback.ok ? 500 : 502,
+                    payload: {
+                        ok: false,
+                        error: "hyper-v-guest-provision-plan-failed",
+                        ownerId,
+                        deviceId: parsed.deviceId,
+                        detail: hyperVBoundedErrorCode(
+                            error,
+                            "hyper-v-guest-provision-plan-failed",
+                        ),
+                        rollback,
+                    },
+                };
             }
             const rawProvisioningExecution = await hyperVProviderCommandRunner(normalized, provisionCommand, { timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 180000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
             hyperVProvisioningExecution = redactProviderCommandInput(
@@ -12149,7 +11690,7 @@ async function lifecycleCommandInvokeUnlocked(
                 ok: true,
                 result: {
                     ...(isHyperVBackend(parsed.backend)
-                        ? redactBrokerHyperVResultSecrets(payload.result)
+                        ? redactHyperVResultSecrets(payload.result)
                         : payload.result || {}),
                     device: redactBrokerDeviceSecrets(device),
                     invoked: true,
@@ -12802,13 +12343,24 @@ async function lifecycleCommandInvokeUnlocked(
                 backend: parsed.backend,
                 deviceId: parsed.deviceId,
                 result: {
-                    ...(payload.result || {}),
-                    device: redactBrokerDeviceSecrets(payload.result?.device),
-                    hyperVDeviceArtifactCleanup,
-                    hyperVNetworkAllocationCleanup,
+                    ...redactHyperVResultSecrets(payload.result),
+                    device: redactHyperVDeviceSecrets(
+                        payload.result?.device,
+                    ),
+                    hyperVDeviceArtifactCleanup: publicHyperVArtifactCleanup(hyperVDeviceArtifactCleanup),
+                    hyperVNetworkAllocationCleanup: publicHyperVNetworkCleanup(hyperVNetworkAllocationCleanup),
                     invoked: true,
                     dryRun: false,
-                    execution: { mode: execution.mode, providerExecution: "executed", mutatesHost: true, command: execution },
+                    execution: {
+                        mode: execution.mode,
+                        providerExecution: "executed",
+                        mutatesHost: true,
+                        command: redactProviderCommandInput(
+                            execution,
+                            true,
+                            "hyper-v-device-cleanup-failed",
+                        ),
+                    },
                 },
             },
         };
@@ -12851,7 +12403,7 @@ async function lifecycleCommandInvokeUnlocked(
                 ownerId,
                 backend: parsed.backend,
                 deviceId: parsed.deviceId,
-                detail: error instanceof Error ? error.message : String(error),
+                detail: "physical-device-state-transition-failed",
                 result: {
                     ...(payload.result || {}),
                     device: redactBrokerDeviceSecrets(auxiliaryCleanup?.device || payload.result?.device),
@@ -12881,14 +12433,28 @@ async function lifecycleCommandInvokeUnlocked(
                     : "provider-command-failed",
                 detail: hyperVGuestReadyExecution
                     ? hyperVGuestReadyFailureCode || "guest-not-ready"
+                    : isHyperVBackend(parsed.backend)
+                    ? hyperVProviderDiagnosticCode(
+                        execution,
+                        "hyper-v-provider-command-failed",
+                    ) || "hyper-v-provider-command-failed"
                     : providerFailureDetail(execution),
             }),
             result: {
-                ...(payload.result || {}),
-                providerCommand: hyperVGuestReadyExecution && !hyperVGuestReady
+                ...(isHyperVBackend(parsed.backend)
+                    ? redactHyperVResultSecrets(payload.result)
+                    : (payload.result || {})),
+                providerCommand: isHyperVBackend(parsed.backend)
+                    ? {
+                        mode: effectiveProviderCommand.mode,
+                        provider: effectiveProviderCommand.provider,
+                    }
+                    : hyperVGuestReadyExecution && !hyperVGuestReady
                     ? { mode: effectiveProviderCommand.mode, provider: effectiveProviderCommand.provider }
                     : effectiveProviderCommand,
-                device: redactBrokerDeviceSecrets(updatedDevice),
+                device: isHyperVBackend(parsed.backend)
+                    ? redactHyperVDeviceSecrets(updatedDevice)
+                    : redactBrokerDeviceSecrets(updatedDevice),
                 ...(androidBoot ? {
                     boot: androidBoot.ok
                         ? { ready: androidBoot.ready, skipped: androidBoot.skipped === true, provider: "adb", result: androidBoot.result || null }
@@ -12911,14 +12477,40 @@ async function lifecycleCommandInvokeUnlocked(
                 ...(auxiliaryCleanup ? { auxiliaryCleanup: auxiliaryCleanup.result } : {}),
                 ...(physicalLeaseCleanup ? { physicalLeaseCleanup } : {}),
                 ...(windowsDeviceArtifactCleanup ? { windowsDeviceArtifactCleanup } : {}),
-                ...(hyperVDeviceArtifactCleanup ? { hyperVDeviceArtifactCleanup } : {}),
+                ...(hyperVDeviceArtifactCleanup ? {
+                    hyperVDeviceArtifactCleanup: publicHyperVArtifactCleanup(
+                        hyperVDeviceArtifactCleanup,
+                    ),
+                } : {}),
                 invoked: true,
                 dryRun: false,
                 execution: {
                     mode: execution.mode,
                     providerExecution: "executed",
                     mutatesHost: success && parsed.command !== "device_status",
-                    command: hyperVGuestReadyExecution && !hyperVGuestReady
+                    command: isHyperVBackend(parsed.backend)
+                        ? {
+                            ...redactProviderCommandInput(
+                                execution,
+                                true,
+                                success
+                                    ? undefined
+                                    : "hyper-v-provider-command-failed",
+                            ),
+                            ...(hyperVGuestReadyExecution && !hyperVGuestReady ? {
+                                guestReadiness: {
+                                    provider: parsed.backend === "linux-vm"
+                                        ? "hyper-v-ssh"
+                                        : "hyper-v-powershell-direct",
+                                    error: hyperVGuestReadyFailureCode
+                                        || "guest-not-ready",
+                                    diagnosticAvailable: Boolean(
+                                        hyperVGuestBootDiagnosticPublic,
+                                    ),
+                                },
+                            } : {}),
+                        }
+                        : hyperVGuestReadyExecution && !hyperVGuestReady
                         ? {
                             mode: execution.mode,
                             provider: execution.provider,
@@ -13014,7 +12606,10 @@ function hyperVOwnerQuotaFailure(ownerId: string, parsed: CommandParamSuccess): 
                 ownerId,
                 backend: parsed.backend,
                 deviceId: parsed.deviceId,
-                detail: error instanceof Error ? error.message : String(error),
+                detail: hyperVBoundedErrorCode(
+                    error,
+                    "hyper-v-owner-quota-state-invalid",
+                ),
             },
         };
     }
@@ -13094,7 +12689,20 @@ async function lifecycleHyperVCommandInvokeLocked(
             } catch (error) {
                 const stateCode = ownerDeviceStateErrorCode(error);
                 if (stateCode) return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
-                return { status: 409, payload: { ok: false, error: "hyper-v-operation-journal-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: error instanceof Error ? error.message : String(error) } };
+                return {
+                    status: 409,
+                    payload: {
+                        ok: false,
+                        error: "hyper-v-operation-journal-invalid",
+                        ownerId,
+                        backend: parsed.backend,
+                        deviceId: parsed.deviceId,
+                        detail: hyperVBoundedErrorCode(
+                            error,
+                            "hyper-v-operation-journal-invalid",
+                        ),
+                    },
+                };
             }
             if (expectedIncarnationId) {
                 if (!validHyperVIncarnationId(parsed.expectedIncarnationId)) {
@@ -13177,7 +12785,20 @@ async function lifecycleHyperVCommandInvokeLocked(
         try {
             writeHyperVIncarnationRecord(ownerId, resolved.backend, resolved.deviceId, incarnationId);
         } catch (error) {
-            return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-record-write-failed", ownerId, backend: resolved.backend, deviceId: resolved.deviceId, detail: error instanceof Error ? error.message : String(error) } };
+            return {
+                status: 409,
+                payload: {
+                    ok: false,
+                    error: "hyper-v-incarnation-record-write-failed",
+                    ownerId,
+                    backend: resolved.backend,
+                    deviceId: resolved.deviceId,
+                    detail: hyperVBoundedErrorCode(
+                        error,
+                        "hyper-v-incarnation-record-write-failed",
+                    ),
+                },
+            };
         }
         if (resolved.create?.networking === false) {
             return await lifecycleCommandInvokeUnlocked(ownerId, withIncarnation(image.params), normalized, undefined, deadlineAt, cleanupDeadlineAt);
@@ -13196,7 +12817,7 @@ async function lifecycleHyperVCommandInvokeLocked(
                     backend: resolved.backend,
                     deviceId: resolved.deviceId,
                     ...(allocation.detail ? { detail: allocation.detail } : {}),
-                    artifactCleanup,
+                    artifactCleanup: publicHyperVArtifactCleanup(artifactCleanup),
                 },
             };
         }
@@ -13306,7 +12927,10 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
                             ownerId,
                             backend: parsed.backend,
                             deviceId: parsed.deviceId,
-                            detail: error instanceof Error ? error.message : String(error),
+                            detail: hyperVBoundedErrorCode(
+                                error,
+                                "hyper-v-host-operation-lock-failed",
+                            ),
                         },
                     };
                 }

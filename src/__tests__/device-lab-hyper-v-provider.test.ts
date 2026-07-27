@@ -226,10 +226,24 @@ describe("Hyper-V provider adapter", () => {
         expect(loader).toContain("$E=[Console]::In.ReadToEnd().Trim()");
         expect(loader).toContain("[ScriptBlock]::Create($P)");
         expect(acquire.input).toMatch(/^[A-Za-z0-9+/=]+$/);
-        expect(scriptOf(acquire)).toContain("Save-BoundedDownload");
-        expect(scriptOf(acquire)).toContain("CCC_HYPER_V_RESULT_B64:");
+        const acquireScript = scriptOf(acquire);
+        expect(acquireScript).toContain("Save-BoundedDownload");
+        expect(acquireScript).toContain("CCC_HYPER_V_RESULT_B64:");
+        const acquireStages = [
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-hash-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-archive-check-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-extract-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-normalize-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-finalize-failed",
+        ];
+        for (let index = 1; index < acquireStages.length; index++) {
+            expect(acquireScript.indexOf(acquireStages[index - 1]))
+                .toBeLessThan(acquireScript.indexOf(acquireStages[index]));
+        }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(scriptOf(acquire)).toContain("ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
+        expect(acquireScript).toContain("ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -526,6 +540,10 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("$HostName.EndsWith('.microsoft.com')");
         expect(script).not.toMatch(/\$ValidateMicrosoftVhdx[^\n]+aka\.ms/);
         expect(script).toContain("AbsolutePath.EndsWith('.vhdx'");
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed"))
+            .toBeLessThan(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed"));
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed"))
+            .toBeLessThan(script.indexOf("Assert-BaseVhd $PartialPath"));
         expect(script).toContain("Assert-BaseVhd $PartialPath");
         expect(script).toContain("base.partial.vhdx");
         expect(script).toContain("hyper-v-base-image-unmanaged-existing");
@@ -555,6 +573,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'partner-images.canonical.com'");
         expect(script).toContain("Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256");
         expect(script).toContain("hyper-v-base-image-checksum-mismatch");
+        expect(script).toContain("hyper-v-base-image-hash-failed");
+        expect(script).toContain("hyper-v-base-image-archive-check-failed");
+        expect(script).toContain("hyper-v-base-image-extract-failed");
+        expect(script).toContain("hyper-v-base-image-inspection-failed");
+        expect(script).toContain("hyper-v-base-image-finalize-failed");
         expect(script).toContain("$MaximumArchiveEntries = 64");
         expect(script).toContain("$MaximumRegularFiles = 8");
         expect(script).toContain("$MaximumExtractedBytes = [long]64GB");
@@ -628,6 +651,16 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Hasher.ComputeHash($BaseImageStream)");
         expect(script).toContain("hyper-v-base-image-hash-mismatch");
         expect(script).toContain("hyper-v-created-disk-parent-mismatch");
+        const createStages = [
+            "CCC_HYPER_V_STAGE:hyper-v-vm-disk-create-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-vm-disk-inspection-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-vm-create-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-vm-configure-failed",
+        ];
+        for (let index = 1; index < createStages.length; index++) {
+            expect(script.indexOf(createStages[index - 1]))
+                .toBeLessThan(script.indexOf(createStages[index]));
+        }
         expect(script).toContain(`ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`);
         expect(script).toContain("AutomaticCheckpointsEnabled $false");
         expect(script).toContain("CheckpointType ProductionOnly");
