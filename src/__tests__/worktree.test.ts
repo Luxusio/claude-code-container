@@ -3965,13 +3965,13 @@ describe("getWorktreeGitMounts", () => {
             containerWorkspace,
             "services/catchy-api",
         );
-        const containerManagementDirectory = posix.resolve(
-            containerGitFileDirectory,
-            forwardPointer.replace(/\\/g, "/"),
-        );
         const actualContainerGitFile = posix.join(
             containerGitFileDirectory,
             ".git",
+        );
+        const containerManagementDirectory = posix.resolve(
+            containerGitFileDirectory,
+            forwardPointer.replace(/\\/g, "/"),
         );
         const compatibilityMount = mounts.find(({ containerPath }) => (
             containerPath === posix.join(containerManagementDirectory, "gitdir")
@@ -3989,6 +3989,66 @@ describe("getWorktreeGitMounts", () => {
         );
         expect(listed.status, listed.stderr).toBe(0);
         expect(listed.stdout).not.toContain("prunable");
+    });
+
+    it("projects tracked submodules from the verified source inventory when workspace discovery is stale", () => {
+        const sourcePath = join(tmpDir, "source-inventory-root");
+        const origin = join(tmpDir, "source-inventory-origin");
+        initRepo(sourcePath);
+        initRepo(origin);
+        expect(spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                origin,
+                "services/catchy-api",
+            ],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        const result = createWorkspace(sourcePath, "source-inventory");
+        renameSync(
+            join(result.workspacePath, ".gitmodules"),
+            join(result.workspacePath, ".gitmodules.stale"),
+        );
+
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/source-inventory-root--source-inventory",
+        );
+        const workspaceSubmoduleGit = posix.join(
+            "/project/source-inventory-root--source-inventory",
+            "services/catchy-api/.git",
+        );
+        const sourceSubmodule = join(sourcePath, "services", "catchy-api");
+        const commonGitDirectory = resolve(
+            sourceSubmodule,
+            spawnSync(
+                "git",
+                ["rev-parse", "--git-common-dir"],
+                {
+                    cwd: sourceSubmodule,
+                    encoding: "utf-8",
+                    stdio: "pipe",
+                },
+            ).stdout.trim(),
+        );
+
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === commonGitDirectory
+        ))).toBe(true);
+        expect(mounts.some(({ hostPath, containerPath }) => (
+            hostPath.endsWith(".ccc-container-gitdir")
+            && readFileSync(hostPath, "utf-8") === `${workspaceSubmoduleGit}\n`
+            && containerPath.endsWith("/gitdir")
+        ))).toBe(true);
     });
 
     it("projects old-form embedded tracked submodule worktree metadata", () => {

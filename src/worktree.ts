@@ -4208,23 +4208,6 @@ export function getWorktreeGitMounts(
             throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
         }
     }
-    const nestedRepositories = hasGitMetadata(resolved)
-        ? scanUnifiedNestedRepositories(
-            resolved,
-            { strict: required, allowRegisteredWorktrees: true },
-        )
-        : scanDirectory(resolved, { strict: required });
-    for (const entry of nestedRepositories) {
-        if (!entry.isGitRepo) continue;
-        const nestedGit = join(entry.path, ".git");
-        if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
-            gitFiles.push(nestedGit);
-        }
-    }
-    if (required && gitFiles.length === 0) {
-        throw new Error(`Required worktree metadata is missing: ${resolved}`);
-    }
-
     let unifiedSourceRoot: string | null = null;
     if (gitFiles.includes(rootGit)) {
         try {
@@ -4239,6 +4222,41 @@ export function getWorktreeGitMounts(
                 });
             }
         }
+    }
+    const nestedRepositories = unifiedSourceRoot
+        ? scanUnifiedNestedRepositories(
+            unifiedSourceRoot,
+            { strict: required },
+        ).flatMap((entry) => {
+            const workspacePath = join(
+                resolved,
+                ...entry.name.split("/"),
+            );
+            if (!pathExistsStrict(join(workspacePath, ".git"))) {
+                if (required) {
+                    throw new Error(
+                        `Required nested worktree metadata is missing: ${workspacePath}`,
+                    );
+                }
+                return [];
+            }
+            return [{ ...entry, path: workspacePath }];
+        })
+        : hasGitMetadata(resolved)
+            ? scanUnifiedNestedRepositories(
+                resolved,
+                { strict: required, allowRegisteredWorktrees: true },
+            )
+            : scanDirectory(resolved, { strict: required });
+    for (const entry of nestedRepositories) {
+        if (!entry.isGitRepo) continue;
+        const nestedGit = join(entry.path, ".git");
+        if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
+            gitFiles.push(nestedGit);
+        }
+    }
+    if (required && gitFiles.length === 0) {
+        throw new Error(`Required worktree metadata is missing: ${resolved}`);
     }
 
     for (const gitFile of gitFiles) {
