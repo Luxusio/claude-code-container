@@ -385,6 +385,7 @@ function removeRegisteredWorktree(
     registrationFence?: WorktreeRegistrationFence,
     sourceEnvironment?: NodeJS.ProcessEnv,
     mutationGuard?: () => void,
+    quarantinedContentGuard?: (quarantinedPath: string) => void,
 ): void {
     mutationGuard?.();
     const expectedBranch = registrationFence?.expectedRef.replace(/^refs\/heads\//, "");
@@ -457,6 +458,7 @@ function removeRegisteredWorktree(
                 );
             }
         }
+        quarantinedContentGuard?.(quarantine.path);
         const args = ["worktree", "remove", quarantine.path];
         if (force) args.push("--force");
         const removed = spawnSync(
@@ -744,14 +746,19 @@ export function assertWorkspaceBranch(
     expectedBranch: string,
     runner: typeof spawnSync = spawnSync,
     sourcePath?: string,
+    options: { allowTrackedGitlinks?: boolean } = {},
 ): void {
     if (!existsSync(workspacePath)) {
         throw new Error(`Workspace for branch '${expectedBranch}' no longer exists.`);
     }
     if (sourcePath) {
-        assertWorkspaceOwnership(workspacePath, sourcePath);
+        assertWorkspaceOwnership(workspacePath, sourcePath, options);
     }
-    const repositories = branchRepositories(workspacePath);
+    const repositories = branchRepositories(
+        workspacePath,
+        undefined,
+        options,
+    );
     if (repositories.length === 0) {
         throw new Error(`Unable to verify workspace branch '${expectedBranch}': no worktree repositories found.`);
     }
@@ -849,13 +856,136 @@ function gitLinkKind(gitPath: string): GitLinkKind {
 function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
     const result = spawnSync(
         "git",
-        ["ls-files", "--stage", "--", entryName],
+        ["ls-files", "--stage", "--", `:(literal)${entryName}`],
         { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
     if (result.error || result.status !== 0) return false;
-    return (result.stdout ?? "")
+    const matches = (result.stdout ?? "")
         .split(/\r?\n/)
-        .some((line) => line.startsWith("160000 "));
+        .filter((line) => {
+            const match = line.match(/^160000 [0-9a-f]+ 0\t(.+)$/i);
+            return match?.[1] === entryName;
+        });
+    return matches.length === 1;
+}
+
+type SubmoduleDeclaration = {
+    name: string;
+    path: string;
+};
+
+function submoduleDeclarations(
+    repositoryPath: string,
+    strict: boolean,
+): SubmoduleDeclaration[] {
+    if (!pathExistsStrict(join(repositoryPath, ".gitmodules"))) return [];
+    const configured = spawnSync(
+        "git",
+        [
+            "config",
+            "--null",
+            "--file",
+            ".gitmodules",
+            "--get-regexp",
+            "^submodule\\..*\\.path$",
+        ],
+        {
+            cwd: repositoryPath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        },
+    );
+    if (configured.error || (configured.status !== 0 && configured.status !== 1)) {
+        if (!strict) return [];
+        const detail = (configured.stderr ?? "").trim()
+            || configured.error?.message
+            || `git exited with status ${String(configured.status)}`;
+        throw new Error(
+            `Unable to inspect submodule configuration in '${repositoryPath}': ${detail}`,
+        );
+    }
+    if (configured.status === 1) return [];
+
+    const declarations: SubmoduleDeclaration[] = [];
+    for (const record of (configured.stdout ?? "").split("\0")) {
+        const separator = record.indexOf("\n");
+        if (separator < 0) continue;
+        const key = record.slice(0, separator);
+        const match = key.match(/^submodule\.(.*)\.path$/);
+        const name = match
+            ? normalizeNestedRepositoryName(match[1])
+            : null;
+        const path = normalizeNestedRepositoryName(record.slice(separator + 1));
+        if (!name || !path) {
+            if (strict) {
+                throw new Error(
+                    `Invalid submodule configuration in '${repositoryPath}'.`,
+                );
+            }
+            continue;
+        }
+        declarations.push({ name, path });
+    }
+    return declarations;
+}
+
+function trackedSubmoduleGitDirectoryIsOwned(
+    parentRepository: string,
+    candidateName: string,
+    candidatePath: string,
+): boolean {
+    if (!isTrackedGitlink(parentRepository, candidateName)) return false;
+    const declaration = submoduleDeclarations(parentRepository, true)
+        .find(({ path }) => path === candidateName);
+    if (!declaration) return false;
+
+    const gitDirectory = spawnSync(
+        "git",
+        ["rev-parse", "--git-dir"],
+        {
+            cwd: parentRepository,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        },
+    );
+    const gitDirectoryOutput = (gitDirectory.stdout ?? "").trim();
+    if (
+        gitDirectory.error
+        || gitDirectory.status !== 0
+        || !gitDirectoryOutput
+    ) return false;
+
+    const expectedGitDirectory = resolve(
+        parentRepository,
+        gitDirectoryOutput,
+        "modules",
+        ...declaration.name.split("/"),
+    );
+    const gitFile = join(candidatePath, ".git");
+    const content = readFileSync(gitFile, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return false;
+    const actualGitDirectory = resolve(dirname(gitFile), match[1].trim());
+    try {
+        const ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
+        const ownerGitRealpath = realpathSync(ownerGitDirectory);
+        let observedPath = ownerGitDirectory;
+        for (const segment of ["modules", ...declaration.name.split("/")]) {
+            observedPath = join(observedPath, segment);
+            const observed = lstatSync(observedPath);
+            if (observed.isSymbolicLink()) return false;
+        }
+        const expected = lstatSync(expectedGitDirectory);
+        if (!expected.isDirectory()) return false;
+        const relativeExpected = relative(
+            ownerGitRealpath,
+            realpathSync(expectedGitDirectory),
+        );
+        if (relativePathEscapesRoot(relativeExpected)) return false;
+        return sameObservedPath(actualGitDirectory, expectedGitDirectory);
+    } catch {
+        return false;
+    }
 }
 
 function sameObservedPath(left: string, right: string): boolean {
@@ -902,7 +1032,10 @@ function siblingRegisteredWorkspacePaths(workspacePath: string): string[] {
                 && registryContainsWorktree(sourcePath, workspacePath)) {
                 registered.push(workspacePath);
             }
-            for (const entry of scanUnifiedNestedRepositories(sourcePath, { strict: true })) {
+            for (const entry of scanUnifiedNestedRepositories(
+                sourcePath,
+                { strict: true, allowRegisteredWorktrees: true },
+            )) {
                 if (entry.isGitRepo
                     && registryContainsWorktree(
                         entry.path,
@@ -926,9 +1059,52 @@ function siblingSourceRegistersWorkspace(workspacePath: string): boolean {
     return siblingRegisteredWorkspacePaths(workspacePath).length > 0;
 }
 
+function primarySourceRepositoryForWorktree(
+    worktreePath: string,
+): string | null {
+    const gitFile = join(worktreePath, ".git");
+    if (!pathExistsStrict(gitFile) || gitLinkKind(gitFile) !== "worktree") {
+        return null;
+    }
+    const content = readFileSync(gitFile, "utf-8").trim();
+    const match = content.match(/^gitdir:\s*(.+)$/);
+    if (!match) return null;
+    const worktreeGitDirectory = resolve(
+        dirname(gitFile),
+        match[1].trim(),
+    );
+    const commonGitDirectory = resolve(worktreeGitDirectory, "..", "..");
+    const listed = spawnSync(
+        "git",
+        [
+            "--git-dir",
+            commonGitDirectory,
+            "worktree",
+            "list",
+            "--porcelain",
+        ],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) return null;
+    for (const line of (listed.stdout ?? "").split(/\r?\n/)) {
+        if (!line.startsWith("worktree ")) continue;
+        const candidate = line.slice("worktree ".length).trim();
+        if (!candidate || sameObservedPath(candidate, worktreePath)) continue;
+        const candidateGit = join(candidate, ".git");
+        if (!pathExistsStrict(candidateGit)) continue;
+        const observed = lstatSync(candidateGit);
+        if (observed.isFile() && gitLinkKind(candidateGit) === "worktree") {
+            continue;
+        }
+        if (isValidWorktree(worktreePath, candidate)) return candidate;
+    }
+    return null;
+}
+
 function branchRepositories(
     workspacePath: string,
     expectedTopology?: "root" | "children",
+    options: { allowTrackedGitlinks?: boolean } = {},
 ): Array<{ name: string; path: string }> {
     const rootGit = join(workspacePath, ".git");
     const hasRootGit = pathExistsStrict(rootGit);
@@ -940,6 +1116,22 @@ function branchRepositories(
     }
     if (hasRootGit) {
         const repositories = [{ name: basename(workspacePath), path: workspacePath }];
+        const rootKind = gitLinkKind(rootGit);
+        const sourceRoot = rootKind === "worktree"
+            ? primarySourceRepositoryForWorktree(workspacePath)
+            : null;
+        if (rootKind === "worktree" && !sourceRoot) {
+            throw new Error(
+                `Workspace root source ownership could not be established: ${workspacePath}`,
+            );
+        }
+        const sourceRepositories = sourceRoot
+            ? new Map(
+                scanUnifiedNestedRepositories(sourceRoot, { strict: true })
+                    .filter((entry) => entry.isGitRepo)
+                    .map((entry) => [entry.name, entry.path]),
+            )
+            : null;
         const nestedRepositories = scanUnifiedNestedRepositories(
             workspacePath,
             { strict: true, allowRegisteredWorktrees: true },
@@ -948,6 +1140,18 @@ function branchRepositories(
             if (!entry.isGitRepo) continue;
             const kind = gitLinkKind(join(entry.path, ".git"));
             if (kind === "worktree") {
+                const sourceRepository = sourceRepositories?.get(entry.name);
+                if (
+                    sourceRepositories
+                    && (
+                        !sourceRepository
+                        || !isValidWorktree(entry.path, sourceRepository)
+                    )
+                ) {
+                    throw new Error(
+                        `Workspace repository '${entry.name}' is not owned by its source repository.`,
+                    );
+                }
                 repositories.push({ name: entry.name, path: entry.path });
                 continue;
             }
@@ -957,7 +1161,10 @@ function branchRepositories(
                     nestedRepositories,
                     entry,
                 )) {
-                continue;
+                if (options.allowTrackedGitlinks) continue;
+                throw new Error(
+                    `Workspace tracked submodule '${entry.name}' is not a linked worktree.`,
+                );
             }
             throw new Error(`Workspace contains unmanaged Git repository '${entry.name}'.`);
         }
@@ -979,12 +1186,25 @@ export function hasGitMetadata(repositoryPath: string): boolean {
     }
 }
 
-function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): void {
+function assertWorkspaceOwnership(
+    workspacePath: string,
+    sourcePath: string,
+    options: { allowTrackedGitlinks?: boolean } = {},
+): void {
     const resolvedSource = resolve(sourcePath);
     if (hasGitMetadata(resolvedSource)) {
         assertWorkspaceRootOwnership(workspacePath, resolvedSource);
+        const sourceGit = join(resolvedSource, ".git");
+        const sourceIsWorktree = lstatSync(sourceGit).isFile()
+            && gitLinkKind(sourceGit) === "worktree";
         const sourceRepositories = new Map(
-            scanUnifiedNestedRepositories(resolvedSource, { strict: true })
+            scanUnifiedNestedRepositories(
+                resolvedSource,
+                {
+                    strict: true,
+                    allowRegisteredWorktrees: sourceIsWorktree,
+                },
+            )
                 .filter((entry) => entry.isGitRepo)
                 .map((entry) => [entry.name, entry]),
         );
@@ -992,11 +1212,11 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
         for (const source of sourceRepositoryEntries) {
             const destinationGit = join(workspacePath, source.name, ".git");
             if (!pathExistsStrict(destinationGit)
-                && !isNestedTrackedGitlink(
+                && !(options.allowTrackedGitlinks && isNestedTrackedGitlink(
                     resolvedSource,
                     sourceRepositoryEntries,
                     source,
-                )) {
+                ))) {
                 throw new Error(
                     `Workspace repository '${source.name}' is not owned by its source repository.`,
                 );
@@ -1017,7 +1237,12 @@ function assertWorkspaceOwnership(workspacePath: string, sourcePath: string): vo
                     workspacePath,
                     destinationRepositories,
                     destination,
-                )) continue;
+                )) {
+                if (options.allowTrackedGitlinks) continue;
+                throw new Error(
+                    `Workspace tracked submodule '${destination.name}' is not a linked worktree.`,
+                );
+            }
             if (kind !== "worktree" || !isValidWorktree(destination.path, source.path)) {
                 throw new Error(`Workspace repository '${destination.name}' is not owned by its source repository.`);
             }
@@ -1238,7 +1463,11 @@ function nestedRepositoryCandidateIsSafe(
         const kind = gitLinkKind(join(candidatePath, ".git"));
         if (kind === "worktree" && allowRegisteredWorktrees) return true;
         if (kind === "gitlink"
-            && isTrackedGitlink(parentRepository, candidateName)) return true;
+            && trackedSubmoduleGitDirectoryIsOwned(
+                parentRepository,
+                candidateName,
+                candidatePath,
+            )) return true;
         throw new Error(
             `Nested Git repository metadata is not owned by its parent or a registered worktree: ${candidatePath}`,
         );
@@ -1280,6 +1509,97 @@ function scanUnifiedNestedRepositories(
         for (const entry of scanDirectory(currentRepository, options)) {
             if (!entry.isGitRepo) continue;
             candidates.set(entry.name, entry);
+        }
+
+        const gitmodulesPath = join(currentRepository, ".gitmodules");
+        if (pathExistsStrict(gitmodulesPath)) {
+            const configured = spawnSync(
+                "git",
+                [
+                    "config",
+                    "--null",
+                    "--file",
+                    ".gitmodules",
+                    "--get-regexp",
+                    "^submodule\\..*\\.path$",
+                ],
+                {
+                    cwd: currentRepository,
+                    encoding: "utf-8",
+                    stdio: ["pipe", "pipe", "pipe"],
+                },
+            );
+            const declaredNames = configured.status === 0
+                ? (configured.stdout ?? "")
+                    .split("\0")
+                    .map((record) => {
+                        const separator = record.indexOf("\n");
+                        return separator < 0
+                            ? null
+                            : normalizeNestedRepositoryName(record.slice(separator + 1));
+                    })
+                    .filter((name): name is string => Boolean(name))
+                : [];
+            if (configured.error || (configured.status !== 0 && configured.status !== 1)) {
+                if (options.strict) {
+                    const detail = (configured.stderr ?? "").trim()
+                        || configured.error?.message
+                        || `git exited with status ${String(configured.status)}`;
+                    throw new Error(
+                        `Unable to inspect submodule configuration in '${currentRepository}': ${detail}`,
+                    );
+                }
+            } else if (declaredNames.length > 0) {
+                const tracked = spawnSync(
+                    "git",
+                    [
+                        "ls-files",
+                        "--stage",
+                        "-z",
+                        "--",
+                        ...declaredNames.map((name) => `:(literal)${name}`),
+                    ],
+                    {
+                        cwd: currentRepository,
+                        encoding: "utf-8",
+                        stdio: ["pipe", "pipe", "pipe"],
+                    },
+                );
+                if (tracked.error || tracked.status !== 0) {
+                    if (options.strict) {
+                        const detail = (tracked.stderr ?? "").trim()
+                            || tracked.error?.message
+                            || `git exited with status ${String(tracked.status)}`;
+                        throw new Error(
+                            `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
+                        );
+                    }
+                } else {
+                    for (const record of (tracked.stdout ?? "").split("\0")) {
+                        if (!record.startsWith("160000 ")) continue;
+                        const separator = record.indexOf("\t");
+                        if (separator < 0) continue;
+                        const name = normalizeNestedRepositoryName(
+                            record.slice(separator + 1),
+                        );
+                        if (!name || candidates.has(name)) continue;
+                        const candidatePath = join(currentRepository, ...name.split("/"));
+                        if (!pathExistsStrict(join(candidatePath, ".git"))) {
+                            if (options.strict) {
+                                throw new Error(
+                                    `Tracked submodule repository is not initialized: ${candidatePath}`,
+                                );
+                            }
+                            continue;
+                        }
+                        candidates.set(name, {
+                            name,
+                            path: candidatePath,
+                            isGitRepo: true,
+                        });
+                    }
+                }
+            }
         }
 
         const candidateCommands = [
@@ -2815,66 +3135,6 @@ export function workspaceExists(sourcePath: string, branch: string): boolean {
     return existsSync(wsPath);
 }
 
-function initializeNestedSubmodules(worktreePath: string): void {
-    const before = spawnSync(
-        "git",
-        ["submodule", "status", "--recursive"],
-        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (before.error || before.status !== 0) {
-        throw new Error(
-            (before.stderr ?? "").trim()
-            || before.error?.message
-            || "unable to inspect nested submodules",
-        );
-    }
-    if (!(before.stdout ?? "").trim()) return;
-    const localSubmodules = spawnSync(
-        "git",
-        ["config", "--bool", "--get", "ccc.localSubmodules"],
-        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const updateArgs = localSubmodules.status === 0
-        && (localSubmodules.stdout ?? "").trim() === "true"
-        ? [
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-        ]
-        : ["submodule", "update", "--init", "--recursive"];
-    const updated = spawnSync(
-        "git",
-        updateArgs,
-        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    if (updated.error || updated.status !== 0) {
-        throw new Error(
-            (updated.stderr ?? "").trim()
-            || updated.error?.message
-            || "unable to initialize nested submodules",
-        );
-    }
-    const verified = spawnSync(
-        "git",
-        ["submodule", "status", "--recursive"],
-        { cwd: worktreePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-    );
-    const invalid = (verified.stdout ?? "")
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .some((line) => line[0] !== " ");
-    if (verified.error || verified.status !== 0 || invalid) {
-        throw new Error(
-            (verified.stderr ?? "").trim()
-            || verified.error?.message
-            || "nested submodule initialization could not be verified",
-        );
-    }
-}
-
 /**
  * List all workspaces for a given source path.
  * Finds sibling directories matching the pattern: {dirname}--*
@@ -3011,7 +3271,7 @@ function getRemoteUrl(repoPath: string): string {
  *
  * - git init the directory
  * - For each child git repo: add as submodule using its remote URL
- * - Submodules track their current branch (not pinned to specific commits)
+ * - Submodules remain registered without automatic checkout updates
  * - Sets ignore = all so parent doesn't report submodule changes as dirty
  * - Commits the initial state
  *
@@ -3084,9 +3344,9 @@ export function initWithSubmodules(dirPath: string): void {
         }
     }
 
-    // Configure submodules: ignore = all + update = rebase
+    // Configure submodules: ignore = all + update = none
     // ignore = all: parent won't report submodule content changes as dirty
-    // update = rebase: submodules follow branch, not pinned to commits
+    // update = none: generic recursive updates cannot reset active development
     for (const repo of gitRepos) {
         spawnSync(
             "git",
@@ -3095,7 +3355,7 @@ export function initWithSubmodules(dirPath: string): void {
         );
         spawnSync(
             "git",
-            ["config", "-f", ".gitmodules", `submodule.${repo.name}.update`, "rebase"],
+            ["config", "-f", ".gitmodules", `submodule.${repo.name}.update`, "none"],
             { cwd: resolved, stdio: "pipe" },
         );
     }
@@ -3116,8 +3376,7 @@ export function initWithSubmodules(dirPath: string): void {
  * Two modes:
  *
  * 1. **Unified mode** (sourcePath is a git repo):
- *    - Creates a single worktree of the top-level repo
- *    - Initializes submodules with --remote (tracks branches, not pinned commits)
+ *    - Creates linked worktrees for the top-level repo and initialized submodules
  *    - All files (.claude, .env, etc.) are part of the repo, fully isolated
  *
  * 2. **Multi-repo mode** (sourcePath is NOT a git repo):
@@ -3208,9 +3467,6 @@ function createUnifiedWorkspace(
         registrationFence,
         wsPath,
     );
-
-    // Init submodules if any (without --remote to avoid fetch failures on local repos)
-    initializeNestedSubmodules(wsPath);
 
     const dirName = basename(resolved);
     let nestedCreated: WorktreeRepoResult[];
@@ -3496,8 +3752,6 @@ function createMultiRepoWorkspace(
  * Repair an existing workspace by creating worktrees for nested git repos
  * that are missing or empty in the workspace directory.
  *
- * Also initializes submodules if they haven't been initialized yet.
- *
  * This is useful when:
  * - A workspace was created before this feature existed
  * - New nested git repos were added to the source after workspace creation
@@ -3516,15 +3770,20 @@ export function repairWorkspace(
     if (!hasGitMetadata(resolved)) {
         return [];
     }
+    const primarySource = primarySourceRepositoryForWorktree(resolved);
+    if (gitLinkKind(join(resolved, ".git")) === "worktree") {
+        if (!primarySource) {
+            throw new Error(
+                `Source worktree ownership could not be established: ${resolved}`,
+            );
+        }
+        assertWorkspaceOwnership(resolved, primarySource);
+    }
     assertWorkspaceRootOwnership(wsPath, resolved);
 
-    // Try to init submodules that may not be initialized yet
-    initializeNestedSubmodules(wsPath);
-
-    // Create worktrees for nested git repos not managed as submodules.
-    // In unified mode, git worktree only checks out the top-level repo.
-    // Nested git repos (gitignored or gitlink entries without submodule config)
-    // end up as empty or missing directories in the worktree.
+    // In unified mode, the root worktree does not populate nested repositories.
+    // Initialized submodules and ignored nested repositories both receive linked
+    // worktrees so the source checkout is never reset by a submodule update.
     const created: WorktreeRepoResult[] = [];
     const rollbackOids = new Map<string, BranchCreationFence | null>();
     const registrationFences = new Map<string, WorktreeRegistrationFence>();
@@ -3535,11 +3794,13 @@ export function repairWorkspace(
         parents: Array<{ path: string; identity: DirectoryIdentity }>;
     }>();
     const blockedRepositoryPrefixes: string[] = [];
-    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
-    const workspaceRepositoryEntries = sourceEntries.map((sourceEntry) => ({
-        ...sourceEntry,
-        path: join(wsPath, sourceEntry.name),
-    }));
+    const sourceEntries = scanUnifiedNestedRepositories(
+        resolved,
+        {
+            strict: true,
+            allowRegisteredWorktrees: Boolean(primarySource),
+        },
+    );
     const sourceRepositoryIdentities = new Map(
         sourceEntries
             .filter((entry) => entry.isGitRepo)
@@ -3678,7 +3939,6 @@ export function repairWorkspace(
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
-        if (isNestedTrackedGitlink(resolved, sourceEntries, entry)) continue;
         if (blockedRepositoryPrefixes.some((prefix) => (
             entry.name.startsWith(`${prefix}/`)
         ))) {
@@ -3724,18 +3984,7 @@ export function repairWorkspace(
             const destIdentity = captureDirectoryIdentity(destPath);
             const contents = readdirSync(destPath);
             if (contents.length > 0) {
-                const nestedGitPath = join(destPath, ".git");
-                const managedSubmodule = pathExistsStrict(nestedGitPath)
-                    && gitLinkKind(nestedGitPath) === "gitlink"
-                    && isNestedTrackedGitlink(
-                        wsPath,
-                        workspaceRepositoryEntries,
-                        {
-                            ...entry,
-                            path: destPath,
-                        },
-                    );
-                if (!managedSubmodule && !isValidWorktree(destPath, entry.path)) {
+                if (!isValidWorktree(destPath, entry.path)) {
                     blockedRepositoryPrefixes.push(entry.name);
                 }
                 operationGuard();
@@ -3795,19 +4044,8 @@ export function repairWorkspace(
             sourceIdentity,
         );
 
-        let nestedFailureDetail: string | null = null;
-        if (!nestedResult.error && nestedResult.status === 0) {
-            try {
-                operationGuard();
-                initializeNestedSubmodules(destPath);
-                operationGuard();
-            } catch (error) {
-                nestedFailureDetail = `submodule initialization failed: ${(error as Error).message}`;
-            }
-        }
-        if (nestedResult.error || nestedResult.status !== 0 || nestedFailureDetail) {
-            const detail = nestedFailureDetail
-                || (nestedResult.stderr ?? "").trim()
+        if (nestedResult.error || nestedResult.status !== 0) {
+            const detail = (nestedResult.stderr ?? "").trim()
                 || nestedResult.error?.message
                 || `git exited with status ${String(nestedResult.status)}`;
             try {
@@ -3939,6 +4177,22 @@ export function getWorktreeGitMounts(
         throw new Error(`Required worktree metadata is missing: ${resolved}`);
     }
 
+    let unifiedSourceRoot: string | null = null;
+    if (gitFiles.includes(rootGit)) {
+        try {
+            unifiedSourceRoot = primarySourceRepositoryForWorktree(resolved);
+            if (required && !unifiedSourceRoot) {
+                throw new Error("worktree source ownership could not be established");
+            }
+        } catch (error) {
+            if (required) {
+                throw new Error(`Required worktree metadata is invalid: ${rootGit}`, {
+                    cause: error,
+                });
+            }
+        }
+    }
+
     for (const gitFile of gitFiles) {
         const gitFileIdentity = capturePathIdentity(gitFile);
         let kind: GitLinkKind;
@@ -3963,7 +4217,14 @@ export function getWorktreeGitMounts(
         const resolvedGitdir = resolve(dirname(gitFile), rawGitDirectory);
         const sourceGitDir = resolve(resolvedGitdir, "..", "..");
         const sourceIdentity = captureDirectoryIdentity(sourceGitDir);
-        const sourceRepoDir = dirname(sourceGitDir);
+        const repositoryRelativePath = relative(resolved, dirname(gitFile))
+            .replace(/\\/g, "/");
+        const sourceRepoDir = unifiedSourceRoot
+            ? join(
+                unifiedSourceRoot,
+                ...repositoryRelativePath.split("/").filter(Boolean),
+            )
+            : dirname(sourceGitDir);
         if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
@@ -3973,8 +4234,6 @@ export function getWorktreeGitMounts(
             gitFileIdentity,
         );
         const sourceBasename = basename(sourceRepoDir);
-        const repositoryRelativePath = relative(resolved, dirname(gitFile))
-            .replace(/\\/g, "/");
         const containerGitFileDirectory = containerWorkspacePath
             ? posix.join(
                 containerWorkspacePath,
@@ -4070,11 +4329,16 @@ export function isValidWorktree(
         let actualSourceGitDir: string;
         try {
             if (lstatSync(sourceGitPath).isFile()) {
-                // Source is a submodule — parse gitlink to find actual git dir
                 const srcContent = readFileSync(sourceGitPath, "utf-8").trim();
                 const srcMatch = srcContent.match(/^gitdir:\s*(.+)$/);
                 if (!srcMatch) return false;
-                actualSourceGitDir = resolve(sourceRepoPath, srcMatch[1].trim());
+                const sourceLinkedGitDirectory = resolve(
+                    sourceRepoPath,
+                    srcMatch[1].trim(),
+                );
+                actualSourceGitDir = gitLinkKind(sourceGitPath) === "worktree"
+                    ? resolve(sourceLinkedGitDirectory, "..", "..")
+                    : sourceLinkedGitDirectory;
             } else {
                 actualSourceGitDir = sourceGitPath;
             }
@@ -4140,11 +4404,18 @@ export function detectBrokenWorktrees(
     }
 
     const broken: BrokenWorktreeEntry[] = [];
-    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
+    const sourceEntries = scanUnifiedNestedRepositories(
+        resolved,
+        {
+            strict: true,
+            allowRegisteredWorktrees: Boolean(
+                primarySourceRepositoryForWorktree(resolved),
+            ),
+        },
+    );
 
     for (const entry of sourceEntries) {
         if (!entry.isGitRepo) continue;
-        if (isNestedTrackedGitlink(resolved, sourceEntries, entry)) continue;
 
         const destPath = join(wsPath, entry.name);
         if (!existsSync(destPath)) continue;
@@ -4197,10 +4468,17 @@ export function fixBrokenWorktree(
     assertWorkspaceRootOwnership(wsPath, resolved);
 
     // Find the source repo
-    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
+    const sourceEntries = scanUnifiedNestedRepositories(
+        resolved,
+        {
+            strict: true,
+            allowRegisteredWorktrees: Boolean(
+                primarySourceRepositoryForWorktree(resolved),
+            ),
+        },
+    );
     const sourceRepo = sourceEntries.find((e) => e.name === repoName && e.isGitRepo);
     if (!sourceRepo) return null;
-    if (isNestedTrackedGitlink(resolved, sourceEntries, sourceRepo)) return null;
     const destPath = join(wsPath, ...sourceRepo.name.split("/"));
     for (const ancestor of sourceEntries.filter((entry) => (
         entry.isGitRepo
@@ -4399,7 +4677,6 @@ export function fixBrokenWorktree(
             if (!isValidWorktree(destPath, sourceRepo.path)) {
                 throw new Error("Created worktree ownership could not be verified.");
             }
-            initializeNestedSubmodules(destPath);
             operationGuard();
             assertQuarantinedIdentity(backup.path, backupIdentity, "directory");
             for (const name of readdirSync(backup.path)) {
@@ -4503,7 +4780,13 @@ export function removeWorkspace(
         throw new Error(`Workspace not found: ${wsPath}`);
     }
 
-    assertWorkspaceBranch(wsPath, branch, spawnSync, resolved);
+    assertWorkspaceBranch(
+        wsPath,
+        branch,
+        spawnSync,
+        resolved,
+        { allowTrackedGitlinks: true },
+    );
     const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     // Unified mode: top-level is a git repo → remove single worktree
@@ -4525,9 +4808,49 @@ function removeUnifiedWorkspace(
     const removed: string[] = [];
     const errors: string[] = [];
 
-    // Remove nested worktrees before removing the parent.
-    // These are worktrees created for nested git repos (non-submodule).
-    const sourceEntries = scanUnifiedNestedRepositories(resolved, { strict: true });
+    const sourceEntries = scanUnifiedNestedRepositories(
+        resolved,
+        {
+            strict: true,
+            allowRegisteredWorktrees: Boolean(
+                primarySourceRepositoryForWorktree(resolved),
+            ),
+        },
+    );
+    const inspectRootStatus = (path = wsPath) => spawnSync(
+        "git",
+        [
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+            "--",
+            ".",
+            ...sourceEntries.map(({ name }) => `:(exclude,literal)${name}`),
+        ],
+        { cwd: path, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const rootStatus = inspectRootStatus();
+    if (rootStatus.error || rootStatus.status !== 0) {
+        return {
+            removed,
+            errors: [
+                (rootStatus.stderr ?? "").trim()
+                || rootStatus.error?.message
+                || "unable to inspect root worktree status",
+            ],
+        };
+    }
+    if (opts?.force !== true && (rootStatus.stdout ?? "").trim()) {
+        return {
+            removed,
+            errors: [
+                "root worktree contains modified or untracked files, use --force to delete it",
+            ],
+        };
+    }
+
+    // Remove every linked nested worktree before removing the parent.
     const workspaceRepositoryEntries = sourceEntries.map((sourceEntry) => ({
         ...sourceEntry,
         path: join(wsPath, sourceEntry.name),
@@ -4583,6 +4906,31 @@ function removeUnifiedWorkspace(
                     path: nestedPath,
                 },
             )) {
+            const nestedStatus = spawnSync(
+                "git",
+                ["status", "--porcelain=v1", "--untracked-files=all"],
+                {
+                    cwd: nestedPath,
+                    encoding: "utf-8",
+                    stdio: ["pipe", "pipe", "pipe"],
+                },
+            );
+            if (nestedStatus.error || nestedStatus.status !== 0) {
+                errors.push(
+                    `${entry.name}: ${
+                        (nestedStatus.stderr ?? "").trim()
+                        || nestedStatus.error?.message
+                        || "unable to inspect tracked submodule status"
+                    }`,
+                );
+            } else if (
+                opts?.force !== true
+                && (nestedStatus.stdout ?? "").trim()
+            ) {
+                errors.push(
+                    `${entry.name}: tracked submodule contains modified or untracked files, use --force to delete it`,
+                );
+            }
             continue;
         }
         if (!isValidWorktree(nestedPath, entry.path)) {
@@ -4631,6 +4979,25 @@ function removeUnifiedWorkspace(
                 : `Unable to determine worktree branch in '${basename(wsPath)}'.`,
         );
     }
+    const finalRootStatus = inspectRootStatus();
+    if (finalRootStatus.error || finalRootStatus.status !== 0) {
+        return {
+            removed,
+            errors: [
+                (finalRootStatus.stderr ?? "").trim()
+                || finalRootStatus.error?.message
+                || "unable to re-inspect root worktree status",
+            ],
+        };
+    }
+    if (opts?.force !== true && (finalRootStatus.stdout ?? "").trim()) {
+        return {
+            removed,
+            errors: [
+                "root worktree changed during removal, use --force to delete it",
+            ],
+        };
+    }
     try {
         const registrationFence = captureExistingWorktreeRegistrationFence(
             resolved,
@@ -4642,9 +5009,31 @@ function removeUnifiedWorkspace(
             resolved,
             wsPath,
             workspaceIdentity,
-            opts?.force === true,
+            true,
             dirname(wsPath),
             registrationFence,
+            undefined,
+            undefined,
+            opts?.force === true
+                ? undefined
+                : (quarantinedPath) => {
+                    const quarantinedStatus = inspectRootStatus(quarantinedPath);
+                    if (
+                        quarantinedStatus.error
+                        || quarantinedStatus.status !== 0
+                    ) {
+                        throw new Error(
+                            (quarantinedStatus.stderr ?? "").trim()
+                            || quarantinedStatus.error?.message
+                            || "unable to inspect quarantined root worktree status",
+                        );
+                    }
+                    if ((quarantinedStatus.stdout ?? "").trim()) {
+                        throw new Error(
+                            "root worktree changed during removal, use --force to delete it",
+                        );
+                    }
+                },
         );
         removed.push(basename(resolved));
     } catch (error) {

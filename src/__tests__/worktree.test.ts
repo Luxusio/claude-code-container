@@ -12,7 +12,7 @@ import {
     statSync,
     chmodSync,
 } from "fs";
-import { join, dirname, basename } from "path";
+import { join, dirname, basename, resolve } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
@@ -1151,6 +1151,47 @@ describe("assertWorkspaceBranch", () => {
             .toThrow("do not share one checked-out branch");
     });
 
+    it("rejects a same-branch nested worktree owned by another repository", () => {
+        const nestedSource = join(repoPath, "nested-owned");
+        const foreignSource = join(repoPath, "foreign-source");
+        initRepo(nestedSource);
+        initRepo(foreignSource);
+        const result = createWorkspace(repoPath, "nested-owner-check");
+        const nestedWorkspace = join(result.workspacePath, "nested-owned");
+        const foreignWorkspace = join(
+            result.workspacePath,
+            "foreign-source",
+        );
+        spawnSync("git", ["worktree", "remove", "--force", nestedWorkspace], {
+            cwd: nestedSource,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["worktree", "remove", "--force", foreignWorkspace], {
+            cwd: foreignSource,
+            stdio: "pipe",
+        });
+        const replacement = spawnSync(
+            "git",
+            [
+                "worktree",
+                "add",
+                nestedWorkspace,
+                "nested-owner-check",
+            ],
+            { cwd: foreignSource, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(replacement.status, replacement.stderr).toBe(0);
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("is not owned by its source repository");
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-owner-check",
+            spawnSync,
+            repoPath,
+        )).toThrow("is not owned by its source repository");
+    });
+
     it("rejects a unified workspace when registered nested metadata disappears", () => {
         const nestedSource = join(repoPath, "nested");
         initRepo(nestedSource);
@@ -1490,7 +1531,7 @@ describe("initWithSubmodules", () => {
         expect(gitmodules).toContain("repo-a");
     });
 
-    it("configures ignore = all and update = rebase", () => {
+    it("configures ignore = all and disables automatic submodule updates", () => {
         initRepo(join(tmpDir, "repo-a"));
 
         initWithSubmodules(tmpDir);
@@ -1501,8 +1542,8 @@ describe("initWithSubmodules", () => {
         );
         // ignore = all: parent won't report submodule changes as dirty
         expect(gitmodules).toContain("ignore = all");
-        // update = rebase: follow branch, not pinned to commits
-        expect(gitmodules).toContain("update = rebase");
+        // update = none: recursive updates cannot reset active development
+        expect(gitmodules).toContain("update = none");
     });
 
     it("uses remote URL when available", () => {
@@ -1604,14 +1645,62 @@ describe("createWorkspace (unified mode)", () => {
         expect(existsSync(join(result.workspacePath, ".env"))).toBe(true);
     });
 
-    it("creates worktree after initWithSubmodules", () => {
+    it("creates a clean chained workspace from an existing CCC worktree", () => {
+        initRepo(tmpDir);
+        initRepo(join(tmpDir, "nested"));
+        const first = createWorkspace(tmpDir, "first-workspace");
+        const second = createWorkspace(first.workspacePath, "second-workspace");
+
+        expect(isValidWorktree(second.workspacePath, tmpDir)).toBe(true);
+        expect(isValidWorktree(
+            join(second.workspacePath, "nested"),
+            join(tmpDir, "nested"),
+        )).toBe(true);
+        expect(detectWorktreeWorkspaceBranch(second.workspacePath))
+            .toBe("second-workspace");
+
+        const secondRemoval = removeWorkspace(
+            first.workspacePath,
+            "second-workspace",
+        );
+        expect(secondRemoval.errors).toEqual([]);
+        expect(existsSync(second.workspacePath)).toBe(false);
+        const firstRemoval = removeWorkspace(tmpDir, "first-workspace");
+        expect(firstRemoval.errors).toEqual([]);
+        expect(existsSync(first.workspacePath)).toBe(false);
+    });
+
+    it("creates and removes a linked worktree for a tracked submodule", () => {
         initRepo(join(tmpDir, "repo-a"));
         mkdirSync(join(tmpDir, ".claude"));
         writeFileSync(join(tmpDir, ".claude", "settings.json"), "{}");
 
         initWithSubmodules(tmpDir);
+        const sourceSubmodule = join(tmpDir, "repo-a");
+        const sourceBranchBefore = spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim();
+        const sourceHeadBefore = spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim();
+        const sourceStatusBefore = spawnSync(
+            "git",
+            ["status", "--porcelain=v1"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout;
+        writeFileSync(join(sourceSubmodule, "source-only.txt"), "preserve");
+        const dirtySourceStatus = spawnSync(
+            "git",
+            ["status", "--porcelain=v1"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout;
 
         const result = createWorkspace(tmpDir, "feature");
+        const submoduleWorktree = join(result.workspacePath, "repo-a");
 
         expect(existsSync(result.workspacePath)).toBe(true);
         expect(result.created.length).toBeGreaterThanOrEqual(1);
@@ -1621,10 +1710,162 @@ describe("createWorkspace (unified mode)", () => {
             existsSync(join(result.workspacePath, ".claude", "settings.json")),
         ).toBe(true);
 
-        // Submodule files should be checked out in worktree
         expect(
-            existsSync(join(result.workspacePath, "repo-a", "init.txt")),
+            existsSync(join(submoduleWorktree, "init.txt")),
         ).toBe(true);
+        expect(isValidWorktree(submoduleWorktree, sourceSubmodule)).toBe(true);
+        expect(spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: submoduleWorktree, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim()).toBe("feature");
+        expect(result.created.map(({ name }) => name)).toContain("repo-a");
+        expect(spawnSync(
+            "git",
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim()).toBe(sourceBranchBefore);
+        expect(spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim()).toBe(sourceHeadBefore);
+        expect(spawnSync(
+            "git",
+            ["status", "--porcelain=v1"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout).toBe(dirtySourceStatus);
+        expect(readFileSync(join(sourceSubmodule, "source-only.txt"), "utf-8"))
+            .toBe("preserve");
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/feature",
+        );
+        const submoduleCommonGitDirectory = spawnSync(
+            "git",
+            ["rev-parse", "--git-common-dir"],
+            {
+                cwd: sourceSubmodule,
+                encoding: "utf-8",
+                stdio: "pipe",
+            },
+        ).stdout.trim();
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === resolve(sourceSubmodule, submoduleCommonGitDirectory)
+        ))).toBe(true);
+
+        const removed = removeWorkspace(tmpDir, "feature");
+        expect(removed.errors).toEqual([]);
+        expect(removed.removed).toContain("repo-a");
+        expect(spawnSync(
+            "git",
+            ["worktree", "list", "--porcelain"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout).not.toContain(submoduleWorktree);
+        expect(sourceStatusBefore).not.toBe(dirtySourceStatus);
+    });
+
+    it("fails without initializing an unavailable tracked submodule", () => {
+        initRepo(join(tmpDir, "repo-a"));
+        initWithSubmodules(tmpDir);
+        const sourceSubmodule = join(tmpDir, "repo-a");
+        const deinitialized = spawnSync(
+            "git",
+            ["submodule", "deinit", "--force", "--", "repo-a"],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(deinitialized.status, deinitialized.stderr).toBe(0);
+        expect(existsSync(join(sourceSubmodule, ".git"))).toBe(false);
+
+        const workspacePath = getWorkspacePath(tmpDir, "unavailable-submodule");
+        expect(() => createWorkspace(tmpDir, "unavailable-submodule"))
+            .toThrow("Tracked submodule repository is not initialized");
+        expect(existsSync(workspacePath)).toBe(false);
+        expect(existsSync(join(sourceSubmodule, ".git"))).toBe(false);
+        expect(branchExistsInRepo(tmpDir, "unavailable-submodule")).toBe("none");
+    });
+
+    it("rejects a tracked submodule whose Git directory belongs to another repository", () => {
+        const parent = join(tmpDir, "parent");
+        const origin = join(tmpDir, "origin");
+        const external = join(tmpDir, "external");
+        initRepo(parent);
+        initRepo(origin);
+        initRepo(external);
+        const added = spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                origin,
+                "repo-a",
+            ],
+            { cwd: parent, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], {
+            cwd: parent,
+            stdio: "pipe",
+        });
+        const externalBranchesBefore = spawnSync(
+            "git",
+            ["for-each-ref", "--format=%(refname)", "refs/heads"],
+            { cwd: external, encoding: "utf-8", stdio: "pipe" },
+        ).stdout;
+        writeFileSync(
+            join(parent, "repo-a", ".git"),
+            `gitdir: ${join(external, ".git")}\n`,
+        );
+
+        expect(() => createWorkspace(parent, "forged-submodule"))
+            .toThrow("metadata is not owned by its parent");
+        expect(existsSync(getWorkspacePath(parent, "forged-submodule")))
+            .toBe(false);
+        expect(spawnSync(
+            "git",
+            ["for-each-ref", "--format=%(refname)", "refs/heads"],
+            { cwd: external, encoding: "utf-8", stdio: "pipe" },
+        ).stdout).toBe(externalBranchesBefore);
+    });
+
+    it("rejects tracked submodule storage reached through a symlinked ancestor", () => {
+        const parent = join(tmpDir, "symlink-parent");
+        const origin = join(tmpDir, "symlink-origin");
+        const externalStorage = join(tmpDir, "external-module-storage");
+        initRepo(parent);
+        initRepo(origin);
+        const added = spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                origin,
+                "group/repo-a",
+            ],
+            { cwd: parent, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add nested submodule"], {
+            cwd: parent,
+            stdio: "pipe",
+        });
+        const moduleGroup = join(parent, ".git", "modules", "group");
+        renameSync(moduleGroup, externalStorage);
+        symlinkSync(
+            externalStorage,
+            moduleGroup,
+            process.platform === "win32" ? "junction" : "dir",
+        );
+
+        expect(() => createWorkspace(parent, "symlinked-submodule"))
+            .toThrow("metadata is not owned by its parent");
+        expect(existsSync(getWorkspacePath(parent, "symlinked-submodule")))
+            .toBe(false);
     });
 
     it("creates worktrees for nested git repos not managed as submodules", () => {
@@ -1764,7 +2005,7 @@ describe("createWorkspace (unified mode)", () => {
             .toBe("recursive-feature");
     });
 
-    it("initializes submodules owned by a newly created ignored repository", () => {
+    it("creates linked worktrees for submodules owned by an ignored repository", () => {
         const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-submodule-origin`);
         try {
             initRepo(tmpDir);
@@ -1807,6 +2048,17 @@ describe("createWorkspace (unified mode)", () => {
                 cwd: outerRepo,
                 stdio: "pipe",
             });
+            const childSource = join(outerRepo, "modules", "child");
+            const sourceBranchBefore = spawnSync(
+                "git",
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                { cwd: childSource, encoding: "utf-8", stdio: "pipe" },
+            ).stdout.trim();
+            const sourceStatusBefore = spawnSync(
+                "git",
+                ["status", "--porcelain=v1"],
+                { cwd: childSource, encoding: "utf-8", stdio: "pipe" },
+            ).stdout;
 
             const previousAllowedProtocol = process.env.GIT_ALLOW_PROTOCOL;
             process.env.GIT_ALLOW_PROTOCOL = "file";
@@ -1821,14 +2073,33 @@ describe("createWorkspace (unified mode)", () => {
                 }
             }
 
-            expect(readFileSync(join(
+            const childWorktree = join(
                 result.workspacePath,
                 "vendor",
                 "platform",
                 "modules",
                 "child",
-                "child.txt",
-            ), "utf-8")).toBe("child");
+            );
+            expect(readFileSync(join(childWorktree, "child.txt"), "utf-8"))
+                .toBe("child");
+            expect(isValidWorktree(childWorktree, childSource)).toBe(true);
+            expect(spawnSync(
+                "git",
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                { cwd: childWorktree, encoding: "utf-8", stdio: "pipe" },
+            ).stdout.trim()).toBe("nested-submodule");
+            expect(result.created.map(({ name }) => name))
+                .toContain("vendor/platform/modules/child");
+            expect(spawnSync(
+                "git",
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                { cwd: childSource, encoding: "utf-8", stdio: "pipe" },
+            ).stdout.trim()).toBe(sourceBranchBefore);
+            expect(spawnSync(
+                "git",
+                ["status", "--porcelain=v1"],
+                { cwd: childSource, encoding: "utf-8", stdio: "pipe" },
+            ).stdout).toBe(sourceStatusBefore);
         } finally {
             rmSync(submoduleOrigin, { recursive: true, force: true });
         }
@@ -3154,7 +3425,7 @@ describe("fixBrokenWorktree", () => {
         }
     });
 
-    it("initializes nested submodules while replacing broken content", () => {
+    it("repairs broken nested repositories and submodules as linked worktrees", () => {
         const submoduleOrigin = join(dirname(tmpDir), `${basename(tmpDir)}-repair-submodule`);
         try {
             initRepo(tmpDir);
@@ -3198,6 +3469,12 @@ describe("fixBrokenWorktree", () => {
             try {
                 const wsResult = createWorkspace(tmpDir, "repair-submodule");
                 const nestedWorktree = join(wsResult.workspacePath, "vendor", "platform");
+                const childSource = join(nestedRepo, "modules", "child");
+                const childWorktree = join(nestedWorktree, "modules", "child");
+                spawnSync("git", ["worktree", "remove", "--force", childWorktree], {
+                    cwd: childSource,
+                    stdio: "pipe",
+                });
                 spawnSync("git", ["worktree", "remove", "--force", nestedWorktree], {
                     cwd: nestedRepo,
                     stdio: "pipe",
@@ -3219,16 +3496,25 @@ describe("fixBrokenWorktree", () => {
                     "repair-submodule",
                     true,
                 );
+                const fixedChild = fixBrokenWorktree(
+                    tmpDir,
+                    wsResult.workspacePath,
+                    "vendor/platform/modules/child",
+                    "repair-submodule",
+                    true,
+                );
 
                 expect(fixed).not.toBeNull();
+                expect(fixedChild).not.toBeNull();
                 expect(readFileSync(
-                    join(nestedWorktree, "modules", "child", "child.txt"),
+                    join(childWorktree, "child.txt"),
                     "utf-8",
                 )).toBe("child");
+                expect(isValidWorktree(childWorktree, childSource)).toBe(true);
                 expect(readFileSync(join(nestedWorktree, "preserve.txt"), "utf-8"))
                     .toBe("preserve");
                 expect(readFileSync(
-                    join(nestedWorktree, "modules", "child", ".git"),
+                    join(childWorktree, ".git"),
                     "utf-8",
                 )).not.toContain("/unowned/stale/metadata");
             } finally {
@@ -3280,6 +3566,55 @@ describe("removeWorkspace (unified mode)", () => {
         expect(removeResult.errors).toHaveLength(0);
         expect(removeResult.removed).toContain("frontend");
         expect(existsSync(wsResult.workspacePath)).toBe(false);
+    });
+
+    it("preserves dirty legacy submodule checkouts unless removal is forced", () => {
+        initRepo(join(tmpDir, "repo-a"));
+        initWithSubmodules(tmpDir);
+        const workspace = getWorkspacePath(tmpDir, "legacy-submodule");
+        const added = spawnSync(
+            "git",
+            ["worktree", "add", "-b", "legacy-submodule", workspace],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(added.status, added.stderr).toBe(0);
+        const initialized = spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "-c",
+                "submodule.repo-a.update=checkout",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ],
+            { cwd: workspace, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(initialized.status, initialized.stderr).toBe(0);
+        const dirtyFile = join(workspace, "repo-a", "precious.txt");
+        writeFileSync(dirtyFile, "preserve");
+
+        expect(() => assertWorkspaceBranch(
+            workspace,
+            "legacy-submodule",
+            spawnSync,
+            tmpDir,
+        )).toThrow("is not a linked worktree");
+        const refused = removeWorkspace(tmpDir, "legacy-submodule");
+        expect(refused.errors.join("; "))
+            .toContain("tracked submodule contains modified or untracked files");
+        expect(readFileSync(dirtyFile, "utf-8")).toBe("preserve");
+        expect(existsSync(workspace)).toBe(true);
+
+        const forced = removeWorkspace(
+            tmpDir,
+            "legacy-submodule",
+            { force: true },
+        );
+        expect(forced.errors).toEqual([]);
+        expect(existsSync(workspace)).toBe(false);
     });
 
     it("removes unified worktrees for deeply nested ignored repositories", () => {
@@ -3555,6 +3890,63 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
         expect(mounts.some((mount) => (
             mount.hostPath === join(sourcePath, "repo-b", ".git")
+        ))).toBe(true);
+    });
+
+    it("returns verified mounts for a tracked submodule linked as a worktree", () => {
+        const sourcePath = join(tmpDir, "submodule-source");
+        const origin = join(tmpDir, "submodule-origin");
+        initRepo(sourcePath);
+        initRepo(origin);
+        const added = spawnSync(
+            "git",
+            [
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                origin,
+                "vendor/repo-a",
+            ],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        const result = createWorkspace(sourcePath, "submodule-mounts");
+        const sourceSubmodule = join(sourcePath, "vendor", "repo-a");
+        const workspaceSubmodule = join(
+            result.workspacePath,
+            "vendor",
+            "repo-a",
+        );
+
+        expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+        const commonGitDirectory = resolve(
+            sourceSubmodule,
+            spawnSync(
+                "git",
+                ["rev-parse", "--git-common-dir"],
+                {
+                    cwd: sourceSubmodule,
+                    encoding: "utf-8",
+                    stdio: "pipe",
+                },
+            ).stdout.trim(),
+        );
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/submodule-source--submodule-mounts",
+        );
+
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === commonGitDirectory
+        ))).toBe(true);
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/vendor/repo-a/.git"
         ))).toBe(true);
     });
 
