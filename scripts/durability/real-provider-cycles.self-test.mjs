@@ -124,6 +124,43 @@ test("fails closed on mounted Android AVD artifacts even on the same filesystem"
     }
 });
 
+test("fails closed on nested mount points in fresh and quarantined Android AVD trees", () => {
+    const home = mkdtempSync(join(tmpdir(), "ccc-avd-nested-mount-"));
+    const avdRoot = join(home, ".android", "avd");
+    const owner = "0123456789abcdef";
+    const fresh = `ccc-${owner}-real-android-e2e-nested-mounted`;
+    const freshDataPath = join(avdRoot, `${fresh}.avd`);
+    const freshNestedPath = join(freshDataPath, "nested-mount");
+    const stale = `ccc-${owner}-real-android-e2e-quarantine-mounted`;
+    const quarantine = join(avdRoot, `.ccc-avd-delete-${stale}-0123456789abcdef0123456789abcdef`);
+    const staleNestedPath = join(quarantine, "data.avd", "nested-mount");
+    try {
+        mkdirSync(freshNestedPath, { recursive: true });
+        writeFileSync(join(freshNestedPath, "preserved"), "fresh");
+        assert.throws(
+            () => removeOwnedAndroidAvdArtifacts(fresh, owner, {
+                home,
+                mountPoints: new Set([freshNestedPath]),
+            }),
+            /mounted Android AVD cleanup path/,
+        );
+        assert.equal(readFileSync(join(freshNestedPath, "preserved"), "utf8"), "fresh");
+
+        mkdirSync(staleNestedPath, { recursive: true });
+        writeFileSync(join(staleNestedPath, "preserved"), "stale");
+        assert.throws(
+            () => removeOwnedAndroidAvdArtifacts(stale, owner, {
+                home,
+                mountPoints: new Set([staleNestedPath]),
+            }),
+            /mounted Android AVD cleanup path/,
+        );
+        assert.equal(readFileSync(join(staleNestedPath, "preserved"), "utf8"), "stale");
+    } finally {
+        rmSync(home, { recursive: true, force: true });
+    }
+});
+
 test("fails closed when the Android AVD storage root traverses a symbolic path", () => {
     const home = mkdtempSync(join(tmpdir(), "ccc-avd-root-link-"));
     const outside = mkdtempSync(join(tmpdir(), "ccc-avd-root-outside-"));

@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { spawn } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -747,6 +748,41 @@ describe("device-lab MCP Android emulator lifecycle with fake SDK", () => {
             expect(status.isError).toBe(true);
         } finally {
             rmSync(failureMarker, { force: true });
+        }
+    });
+
+    it.runIf(process.platform !== "win32")("preserves partial AVD artifacts when a matching emulator process starts during failed creation", { timeout: TIMEOUT }, async () => {
+        const inventory = await client.callTool({ name: "device_inventory", arguments: { backend: "android-emulator" } });
+        const ownerId = (parseToolJson(inventory) as { ownerId: string }).ownerId;
+        const deviceId = "android-active-partial-create-failure";
+        const avdName = `ccc-${ownerId}-active-partial-create-failure`;
+        const avdRoot = join(homeDir, ".android", "avd");
+        const failureMarker = join(homeDir, "fake-android-avdmanager-create-fail");
+        const emulator = spawn("/bin/sh", ["-c", "sleep 30", "fake-emulator", "-avd", avdName], {
+            stdio: "ignore",
+        });
+        writeFileSync(failureMarker, "fail");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        try {
+            const created = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "android-emulator",
+                    name: "Active Partial Create Failure",
+                    deviceId,
+                    avdName,
+                    systemImage: "system-images;android-35;google_apis;x86_64",
+                    createAvd: true,
+                },
+            });
+            expect(created.isError).toBe(true);
+            expect(existsSync(join(avdRoot, `${avdName}.avd`))).toBe(true);
+            expect(existsSync(join(avdRoot, `${avdName}.ini`))).toBe(true);
+        } finally {
+            emulator.kill("SIGKILL");
+            rmSync(failureMarker, { force: true });
+            rmSync(join(avdRoot, `${avdName}.avd`), { recursive: true, force: true });
+            rmSync(join(avdRoot, `${avdName}.ini`), { force: true });
         }
     });
 

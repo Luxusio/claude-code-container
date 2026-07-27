@@ -2170,8 +2170,32 @@ describe("device-lab host broker lifecycle commands", () => {
 
     it("provisions owner-scoped Android AVDs before persisting broker metadata", async () => {
         const ownerId = deviceLabOwnerId("/project/broker-android-create-test");
-        const commandRunner = vi.fn()
-            .mockImplementationOnce((command) => ({
+        let avdCreateCalls = 0;
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "adb") {
+                return {
+                    mode: command.mode,
+                    provider: command.provider,
+                    executable: command.executable,
+                    args: command.args,
+                    status: 0,
+                    stdout: "List of devices attached\n",
+                    stderr: "",
+                };
+            }
+            if (command.provider === "process-inventory") {
+                return {
+                    mode: command.mode,
+                    provider: command.provider,
+                    executable: command.executable,
+                    args: command.args,
+                    status: 0,
+                    stdout: "",
+                    stderr: "",
+                };
+            }
+            avdCreateCalls += 1;
+            return avdCreateCalls === 1 ? {
                 mode: command.mode,
                 provider: command.provider,
                 executable: command.executable,
@@ -2180,8 +2204,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 status: 0,
                 stdout: "created avd",
                 stderr: "",
-            }))
-            .mockImplementationOnce((command) => ({
+            } : {
                 mode: command.mode,
                 provider: command.provider,
                 executable: command.executable,
@@ -2191,7 +2214,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 stdout: "avdmanager progress",
                 stderr: "bad system image",
                 error: "provider timed out during cleanup",
-            }));
+            };
+        });
         const server = createDeviceBrokerServer({
             cwd: "/project/broker-android-create-test",
             host: "127.0.0.1",
@@ -2309,13 +2333,74 @@ describe("device-lab host broker lifecycle commands", () => {
                 error: "invalid-android-emulator-port",
                 allowed: "even integer 5554-5682",
             }));
-            expect(commandRunner).toHaveBeenCalledTimes(2);
+            expect(avdCreateCalls).toBe(2);
 
             const state = JSON.parse(readFileSync(join(backendRoot(ownerId, "android"), "devices.json"), "utf8")) as { devices: Array<{ id: string }> };
             expect(state.devices.map((device) => device.id)).toEqual(["android-broker-pixel"]);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
+        }
+    });
+
+    it("preserves failed-create AVD artifacts when a matching emulator process is active", async () => {
+        const cwd = "/project/broker-android-active-create-rollback-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const avdName = `ccc-${ownerId}-active-create-rollback`;
+        const avdRoot = join(process.env.HOME!, ".android", "avd");
+        const avdDataPath = join(avdRoot, `${avdName}.avd`);
+        const avdIniPath = join(avdRoot, `${avdName}.ini`);
+        const commandRunner = vi.fn((command) => {
+            if (command.provider === "avdmanager") {
+                mkdirSync(avdDataPath, { recursive: true });
+                writeFileSync(join(avdDataPath, "userdata-qemu.img"), "active");
+                writeFileSync(avdIniPath, `path=${avdDataPath}`);
+                return { mode: command.mode, provider: command.provider, status: 1, stdout: "", stderr: "create failed" };
+            }
+            if (command.provider === "adb") {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: "List of devices attached\n", stderr: "" };
+            }
+            if (command.provider === "process-inventory") {
+                return { mode: command.mode, provider: command.provider, status: 0, stdout: `emulator -avd ${avdName} -port 5680\n`, stderr: "" };
+            }
+            return { mode: command.mode, provider: command.provider, status: 1, stdout: "", stderr: "unexpected command" };
+        });
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            providerPaths: { adb: "/fake/adb", avdmanager: "/fake/avdmanager" },
+            commandRunner,
+        });
+        const baseUrl = await listen(server);
+        try {
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.invoke",
+                    params: {
+                        backend: "android-emulator",
+                        command: "device_create",
+                        name: "Active Create Rollback",
+                        deviceId: "android-active-create-rollback",
+                        systemImage: "system-images;android-35;google_apis;x86_64",
+                        createAvd: true,
+                    },
+                }),
+            });
+            expect(response.status).toBe(502);
+            expect(await response.json()).toEqual(expect.objectContaining({
+                ok: false,
+                rollback: { ok: false, error: "android-avd-artifact-cleanup-failed" },
+            }));
+            expect(existsSync(avdDataPath)).toBe(true);
+            expect(existsSync(avdIniPath)).toBe(true);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+            rmSync(avdDataPath, { recursive: true, force: true });
+            rmSync(avdIniPath, { force: true });
         }
     });
 

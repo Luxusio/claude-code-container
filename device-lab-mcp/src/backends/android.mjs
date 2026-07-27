@@ -870,7 +870,10 @@ async function handleAndroidToolUnlocked(name, args) {
                 if (deviceProfile) avdArgs.push("--device", deviceProfile);
                 const r = runWithInput(discovery.avdmanager, avdArgs, "no\n", { timeout: 300_000 });
                 if (r.status !== 0) {
-                    const rollback = deleteOwnedAndroidAvd(resolvedAvdName, { avdRoot });
+                    const rollback = deleteOwnedAndroidAvd(resolvedAvdName, {
+                        avdRoot,
+                        verifyInactive: () => androidAvdIsInactive(discovery, { avdName: resolvedAvdName }),
+                    });
                     if (!rollback.ok) {
                         return textResult(false, `Android AVD create failed and partial artifact cleanup failed: ${rollback.error}`);
                     }

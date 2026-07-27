@@ -57,6 +57,7 @@ function validateDevicesPayload(parsed: unknown): unknown[] {
     const devices = (parsed as { devices?: unknown }).devices;
     if (!Array.isArray(devices)) throw stateError("owner-devices-state-invalid");
     const ids = new Set<string>();
+    const avdNames = new Set<string>();
     for (const device of devices) {
         if (!device || typeof device !== "object" || Array.isArray(device)) {
             throw stateError("owner-devices-state-invalid");
@@ -66,6 +67,16 @@ function validateDevicesPayload(parsed: unknown): unknown[] {
             throw stateError("owner-devices-state-invalid");
         }
         ids.add(id);
+        const avdName = (device as { avdName?: unknown }).avdName;
+        if (avdName !== undefined) {
+            if (typeof avdName !== "string"
+                || avdName.length === 0
+                || avdName.length > 128
+                || avdNames.has(avdName)) {
+                throw stateError("owner-devices-state-invalid");
+            }
+            avdNames.add(avdName);
+        }
     }
     return devices;
 }

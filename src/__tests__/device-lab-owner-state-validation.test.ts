@@ -60,6 +60,12 @@ describe("owner device state validation", () => {
         ["non-ASCII id", JSON.stringify({ devices: [{ id: "device-테스트" }] })],
         ["oversized id", JSON.stringify({ devices: [{ id: "a".repeat(129) }] })],
         ["duplicate id", JSON.stringify({ devices: [{ id: "same" }, { id: "same" }] })],
+        ["duplicate Android AVD identity", JSON.stringify({
+            devices: [
+                { id: "first", avdName: "ccc-0123456789abcdef-shared" },
+                { id: "forged", avdName: "ccc-0123456789abcdef-shared" },
+            ],
+        })],
     ])("rejects %s without replacing the original bytes", (_label, contents) => {
         const file = ownerStateFile("android");
         mkdirSync(dirname(file), { recursive: true });

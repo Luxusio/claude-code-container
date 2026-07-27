@@ -47,6 +47,36 @@ function linuxMountPoints() {
         .map((path) => resolve(decode(path))));
 }
 
+function assertSafeRemovalTree(path, rootIdentity, mountPoints, options = {}) {
+    const pending = [path];
+    while (pending.length > 0) {
+        const current = pending.pop();
+        const metadata = lstatSync(current);
+        if (metadata.isSymbolicLink()) {
+            throw new Error(`refusing symbolic Android AVD cleanup path: ${current}`);
+        }
+        if (comparablePath(realpathSync.native(current), options.platform)
+            !== comparablePath(current, options.platform)) {
+            throw new Error(`refusing reparse Android AVD cleanup path: ${current}`);
+        }
+        if (mountPoints.has(resolve(current))) {
+            throw new Error(`refusing mounted Android AVD cleanup path: ${current}`);
+        }
+        if (metadata.dev !== rootIdentity.dev) {
+            throw new Error(`refusing cross-filesystem Android AVD cleanup path: ${current}`);
+        }
+        if (metadata.isDirectory()) {
+            for (const entry of readdirSync(current)) {
+                const child = resolve(current, entry);
+                if (!pathWithin(current, child) || child === current) {
+                    throw new Error(`Android AVD cleanup path escaped its parent: ${entry}`);
+                }
+                pending.push(child);
+            }
+        }
+    }
+}
+
 export function androidAvdHome(options = {}) {
     if (options.root) return resolve(options.root);
     const env = options.env || process.env;
@@ -131,6 +161,7 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
     if (!ownedAndroidAvdName(name, ownerId, options.suffixPattern)) {
         throw new Error(`refusing non-owned Android AVD artifact cleanup: ${name}`);
     }
+    const mountPoints = options.mountPoints || linuxMountPoints();
     const matching = listOwnedAndroidAvdArtifacts(ownerId, options).filter((artifact) => artifact.name === name);
     let removed = 0;
     for (const artifact of matching) {
@@ -145,6 +176,7 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
             if (options.verifyInactive && options.verifyInactive(name) !== true) {
                 throw new Error(`Android AVD became active before quarantine cleanup: ${name}`);
             }
+            assertSafeRemovalTree(quarantine.path, artifact.rootIdentity, mountPoints, options);
             rmSync(quarantine.path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             if (existsSync(quarantine.path)) {
                 throw new Error(`Android AVD quarantine remained after cleanup: ${quarantine.path}`);
@@ -179,6 +211,7 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
                         || !sameIdentity(path, identity)) {
                         throw new Error(`Android AVD artifact identity changed before cleanup: ${path}`);
                     }
+                    assertSafeRemovalTree(path, artifact.rootIdentity, mountPoints, options);
                     const stagedPath = resolve(quarantine, stagedName);
                     if (!pathWithin(quarantine, stagedPath) || existsSync(stagedPath)) {
                         throw new Error("Android AVD staged artifact path is unavailable");
@@ -198,6 +231,7 @@ export function removeOwnedAndroidAvdArtifacts(name, ownerId, options = {}) {
                     || options.verifyInactive && options.verifyInactive(name) !== true) {
                     throw new Error(`Android AVD became active during cleanup: ${name}`);
                 }
+                assertSafeRemovalTree(quarantine, artifact.rootIdentity, mountPoints, options);
                 rmSync(quarantine, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
             } catch (error) {
                 for (const entry of staged.reverse()) {

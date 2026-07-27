@@ -11247,6 +11247,7 @@ async function lifecycleCommandInvokeUnlocked(
                         try {
                             const cleanup = removeOwnedAndroidAvdArtifacts(avdName, ownerId, {
                                 root: androidCreateAvdRoot,
+                                verifyInactive: () => androidAvdIsInactiveForBroker(avdName, normalized),
                             });
                             androidRollback = { ok: true, artifactsRemoved: cleanup.removed };
                         } catch {

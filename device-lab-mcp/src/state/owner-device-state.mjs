@@ -39,6 +39,7 @@ function validateDevicesPayload(parsed) {
         throw stateError("owner-devices-state-invalid");
     }
     const ids = new Set();
+    const avdNames = new Set();
     for (const device of parsed.devices) {
         if (!device || typeof device !== "object" || Array.isArray(device)) {
             throw stateError("owner-devices-state-invalid");
@@ -48,6 +49,15 @@ function validateDevicesPayload(parsed) {
             throw stateError("owner-devices-state-invalid");
         }
         ids.add(id);
+        if (device.avdName !== undefined) {
+            if (typeof device.avdName !== "string"
+                || device.avdName.length === 0
+                || device.avdName.length > 128
+                || avdNames.has(device.avdName)) {
+                throw stateError("owner-devices-state-invalid");
+            }
+            avdNames.add(device.avdName);
+        }
     }
     return parsed.devices;
 }
