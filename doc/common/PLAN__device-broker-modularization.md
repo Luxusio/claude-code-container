@@ -47,8 +47,13 @@ back into broker transport or mutate unrelated provider state.
   - automatic image acquisition and explicit source-image preparation
   - provider execution and executable lookup through a narrow injected runtime
 - `network.ts`
-  - shared switch/NAT state and address allocation
-  - provider command execution through an injected runner
+  - shared switch/NAT state, ownership intent, and deterministic address/MAC
+    allocation
+  - incarnation-fenced allocation release and last-owner NAT cleanup
+  - Linux SSH host-key binding to the committed network allocation
+  - provider command execution through an injected executable resolver, runner,
+    elevation resolver, private state root, and operation limits
+  - no broker options, HTTP/RPC DTOs, or imports from `device-lab-broker.ts`
 - `snapshots.ts`
   - snapshot journals, reconciliation, and state transitions
 - `lifecycle.ts`
