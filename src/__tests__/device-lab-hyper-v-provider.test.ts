@@ -564,6 +564,9 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("tar.exe -tf $ArchivePath");
         expect(script).toContain("tar.exe -tvf $ArchivePath");
+        expect(script).toContain("& tar.exe -xf $ArchivePath -C $ExtractPath");
+        expect(script).not.toContain("--no-same-owner");
+        expect(script).not.toContain("--no-same-permissions");
         expect(script).toContain("hyper-v-base-image-archive-path-invalid");
         expect(script).toContain("hyper-v-base-image-archive-entry-type-invalid");
         expect(script).toContain("https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
@@ -576,6 +579,12 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-base-image-hash-failed");
         expect(script).toContain("hyper-v-base-image-archive-check-failed");
         expect(script).toContain("hyper-v-base-image-extract-failed");
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-archive-check-failed"))
+            .toBeLessThan(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"));
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-extract-failed"))
+            .toBeLessThan(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"));
+        expect(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"))
+            .toBeLessThan(script.indexOf("if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-extract-failed' }"));
         expect(script).toContain("hyper-v-base-image-inspection-failed");
         expect(script).toContain("hyper-v-base-image-finalize-failed");
         expect(script).toContain("$MaximumArchiveEntries = 64");
@@ -652,6 +661,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-base-image-hash-mismatch");
         expect(script).toContain("hyper-v-created-disk-parent-mismatch");
         const createStages = [
+            "CCC_HYPER_V_STAGE:hyper-v-vm-preflight-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-hash-failed",
+            "CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-disk-create-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-disk-inspection-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-create-failed",
@@ -661,6 +673,12 @@ describe("Hyper-V provider adapter", () => {
             expect(script.indexOf(createStages[index - 1]))
                 .toBeLessThan(script.indexOf(createStages[index]));
         }
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-vm-preflight-failed"))
+            .toBeLessThan(script.indexOf("$ComputerInfo = Get-CimInstance"));
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-hash-failed"))
+            .toBeLessThan(script.indexOf("$BaseImageStream = [IO.File]::Open"));
+        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed"))
+            .toBeLessThan(script.indexOf("$BaseVhd = Get-VHD"));
         expect(script).toContain(`ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`);
         expect(script).toContain("AutomaticCheckpointsEnabled $false");
         expect(script).toContain("CheckpointType ProductionOnly");

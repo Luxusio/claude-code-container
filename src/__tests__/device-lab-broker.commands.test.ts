@@ -108,6 +108,7 @@ describe("device-lab host broker lifecycle commands", () => {
         for (const diagnosticCode of [
             "hyper-v-base-image-download-failed",
             "hyper-v-base-image-hash-failed",
+            "hyper-v-base-image-hash-mismatch",
             "hyper-v-base-image-archive-check-failed",
             "hyper-v-base-image-extract-failed",
             "hyper-v-base-image-normalize-failed",
@@ -117,6 +118,7 @@ describe("device-lab host broker lifecycle commands", () => {
             "hyper-v-vm-disk-inspection-failed",
             "hyper-v-vm-create-failed",
             "hyper-v-vm-configure-failed",
+            "hyper-v-vm-preflight-failed",
         ]) {
             expect(redactProviderCommandInput({
                 mode: "exec",
@@ -174,6 +176,21 @@ describe("device-lab host broker lifecycle commands", () => {
             ].join("\n"),
         }, true, "hyper-v-provider-command-failed")).toEqual(expect.objectContaining({
             diagnosticCode: "hyper-v-base-image-checksum-mismatch",
+        }));
+    });
+
+    it("preserves an explicit base image hash mismatch before VM creation starts", () => {
+        expect(redactProviderCommandInput({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 1,
+            stderr: [
+                "hyper-v-base-image-hash-mismatch",
+                "hyper-v-powershell-execution-failed",
+            ].join("\n"),
+        }, true, "hyper-v-provider-command-failed")).toEqual(expect.objectContaining({
+            diagnosticCode: "hyper-v-base-image-hash-mismatch",
+            stderrPresent: true,
         }));
     });
 
