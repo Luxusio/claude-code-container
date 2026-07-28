@@ -77,7 +77,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "guest-helper-recording-proxy-v1",
     "physical-unattached-wireless-routing-v1",
     "android-recording-signal-fallback-v1",
-    "hyper-v-vm-managed-auto-images-v17",
+    "hyper-v-vm-managed-auto-images-v18",
     "hyper-v-setup-network-v3",
     "hyper-v-guest-readiness-diagnostics-v1",
     "hyper-v-azure-ovf-seed-v1",

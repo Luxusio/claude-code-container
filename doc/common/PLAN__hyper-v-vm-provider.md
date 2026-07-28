@@ -99,7 +99,7 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v17`. This capability
+The host broker advertises `hyper-v-vm-managed-auto-images-v18`. This capability
 revision changes whenever the generated Hyper-V PowerShell programs or automatic
 image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
@@ -112,6 +112,13 @@ code through the redacted broker response. Host capacity, image integrity,
 disk construction, VM identity, and network selection failures therefore
 remain actionable without exposing raw PowerShell output, command input, or
 private host paths.
+Version 18 removes the redundant per-VM read-only mount of a newly created
+differencing disk. Image preparation still derives generation from the base
+VHD partition style, while each create validates manifest provenance, file
+identity, SHA-256, VHD type, and differencing parent before using the recorded
+generation. This keeps VM creation within ordinary Hyper-V management
+permissions on Windows hosts where `Mount-VHD` requires separate disk
+management privileges.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random

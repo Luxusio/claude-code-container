@@ -647,26 +647,27 @@ describe("Hyper-V provider adapter", () => {
 
         expect(command).toMatchObject({ mode: "exec", provider: "hyper-v", executable: "powershell.exe" });
         const script = scriptOf(command);
-        expect(script).toContain("Mount-VHD -Path $DiskPath -ReadOnly -NoDriveLetter");
-        expect(script).toContain("$VmGeneration = switch ([string]$BootDisk.PartitionStyle)");
+        expect(script).not.toContain("Mount-VHD -Path $DiskPath");
+        expect(script).not.toContain("$BootDisk.PartitionStyle");
+        expect(script).toContain("$VmGeneration = $ExpectedVmGeneration");
         expect(script).toContain("$ExpectedVmGeneration = 2");
-        expect(script).toContain("hyper-v-base-image-generation-mismatch");
-        expect(script).toContain("hyper-v-created-disk-dismount-failed");
-        expect(script).toContain("'GPT' { 2 }");
-        expect(script).toContain("'MBR' { 1 }");
         expect(script).toContain("Generation = $VmGeneration");
-        expect(script).toContain("hyper-v-base-image-partition-style-unsupported");
         expect(script).toContain("New-VHD -Path $DiskPath -ParentPath $BaseImage -Differencing");
         expect(script).toContain("[IO.FileShare]::Read");
         expect(script).toContain("$Hasher.ComputeHash($BaseImageStream)");
         expect(script).toContain("hyper-v-base-image-hash-mismatch");
         expect(script).toContain("hyper-v-created-disk-parent-mismatch");
+        expect(script.indexOf("if ($BaseImageHash -ne $ExpectedBaseImageHash)"))
+            .toBeLessThan(script.indexOf("$VmGeneration = $ExpectedVmGeneration"));
+        expect(script.indexOf("hyper-v-created-disk-parent-mismatch"))
+            .toBeLessThan(script.indexOf("$VmGeneration = $ExpectedVmGeneration"));
+        expect(script.indexOf("$VmGeneration = $ExpectedVmGeneration"))
+            .toBeLessThan(script.indexOf("$CreatedVm = New-VM"));
         const createStages = [
             "CCC_HYPER_V_STAGE:hyper-v-vm-preflight-failed",
             "CCC_HYPER_V_STAGE:hyper-v-base-image-hash-failed",
             "CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-disk-create-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-vm-disk-inspection-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-create-failed",
             "CCC_HYPER_V_STAGE:hyper-v-vm-configure-failed",
         ];
