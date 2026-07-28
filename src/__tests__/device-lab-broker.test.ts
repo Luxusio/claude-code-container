@@ -25,6 +25,7 @@ import {
     defaultProviderCommandRunnerAsync,
     ensureHostDeviceBroker,
     readHostBrokerHttpJson,
+    verifySpawnedHostBrokerListenerForTest,
 } from "../device-lab-broker.js";
 import { deviceLabOwnerFromProjectMountPath, deviceLabOwnerId, deviceLabProjectMountPath } from "../device-lab-owner.js";
 import { CLI_VERSION } from "../utils.js";
@@ -45,6 +46,30 @@ function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
 
 describe("device-lab host broker daemon", () => {
     let originalHome: string | undefined;
+
+    it("rejects a compatible listener that won the port race against the spawned broker", () => {
+        const port = 17373;
+        const cliPath = "/opt/ccc/dist/index.js";
+        const spawned = fakeBrokerPortProcess(51001, `node ${cliPath} devices broker serve --host 127.0.0.1 --port ${port}`);
+        const competing = fakeBrokerPortProcess(51002, `node ${cliPath} devices broker serve --host 127.0.0.1 --port ${port}`);
+
+        expect(verifySpawnedHostBrokerListenerForTest(
+            spawned.pid,
+            spawned.processIdentity,
+            competing,
+            competing.processIdentity,
+            port,
+            cliPath,
+        )).toBe(false);
+        expect(verifySpawnedHostBrokerListenerForTest(
+            spawned.pid,
+            spawned.processIdentity,
+            spawned,
+            spawned.processIdentity,
+            port,
+            cliPath,
+        )).toBe(true);
+    });
 
     beforeEach(() => {
         originalHome = process.env.HOME;
@@ -257,7 +282,7 @@ describe("device-lab host broker daemon", () => {
                 "physical-lease-state-write-rollback-v1",
                 "runtime-cleanup-failure-preservation-v1",
                 "appium-runtime-generation-fencing-v1",
-                "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1", "windows-sandbox-best-effort-minimize-v1",
+                "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1", "windows-sandbox-best-effort-minimize-v1",
                 "host-service-manager-diagnostics",
                 "host-ccc-auto-start-compatible",
             ]),
@@ -958,7 +983,7 @@ describe("device-lab host broker daemon", () => {
         const ownerId = "2222222222222222";
         const currentCapabilities = deviceBrokerStatus({ ownerId }).implemented;
         const staleHyperVCapabilities = [
-            ...currentCapabilities.filter((capability) => capability !== "hyper-v-vm-managed-auto-images-v19"),
+            ...currentCapabilities.filter((capability) => capability !== "hyper-v-vm-managed-auto-images-v20"),
             "hyper-v-vm-managed-auto-images-v18",
         ];
         const incompatible = createServer((req, res) => {
@@ -1034,6 +1059,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 54321;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1045,7 +1071,8 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => fakeBrokerPortProcess(43210, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                portProcessResolver: () => stopped ? spawnedProcess : fakeBrokerPortProcess(43210, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1066,7 +1093,7 @@ describe("device-lab host broker daemon", () => {
             expect(attempts).toContain("runtime-incompatible-contract");
             expect(attempts).toContain('"versionCompatible":true');
             expect(incompatibleStatus).toEqual(expect.objectContaining({
-                missingCapabilities: ["hyper-v-vm-managed-auto-images-v19"],
+                missingCapabilities: ["hyper-v-vm-managed-auto-images-v20"],
             }));
         } finally {
             killSpy.mockRestore();
@@ -1101,7 +1128,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1174,6 +1201,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 13579;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1185,7 +1213,8 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => fakeBrokerPortProcess(24680, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                portProcessResolver: () => stopped ? spawnedProcess : fakeBrokerPortProcess(24680, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1233,7 +1262,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1306,6 +1335,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 86420;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1317,7 +1347,8 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => fakeBrokerPortProcess(97531, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                portProcessResolver: () => stopped ? spawnedProcess : fakeBrokerPortProcess(97531, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1363,7 +1394,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1444,7 +1475,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1527,7 +1558,8 @@ describe("device-lab host broker daemon", () => {
         child.pid = 44556;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
-        const portProcessResolver = vi.fn(() => fakeBrokerPortProcess(
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
+        const portProcessResolver = vi.fn(() => stopped ? spawnedProcess : fakeBrokerPortProcess(
             stalePid,
             `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`,
         ));
@@ -1543,6 +1575,7 @@ describe("device-lab host broker daemon", () => {
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
                 portProcessResolver,
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({
@@ -1639,6 +1672,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 44557;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1650,7 +1684,8 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => fakeBrokerPortProcess(stalePid, null),
+                portProcessResolver: () => stopped ? spawnedProcess : fakeBrokerPortProcess(stalePid, null),
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({ ok: true, launched: true, reused: false, port }));
@@ -1690,7 +1725,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1777,7 +1812,7 @@ describe("device-lab host broker daemon", () => {
             "physical-lease-state-write-rollback-v1",
             "runtime-cleanup-failure-preservation-v1",
             "appium-runtime-generation-fencing-v1",
-            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v19", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
+            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "appium-port-process-identity-fencing-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1","owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1","ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1",
         ];
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
@@ -1865,6 +1900,7 @@ describe("device-lab host broker daemon", () => {
         child.pid = 55667;
         child.unref = vi.fn();
         const spawnImpl = vi.fn(() => child);
+        const spawnedProcess = fakeBrokerPortProcess(child.pid, `node /opt/ccc/dist/index.js devices broker serve --host 0.0.0.0 --port ${port}`);
         try {
             const result = await ensureHostDeviceBroker({
                 ownerId,
@@ -1876,7 +1912,8 @@ describe("device-lab host broker daemon", () => {
                 timeoutMs: 500,
                 startupTimeoutMs: 3000,
                 spawnImpl: spawnImpl as any,
-                portProcessResolver: () => fakeBrokerPortProcess(stalePid, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                portProcessResolver: () => stopped ? spawnedProcess : fakeBrokerPortProcess(stalePid, `node /opt/ccc/dist/index.js devices broker serve --host 127.0.0.1 --port ${port}`),
+                processIdentityReader: (pid) => pid === child.pid ? spawnedProcess.processIdentity : null,
             });
 
             expect(result).toEqual(expect.objectContaining({

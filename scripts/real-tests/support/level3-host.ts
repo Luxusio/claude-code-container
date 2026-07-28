@@ -2,6 +2,11 @@ import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
+export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
+    "hyper-v-vm-managed-auto-images-v20",
+    "hyper-v-windows-iso-unattend-v1",
+];
+
 export function buildLevel3Artifacts(repoRoot, options: any = {}) {
     const spawn = options.spawn || spawnSync;
     const env = options.env || process.env;
@@ -37,7 +42,18 @@ export function ensureHostBrokerReady(repoRoot, options: any = {}) {
         timeout: 30000,
         windowsHide: true,
     });
-    if (result.status === 0 && /brokerReady:\s*true/.test(result.stdout || "")) return 0;
+    const stdout = String(result.stdout || "");
+    const verifiedCapabilities = /^brokerVerifiedCapabilities:\s*(.*)$/m.exec(stdout)?.[1]
+        ?.split(",")
+        .map((capability) => capability.trim())
+        .filter(Boolean) || [];
+    const missingCapabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES
+        .filter((capability) => !verifiedCapabilities.includes(capability));
+    if (result.status === 0 && /brokerReady:\s*true/.test(stdout) && missingCapabilities.length === 0) return 0;
+    if (result.status === 0 && missingCapabilities.length > 0) {
+        process.stderr.write(`CCC host broker capability attestation failed; missing: ${missingCapabilities.join(", ")}\n`);
+        return 1;
+    }
     process.stderr.write(result.stderr || result.stdout || "CCC host broker repair preflight failed\n");
     return result.status ?? 1;
 }

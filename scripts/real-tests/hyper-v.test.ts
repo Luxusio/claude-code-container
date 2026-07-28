@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { basename } from "path";
 import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
+import { ensureHostBrokerReady, HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES } from "./support/level3-host.ts";
 
 describe("Hyper-V Level 3 launcher", () => {
     it("selects both Hyper-V providers by default", () => {
@@ -92,5 +93,46 @@ describe("Hyper-V Level 3 launcher", () => {
         });
         expect(status).toBe(7);
         expect(calls).toEqual(["build"]);
+    });
+
+    it("attests the repaired broker Hyper-V capability generation", () => {
+        const status = ensureHostBrokerReady("/repo", {
+            spawn: () => ({
+                status: 0,
+                stdout: [
+                    "brokerReady: true",
+                    `brokerVerifiedCapabilities: ${HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES.join(", ")}`,
+                ].join("\n"),
+                stderr: "",
+            }),
+        });
+
+        expect(status).toBe(0);
+    });
+
+    it("rejects a healthy broker that did not attest the candidate Hyper-V generation", () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: [
+                        "brokerReady: true",
+                        "brokerVerifiedCapabilities: hyper-v-vm-managed-auto-images-v19, hyper-v-windows-iso-unattend-v1",
+                    ].join("\n"),
+                    stderr: "",
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain("hyper-v-vm-managed-auto-images-v20");
+        } finally {
+            process.stderr.write = originalWrite;
+        }
     });
 });

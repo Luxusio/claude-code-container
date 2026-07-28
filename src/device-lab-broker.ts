@@ -13,7 +13,7 @@ import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDev
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
 import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
-import { inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
+import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
 import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
 import {
@@ -185,7 +185,7 @@ const DEVICE_BROKER_CAPABILITY_WINDOWS_BEST_EFFORT_MINIMIZE = "windows-sandbox-b
 const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-recording-proxy-v1";
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v19";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v3";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
@@ -842,6 +842,7 @@ export interface HostDeviceBrokerOptions extends DeviceBrokerOptions {
     startupTimeoutMs?: number;
     spawnImpl?: BrokerSpawn;
     portProcessResolver?: BrokerPortProcessResolver;
+    processIdentityReader?: (pid: number, platform: NodeJS.Platform) => DeviceRuntimeProcessIdentity | null;
     env?: NodeJS.ProcessEnv;
     enabled?: boolean;
 }
@@ -2127,6 +2128,34 @@ function hostBrokerCompatibilityDiagnostics(attempts: unknown[]): string[] {
     return [...new Set(diagnostics)];
 }
 
+function verifiedHostBrokerCapabilities(status: unknown): string[] {
+    if (!status || typeof status !== "object") return [];
+    const body = (status as { body?: unknown }).body;
+    if (!body || typeof body !== "object") return [];
+    const broker = (body as { broker?: unknown }).broker;
+    if (!broker || typeof broker !== "object") return [];
+    const implemented = (broker as { implemented?: unknown }).implemented;
+    return Array.isArray(implemented) ? implemented.map(String) : [];
+}
+
+export function verifySpawnedHostBrokerListenerForTest(
+    pid: number | null,
+    spawnedIdentity: DeviceRuntimeProcessIdentity | null,
+    listener: BrokerPortProcess | null,
+    listenerIdentity: DeviceRuntimeProcessIdentity | null,
+    port: number,
+    cliPath: string,
+): boolean {
+    return Boolean(
+        pid
+        && spawnedIdentity
+        && listener?.pid === pid
+        && listenerIdentity
+        && deviceRuntimeProcessIdentityMatches(spawnedIdentity, listenerIdentity)
+        && isBrokerServeCommandLine(listener.commandLine?.trim() || "", port, cliPath),
+    );
+}
+
 async function waitForHostBrokerReady(host: string, port: number, timeoutMs: number, cwd: string, expectedOwnerId: string, profile?: string) {
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const attempts: unknown[] = [];
@@ -2171,6 +2200,8 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
     const before = await probeHostBrokerHealth(probeHost, port, probeTimeoutMs);
     const prelaunchAttempts: unknown[] = [before];
     const portProcessResolver = options.portProcessResolver || discoverBrokerPortProcess;
+    const processIdentityReader = options.processIdentityReader
+        || ((pid: number, platform: NodeJS.Platform) => readDeviceRuntimeProcessIdentity(pid, { platform }));
     if (before.available) {
         const compatibility = await probeHostBrokerStatus(probeHost, port, probeTimeoutMs, normalized.cwd, ownerId, options.profile);
         prelaunchAttempts.push(compatibility);
@@ -2199,6 +2230,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 host: bindHost,
                 probeHost,
                 port,
+                verifiedCapabilities: verifiedHostBrokerCapabilities(compatibility),
                 attempts: prelaunchAttempts,
             };
         }
@@ -2273,10 +2305,10 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         child.once("error", () => { /* readiness probe below reports startup failure */ });
         child.once("exit", () => { /* readiness probe below reports early exit as timeout */ });
         const pid = child.pid || null;
-        let spawnedProcessIdentity = pid ? readDeviceRuntimeProcessIdentity(pid, { platform: normalized.platform }) : null;
+        let spawnedProcessIdentity = pid ? processIdentityReader(pid, normalized.platform) : null;
         for (let attempt = 0; pid && !spawnedProcessIdentity && attempt < 5; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 25));
-            spawnedProcessIdentity = readDeviceRuntimeProcessIdentity(pid, { platform: normalized.platform });
+            spawnedProcessIdentity = processIdentityReader(pid, normalized.platform);
         }
         child.unref();
 
@@ -2284,7 +2316,10 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         if (!ready.available) {
             let startupCleanup: Record<string, unknown> = { attempted: false, reason: "spawned-process-identity-unavailable" };
             if (pid) {
-                const observation = inspectDeviceRuntimeProcessIdentity(spawnedProcessIdentity, pid, { platform: normalized.platform });
+                const observation = inspectDeviceRuntimeProcessIdentity(spawnedProcessIdentity, pid, {
+                    platform: normalized.platform,
+                    readIdentity: (value) => processIdentityReader(value, normalized.platform),
+                });
                 if (observation.status === "match") {
                     try {
                         process.kill(pid, "SIGTERM");
@@ -2309,6 +2344,44 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 args,
                 logPath,
                 startupCleanup,
+                attempts: [...prelaunchAttempts, ...ready.attempts],
+            };
+        }
+
+        const listener = portProcessResolver(port, normalized.platform);
+        const listenerIdentity = listener?.processIdentity
+            || (listener?.pid ? processIdentityReader(listener.pid, normalized.platform) : null);
+        const listenerVerified = verifySpawnedHostBrokerListenerForTest(
+            pid,
+            spawnedProcessIdentity,
+            listener,
+            listenerIdentity,
+            port,
+            normalized.cliPath,
+        );
+        if (!listenerVerified) {
+            const observation = pid
+                ? inspectDeviceRuntimeProcessIdentity(spawnedProcessIdentity, pid, {
+                    platform: normalized.platform,
+                    readIdentity: (value) => processIdentityReader(value, normalized.platform),
+                })
+                : { status: "unavailable", current: null };
+            if (pid && observation.status === "match") {
+                try { process.kill(pid, "SIGTERM"); } catch { /* bounded failure below is sufficient */ }
+            }
+            return {
+                ok: false,
+                ownerId,
+                launched: true,
+                reused: false,
+                error: "host-broker-launch-process-unverified",
+                host: bindHost,
+                probeHost,
+                port,
+                command,
+                args,
+                logPath,
+                listener: listener ? { pid: listener.pid, processIdentity: listenerIdentity } : null,
                 attempts: [...prelaunchAttempts, ...ready.attempts],
             };
         }
@@ -2340,6 +2413,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             host: bindHost,
             probeHost,
             port,
+            verifiedCapabilities: verifiedHostBrokerCapabilities(ready.selected),
             attempts: [...prelaunchAttempts, ...ready.attempts],
         };
     } catch (error) {
@@ -14417,5 +14491,8 @@ export async function deviceBrokerCliAsync(
     console.log(`brokerReady: true`);
     console.log(`brokerReused: ${readiness.reused === true}`);
     console.log(`brokerLaunched: ${readiness.launched === true}`);
+    if (Array.isArray(readinessRecord.verifiedCapabilities)) {
+        console.log(`brokerVerifiedCapabilities: ${readinessRecord.verifiedCapabilities.map(String).join(", ")}`);
+    }
     return 0;
 }

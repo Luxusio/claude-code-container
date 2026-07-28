@@ -1596,6 +1596,8 @@ describe("Hyper-V provider adapter", () => {
         const loader = loaderOf(command);
         expect(loader).toContain("hyper-v-powershell-parse-failed");
         expect(loader).toContain("hyper-v-powershell-execution-failed");
+        expect(loader).toContain("CCC_HYPER_V_STAGE:hyper-v-powershell-parse-failed");
+        expect(loader).toContain("CCC_HYPER_V_STAGE:hyper-v-powershell-execution-failed");
         expect(loader).toContain("if($M -match '^hyper-v-[a-z0-9-]{3,128}$')");
         expect(loader).not.toContain(guestPassword);
         expect(parseHyperVGuestProvisionObservation(JSON.stringify({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath })))

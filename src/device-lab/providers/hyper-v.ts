@@ -439,8 +439,8 @@ function command(executable: string, script: string, input?: string): HyperVProv
             "try{$D=[Convert]::FromBase64String($E)}catch{throw 'hyper-v-powershell-program-invalid'}",
             "if($D.Length -eq 0 -or $D.Length -gt 12582912){throw 'hyper-v-powershell-program-invalid'}",
             "$P=[Text.Encoding]::UTF8.GetString($D);$E=$null;$D=$null",
-            "try{$B=[ScriptBlock]::Create($P)}catch{throw 'hyper-v-powershell-parse-failed'}",
-            "try{&$B}catch{$M=[string]$_.Exception.Message;if($M -match '^hyper-v-[a-z0-9-]{3,128}$'){throw $M};throw 'hyper-v-powershell-execution-failed'}",
+            "try{$B=[ScriptBlock]::Create($P)}catch{echo 'CCC_HYPER_V_STAGE:hyper-v-powershell-parse-failed';throw 'hyper-v-powershell-parse-failed'}",
+            "try{&$B}catch{$M=[string]$_.Exception.Message;if($M -match '^hyper-v-[a-z0-9-]{3,128}$'){throw $M};echo 'CCC_HYPER_V_STAGE:hyper-v-powershell-execution-failed';throw 'hyper-v-powershell-execution-failed'}",
         ].join("\n");
         return {
             mode: "exec",
