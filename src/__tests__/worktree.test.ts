@@ -1766,6 +1766,128 @@ describe("createWorkspace (unified mode)", () => {
         expect(sourceStatusBefore).not.toBe(dirtySourceStatus);
     });
 
+    it("creates and projects a tracked Gitlink without .gitmodules", () => {
+        initRepo(tmpDir);
+        const sourceSubmodule = join(tmpDir, "services", "catchy-api");
+        initRepo(sourceSubmodule);
+        const submoduleHead = spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim();
+        const tracked = spawnSync(
+            "git",
+            [
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                `160000,${submoduleHead},services/catchy-api`,
+            ],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        );
+        expect(tracked.status, tracked.stderr).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "track API Gitlink without metadata"],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(existsSync(join(tmpDir, ".gitmodules"))).toBe(false);
+        expect(spawnSync(
+            "git",
+            ["ls-files", "--stage", "--", "services/catchy-api"],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).stdout).toMatch(/^160000 /);
+
+        const result = createWorkspace(tmpDir, "gitlink-only");
+        const workspaceSubmodule = join(
+            result.workspacePath,
+            "services",
+            "catchy-api",
+        );
+
+        expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+        expect(result.created.map(({ name }) => name))
+            .toContain("services/catchy-api");
+        const containerWorkspace = "/project/catchy-secrets--gitlink-only";
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            containerWorkspace,
+        );
+        const workspaceGitFile = join(workspaceSubmodule, ".git");
+        const forwardPointer = readFileSync(workspaceGitFile, "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        expect(forwardPointer).not.toMatch(/^[A-Za-z]:[\\/]/);
+        expect(forwardPointer).not.toMatch(/^\//);
+        expect(mounts.some(({ containerPath }) => (
+            containerPath === "/project/services/catchy-api/.git"
+        ))).toBe(true);
+        expect(mounts.some(({ hostPath, containerPath }) => (
+            hostPath.endsWith(".ccc-container-gitdir")
+            && readFileSync(hostPath, "utf-8")
+            === `${containerWorkspace}/services/catchy-api/.git\n`
+            && containerPath.endsWith("/gitdir")
+        ))).toBe(true);
+
+        const removed = removeWorkspace(tmpDir, "gitlink-only");
+        expect(removed.errors).toEqual([]);
+        expect(removed.removed).toContain("services/catchy-api");
+    });
+
+    it("owns absorbed tracked Gitlink storage by its index path without .gitmodules", () => {
+        const origin = join(dirname(tmpDir), `${basename(tmpDir)}-gitlink-origin`);
+        try {
+            initRepo(tmpDir);
+            initRepo(origin);
+            expect(spawnSync(
+                "git",
+                [
+                    "-c",
+                    "protocol.file.allow=always",
+                    "submodule",
+                    "add",
+                    origin,
+                    "services/catchy-api",
+                ],
+                { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            expect(spawnSync(
+                "git",
+                ["commit", "-am", "add absorbed API submodule"],
+                { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            expect(spawnSync(
+                "git",
+                ["rm", ".gitmodules"],
+                { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            expect(spawnSync(
+                "git",
+                ["commit", "-m", "retain Gitlink without metadata"],
+                { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            const sourceSubmodule = join(tmpDir, "services", "catchy-api");
+            expect(lstatSync(join(sourceSubmodule, ".git")).isFile()).toBe(true);
+
+            const result = createWorkspace(tmpDir, "absorbed-gitlink-only");
+            const workspaceSubmodule = join(
+                result.workspacePath,
+                "services",
+                "catchy-api",
+            );
+
+            expect(isValidWorktree(workspaceSubmodule, sourceSubmodule)).toBe(true);
+            expect(result.created.map(({ name }) => name))
+                .toContain("services/catchy-api");
+            const removed = removeWorkspace(tmpDir, "absorbed-gitlink-only");
+            expect(removed.errors).toEqual([]);
+            expect(removed.removed).toContain("services/catchy-api");
+        } finally {
+            rmSync(origin, { recursive: true, force: true });
+        }
+    });
+
     it("fails without initializing an unavailable tracked submodule", () => {
         initRepo(join(tmpDir, "repo-a"));
         initWithSubmodules(tmpDir);

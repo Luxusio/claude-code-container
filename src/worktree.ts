@@ -877,6 +877,47 @@ function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
     return matches.length === 1;
 }
 
+function trackedGitlinkPaths(
+    repositoryPath: string,
+    strict: boolean,
+): string[] {
+    const tracked = spawnSync(
+        "git",
+        ["ls-files", "--stage", "-z"],
+        {
+            cwd: repositoryPath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        },
+    );
+    if (tracked.error || tracked.status !== 0) {
+        if (!strict) return [];
+        const detail = (tracked.stderr ?? "").trim()
+            || tracked.error?.message
+            || `git exited with status ${String(tracked.status)}`;
+        throw new Error(
+            `Unable to inspect tracked Git links in '${repositoryPath}': ${detail}`,
+        );
+    }
+
+    const paths: string[] = [];
+    for (const record of (tracked.stdout ?? "").split("\0")) {
+        const match = record.match(/^160000 [0-9a-f]+ 0\t(.+)$/i);
+        if (!match) continue;
+        const path = normalizeNestedRepositoryName(match[1]);
+        if (!path) {
+            if (strict) {
+                throw new Error(
+                    `Invalid tracked Git link path in '${repositoryPath}'.`,
+                );
+            }
+            continue;
+        }
+        paths.push(path);
+    }
+    return paths;
+}
+
 type SubmoduleDeclaration = {
     name: string;
     path: string;
@@ -963,7 +1004,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
     if (!isTrackedGitlink(parentRepository, candidateName)) return false;
     const declaration = submoduleDeclarations(parentRepository, true)
         .find(({ path }) => path === candidateName);
-    if (!declaration) return false;
+    const storageName = declaration?.name ?? candidateName;
 
     const gitDirectory = spawnSync(
         "git",
@@ -985,7 +1026,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
         parentRepository,
         gitDirectoryOutput,
         "modules",
-        ...declaration.name.split("/"),
+        ...storageName.split("/"),
     );
     const gitFile = join(candidatePath, ".git");
     const content = readFileSync(gitFile, "utf-8").trim();
@@ -996,7 +1037,7 @@ function trackedSubmoduleGitDirectoryIsOwned(
         const ownerGitDirectory = resolve(parentRepository, gitDirectoryOutput);
         const ownerGitRealpath = realpathSync(ownerGitDirectory);
         let observedPath = ownerGitDirectory;
-        for (const segment of ["modules", ...declaration.name.split("/")]) {
+        for (const segment of ["modules", ...storageName.split("/")]) {
             observedPath = join(observedPath, segment);
             const observed = lstatSync(observedPath);
             if (observed.isSymbolicLink()) return false;
@@ -1513,10 +1554,11 @@ function nestedRepositoryCandidateIsSafe(
 }
 
 /**
- * Find managed repositories nested below a unified Git root. Tracked
- * submodules are read from .gitmodules; non-ignored untracked repositories are
- * reported by Git without an unrestricted filesystem walk. Ignored paths are
- * deliberately outside CCC worktree management.
+ * Find managed repositories nested below a unified Git root. Tracked Gitlinks
+ * are read directly from the index; .gitmodules only supplies optional
+ * absorbed-storage names. Non-ignored untracked repositories are reported by
+ * Git without an unrestricted filesystem walk. Ignored paths are deliberately
+ * outside CCC worktree management.
  */
 function scanUnifiedNestedRepositories(
     repositoryPath: string,
@@ -1533,14 +1575,14 @@ function scanUnifiedNestedRepositories(
         relativePrefix: string,
     ): void => {
         const candidates = new Map<string, WorkspaceEntry>();
-        const declarations = submoduleDeclarations(
+        const trackedPaths = trackedGitlinkPaths(
             currentRepository,
             options.strict === true,
         );
-        const declaredPaths = new Set(declarations.map(({ path }) => path));
+        const trackedPathSet = new Set(trackedPaths);
         for (const entry of scanDirectory(currentRepository, options)) {
             if (!entry.isGitRepo) continue;
-            if (!declaredPaths.has(entry.name)) {
+            if (!trackedPathSet.has(entry.name)) {
                 const ignored = spawnSync(
                     "git",
                     [
@@ -1572,57 +1614,22 @@ function scanUnifiedNestedRepositories(
             candidates.set(entry.name, entry);
         }
 
-        const declaredNames = declarations.map(({ path }) => path);
-        if (declaredNames.length > 0) {
-            const tracked = spawnSync(
-                "git",
-                [
-                    "ls-files",
-                    "--stage",
-                    "-z",
-                    "--",
-                    ...declaredNames.map((name) => `:(literal)${name}`),
-                ],
-                {
-                    cwd: currentRepository,
-                    encoding: "utf-8",
-                    stdio: ["pipe", "pipe", "pipe"],
-                },
-            );
-            if (tracked.error || tracked.status !== 0) {
+        for (const name of trackedPaths) {
+            if (candidates.has(name)) continue;
+            const candidatePath = join(currentRepository, ...name.split("/"));
+            if (!pathExistsStrict(join(candidatePath, ".git"))) {
                 if (options.strict) {
-                    const detail = (tracked.stderr ?? "").trim()
-                        || tracked.error?.message
-                        || `git exited with status ${String(tracked.status)}`;
                     throw new Error(
-                        `Unable to inspect tracked Git links in '${currentRepository}': ${detail}`,
+                        `Tracked submodule repository is not initialized: ${candidatePath}`,
                     );
                 }
-            } else {
-                for (const record of (tracked.stdout ?? "").split("\0")) {
-                    if (!record.startsWith("160000 ")) continue;
-                    const separator = record.indexOf("\t");
-                    if (separator < 0) continue;
-                    const name = normalizeNestedRepositoryName(
-                        record.slice(separator + 1),
-                    );
-                    if (!name || candidates.has(name)) continue;
-                    const candidatePath = join(currentRepository, ...name.split("/"));
-                    if (!pathExistsStrict(join(candidatePath, ".git"))) {
-                        if (options.strict) {
-                            throw new Error(
-                                `Tracked submodule repository is not initialized: ${candidatePath}`,
-                            );
-                        }
-                        continue;
-                    }
-                    candidates.set(name, {
-                        name,
-                        path: candidatePath,
-                        isGitRepo: true,
-                    });
-                }
+                continue;
             }
+            candidates.set(name, {
+                name,
+                path: candidatePath,
+                isGitRepo: true,
+            });
         }
 
         const candidateCommands = [[
