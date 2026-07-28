@@ -100,7 +100,7 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v19`. This capability
+The host broker advertises `hyper-v-vm-managed-auto-images-v20`. This capability
 revision changes whenever the generated Hyper-V PowerShell programs or automatic
 image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
@@ -127,6 +127,19 @@ boots. It does not mount or modify the differencing VHD from the host. The
 Windows-host Level 2 E2E remains the acceptance gate for the selected
 evaluation image because a cached Panther answer file would take precedence
 over removable media.
+Version 20 requires the Hyper-V Level 3 launcher to verify both the repair
+CLI's capability attestation and the capabilities returned directly by the
+running loopback broker's `/status` endpoint. Provider execution cannot begin
+when an older same-version broker remains on the port or reappears after
+repair. The launcher matches the broker PID and start timestamp from the
+initial CLI verification, direct response, and a second CLI process-identity
+verification. A same-host device-lab MCP performs OS port-owner and command-line
+fencing again before provider RPC; a container crossing into another host OS
+cannot inspect that host process table and retains the authenticated broker
+contract only for an allowlisted non-loopback host address. Container-local
+loopback listeners never receive that exception. The direct response stream is
+cancelled as soon as it exceeds its byte limit and is also time-bounded; a
+mismatch reports only the missing and observed `hyper-v-*` capability names.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random

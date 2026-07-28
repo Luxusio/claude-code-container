@@ -25,7 +25,7 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
     const runProcess = dependencies.runSupervisedProcessImpl || runSupervisedProcess;
     const buildStatus = build(repoRoot, { env });
     if (buildStatus !== 0) return buildStatus;
-    const brokerStatus = ensureBroker(repoRoot, { env });
+    const brokerStatus = await ensureBroker(repoRoot, { env });
     if (brokerStatus !== 0) return brokerStatus;
     const runner = join(repoRoot, "scripts", "real-tests", "run.ts");
     const result = await runProcess(process.execPath, [runner, "--compact", ...testFiles], {

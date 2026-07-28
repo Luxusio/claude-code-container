@@ -918,14 +918,39 @@ function discoverBrokerPortProcess(port) {
 function verifiedBrokerProcess(runtime, port = Number(runtime?.port)) {
     const pid = Number(runtime?.pid);
     if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port)) return null;
-    if (runtime?.managedBy === "device-lab-mcp" && ownedBrokerChildren.has(pid)) {
-        return { pid, source: "owned-child" };
-    }
     const observed = discoverBrokerPortProcess(port);
-    const expectedCliPath = Array.isArray(runtime?.args) && typeof runtime.args[0] === "string" ? runtime.args[0] : null;
-    if (!expectedCliPath || !observed || observed.pid !== pid || !isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) return null;
+    const command = String(runtime?.command || "").replace(/\\/g, "/");
+    const nodeLaunch = /(?:^|\/)node(?:\.exe)?$/i.test(command);
+    const expectedCliPath = nodeLaunch && Array.isArray(runtime?.args) && typeof runtime.args[0] === "string"
+        ? runtime.args[0]
+        : null;
+    if (!observed || observed.pid !== pid || !isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) return null;
     return { ...observed, source: "port-process" };
 }
+
+function reusableBrokerProcessVerification(runtime, port, host, options = {}) {
+    const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
+    const testEscape = options.testEscape ?? process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+    if (nodeEnv === "test" && testEscape === "1") {
+        return { ok: true, source: "explicit-test-fixture" };
+    }
+    const normalizedHost = String(host || "").trim().toLowerCase();
+    const loopback = normalizedHost === "127.0.0.1" || normalizedHost === "localhost" || normalizedHost === "::1";
+    const containerBoundary = options.containerBoundary ?? existsSync("/.dockerenv");
+    if (runtime?.managedBy === "ccc-host"
+        && containerBoundary
+        && !loopback
+        && TRUSTED_BROKER_HOSTS.has(normalizedHost)) {
+        return { ok: true, source: "cross-host-container-boundary" };
+    }
+    const processVerifier = options.processVerifier || verifiedBrokerProcess;
+    const verified = processVerifier(runtime, port);
+    return verified
+        ? { ok: true, source: verified.source, verified }
+        : { ok: false, source: "unverified-broker-port-process" };
+}
+
+export const reusableBrokerProcessVerificationForTest = reusableBrokerProcessVerification;
 
 async function terminateVerifiedBrokerRuntime(runtime, timeoutMs = 3000) {
     const verified = verifiedBrokerProcess(runtime);
@@ -990,6 +1015,21 @@ async function ensureBroker(options = {}) {
             timeoutMs: launch.timeoutMs,
         });
         if (ownerResolve.ok) {
+            const processVerification = reusableBrokerProcessVerification(existingRuntime, before.selected.port, before.selected.host);
+            if (!processVerification.ok) {
+                return {
+                    ok: false,
+                    ownerId: owner,
+                    launched: false,
+                    reused: false,
+                    error: "broker-runtime-process-unverified",
+                    runtime: existingRuntime,
+                    host: before.selected.host,
+                    port: before.selected.port,
+                    ownerResolve,
+                    attempts: [...before.attempts, { reason: "broker-reuse-process-unverified", processVerification }],
+                };
+            }
             return {
                 ok: true,
                 ownerId: owner,
@@ -998,7 +1038,11 @@ async function ensureBroker(options = {}) {
                 runtime: readBrokerRuntime(),
                 host: before.selected.host,
                 port: before.selected.port,
-                attempts: [...before.attempts, { reason: "broker-owner-resolve-ready", ownerResolve }],
+                attempts: [
+                    ...before.attempts,
+                    { reason: "broker-reuse-process-verified", processVerification },
+                    { reason: "broker-owner-resolve-ready", ownerResolve },
+                ],
             };
         }
         const runtime = readBrokerRuntime();
@@ -1091,6 +1135,25 @@ async function ensureBroker(options = {}) {
                     timeoutMs: launch.timeoutMs,
                 });
                 if (ownerResolve.ok) {
+                    const processVerification = reusableBrokerProcessVerification(existing, existingProbe.selected.port, existingProbe.selected.host);
+                    if (!processVerification.ok) {
+                        return {
+                            ok: false,
+                            ownerId: owner,
+                            launched: false,
+                            reused: false,
+                            error: "broker-runtime-process-unverified",
+                            runtime: existing,
+                            host: existingProbe.selected.host,
+                            port: existingProbe.selected.port,
+                            ownerResolve,
+                            attempts: [
+                                ...before.attempts,
+                                ...existingProbe.attempts,
+                                { reason: "broker-reuse-process-unverified", processVerification },
+                            ],
+                        };
+                    }
                     return {
                         ok: true,
                         ownerId: owner,
@@ -1099,7 +1162,12 @@ async function ensureBroker(options = {}) {
                         runtime: existing,
                         host: existingProbe.selected.host,
                         port: existingProbe.selected.port,
-                        attempts: [...before.attempts, ...existingProbe.attempts, { reason: "broker-owner-resolve-ready", ownerResolve }],
+                        attempts: [
+                            ...before.attempts,
+                            ...existingProbe.attempts,
+                            { reason: "broker-reuse-process-verified", processVerification },
+                            { reason: "broker-owner-resolve-ready", ownerResolve },
+                        ],
                     };
                 }
                 stale.push({ reason: "runtime-owner-resolve-incompatible", runtime: existing, attempts: existingProbe.attempts, ownerResolve });
@@ -1144,6 +1212,26 @@ async function ensureBroker(options = {}) {
                         timeoutMs: launch.timeoutMs,
                     });
                     if (ownerResolve.ok) {
+                        const processVerification = reusableBrokerProcessVerification(existing, recoveryProbe.selected.port, recoveryProbe.selected.host);
+                        if (!processVerification.ok) {
+                            return {
+                                ok: false,
+                                ownerId: owner,
+                                launched: false,
+                                reused: false,
+                                error: "broker-runtime-process-unverified",
+                                runtime: existing,
+                                host: recoveryProbe.selected.host,
+                                port: recoveryProbe.selected.port,
+                                ownerResolve,
+                                attempts: [
+                                    ...before.attempts,
+                                    ...existingProbe.attempts,
+                                    ...recoveryProbe.attempts,
+                                    { reason: "broker-reuse-process-unverified", processVerification },
+                                ],
+                            };
+                        }
                         return {
                             ok: true,
                             ownerId: owner,
@@ -1152,7 +1240,13 @@ async function ensureBroker(options = {}) {
                             runtime: existing,
                             host: recoveryProbe.selected.host,
                             port: recoveryProbe.selected.port,
-                            attempts: [...before.attempts, ...existingProbe.attempts, ...recoveryProbe.attempts, { reason: "broker-owner-resolve-ready", ownerResolve }],
+                            attempts: [
+                                ...before.attempts,
+                                ...existingProbe.attempts,
+                                ...recoveryProbe.attempts,
+                                { reason: "broker-reuse-process-verified", processVerification },
+                                { reason: "broker-owner-resolve-ready", ownerResolve },
+                            ],
                         };
                     }
                 }
@@ -1229,6 +1323,32 @@ async function ensureBroker(options = {}) {
         if (ready.available) {
             const ownerResolve = await waitForBrokerOwnerResolve(launch.host, launch.port, launch.launchTimeoutMs);
             if (ownerResolve.ok) {
+                const processVerification = reusableBrokerProcessVerification(runtime, launch.port, launch.host);
+                if (!processVerification.ok) {
+                    try {
+                        if (child.pid) await terminateBrokerProcess(child.pid);
+                    } catch {
+                        // The bounded failure below is sufficient.
+                    }
+                    ownedBrokerChildren.delete(child.pid);
+                    removeBrokerRuntime();
+                    return {
+                        ok: false,
+                        ownerId: owner,
+                        launched: true,
+                        reused: false,
+                        error: "broker-runtime-process-unverified",
+                        runtime,
+                        host: launch.host,
+                        port: launch.port,
+                        attempts: [
+                            ...before.attempts,
+                            ...stale,
+                            ...ready.attempts,
+                            { reason: "broker-launch-process-unverified", processVerification },
+                        ],
+                    };
+                }
                 return {
                     ok: true,
                     ownerId: ownerResolve.ownerId,
@@ -1237,7 +1357,13 @@ async function ensureBroker(options = {}) {
                     runtime,
                     host: launch.host,
                     port: launch.port,
-                    attempts: [...before.attempts, ...stale, ...ready.attempts, { reason: "broker-owner-resolve-ready", ownerResolve }],
+                    attempts: [
+                        ...before.attempts,
+                        ...stale,
+                        ...ready.attempts,
+                        { reason: "broker-launch-process-verified", processVerification },
+                        { reason: "broker-owner-resolve-ready", ownerResolve },
+                    ],
                 };
             }
             try {

@@ -1026,6 +1026,8 @@ describe("device-lab host broker physical attach and CLI", () => {
             probeHost: "127.0.0.1",
             port: 54321,
             verifiedCapabilities: ["hyper-v-vm-managed-auto-images-v20", "hyper-v-windows-iso-unattend-v1"],
+            verifiedBrokerPid: 4321,
+            verifiedBrokerStartedAt: "2026-07-28T00:00:00.000Z",
             attempts: [],
         }));
 
@@ -1038,6 +1040,8 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(log).toHaveBeenCalledWith("brokerReady: true");
         expect(log).toHaveBeenCalledWith("brokerLaunched: true");
         expect(log).toHaveBeenCalledWith("brokerVerifiedCapabilities: hyper-v-vm-managed-auto-images-v20, hyper-v-windows-iso-unattend-v1");
+        expect(log).toHaveBeenCalledWith("brokerVerifiedPid: 4321");
+        expect(log).toHaveBeenCalledWith("brokerVerifiedStartedAt: 2026-07-28T00:00:00.000Z");
         expect(error).not.toHaveBeenCalled();
     });
 

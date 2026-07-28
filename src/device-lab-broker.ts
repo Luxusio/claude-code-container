@@ -1973,6 +1973,7 @@ function hostBrokerRuntimeFromPortProcess(
     const record = compatibilityBrokerRecord(compatibility);
     const process = portProcessResolver(port, platform);
     if (!process || !Number.isInteger(process.pid) || process.pid <= 0) return null;
+    if (statusRuntime && Number(statusRuntime.pid) !== process.pid) return null;
     const commandLine = process.commandLine?.trim() || "";
     const commandLineVerified = isBrokerServeCommandLine(commandLine, port, expectedCliPath);
     const metadataVerified = commandLine.length === 0
@@ -1999,6 +2000,8 @@ function hostBrokerRuntimeFromPortProcess(
         identitySource: commandLineVerified ? "port-command-line" : "port-pid-plus-runtime-and-status",
     };
 }
+
+export const hostBrokerRuntimeFromPortProcessForTest = hostBrokerRuntimeFromPortProcess;
 
 function isBrokerServeCommandLine(commandLine: string, port: number, expectedCliPath?: string): boolean {
     const normalized = commandLine.replace(/["']/g, " ").replace(/\s+/g, " ").trim();
@@ -2138,6 +2141,21 @@ function verifiedHostBrokerCapabilities(status: unknown): string[] {
     return Array.isArray(implemented) ? implemented.map(String) : [];
 }
 
+function verifiedHostBrokerIdentity(status: unknown): { pid: number; startedAt: string } | null {
+    if (!status || typeof status !== "object") return null;
+    const body = (status as { body?: unknown }).body;
+    if (!body || typeof body !== "object") return null;
+    const broker = (body as { broker?: unknown }).broker;
+    if (!broker || typeof broker !== "object") return null;
+    const record = broker as { process?: unknown; startedAt?: unknown };
+    const processRecord = record.process && typeof record.process === "object"
+        ? record.process as { pid?: unknown }
+        : null;
+    const pid = Number(processRecord?.pid);
+    const startedAt = typeof record.startedAt === "string" ? record.startedAt : "";
+    return Number.isInteger(pid) && pid > 0 && startedAt ? { pid, startedAt } : null;
+}
+
 export function verifySpawnedHostBrokerListenerForTest(
     pid: number | null,
     spawnedIdentity: DeviceRuntimeProcessIdentity | null,
@@ -2219,9 +2237,12 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 normalized.cliPath,
             )
             : null;
+        const verifiedIdentity = verifiedHostBrokerIdentity(compatibility);
         prelaunchAttempts.push({ reason: verifiedRuntime ? "compatible-broker-process-verified" : "compatible-broker-process-unverified", runtime: verifiedRuntime });
         if (compatibility.compatible && (hostBrokerRuntimeMatchesRequiredBindHost(runtime, port, bindHost)
-            || hostBrokerStatusMatchesRequiredBindHost(compatibility, port, bindHost)) && verifiedRuntime) {
+            || hostBrokerStatusMatchesRequiredBindHost(compatibility, port, bindHost))
+            && verifiedRuntime
+            && verifiedIdentity?.pid === Number(verifiedRuntime.pid)) {
             return {
                 ok: true,
                 ownerId,
@@ -2231,6 +2252,8 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 probeHost,
                 port,
                 verifiedCapabilities: verifiedHostBrokerCapabilities(compatibility),
+                verifiedBrokerPid: verifiedIdentity.pid,
+                verifiedBrokerStartedAt: verifiedIdentity.startedAt,
                 attempts: prelaunchAttempts,
             };
         }
@@ -2359,7 +2382,8 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             port,
             normalized.cliPath,
         );
-        if (!listenerVerified) {
+        const verifiedIdentity = verifiedHostBrokerIdentity(ready.selected);
+        if (!listenerVerified || !verifiedIdentity || verifiedIdentity.pid !== pid) {
             const observation = pid
                 ? inspectDeviceRuntimeProcessIdentity(spawnedProcessIdentity, pid, {
                     platform: normalized.platform,
@@ -2414,6 +2438,10 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             probeHost,
             port,
             verifiedCapabilities: verifiedHostBrokerCapabilities(ready.selected),
+            ...(verifiedIdentity ? {
+                verifiedBrokerPid: verifiedIdentity.pid,
+                verifiedBrokerStartedAt: verifiedIdentity.startedAt,
+            } : {}),
             attempts: [...prelaunchAttempts, ...ready.attempts],
         };
     } catch (error) {
@@ -14493,6 +14521,12 @@ export async function deviceBrokerCliAsync(
     console.log(`brokerLaunched: ${readiness.launched === true}`);
     if (Array.isArray(readinessRecord.verifiedCapabilities)) {
         console.log(`brokerVerifiedCapabilities: ${readinessRecord.verifiedCapabilities.map(String).join(", ")}`);
+    }
+    if (Number.isInteger(readinessRecord.verifiedBrokerPid)) {
+        console.log(`brokerVerifiedPid: ${Number(readinessRecord.verifiedBrokerPid)}`);
+    }
+    if (typeof readinessRecord.verifiedBrokerStartedAt === "string") {
+        console.log(`brokerVerifiedStartedAt: ${readinessRecord.verifiedBrokerStartedAt}`);
     }
     return 0;
 }

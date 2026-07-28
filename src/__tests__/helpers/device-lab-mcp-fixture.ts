@@ -58,6 +58,7 @@ export async function createDeviceLabMcpTestContext(options: DeviceLabMcpTestCon
             HOME: homeDir,
             PATH: pathDir,
             NODE_ENV: "test",
+            CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER: "1",
             ...options.env,
         },
     });

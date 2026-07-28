@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { basename } from "path";
 import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
-import { ensureHostBrokerReady, HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES } from "./support/level3-host.ts";
+import {
+    ensureHostBrokerReady,
+    HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+    probeHostBrokerCapabilities,
+} from "./support/level3-host.ts";
+
+const verifiedBrokerPid = 4321;
+const verifiedBrokerStartedAt = "2026-07-28T00:00:00.000Z";
+
+function brokerStatusOutput(capabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES) {
+    return [
+        "port: 17373",
+        "brokerReady: true",
+        `brokerVerifiedCapabilities: ${capabilities.join(", ")}`,
+        `brokerVerifiedPid: ${verifiedBrokerPid}`,
+        `brokerVerifiedStartedAt: ${verifiedBrokerStartedAt}`,
+    ].join("\n");
+}
 
 describe("Hyper-V Level 3 launcher", () => {
     it("selects both Hyper-V providers by default", () => {
@@ -95,22 +112,46 @@ describe("Hyper-V Level 3 launcher", () => {
         expect(calls).toEqual(["build"]);
     });
 
-    it("attests the repaired broker Hyper-V capability generation", () => {
-        const status = ensureHostBrokerReady("/repo", {
+    it("does not run providers when broker attestation fails", async () => {
+        const calls: string[] = [];
+        const status = await runHyperVTests("windows", {
+            buildLevel3ArtifactsImpl: () => {
+                calls.push("build");
+                return 0;
+            },
+            ensureHostBrokerReadyImpl: async () => {
+                calls.push("broker");
+                return 1;
+            },
+            runSupervisedProcessImpl: async () => {
+                calls.push("run");
+                return { status: 0 };
+            },
+        });
+
+        expect(status).toBe(1);
+        expect(calls).toEqual(["build", "broker"]);
+    });
+
+    it("attests the repaired broker Hyper-V capability generation", async () => {
+        const status = await ensureHostBrokerReady("/repo", {
             spawn: () => ({
                 status: 0,
-                stdout: [
-                    "brokerReady: true",
-                    `brokerVerifiedCapabilities: ${HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES.join(", ")}`,
-                ].join("\n"),
+                stdout: brokerStatusOutput(),
                 stderr: "",
+            }),
+            probeHostBrokerCapabilitiesImpl: async () => ({
+                ok: true,
+                capabilities: HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+                pid: verifiedBrokerPid,
+                startedAt: verifiedBrokerStartedAt,
             }),
         });
 
         expect(status).toBe(0);
     });
 
-    it("rejects a healthy broker that did not attest the candidate Hyper-V generation", () => {
+    it("rejects a healthy broker that did not attest the candidate Hyper-V generation", async () => {
         let diagnostic = "";
         const originalWrite = process.stderr.write;
         process.stderr.write = ((chunk: any) => {
@@ -118,13 +159,13 @@ describe("Hyper-V Level 3 launcher", () => {
             return true;
         }) as typeof process.stderr.write;
         try {
-            const status = ensureHostBrokerReady("/repo", {
+            const status = await ensureHostBrokerReady("/repo", {
                 spawn: () => ({
                     status: 0,
-                    stdout: [
-                        "brokerReady: true",
-                        "brokerVerifiedCapabilities: hyper-v-vm-managed-auto-images-v19, hyper-v-windows-iso-unattend-v1",
-                    ].join("\n"),
+                    stdout: brokerStatusOutput([
+                        "hyper-v-vm-managed-auto-images-v19",
+                        "hyper-v-windows-iso-unattend-v1",
+                    ]),
                     stderr: "",
                 }),
             });
@@ -134,5 +175,148 @@ describe("Hyper-V Level 3 launcher", () => {
         } finally {
             process.stderr.write = originalWrite;
         }
+    });
+
+    it("rejects a stale broker observed after CLI repair attestation", async () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: brokerStatusOutput(),
+                    stderr: "",
+                }),
+                probeHostBrokerCapabilitiesImpl: async () => ({
+                    ok: true,
+                    capabilities: [
+                        "hyper-v-vm-managed-auto-images-v18",
+                        "hyper-v-windows-offline-unattend-v2",
+                    ],
+                    pid: verifiedBrokerPid,
+                    startedAt: verifiedBrokerStartedAt,
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain("remote capability attestation failed");
+            expect(diagnostic).toContain("hyper-v-vm-managed-auto-images-v20");
+            expect(diagnostic).toContain("hyper-v-vm-managed-auto-images-v18");
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
+    it("reads capabilities directly from the running loopback broker", async () => {
+        const capabilities = [
+            ...HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+            "http-health",
+        ];
+        const observed = await probeHostBrokerCapabilities(17373, {
+            fetchImpl: async (url: string) => {
+                expect(url).toBe("http://127.0.0.1:17373/status");
+                return new Response(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        implemented: capabilities,
+                        process: { pid: verifiedBrokerPid },
+                        startedAt: verifiedBrokerStartedAt,
+                    },
+                }), {
+                    status: 200,
+                    headers: { "content-type": "application/json" },
+                });
+            },
+        });
+
+        expect(observed).toEqual({
+            ok: true,
+            capabilities,
+            pid: verifiedBrokerPid,
+            startedAt: verifiedBrokerStartedAt,
+        });
+    });
+
+    it("rejects an oversized direct broker status response before reading it", async () => {
+        let bodyRead = false;
+        const observed = await probeHostBrokerCapabilities(17373, {
+            fetchImpl: async () => ({
+                ok: true,
+                status: 200,
+                headers: {
+                    get: (name: string) => name === "content-length" ? String(256 * 1024 + 1) : null,
+                },
+                text: async () => {
+                    bodyRead = true;
+                    return "{}";
+                },
+            }),
+        });
+
+        expect(observed).toEqual({ ok: false, error: "response-too-large", capabilities: [] });
+        expect(bodyRead).toBe(false);
+    });
+
+    it("cancels a chunked broker status response at the byte limit", async () => {
+        let cancelled = false;
+        const body = new ReadableStream({
+            start(controller) {
+                controller.enqueue(new Uint8Array(200 * 1024));
+                controller.enqueue(new Uint8Array(100 * 1024));
+            },
+            cancel() {
+                cancelled = true;
+            },
+        });
+        const observed = await probeHostBrokerCapabilities(17373, {
+            fetchImpl: async () => new Response(body, { status: 200 }),
+        });
+
+        expect(observed).toEqual({ ok: false, error: "response-too-large", capabilities: [] });
+        expect(cancelled).toBe(true);
+    });
+
+    it("rejects a broker process identity change between repair and confirmation", async () => {
+        let statusCalls = 0;
+        const status = await ensureHostBrokerReady("/repo", {
+            spawn: () => {
+                statusCalls += 1;
+                return {
+                    status: 0,
+                    stdout: statusCalls === 1
+                        ? brokerStatusOutput()
+                        : brokerStatusOutput().replace(
+                            `brokerVerifiedPid: ${verifiedBrokerPid}`,
+                            `brokerVerifiedPid: ${verifiedBrokerPid + 1}`,
+                        ),
+                    stderr: "",
+                };
+            },
+            probeHostBrokerCapabilitiesImpl: async () => ({
+                ok: true,
+                capabilities: HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+                pid: verifiedBrokerPid,
+                startedAt: verifiedBrokerStartedAt,
+            }),
+        });
+
+        expect(status).toBe(1);
+        expect(statusCalls).toBe(2);
+    });
+
+    it("fails when the broker status command exits zero without readiness", async () => {
+        const status = await ensureHostBrokerReady("/repo", {
+            spawn: () => ({
+                status: 0,
+                stdout: "brokerReady: false\n",
+                stderr: "",
+            }),
+        });
+
+        expect(status).toBe(1);
     });
 });

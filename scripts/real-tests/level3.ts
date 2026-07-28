@@ -37,7 +37,7 @@ async function runLevel3() {
     const env = hiddenChildProcessEnv();
     const buildStatus = buildLevel3Artifacts(repoRoot, { env });
     if (buildStatus !== 0) return buildStatus;
-    const brokerStatus = ensureHostBrokerReady(repoRoot, { env });
+    const brokerStatus = await ensureHostBrokerReady(repoRoot, { env });
     if (brokerStatus !== 0) return brokerStatus;
 
     const vitest = join(repoRoot, "node_modules", "vitest", "vitest.mjs");

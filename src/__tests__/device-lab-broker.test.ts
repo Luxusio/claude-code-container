@@ -24,6 +24,7 @@ import {
     deviceBrokerToolContractForTest,
     defaultProviderCommandRunnerAsync,
     ensureHostDeviceBroker,
+    hostBrokerRuntimeFromPortProcessForTest,
     readHostBrokerHttpJson,
     verifySpawnedHostBrokerListenerForTest,
 } from "../device-lab-broker.js";
@@ -69,6 +70,31 @@ describe("device-lab host broker daemon", () => {
             port,
             cliPath,
         )).toBe(true);
+    });
+
+    it("rejects a broker whose status PID disagrees with the OS port owner", () => {
+        const port = 17373;
+        const cliPath = "/opt/ccc/dist/index.js";
+        const listener = fakeBrokerPortProcess(
+            51001,
+            `node ${cliPath} devices broker serve --host 127.0.0.1 --port ${port}`,
+        );
+
+        expect(hostBrokerRuntimeFromPortProcessForTest(
+            "1111111111111111",
+            port,
+            { body: { broker: { host: "127.0.0.1" } } },
+            "linux",
+            () => listener,
+            null,
+            {
+                name: "ccc-device-broker",
+                managedBy: "ccc-host-status",
+                pid: 51002,
+                port,
+            },
+            cliPath,
+        )).toBeNull();
     });
 
     beforeEach(() => {
@@ -1017,7 +1043,16 @@ describe("device-lab host broker daemon", () => {
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented: currentCapabilities } }));
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        ownerId,
+                        version: CLI_VERSION,
+                        process: { pid: 54321 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
+                        implemented: currentCapabilities,
+                    },
+                }));
                 return;
             }
             if (req.url === "/v1/owner/resolve" && req.method === "POST") {
@@ -1138,7 +1173,16 @@ describe("device-lab host broker daemon", () => {
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented } }));
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        ownerId,
+                        version: CLI_VERSION,
+                        process: { pid: 13579 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
+                        implemented,
+                    },
+                }));
                 return;
             }
             if (req.url === "/v1/owner/resolve") {
@@ -1159,7 +1203,16 @@ describe("device-lab host broker daemon", () => {
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented } }));
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        ownerId,
+                        version: CLI_VERSION,
+                        process: { pid: 13579 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
+                        implemented,
+                    },
+                }));
                 return;
             }
             if (req.url === "/v1/owner/resolve" && req.method === "POST") {
@@ -1293,7 +1346,16 @@ describe("device-lab host broker daemon", () => {
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { ownerId, version: CLI_VERSION, implemented } }));
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        ownerId,
+                        version: CLI_VERSION,
+                        process: { pid: 86420 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
+                        implemented,
+                    },
+                }));
                 return;
             }
             if (req.url === "/v1/owner/resolve" && req.method === "POST") {
@@ -1522,7 +1584,8 @@ describe("device-lab host broker daemon", () => {
                         mode: "host-broker-daemon",
                         ownerId,
                         port,
-                        process: { pid: 33445 },
+                        process: { pid: 44556 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
                         version: CLI_VERSION,
                         implemented,
                     },
@@ -1634,7 +1697,15 @@ describe("device-lab host broker daemon", () => {
             if (req.url === "/health") {
                 res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }));
             } else if (req.url === "/status") {
-                res.end(JSON.stringify({ ok: true, broker: { version: CLI_VERSION, implemented: deviceBrokerStatus({ ownerId }).implemented } }));
+                res.end(JSON.stringify({
+                    ok: true,
+                    broker: {
+                        version: CLI_VERSION,
+                        process: { pid: 44557 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
+                        implemented: deviceBrokerStatus({ ownerId }).implemented,
+                    },
+                }));
             } else if (req.url === "/v1/owner/resolve") {
                 res.end(JSON.stringify({ ok: true, result: { ownerId } }));
             } else {
@@ -1864,7 +1935,8 @@ describe("device-lab host broker daemon", () => {
                         ownerId,
                         host: "0.0.0.0",
                         port,
-                        process: { pid: 44556 },
+                        process: { pid: 55667 },
+                        startedAt: "2026-07-28T00:00:00.000Z",
                         version: CLI_VERSION,
                         implemented,
                     },

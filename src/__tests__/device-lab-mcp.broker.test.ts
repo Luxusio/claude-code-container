@@ -13,7 +13,7 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
-import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
+import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, reusableBrokerProcessVerificationForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
 import { projectMountPath } from "../../device-lab-mcp/src/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
@@ -43,6 +43,83 @@ function sendCurrentBrokerStatus(req: { url?: string }, res: { setHeader(name: s
 }
 
 describe("device-lab MCP", () => {
+    it("keeps the unverified broker fixture escape disabled outside explicit test mode", () => {
+        const originalNodeEnv = process.env.NODE_ENV;
+        const originalEscape = process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+        try {
+            process.env.NODE_ENV = "production";
+            process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = "1";
+            expect(reusableBrokerProcessVerificationForTest(null, 17373)).toEqual({
+                ok: false,
+                source: "unverified-broker-port-process",
+            });
+
+            process.env.NODE_ENV = "test";
+            expect(reusableBrokerProcessVerificationForTest(null, 17373)).toEqual({
+                ok: true,
+                source: "explicit-test-fixture",
+            });
+        } finally {
+            if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+            else process.env.NODE_ENV = originalNodeEnv;
+            if (originalEscape === undefined) delete process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
+            else process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER = originalEscape;
+        }
+    });
+
+    it("permits cross-host container brokers without exempting container loopback listeners", () => {
+        const runtime = { managedBy: "ccc-host", pid: 4321, port: 17373 };
+        const processVerifier = vi.fn(() => null);
+        const options = {
+            nodeEnv: "production",
+            testEscape: "0",
+            containerBoundary: true,
+            processVerifier,
+        };
+
+        expect(reusableBrokerProcessVerificationForTest(
+            runtime,
+            17373,
+            "host.docker.internal",
+            options,
+        )).toEqual({
+            ok: true,
+            source: "cross-host-container-boundary",
+        });
+        expect(reusableBrokerProcessVerificationForTest(
+            runtime,
+            17373,
+            "127.0.0.1",
+            options,
+        )).toEqual({
+            ok: false,
+            source: "unverified-broker-port-process",
+        });
+        expect(processVerifier).toHaveBeenCalledOnce();
+    });
+
+    it("accepts a same-host broker only after its port process is verified", () => {
+        const runtime = { managedBy: "ccc-host", pid: 4321, port: 17373 };
+        const verified = { pid: 4321, source: "port-process" };
+        const processVerifier = vi.fn(() => verified);
+
+        expect(reusableBrokerProcessVerificationForTest(
+            runtime,
+            17373,
+            "127.0.0.1",
+            {
+                nodeEnv: "production",
+                testEscape: "0",
+                containerBoundary: false,
+                processVerifier,
+            },
+        )).toEqual({
+            ok: true,
+            source: "port-process",
+            verified,
+        });
+    });
+
     let context: DeviceLabMcpTestContext;
     let client: DeviceLabMcpTestContext["client"];
     let homeDir: string;
