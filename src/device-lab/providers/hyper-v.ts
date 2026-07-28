@@ -387,10 +387,16 @@ function ownershipMarker(ownerId: string, deviceId: string, incarnationId: strin
     return `ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`;
 }
 
-function jsonScript(lines: string[]): string {
+function jsonScript(lines: string[], initialStage?: string): string {
+    if (initialStage && !/^hyper-v-[a-z0-9-]{3,128}$/.test(initialStage)) {
+        throw new Error("hyper-v-diagnostic-stage-invalid");
+    }
     return [
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
+        ...(initialStage
+            ? [`[Console]::Out.WriteLine(${psQuote(`CCC_HYPER_V_STAGE:${initialStage}`)})`]
+            : []),
         "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
         "$env:PSModulePath = $TrustedModuleRoot",
         "Import-Module Hyper-V -ErrorAction Stop",
@@ -1205,7 +1211,6 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         `$MacAddress = ${psQuote(macAddress)}`,
         `$Networking = ${options.networking === false ? "$false" : "$true"}`,
         `$BootstrapDhcp = ${options.bootstrapDhcp === true ? "$true" : "$false"}`,
-        "[Console]::Out.WriteLine('CCC_HYPER_V_STAGE:hyper-v-vm-preflight-failed')",
         "$ComputerInfo = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop",
         "$TotalMemoryMb = [Math]::Floor([double]$ComputerInfo.TotalPhysicalMemory / 1MB)",
         "$MemoryReserveMb = [Math]::Max(2048, [Math]::Floor($TotalMemoryMb * 0.10))",
@@ -1331,7 +1336,10 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  throw",
         "}",
     ];
-    return command(options.executable, jsonScript(lines));
+    return command(
+        options.executable,
+        jsonScript(lines, "hyper-v-vm-preflight-failed"),
+    );
 }
 
 export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVProviderCommand {

@@ -99,7 +99,7 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v16`. This capability
+The host broker advertises `hyper-v-vm-managed-auto-images-v17`. This capability
 revision changes whenever the generated Hyper-V PowerShell programs or automatic
 image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
@@ -107,6 +107,11 @@ packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
 `hyper-v-guest-readiness-diagnostics-v1`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
+Version 17 preserves every explicit, allowlisted Windows VM creation failure
+code through the redacted broker response. Host capacity, image integrity,
+disk construction, VM identity, and network selection failures therefore
+remain actionable without exposing raw PowerShell output, command input, or
+private host paths.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random

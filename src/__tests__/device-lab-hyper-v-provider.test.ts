@@ -55,6 +55,7 @@ import {
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
 } from "../device-lab/providers/hyper-v.js";
+import { hyperVProviderDiagnosticCode } from "../device-lab/broker/hyper-v/public-response.js";
 
 const ownerId = "0123456789abcdef";
 const deviceId = "windows-ci-01";
@@ -694,6 +695,19 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Remove-VM -VM $CreatedVm -Force");
         expect(script).toContain("Remove-Item -LiteralPath $DiskPath -Force");
         expect(script).toContain("if (-not $DeviceRootExisted");
+        const explicitFailureCodes = [...new Set(
+            [...script.matchAll(/throw '(hyper-v-[a-z0-9-]+)'/g)]
+                .map((match) => match[1]),
+        )];
+        expect(explicitFailureCodes.length).toBeGreaterThan(10);
+        for (const code of explicitFailureCodes) {
+            expect(hyperVProviderDiagnosticCode({ stderr: code, stdout: "" }))
+                .toBe(code);
+        }
+        expect(hyperVProviderDiagnosticCode(
+            { stderr: "hyper-v-untrusted-runtime-detail", stdout: "" },
+            "hyper-v-provider-command-failed",
+        )).toBe("hyper-v-provider-command-failed");
         expect(() => hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
