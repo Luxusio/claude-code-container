@@ -99,7 +99,10 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v15`. Host CLI and
+The host broker advertises `hyper-v-vm-managed-auto-images-v16`. This capability
+revision changes whenever the generated Hyper-V PowerShell programs or automatic
+image acquisition semantics change, even when the package version is unchanged
+during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
 `hyper-v-guest-readiness-diagnostics-v1`, so a same-version daemon started
