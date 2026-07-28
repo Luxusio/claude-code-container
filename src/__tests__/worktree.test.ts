@@ -70,6 +70,74 @@ function installFailingCheckoutHook(repoPath: string): void {
     chmodSync(hook, 0o755);
 }
 
+function withGitMetadataMutation<T>(
+    target: string,
+    readyPath: string | null,
+    operation: () => T,
+): T {
+    const realGit = spawnSync(
+        "sh",
+        ["-c", "command -v git"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    ).stdout.trim();
+    const wrapperDirectory = join(tmpdir(), `ccc-git-wrapper-${randomUUID()}`);
+    const wrapper = join(wrapperDirectory, "git");
+    const marker = join(wrapperDirectory, "mutated");
+    mkdirSync(wrapperDirectory);
+    writeFileSync(
+        wrapper,
+        [
+            "#!/bin/sh",
+            "case \" $* \" in",
+            "  *\" worktree list \"*)",
+            "    if [ ! -e \"$CCC_TEST_GIT_MUTATION_MARKER\" ]"
+            + " && { [ -z \"$CCC_TEST_GIT_MUTATION_READY\" ]"
+            + " || [ -e \"$CCC_TEST_GIT_MUTATION_READY/.git\" ]; }; then",
+            "      printf 'gitdir: /ccc-test-missing-gitdir\\n'"
+            + " > \"$CCC_TEST_GIT_MUTATION_TARGET\"",
+            "      : > \"$CCC_TEST_GIT_MUTATION_MARKER\"",
+            "    fi",
+            "    ;;",
+            "esac",
+            "exec \"$CCC_TEST_REAL_GIT\" \"$@\"",
+            "",
+        ].join("\n"),
+    );
+    chmodSync(wrapper, 0o755);
+    const previous = {
+        path: process.env.PATH,
+        realGit: process.env.CCC_TEST_REAL_GIT,
+        target: process.env.CCC_TEST_GIT_MUTATION_TARGET,
+        ready: process.env.CCC_TEST_GIT_MUTATION_READY,
+        marker: process.env.CCC_TEST_GIT_MUTATION_MARKER,
+    };
+    process.env.PATH = `${wrapperDirectory}:${previous.path ?? ""}`;
+    process.env.CCC_TEST_REAL_GIT = realGit;
+    process.env.CCC_TEST_GIT_MUTATION_TARGET = target;
+    process.env.CCC_TEST_GIT_MUTATION_READY = readyPath ?? "";
+    process.env.CCC_TEST_GIT_MUTATION_MARKER = marker;
+    try {
+        const result = operation();
+        expect(existsSync(marker)).toBe(true);
+        return result;
+    } finally {
+        for (const [name, value] of [
+            ["PATH", previous.path],
+            ["CCC_TEST_REAL_GIT", previous.realGit],
+            ["CCC_TEST_GIT_MUTATION_TARGET", previous.target],
+            ["CCC_TEST_GIT_MUTATION_READY", previous.ready],
+            ["CCC_TEST_GIT_MUTATION_MARKER", previous.marker],
+        ] as const) {
+            if (value === undefined) {
+                delete process.env[name];
+            } else {
+                process.env[name] = value;
+            }
+        }
+        rmSync(wrapperDirectory, { recursive: true, force: true });
+    }
+}
+
 // === Pure Function Tests (no I/O) ===
 
 describe("validateBranchName", () => {
@@ -1809,12 +1877,17 @@ describe("createWorkspace (unified mode)", () => {
         expect(result.created.map(({ name }) => name))
             .toContain("services/catchy-api");
         const containerWorkspace = "/project/catchy-secrets--gitlink-only";
+        const workspaceGitFile = join(workspaceSubmodule, ".git");
+        const createdForwardPointer = readFileSync(workspaceGitFile, "utf-8")
+            .trim()
+            .replace(/^gitdir:\s*/, "");
+        expect(createdForwardPointer).not.toMatch(/^[A-Za-z]:[\\/]/);
+        expect(createdForwardPointer).not.toMatch(/^\//);
         const mounts = getWorktreeGitMounts(
             result.workspacePath,
             true,
             containerWorkspace,
         );
-        const workspaceGitFile = join(workspaceSubmodule, ".git");
         const forwardPointer = readFileSync(workspaceGitFile, "utf-8")
             .trim()
             .replace(/^gitdir:\s*/, "");
@@ -1833,6 +1906,145 @@ describe("createWorkspace (unified mode)", () => {
         const removed = removeWorkspace(tmpDir, "gitlink-only");
         expect(removed.errors).toEqual([]);
         expect(removed.removed).toContain("services/catchy-api");
+    });
+
+    it("repairs absolute root and tracked Gitlink pointers in a reused workspace", () => {
+        initRepo(tmpDir);
+        const sourceSubmodule = join(tmpDir, "services", "catchy-api");
+        initRepo(sourceSubmodule);
+        const submoduleHead = spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            { cwd: sourceSubmodule, encoding: "utf-8", stdio: "pipe" },
+        ).stdout.trim();
+        expect(spawnSync(
+            "git",
+            [
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                `160000,${submoduleHead},services/catchy-api`,
+            ],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "track API Gitlink"],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+
+        const result = createWorkspace(tmpDir, "reuse-portable");
+        const gitFiles = [
+            join(result.workspacePath, ".git"),
+            join(result.workspacePath, "services", "catchy-api", ".git"),
+        ];
+        for (const gitFile of gitFiles) {
+            const relativePointer = readFileSync(gitFile, "utf-8")
+                .trim()
+                .replace(/^gitdir:\s*/, "");
+            const absolutePointer = resolve(dirname(gitFile), relativePointer);
+            writeFileSync(gitFile, `gitdir: ${absolutePointer}\n`);
+            expect(readFileSync(gitFile, "utf-8")).toContain(absolutePointer);
+        }
+
+        const repaired = repairWorkspace(
+            tmpDir,
+            result.workspacePath,
+            "reuse-portable",
+        );
+
+        expect(repaired).toEqual([]);
+        for (const gitFile of gitFiles) {
+            const pointer = readFileSync(gitFile, "utf-8")
+                .trim()
+                .replace(/^gitdir:\s*/, "");
+            expect(pointer).not.toMatch(/^[A-Za-z]:[\\/]/);
+            expect(pointer).not.toMatch(/^\//);
+        }
+        const nestedStatus = spawnSync(
+            "git",
+            ["status", "--short"],
+            {
+                cwd: join(result.workspacePath, "services", "catchy-api"),
+                encoding: "utf-8",
+                stdio: "pipe",
+            },
+        );
+        expect(nestedStatus.status, nestedStatus.stderr).toBe(0);
+
+        const removed = removeWorkspace(tmpDir, "reuse-portable");
+        expect(removed.errors).toEqual([]);
+    });
+
+    it("preserves a foreign registered worktree at a tracked Gitlink destination", () => {
+        const foreignSource = join(
+            dirname(tmpDir),
+            `${basename(tmpDir)}-foreign-worktree`,
+        );
+        try {
+            initRepo(tmpDir);
+            const expectedSource = join(tmpDir, "services", "catchy-api");
+            initRepo(expectedSource);
+            spawnSync("git", ["add", "services/catchy-api"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            spawnSync("git", ["commit", "-m", "track API Gitlink"], {
+                cwd: tmpDir,
+                stdio: "pipe",
+            });
+            const result = createWorkspace(tmpDir, "foreign-preserve");
+            const destination = join(
+                result.workspacePath,
+                "services",
+                "catchy-api",
+            );
+            expect(spawnSync(
+                "git",
+                ["worktree", "remove", "--force", destination],
+                { cwd: expectedSource, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+
+            initRepo(foreignSource);
+            expect(spawnSync(
+                "git",
+                ["branch", "foreign-preserve"],
+                { cwd: foreignSource, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            expect(spawnSync(
+                "git",
+                ["worktree", "add", destination, "foreign-preserve"],
+                { cwd: foreignSource, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            const foreignGitFile = join(destination, ".git");
+            const beforeRepair = readFileSync(foreignGitFile, "utf-8");
+
+            const repaired = repairWorkspace(
+                tmpDir,
+                result.workspacePath,
+                "foreign-preserve",
+            );
+
+            expect(repaired).toEqual([]);
+            expect(readFileSync(foreignGitFile, "utf-8")).toBe(beforeRepair);
+            expect(isValidWorktree(destination, foreignSource)).toBe(true);
+            expect(isValidWorktree(destination, expectedSource)).toBe(false);
+
+            expect(spawnSync(
+                "git",
+                ["worktree", "remove", "--force", destination],
+                { cwd: foreignSource, encoding: "utf-8", stdio: "pipe" },
+            ).status).toBe(0);
+            expect(repairWorkspace(
+                tmpDir,
+                result.workspacePath,
+                "foreign-preserve",
+            ).map(({ name }) => name)).toContain("services/catchy-api");
+            const removed = removeWorkspace(tmpDir, "foreign-preserve");
+            expect(removed.errors).toEqual([]);
+        } finally {
+            rmSync(foreignSource, { recursive: true, force: true });
+        }
     });
 
     it("owns absorbed tracked Gitlink storage by its index path without .gitmodules", () => {
@@ -2360,6 +2572,45 @@ describe("repairWorkspace", () => {
 
         // backend files should now exist
         expect(existsSync(join(wsResult.workspacePath, "backend", "server.ts"))).toBe(true);
+    });
+
+    it.skipIf(process.platform === "win32")("rolls back nested creation when pointer normalization races", () => {
+        initRepo(tmpDir);
+        const nestedSource = join(tmpDir, "backend");
+        initRepo(nestedSource);
+        const branch = "normalize-rollback";
+        const wsPath = getWorkspacePath(tmpDir, branch);
+        expect(spawnSync(
+            "git",
+            ["worktree", "add", "-b", branch, wsPath],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        const rootGitFile = join(wsPath, ".git");
+        const originalRootGit = readFileSync(rootGitFile, "utf-8");
+        const nestedWorktree = join(wsPath, "backend");
+
+        try {
+            expect(() => withGitMetadataMutation(
+                rootGitFile,
+                nestedWorktree,
+                () => repairWorkspace(tmpDir, wsPath, branch),
+            )).toThrow(/metadata changed|metadata is invalid|ownership could not be verified/i);
+            expect(existsSync(nestedWorktree)).toBe(false);
+            expect(branchExistsInRepo(nestedSource, branch)).toBe("none");
+        } finally {
+            writeFileSync(rootGitFile, originalRootGit);
+        }
+
+        expect(spawnSync(
+            "git",
+            ["worktree", "remove", "--force", wsPath],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["branch", "-D", branch],
+            { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
     });
 
     it("does not repair a repository added beneath an ignored path", () => {
@@ -3973,6 +4224,34 @@ describe("getWorktreeGitMounts", () => {
             encoding: "utf-8",
         });
         expect(status.status).toBe(0);
+    });
+
+    it.skipIf(process.platform === "win32")("rejects same-inode pointer mutation during ownership validation", () => {
+        const repoPath = join(tmpDir, "mutation-source");
+        initRepo(repoPath);
+        const wtPath = join(tmpDir, "mutation-source--feat");
+        spawnSync("git", ["worktree", "add", "-b", "mutation-feat", wtPath], {
+            cwd: repoPath,
+            stdio: "pipe",
+        });
+        const gitFile = join(wtPath, ".git");
+        const originalGitFile = readFileSync(gitFile, "utf-8");
+
+        try {
+            expect(() => withGitMetadataMutation(
+                gitFile,
+                null,
+                () => getWorktreeGitMounts(
+                    wtPath,
+                    true,
+                    "/project/mutation-source--feat",
+                ),
+            )).toThrow(/metadata changed|metadata is invalid/i);
+            expect(readFileSync(gitFile, "utf-8"))
+                .toBe("gitdir: /ccc-test-missing-gitdir\n");
+        } finally {
+            writeFileSync(gitFile, originalGitFile);
+        }
     });
 
     it("rejects a forged registration backpointer before creating mounts", () => {

@@ -198,13 +198,19 @@ function normalizeWorktreeGitLink(
     gitFile: string,
     resolvedGitDirectory: string,
     gitFileIdentity: DirectoryIdentity,
+    validatedContent?: string,
 ): string {
     const portableGitDirectory = portableWorktreeGitDirectory(
         dirname(gitFile),
         resolvedGitDirectory,
     );
     const expectedContent = `gitdir: ${portableGitDirectory}\n`;
-    normalizeWorktreeMetadataFile(gitFile, expectedContent, gitFileIdentity);
+    normalizeWorktreeMetadataFile(
+        gitFile,
+        expectedContent,
+        gitFileIdentity,
+        validatedContent,
+    );
     return portableGitDirectory;
 }
 
@@ -212,6 +218,7 @@ function normalizeWorktreeMetadataFile(
     metadataFile: string,
     expectedContent: string,
     metadataIdentity: DirectoryIdentity,
+    validatedContent?: string,
 ): void {
     assertPathIdentity(metadataFile, metadataIdentity);
     const existingContent = readFileSync(metadataFile, "utf-8");
@@ -236,6 +243,10 @@ function normalizeWorktreeMetadataFile(
         assertPathIdentity(metadataFile, metadataIdentity);
         renameSync(metadataFile, backup);
         assertQuarantinedIdentity(backup, metadataIdentity, "entry");
+        if (validatedContent !== undefined
+            && readFileSync(backup, "utf-8") !== validatedContent) {
+            throw new Error("validated worktree metadata changed before quarantine");
+        }
         assertDirectoryIdentity(dirname(metadataFile), parentIdentity);
         linkSync(temporary, metadataFile);
         assertFileIdentity(metadataFile, temporaryIdentity);
@@ -246,6 +257,10 @@ function normalizeWorktreeMetadataFile(
             throw new Error("normalized worktree metadata changed after installation");
         }
         assertQuarantinedIdentity(backup, metadataIdentity, "entry");
+        if (validatedContent !== undefined
+            && readFileSync(backup, "utf-8") !== validatedContent) {
+            throw new Error("validated worktree metadata changed after quarantine");
+        }
         rmSync(backup);
     } catch (error) {
         rmSync(temporary, { force: true });
@@ -4100,6 +4115,19 @@ export function repairWorkspace(
         );
     }
 
+    try {
+        normalizeOwnerVerifiedWorktreeGitLink(wsPath, resolved);
+        for (const entry of sourceEntries) {
+            if (!entry.isGitRepo) continue;
+            const destination = join(wsPath, entry.name);
+            // Broken or foreign nested entries are preserved for the explicit
+            // repair prompt and must never be mutated during normalization.
+            if (!isValidWorktree(destination, entry.path)) continue;
+            normalizeOwnerVerifiedWorktreeGitLink(destination, entry.path);
+        }
+    } catch (error) {
+        rollbackNestedCreation(error);
+    }
     return created;
 }
 
@@ -4109,6 +4137,101 @@ export interface WorktreeGitMount {
     hostPath: string;
     containerPath: string;
     identity: DirectoryIdentity;
+}
+
+function workspaceWorktreeGitFiles(
+    worktreePath: string,
+    required: boolean,
+): string[] {
+    const resolved = resolve(worktreePath);
+    const gitFiles: string[] = [];
+    const rootGit = join(resolved, ".git");
+    if (pathExistsStrict(rootGit)) {
+        if (lstatSync(rootGit).isFile()) {
+            gitFiles.push(rootGit);
+        } else if (required) {
+            throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
+        }
+    }
+
+    const nestedRepositories = hasGitMetadata(resolved)
+        ? scanUnifiedNestedRepositories(
+            resolved,
+            { strict: required, allowRegisteredWorktrees: true },
+        )
+        : scanDirectory(resolved, { strict: required });
+    for (const entry of nestedRepositories) {
+        if (!entry.isGitRepo) continue;
+        const nestedGit = join(entry.path, ".git");
+        if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
+            gitFiles.push(nestedGit);
+        }
+    }
+    if (required && gitFiles.length === 0) {
+        throw new Error(`Required worktree metadata is missing: ${resolved}`);
+    }
+    return gitFiles;
+}
+
+type StableGitLinkSnapshot = {
+    identity: DirectoryIdentity;
+    content: string;
+    kind: GitLinkKind;
+    resolvedGitDirectory: string;
+};
+
+function stableGitLinkSnapshot(gitFile: string): StableGitLinkSnapshot {
+    const identity = capturePathIdentity(gitFile);
+    const content = readFileSync(gitFile, "utf-8");
+    assertPathIdentity(gitFile, identity);
+    const kind = gitLinkKind(gitFile);
+    assertPathIdentity(gitFile, identity);
+    if (readFileSync(gitFile, "utf-8") !== content) {
+        throw new Error(`Worktree metadata changed during ownership validation: ${gitFile}`);
+    }
+    assertPathIdentity(gitFile, identity);
+    const match = content.trim().match(/^gitdir:\s*(.+)$/);
+    if (!match) {
+        throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
+    }
+    return {
+        identity,
+        content,
+        kind,
+        resolvedGitDirectory: resolve(dirname(gitFile), match[1].trim()),
+    };
+}
+
+function assertStableGitLinkSnapshot(
+    gitFile: string,
+    snapshot: StableGitLinkSnapshot,
+): void {
+    assertPathIdentity(gitFile, snapshot.identity);
+    if (readFileSync(gitFile, "utf-8") !== snapshot.content) {
+        throw new Error(`Worktree metadata changed after ownership validation: ${gitFile}`);
+    }
+    assertPathIdentity(gitFile, snapshot.identity);
+}
+
+function normalizeOwnerVerifiedWorktreeGitLink(
+    worktreePath: string,
+    sourceRepositoryPath: string,
+): void {
+    const gitFile = join(worktreePath, ".git");
+    const snapshot = stableGitLinkSnapshot(gitFile);
+    if (snapshot.kind !== "worktree"
+        || !isValidWorktree(worktreePath, sourceRepositoryPath)) {
+        throw new Error(
+            `Worktree normalization ownership could not be verified: ${gitFile}`,
+        );
+    }
+    assertStableGitLinkSnapshot(gitFile, snapshot);
+    normalizeWorktreeGitLink(
+        gitFile,
+        snapshot.resolvedGitDirectory,
+        snapshot.identity,
+        snapshot.content,
+    );
 }
 
 export function containerGitSourceMountPath(
@@ -4225,14 +4348,7 @@ export function getWorktreeGitMounts(
     }
 
     const rootGit = join(resolved, ".git");
-    const gitFiles: string[] = [];
-    if (pathExistsStrict(rootGit)) {
-        if (lstatSync(rootGit).isFile()) {
-            gitFiles.push(rootGit);
-        } else if (required) {
-            throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
-        }
-    }
+    const gitFiles = workspaceWorktreeGitFiles(resolved, required);
     let unifiedSourceRoot: string | null = null;
     if (gitFiles.includes(rootGit)) {
         try {
@@ -4248,28 +4364,10 @@ export function getWorktreeGitMounts(
             }
         }
     }
-    const nestedRepositories = hasGitMetadata(resolved)
-        ? scanUnifiedNestedRepositories(
-            resolved,
-            { strict: required, allowRegisteredWorktrees: true },
-        )
-        : scanDirectory(resolved, { strict: required });
-    for (const entry of nestedRepositories) {
-        if (!entry.isGitRepo) continue;
-        const nestedGit = join(entry.path, ".git");
-        if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
-            gitFiles.push(nestedGit);
-        }
-    }
-    if (required && gitFiles.length === 0) {
-        throw new Error(`Required worktree metadata is missing: ${resolved}`);
-    }
-
     for (const gitFile of gitFiles) {
-        const gitFileIdentity = capturePathIdentity(gitFile);
-        let kind: GitLinkKind;
+        let snapshot: StableGitLinkSnapshot;
         try {
-            kind = gitLinkKind(gitFile);
+            snapshot = stableGitLinkSnapshot(gitFile);
         } catch (error) {
             if (required) {
                 throw new Error(`Required worktree metadata is invalid: ${gitFile}`, {
@@ -4278,15 +4376,11 @@ export function getWorktreeGitMounts(
             }
             continue;
         }
-        if (kind !== "worktree") {
+        if (snapshot.kind !== "worktree") {
             if (required) throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
             continue;
         }
-        const content = readFileSync(gitFile, "utf-8").trim();
-        const match = content.match(/^gitdir:\s*(.+)$/);
-        if (!match) throw new Error(`Required worktree metadata is invalid: ${gitFile}`);
-        const rawGitDirectory = match[1].trim();
-        const resolvedGitdir = resolve(dirname(gitFile), rawGitDirectory);
+        const resolvedGitdir = snapshot.resolvedGitDirectory;
         const sourceGitDir = resolve(resolvedGitdir, "..", "..");
         const sourceIdentity = captureDirectoryIdentity(sourceGitDir);
         const repositoryRelativePath = relative(resolved, dirname(gitFile))
@@ -4300,10 +4394,12 @@ export function getWorktreeGitMounts(
         if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
+        assertStableGitLinkSnapshot(gitFile, snapshot);
         const portableGitDirectory = normalizeWorktreeGitLink(
             gitFile,
             resolvedGitdir,
-            gitFileIdentity,
+            snapshot.identity,
+            snapshot.content,
         );
         const registrationFile = join(resolvedGitdir, "gitdir");
         const registrationIdentity = captureFileIdentity(registrationFile);
