@@ -13,7 +13,8 @@ Implemented in the current slice:
 - bounded PowerShell Direct guest exec, upload, and download transport
 - broker-owned credential-path, local-path, and downloaded-artifact validation
 - project-scoped VHDX import, SHA-256 verification, VHD validation, profile cache, and atomic manifest
-- offline per-device Windows account/unattend injection with DPAPI host credentials
+- per-device Windows account provisioning from owner-scoped unattend ISO with
+  DPAPI host credentials
 - bounded PowerShell Direct readiness after start
 - host memory, CPU, and disk capacity checks plus owner-scoped definition/running quotas
 - CCC-owned internal switch/NAT contract, atomic global IPv4 allocation, guest static-IP setup, and readiness verification
@@ -99,7 +100,7 @@ ccc devices delete <name>
 Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
-The host broker advertises `hyper-v-vm-managed-auto-images-v18`. This capability
+The host broker advertises `hyper-v-vm-managed-auto-images-v19`. This capability
 revision changes whenever the generated Hyper-V PowerShell programs or automatic
 image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
@@ -119,6 +120,13 @@ identity, SHA-256, VHD type, and differencing parent before using the recorded
 generation. This keeps VM creation within ordinary Hyper-V management
 permissions on Windows hosts where `Mount-VHD` requires separate disk
 management privileges.
+Version 19 also removes the writable OS-disk mount from Windows guest
+provisioning. The provider writes `Autounattend.xml` at the root of an
+owner-scoped ISO and attaches that ISO before the generalized guest first
+boots. It does not mount or modify the differencing VHD from the host. The
+Windows-host Level 2 E2E remains the acceptance gate for the selected
+evaluation image because a cached Panther answer file would take precedence
+over removable media.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random

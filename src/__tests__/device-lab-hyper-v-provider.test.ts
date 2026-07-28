@@ -709,6 +709,10 @@ describe("Hyper-V provider adapter", () => {
             { stderr: "hyper-v-untrusted-runtime-detail", stdout: "" },
             "hyper-v-provider-command-failed",
         )).toBe("hyper-v-provider-command-failed");
+        expect(hyperVProviderDiagnosticCode({
+            stdout: "CCC_HYPER_V_STAGE:hyper-v-guest-provision-media-build-command-failed",
+            stderr: "hyper-v-powershell-execution-failed",
+        })).toBe("hyper-v-guest-provision-media-build-command-failed");
         expect(() => hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
@@ -900,7 +904,7 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("Set-CccProvisionStage 'media-check'");
         expect(seedScript).toContain("Set-CccProvisionStage 'media-build'");
         expect(seedScript).toContain("Set-CccProvisionStage 'media-attach'");
-        expect(seedScript).toContain("[Console]::Out.WriteLine(('hyper-v-linux-seed-' + $Stage + '-command-failed'))");
+        expect(seedScript).toContain("[Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:hyper-v-linux-seed-' + $Stage + '-command-failed'))");
         expect(seedScript).toContain("hyper-v-linux-seed-' + $CccProvisionStage + '-command-failed");
         expect(seedScript).toContain("ssh_host_ed25519_key");
         expect(seedScript).toContain("ssh_deletekeys: true");
@@ -1565,17 +1569,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("input.Read(");
         expect(script).toContain("Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia");
         expect(script).not.toContain("$ProvisioningSource");
-        expect(script).toContain("Mount-VHD -Path $DiskPath -Passthru");
         expect(script).toContain("Get-VMHardDiskDrive -VM $Vm");
-        expect(script).toContain("$AttachedDisks.Count -ne 1");
-        expect(script.indexOf("$AttachedDisks.Count -ne 1")).toBeLessThan(script.indexOf("Mount-VHD -Path $DiskPath"));
-        expect(script).toContain("$MountedDisk = $MountedVhd | Get-Disk");
-        expect(script).toContain("Get-Partition -DiskNumber $MountedDisk.Number");
-        expect(script).toContain("$PantherDirectory = Join-Path $WindowsRoots[0] 'Windows\\Panther'");
-        expect(script).toContain("Join-Path $PantherDirectory 'unattend.xml'");
-        expect(script).toContain("Join-Path $OfflineUnattendDirectory 'Unattend.xml'");
-        expect(script).toContain("foreach ($OfflineUnattendPath in $OfflineUnattendPaths)");
-        expect(script).toContain("Dismount-VHD -Path $DiskPath");
+        expect(script).not.toContain("Mount-VHD -Path $DiskPath");
+        expect(script).not.toContain("$MountedDisk = $MountedVhd | Get-Disk");
+        expect(script).not.toContain("Get-Partition -DiskNumber");
+        expect(script).not.toContain("$PantherDirectory");
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");
         expect(script).toContain("Remove CCC bootstrap secrets");
@@ -1586,9 +1584,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Set-CccProvisionStage 'media-check'");
         expect(script).toContain("Set-CccProvisionStage 'media-content'");
         expect(script).toContain("Set-CccProvisionStage 'media-build'");
-        expect(script).toContain("Set-CccProvisionStage 'offline-unattend'");
         expect(script).toContain("Set-CccProvisionStage 'media-attach'");
-        expect(script).toContain("[Console]::Out.WriteLine(('hyper-v-guest-provision-' + $Stage + '-command-failed'))");
+        expect(script).toContain("[Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:hyper-v-guest-provision-' + $Stage + '-command-failed'))");
         expect(script).toContain("hyper-v-guest-provision-' + $CccProvisionStage + '-command-failed");
         expect(script).not.toContain(guestPassword);
         expect(command.args.join(" ")).not.toContain(guestPassword);
