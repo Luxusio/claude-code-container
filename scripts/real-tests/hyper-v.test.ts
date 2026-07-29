@@ -239,7 +239,7 @@ describe("Hyper-V Level 3 launcher", () => {
                     status: 0,
                     stdout: brokerStatusOutput([
                         "hyper-v-vm-managed-auto-images-v19",
-                        "hyper-v-windows-iso-unattend-v1",
+                        "hyper-v-windows-boot-contract-v1",
                     ]),
                     stderr: "",
                 }),
@@ -247,6 +247,32 @@ describe("Hyper-V Level 3 launcher", () => {
 
             expect(status).toBe(1);
             expect(diagnostic).toContain("hyper-v-vm-managed-auto-images-v20");
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
+    it("rejects a broker that predates the Windows boot contract", async () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: brokerStatusOutput([
+                        "hyper-v-vm-managed-auto-images-v20",
+                        "hyper-v-windows-iso-unattend-v1",
+                    ]),
+                    stderr: "",
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain("hyper-v-windows-boot-contract-v1");
         } finally {
             process.stderr.write = originalWrite;
         }
@@ -270,7 +296,7 @@ describe("Hyper-V Level 3 launcher", () => {
                     ok: true,
                     capabilities: [
                         "hyper-v-vm-managed-auto-images-v18",
-                        "hyper-v-windows-offline-unattend-v2",
+                        "hyper-v-windows-boot-contract-v1",
                     ],
                     pid: verifiedBrokerPid,
                     startedAt: verifiedBrokerStartedAt,

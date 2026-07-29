@@ -1571,8 +1571,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("$ProvisioningSource");
         expect(script).toContain("Get-VMHardDiskDrive -VM $Vm");
         expect(script).not.toContain("Mount-VHD -Path $DiskPath");
-        expect(script).not.toContain("$MountedDisk = $MountedVhd | Get-Disk");
-        expect(script).not.toContain("Get-Partition -DiskNumber");
+        expect(script).not.toContain("Add-PartitionAccessPath");
+        expect(script).toContain("EnableSecureBoot On -SecureBootTemplate 'MicrosoftWindows'");
+        expect(script).toContain("hyper-v-guest-secure-boot-not-enabled");
+        expect(script).toContain("Enable-VMIntegrationService");
+        expect(script).toContain("hyper-v-guest-integration-services-not-enabled");
         expect(script).not.toContain("$PantherDirectory");
         expect(script).toContain("Microsoft-Windows-Shell-Setup");
         expect(script).toContain("Export-Clixml -LiteralPath $CredentialPath");

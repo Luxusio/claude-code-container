@@ -120,13 +120,8 @@ identity, SHA-256, VHD type, and differencing parent before using the recorded
 generation. This keeps VM creation within ordinary Hyper-V management
 permissions on Windows hosts where `Mount-VHD` requires separate disk
 management privileges.
-Version 19 also removes the writable OS-disk mount from Windows guest
-provisioning. The provider writes `Autounattend.xml` at the root of an
-owner-scoped ISO and attaches that ISO before the generalized guest first
-boots. It does not mount or modify the differencing VHD from the host. The
-Windows-host Level 2 E2E remains the acceptance gate for the selected
-evaluation image because a cached Panther answer file would take precedence
-over removable media.
+Version 19 writes `Autounattend.xml` at the root of an owner-scoped ISO and
+attaches that ISO before the generalized guest first boots.
 Version 20 requires the Hyper-V Level 3 launcher to verify both the repair
 CLI's capability attestation and the capabilities returned directly by the
 running loopback broker's `/status` endpoint. Provider execution cannot begin
@@ -159,6 +154,12 @@ and one-time nonce instead of transmitting the owner token. Windows shutdown
 then acquires the process and descendant handles, compares their start times
 with the fenced identity snapshot, and terminates only through those handles so
 PID reuse cannot target a successor.
+Version 21 reasserts the Microsoft Windows Secure Boot template and enables
+Hyper-V integration services before first boot. Provisioning fails immediately
+when the firmware or host-side integration-service postcondition is not met
+instead of waiting 20 minutes on a VM with a known-invalid boot contract. The
+provider retains the owner-scoped unattend ISO and does not mount or modify the
+per-device differencing VHD from the host.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random
@@ -560,11 +561,13 @@ Real-provider tests:
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
-  the removable answer file during its actual first configuration pass and
-  creates the disposable local administrator before PowerShell Direct probes
-  begin. The second pass performs automatic login and secret cleanup. Broker
-  compatibility requires `hyper-v-windows-specialize-seed-v1` and
-  `hyper-v-windows-specialize-account-v1`.
+  the answer file during its actual first configuration pass and creates the
+  disposable local administrator before PowerShell Direct probes begin. The
+  answer file is present on the attached owner-scoped ISO. The second pass
+  performs automatic login and secret cleanup. Broker compatibility requires
+  `hyper-v-windows-specialize-seed-v1`,
+  `hyper-v-windows-specialize-account-v1`, and
+  `hyper-v-windows-boot-contract-v1`.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
 - The focused Level 3 launcher allows up to three minutes for the packaged CCC
   CLI to import, inspect, repair, and attest the host broker before provider
