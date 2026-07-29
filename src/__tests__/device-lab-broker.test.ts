@@ -27,6 +27,7 @@ import {
     hostBrokerRuntimeFromPortProcessForTest,
     parseWindowsBrokerNetstatListenerForTest,
     readHostBrokerHttpJson,
+    retainRecentBrokerAttemptForTest,
     verifySpawnedHostBrokerListenerForTest,
     verifiedHostBrokerIdentityForTest,
 } from "../device-lab-broker.js";
@@ -54,6 +55,19 @@ function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
 
 describe("device-lab host broker daemon", () => {
     let originalHome: string | undefined;
+
+    it("bounds retained startup diagnostics while preserving the most recent attempts", () => {
+        const attempts: unknown[] = [];
+        for (let index = 0; index < 20; index += 1) {
+            retainRecentBrokerAttemptForTest(attempts, { index, body: "x".repeat(1024) });
+        }
+
+        expect(attempts).toHaveLength(8);
+        expect(attempts).toEqual(Array.from({ length: 8 }, (_, offset) => ({
+            index: offset + 12,
+            body: "x".repeat(1024),
+        })));
+    });
 
     it("rejects a compatible listener that won the port race against the spawned broker", () => {
         const port = 17373;

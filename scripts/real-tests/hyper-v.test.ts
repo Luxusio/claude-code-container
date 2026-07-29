@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { basename } from "path";
 import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
 import {
@@ -149,6 +149,81 @@ describe("Hyper-V Level 3 launcher", () => {
         });
 
         expect(status).toBe(0);
+    });
+
+    it("bounds the complete Windows broker repair and preserves spawn failures after partial output", async () => {
+        let diagnostic = "";
+        const observedTimeouts: number[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                repairTimeoutMs: 123456,
+                spawn: (_command: string, _args: string[], options: { timeout?: number }) => {
+                    observedTimeouts.push(Number(options.timeout));
+                    return {
+                        status: null,
+                        signal: "SIGTERM",
+                        stdout: "partial broker output",
+                        stderr: "",
+                        error: Object.assign(new Error("spawn timed out"), { code: "ETIMEDOUT" }),
+                    };
+                },
+            });
+
+            expect(status).toBe(1);
+            expect(observedTimeouts).toHaveLength(1);
+            expect(observedTimeouts[0]).toBeGreaterThan(123000);
+            expect(observedTimeouts[0]).toBeLessThanOrEqual(123456);
+            expect(diagnostic).toContain("partial broker output");
+            expect(diagnostic).toContain("CCC host broker repair preflight failed");
+            expect(diagnostic).toContain("spawn timed out");
+            expect(diagnostic).toContain("timeoutMs=123456");
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
+    it("shares one repair deadline across initial status, remote attestation, and confirmation", async () => {
+        const observedStatusTimeouts: number[] = [];
+        let observedProbeTimeout = 0;
+        const now = vi.spyOn(Date, "now")
+            .mockReturnValueOnce(1000)
+            .mockReturnValueOnce(1000)
+            .mockReturnValueOnce(1040)
+            .mockReturnValueOnce(1060);
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                repairTimeoutMs: 100,
+                spawn: (_command: string, _args: string[], options: { timeout?: number }) => {
+                    observedStatusTimeouts.push(Number(options.timeout));
+                    return {
+                        status: 0,
+                        signal: null,
+                        stdout: brokerStatusOutput(),
+                        stderr: "",
+                    };
+                },
+                probeHostBrokerCapabilitiesImpl: async (_port: number, options: { timeoutMs?: number }) => {
+                    observedProbeTimeout = Number(options.timeoutMs);
+                    return {
+                        ok: true,
+                        capabilities: HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+                        pid: verifiedBrokerPid,
+                        startedAt: verifiedBrokerStartedAt,
+                    };
+                },
+            });
+
+            expect(status).toBe(0);
+            expect(observedStatusTimeouts).toEqual([100, 40]);
+            expect(observedProbeTimeout).toBe(60);
+        } finally {
+            now.mockRestore();
+        }
     });
 
     it("rejects a healthy broker that did not attest the candidate Hyper-V generation", async () => {

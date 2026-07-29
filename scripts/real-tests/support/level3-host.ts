@@ -8,6 +8,7 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
 ];
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
+const HOST_BROKER_REPAIR_TIMEOUT_MS = 180000;
 
 export function buildLevel3Artifacts(repoRoot, options: any = {}) {
     const spawn = options.spawn || spawnSync;
@@ -91,6 +92,11 @@ export async function probeHostBrokerCapabilities(port: number, options: any = {
 
 export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
     const spawn = options.spawn || spawnSync;
+    const repairTimeoutMs = Number.isFinite(options.repairTimeoutMs)
+        ? Math.max(1, Number(options.repairTimeoutMs))
+        : HOST_BROKER_REPAIR_TIMEOUT_MS;
+    const deadlineAt = Date.now() + repairTimeoutMs;
+    const remainingMs = () => Math.max(1, deadlineAt - Date.now());
     const runStatus = () => spawn(
         process.execPath,
         [join(repoRoot, "dist", "index.js"), "devices", "broker", "status"],
@@ -98,7 +104,8 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             cwd: repoRoot,
             env: options.env || process.env,
             encoding: "utf-8",
-            timeout: 30000,
+            timeout: remainingMs(),
+            maxBuffer: HOST_BROKER_STATUS_MAX_BYTES,
             windowsHide: true,
         },
     );
@@ -123,7 +130,15 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             return 1;
         }
         const probe = options.probeHostBrokerCapabilitiesImpl || probeHostBrokerCapabilities;
-        const observed = await probe(port, options);
+        const observed = await probe(port, {
+            ...options,
+            timeoutMs: Math.min(
+                remainingMs(),
+                Number.isFinite(options.timeoutMs)
+                    ? Math.max(1, Number(options.timeoutMs))
+                    : HOST_BROKER_STATUS_TIMEOUT_MS,
+            ),
+        });
         const observedCapabilities = Array.isArray(observed?.capabilities)
             ? observed.capabilities.map(String)
             : [];
@@ -167,6 +182,17 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
         ].join("; ") + "\n");
         return 1;
     }
-    process.stderr.write(result.stderr || result.stdout || "CCC host broker repair preflight failed\n");
+    const processError = result.error instanceof Error
+        ? `${result.error.name}: ${result.error.message}`
+        : result.error ? String(result.error) : "";
+    const childOutput = String(result.stderr || result.stdout || "").trimEnd();
+    const processDiagnostic = [
+        "CCC host broker repair preflight failed",
+        `status=${result.status ?? "missing"}`,
+        `signal=${result.signal || "none"}`,
+        `error=${processError || "no-output"}`,
+        `timeoutMs=${repairTimeoutMs}`,
+    ].join("; ");
+    process.stderr.write(`${childOutput ? `${childOutput}\n` : ""}${processDiagnostic}\n`);
     return 1;
 }

@@ -566,6 +566,11 @@ Real-provider tests:
   compatibility requires `hyper-v-windows-specialize-seed-v1` and
   `hyper-v-windows-specialize-account-v1`.
 - Windows and Linux Hyper-V durability each pass two consecutive cycles.
+- The focused Level 3 launcher allows up to three minutes for the packaged CCC
+  CLI to import, inspect, repair, and attest the host broker before provider
+  execution. The broker process itself receives a separate 30-second startup
+  readiness window. A failed preflight reports the bounded child status,
+  signal, spawn error, and timeout instead of a generic no-output message.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
 ## References

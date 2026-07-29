@@ -110,7 +110,8 @@ const DEVICE_BROKER_APPIUM_PORT_SCAN_LIMIT = 128;
 const DEVICE_BROKER_APPIUM_AUTO_PORT_MIN = 20000;
 const DEVICE_BROKER_APPIUM_AUTO_PORT_MAX = 39999;
 export const DEVICE_BROKER_COMMAND_OUTPUT_LIMIT = 32 * 1024;
-export const DEVICE_BROKER_AUTO_START_TIMEOUT_MS = 2500;
+export const DEVICE_BROKER_AUTO_START_TIMEOUT_MS = 30000;
+const DEVICE_BROKER_STARTUP_ATTEMPT_HISTORY_LIMIT = 8;
 const DEVICE_BROKER_WINDOWS_SANDBOX_REGISTRATION_TIMEOUT_MS = 60000;
 const DEVICE_BROKER_WINDOWS_SANDBOX_LIST_TIMEOUT_MS = 10000;
 const DEVICE_BROKER_WINDOWS_SANDBOX_MINIMIZE_WATCHDOG_MS = 180000;
@@ -2315,16 +2316,23 @@ export function verifySpawnedHostBrokerListenerForTest(
     return commandLineIdentityVerified || redactedStartTokenVerified;
 }
 
+function retainRecentBrokerAttempt(attempts: unknown[], attempt: unknown) {
+    attempts.push(attempt);
+    if (attempts.length > DEVICE_BROKER_STARTUP_ATTEMPT_HISTORY_LIMIT) attempts.shift();
+}
+
+export const retainRecentBrokerAttemptForTest = retainRecentBrokerAttempt;
+
 async function waitForHostBrokerReady(host: string, port: number, timeoutMs: number, cwd: string, expectedOwnerId: string, profile?: string) {
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const attempts: unknown[] = [];
     while (Date.now() <= deadline) {
         const remaining = Math.min(250, Math.max(1, deadline - Date.now()));
         const health = await probeHostBrokerHealth(host, port, remaining);
-        attempts.push(health);
+        retainRecentBrokerAttempt(attempts, health);
         if (health.available) {
             const status = await probeHostBrokerStatus(host, port, remaining, cwd, expectedOwnerId, profile);
-            attempts.push(status);
+            retainRecentBrokerAttempt(attempts, status);
             if (status.compatible) return { available: true, compatible: true, attempts, selected: status };
         }
         await sleep(50);
