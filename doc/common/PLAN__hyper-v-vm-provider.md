@@ -140,6 +140,25 @@ contract only for an allowlisted non-loopback host address. Container-local
 loopback listeners never receive that exception. The direct response stream is
 cancelled as soon as it exceeds its byte limit and is also time-bounded; a
 mismatch reports only the missing and observed `hyper-v-*` capability names.
+On Windows, same-host MCP verification first uses `Get-NetTCPConnection` plus
+CIM command-line inspection and falls back to `netstat -ano -p tcp` when that
+PowerShell inspection is unavailable. A command-line-redacted listener is
+accepted only when the port-owner PID and OS process start token, persisted
+broker identity, and `/status` identity all agree. Legacy runtime metadata is
+migrated only when its broker start timestamp still matches `/status` and the
+OS and `/status` process tokens agree. This preserves process fencing on
+hosts where CIM hides command lines without treating an unverified listener as
+the broker. The `netstat` parser identifies listeners by TCP local port,
+zero-valued remote port, and final PID rather than the localized state label.
+New MCP-owned broker launches also fetch `/status`, normalize their persisted
+start timestamp and process token to the attested broker values, and apply the
+same verification before the first owner RPC. Recovery and shutdown revalidate
+the token immediately before signaling. Authenticated owner RPCs use a
+generation-bound HMAC over the request body, broker start identity, timestamp,
+and one-time nonce instead of transmitting the owner token. Windows shutdown
+then acquires the process and descendant handles, compares their start times
+with the fenced identity snapshot, and terminates only through those handles so
+PID reuse cannot target a successor.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random

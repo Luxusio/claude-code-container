@@ -1,6 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath } from "./windows-system-powershell.mjs";
 
 function validPid(pid) {
     return Number.isInteger(pid) && pid > 0;
@@ -30,8 +31,10 @@ function linuxProcessIdentity(pid) {
 }
 
 function windowsProcessIdentity(pid) {
+    const powershell = canonicalWindowsPowerShellPath();
+    if (!powershell) return null;
     const script = windowsProcessIdentityScript(pid);
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf-8",
         timeout: 5000,
         windowsHide: true,
@@ -41,7 +44,7 @@ function windowsProcessIdentity(pid) {
 }
 
 function windowsProcessIdentityScript(pid) {
-    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
 }
 
 function parseWindowsProcessIdentity(pid, output) {
@@ -55,7 +58,12 @@ function parseWindowsProcessIdentity(pid, output) {
 
 function windowsProcessIdentityAsync(pid) {
     return new Promise((resolve) => {
-        execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+        const powershell = canonicalWindowsPowerShellPath();
+        if (!powershell) {
+            resolve(null);
+            return;
+        }
+        execFile(powershell, ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
             encoding: "utf-8",
             timeout: 5000,
             windowsHide: true,
@@ -265,11 +273,16 @@ export async function terminateOwnedRuntimeProcessTree(runtime, label, options =
         });
     }
 
-    const taskkill = options.taskkill || ((pid) => spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        encoding: "utf-8",
-        timeout: 10_000,
-        windowsHide: true,
-    }));
+    const taskkill = options.taskkill || ((pid) => {
+        const taskkillPath = canonicalWindowsSystemExecutablePath("taskkill.exe");
+        return taskkillPath
+            ? spawnSync(taskkillPath, ["/PID", String(pid), "/T", "/F"], {
+                encoding: "utf-8",
+                timeout: 10_000,
+                windowsHide: true,
+            })
+            : { status: null, stdout: "", stderr: "", error: new Error("windows-system-taskkill-unavailable") };
+    });
     const result = taskkill(runtime.pid);
     const requestedTimeoutMs = Number(options.timeoutMs ?? 1000);
     const timeoutMs = Number.isFinite(requestedTimeoutMs) ? Math.max(0, requestedTimeoutMs) : 1000;

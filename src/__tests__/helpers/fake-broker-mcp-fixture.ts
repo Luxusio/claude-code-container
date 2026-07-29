@@ -32,7 +32,7 @@ const FAKE_BROKER_CAPABILITIES = [
     "runtime-process-observation-v1",
     "host-appium-process-identity-v1",
     "broker-owned-owner-secret-provisioning-v1",
-    "host-broker-port-process-identity-v1",
+    "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1",
     "direct-appium-process-identity-v1",
     "owner-device-state-validation-v1",
     "shared-device-ownership-state-validation-v1",
@@ -88,6 +88,17 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
 const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
 const port = Number(args[args.indexOf("--port") + 1] || 17373);
+const startedAt = new Date().toISOString();
+function processStartToken() {
+  try {
+    const stat = fs.readFileSync("/proc/" + process.pid + "/stat", "utf8");
+    const close = stat.lastIndexOf(")");
+    const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\\s+/) : [];
+    return fields[19] ? "linux:" + fields[19] : null;
+  } catch {
+    return null;
+  }
+}
 function send(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -131,7 +142,7 @@ function expectedOwnerToken(ownerId) {
 }
 const server = http.createServer((req, res) => {
   if (req.url === "/health") return send(res, 200, { ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" });
-  if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", host, port, implemented: ${JSON.stringify(FAKE_BROKER_CAPABILITIES)} } });
+  if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", mode: "host-broker-daemon", host, port, process: { pid: process.pid, startToken: processStartToken() }, startedAt, implemented: ${JSON.stringify(FAKE_BROKER_CAPABILITIES)} } });
   if (req.url === "/v1/owner/resolve" && req.method === "POST") {
     let raw = "";
     req.on("data", (chunk) => { raw += chunk; });
@@ -189,6 +200,17 @@ const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(args) + "\\n");
 const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
 const port = Number(args[args.indexOf("--port") + 1] || 17373);
+const startedAt = new Date().toISOString();
+function processStartToken() {
+  try {
+    const stat = fs.readFileSync("/proc/" + process.pid + "/stat", "utf8");
+    const close = stat.lastIndexOf(")");
+    const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\\s+/) : [];
+    return fields[19] ? "linux:" + fields[19] : null;
+  } catch {
+    return null;
+  }
+}
 function send(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -211,6 +233,7 @@ function ownerIdForRequestBody(body) {
 }
 const server = http.createServer((req, res) => {
   if (req.url === "/health") return send(res, 200, { ok: true, name: "ccc-device-broker" });
+  if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", mode: "host-broker-daemon", host, port, process: { pid: process.pid, startToken: processStartToken() }, startedAt, implemented: ${JSON.stringify(FAKE_BROKER_CAPABILITIES)} } });
   if (req.url === "/v1/owner/resolve" && req.method === "POST") {
     let raw = "";
     req.on("data", (chunk) => { raw += chunk; });

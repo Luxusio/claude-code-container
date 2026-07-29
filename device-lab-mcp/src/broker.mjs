@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes } from "crypto";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, unlinkSync } from "fs";
 import { request as httpRequest } from "http";
@@ -7,6 +7,7 @@ import { delimiter, dirname, join, resolve } from "path";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "./context.mjs";
 import { writeJsonFileAtomically } from "./state/shared-mutation-lock.mjs";
 import { readDeviceLabStateFile } from "./state/state-file.mjs";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, terminateWindowsProcessByStartToken } from "./state/windows-system-powershell.mjs";
 
 const HOST_CANDIDATES = [
     "127.0.0.1",
@@ -50,6 +51,8 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "host-appium-process-identity-v1",
     "broker-owned-owner-secret-provisioning-v1",
     "host-broker-port-process-identity-v1",
+    "host-broker-process-start-token-v1",
+    "owner-generation-hmac-auth-v1",
     "direct-appium-process-identity-v1", "owner-device-state-validation-v1", "shared-device-ownership-state-validation-v1",
     "android-emulator-port-allocation-fencing-v1",
     "bounded-error-responses-v1",
@@ -747,32 +750,46 @@ async function waitForBrokerHealth({ host, port, timeoutMs }) {
     return { requested: true, available: false, selected: null, attempts };
 }
 
-function cleanupOwnedBrokerChildren() {
-    for (const [pid, child] of ownedBrokerChildren.entries()) {
-        try {
-            process.kill(pid, "SIGTERM");
-        } catch {
-            // Already gone.
-        }
-        try {
-            child.kill?.("SIGTERM");
-        } catch {
-            // Already gone.
-        }
-        try {
-            process.kill(pid, "SIGKILL");
-        } catch {
-            // Already gone.
-        }
-        try {
-            child.kill?.("SIGKILL");
-        } catch {
-            // Already gone.
+function cleanupOwnedBrokerChildrenOnExit() {
+    for (const [pid, owned] of ownedBrokerChildren.entries()) {
+        const child = owned?.child || owned;
+        const expectedStartToken = owned?.processStartToken || null;
+        if (expectedStartToken && readBrokerProcessStartToken(pid) === expectedStartToken) {
+            try { child.kill?.("SIGTERM"); } catch { /* preserve runtime evidence */ }
         }
         ownedBrokerChildren.delete(pid);
     }
+}
+
+async function cleanupOwnedBrokerChildren() {
+    const confirmedOwnedExits = new Map();
+    for (const [pid, owned] of ownedBrokerChildren.entries()) {
+        const child = owned?.child || owned;
+        const expectedStartToken = owned?.processStartToken || null;
+        if (!expectedStartToken || readBrokerProcessStartToken(pid) !== expectedStartToken) {
+            ownedBrokerChildren.delete(pid);
+            continue;
+        }
+        let termination = await terminateBrokerProcess(pid, 500, expectedStartToken);
+        if (!termination.ok
+            && !termination.reason
+            && readBrokerProcessStartToken(pid) === expectedStartToken) {
+            try { child.kill?.("SIGKILL"); } catch { /* checked below */ }
+            termination = {
+                ok: await waitForProcessExit(pid, 500),
+                pid,
+                reason: "forced-signal-cleanup",
+            };
+        }
+        if (termination.ok && !pidAlive(pid)) confirmedOwnedExits.set(pid, expectedStartToken);
+        ownedBrokerChildren.delete(pid);
+    }
     const runtime = readBrokerRuntime();
-    if (runtime?.managedBy === "device-lab-mcp" && runtime.ownerId === ownerId()) {
+    const confirmedRuntimeExit = runtime
+        && confirmedOwnedExits.get(Number(runtime.pid)) === runtime.processStartToken;
+    if (confirmedRuntimeExit
+        && runtime.managedBy === "device-lab-mcp"
+        && runtime.ownerId === ownerId()) {
         removeBrokerRuntime();
     }
 }
@@ -780,10 +797,10 @@ function cleanupOwnedBrokerChildren() {
 function registerBrokerCleanup() {
     if (cleanupRegistered) return;
     cleanupRegistered = true;
-    process.once("exit", cleanupOwnedBrokerChildren);
+    process.once("exit", cleanupOwnedBrokerChildrenOnExit);
     for (const signal of ["SIGINT", "SIGTERM"]) {
-        process.once(signal, () => {
-            cleanupOwnedBrokerChildren();
+        process.once(signal, async () => {
+            await cleanupOwnedBrokerChildren();
             if (!exitingFromSignal) {
                 exitingFromSignal = true;
                 process.kill(process.pid, signal);
@@ -801,29 +818,21 @@ async function waitForProcessExit(pid, timeoutMs = 1500) {
     return !pidAlive(pid);
 }
 
-async function terminateBrokerProcess(pid, timeoutMs = 3000) {
+async function terminateBrokerProcess(pid, timeoutMs = 3000, expectedStartToken = null) {
     if (!pidAlive(pid)) return { ok: true, stale: true, pid };
+    if (!expectedStartToken) {
+        return { ok: false, pid, reason: "process-start-token-unavailable" };
+    }
+    const currentStartToken = readBrokerProcessStartToken(pid);
+    if (!currentStartToken || currentStartToken !== expectedStartToken) {
+        return {
+            ok: false,
+            pid,
+            reason: currentStartToken ? "process-start-token-mismatch" : "process-start-token-unavailable",
+        };
+    }
     if (process.platform === "win32") {
-        const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
-            stdio: "ignore",
-            windowsHide: true,
-        });
-        const status = await new Promise((resolve) => {
-            const timer = setTimeout(() => {
-                try { child.kill(); } catch { /* already exited */ }
-                resolve(null);
-            }, timeoutMs);
-            child.once("error", () => {
-                clearTimeout(timer);
-                resolve(null);
-            });
-            child.once("exit", (code) => {
-                clearTimeout(timer);
-                resolve(code);
-            });
-        });
-        const exited = await waitForProcessExit(pid, timeoutMs);
-        return { ok: exited, pid, status, method: "taskkill-tree" };
+        return terminateWindowsProcessByStartToken(pid, expectedStartToken, timeoutMs);
     }
     try {
         process.kill(pid, "SIGTERM");
@@ -873,7 +882,14 @@ function discoverLinuxBrokerPortProcess(port) {
                 if (!match || !inodes.has(match[1])) continue;
                 let commandLine = "";
                 try { commandLine = readFileSync(`/proc/${pidText}/cmdline`, "utf8").replace(/\0/g, " ").trim(); } catch { /* diagnostic only */ }
-                return { pid: Number(pidText), commandLine };
+                let processStartToken = null;
+                try {
+                    const stat = readFileSync(`/proc/${pidText}/stat`, "utf8");
+                    const close = stat.lastIndexOf(")");
+                    const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/) : [];
+                    processStartToken = fields[19] ? `linux:${fields[19]}` : null;
+                } catch { /* diagnostic only */ }
+                return { pid: Number(pidText), commandLine, processStartToken };
             }
         }
     } catch {
@@ -887,25 +903,71 @@ function discoverCommandBrokerPortProcess(command, args) {
     const pid = Number((result.stdout?.match(/^p(\d+)$/m) || [])[1]);
     if (result.status !== 0 || !Number.isInteger(pid) || pid <= 0) return null;
     const ps = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8", windowsHide: true, timeout: 1000 });
-    return { pid, commandLine: String(ps.stdout || "").trim() };
+    const started = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", windowsHide: true, timeout: 1000 });
+    const startedAt = started.status === 0 ? String(started.stdout || "").trim() : "";
+    return { pid, commandLine: String(ps.stdout || "").trim(), processStartToken: startedAt ? `ps:${startedAt}` : null };
+}
+
+export function parseWindowsNetstatListenerForTest(output, port) {
+    const expectedPort = Number(port);
+    if (!Number.isInteger(expectedPort) || expectedPort < 1 || expectedPort > 65535) return null;
+    for (const line of String(output || "").split(/\r?\n/)) {
+        const fields = line.trim().split(/\s+/);
+        if (fields.length < 5 || fields[0]?.toUpperCase() !== "TCP") continue;
+        const localAddress = String(fields[1] || "");
+        const remoteAddress = String(fields[2] || "");
+        const portMatch = /:(\d+)$/.exec(localAddress);
+        const remotePortMatch = /:(\d+)$/.exec(remoteAddress);
+        const pid = Number(fields.at(-1));
+        if (Number(portMatch?.[1]) === expectedPort
+            && Number(remotePortMatch?.[1]) === 0
+            && Number.isInteger(pid)
+            && pid > 0) {
+            return { pid, commandLine: "" };
+        }
+    }
+    return null;
 }
 
 function discoverWindowsBrokerPortProcess(port) {
+    const powershell = canonicalWindowsPowerShellPath();
     const script = [
         `$c = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1`,
         "if (-not $c) { exit 1 }",
         "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"",
-        "[Console]::Out.Write(($c.OwningProcess.ToString()) + \"`n\" + ($p.CommandLine -replace \"`r?`n\", \" \"))",
+        "$h = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue",
+        "if (-not $p -or -not $h) { exit 1 }",
+        "[pscustomobject]@{ pid = [int]$c.OwningProcess; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
     ].join("; ");
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    const result = powershell ? spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
         encoding: "utf8",
         windowsHide: true,
         timeout: 1500,
-    });
-    if (result.status !== 0 || !result.stdout) return null;
-    const [pidText, ...commandLines] = result.stdout.split(/\r?\n/);
-    const pid = Number(pidText);
-    return Number.isInteger(pid) && pid > 0 ? { pid, commandLine: commandLines.join(" ").trim() } : null;
+    }) : { status: null, stdout: "" };
+    if (result.status === 0 && result.stdout) {
+        try {
+            const parsed = JSON.parse(result.stdout);
+            const pid = Number(parsed?.pid);
+            if (Number.isInteger(pid) && pid > 0) {
+                return {
+                    pid,
+                    commandLine: typeof parsed?.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "",
+                    processStartToken: typeof parsed?.startToken === "string" ? `windows:${parsed.startToken}` : null,
+                };
+            }
+        } catch {
+            // Fall through to the locale-independent netstat listener lookup.
+        }
+    }
+    const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
+    const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 1500,
+    }) : { status: null, stdout: "" };
+    const listener = netstat.status === 0 ? parseWindowsNetstatListenerForTest(netstat.stdout, port) : null;
+    if (!listener) return null;
+    return { ...listener, processStartToken: readBrokerProcessStartToken(listener.pid, "win32") };
 }
 
 function discoverBrokerPortProcess(port) {
@@ -915,17 +977,111 @@ function discoverBrokerPortProcess(port) {
     return null;
 }
 
-function verifiedBrokerProcess(runtime, port = Number(runtime?.port)) {
+function readBrokerProcessStartToken(pid, platform = process.platform) {
+    if (!Number.isInteger(Number(pid)) || Number(pid) <= 0) return null;
+    if (platform === "linux") {
+        try {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            const close = stat.lastIndexOf(")");
+            const fields = close >= 0 ? stat.slice(close + 1).trim().split(/\s+/) : [];
+            return fields[19] ? `linux:${fields[19]}` : null;
+        } catch {
+            return null;
+        }
+    }
+    if (platform === "win32") {
+        const powershell = canonicalWindowsPowerShellPath();
+        if (!powershell) return null;
+        const script = `$P = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
+        const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: 1500,
+        });
+        const value = result.status === 0 ? String(result.stdout || "").trim() : "";
+        return value ? `windows:${value}` : null;
+    }
+    const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 1000,
+    });
+    const value = result.status === 0 ? String(result.stdout || "").trim() : "";
+    return value ? `ps:${value}` : null;
+}
+
+function verifiedBrokerProcess(
+    runtime,
+    port = Number(runtime?.port),
+    statusBroker = null,
+    portProcessResolver = discoverBrokerPortProcess,
+) {
     const pid = Number(runtime?.pid);
     if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port)) return null;
-    const observed = discoverBrokerPortProcess(port);
+    const observed = portProcessResolver(port);
     const command = String(runtime?.command || "").replace(/\\/g, "/");
     const nodeLaunch = /(?:^|\/)node(?:\.exe)?$/i.test(command);
     const expectedCliPath = nodeLaunch && Array.isArray(runtime?.args) && typeof runtime.args[0] === "string"
         ? runtime.args[0]
         : null;
-    if (!observed || observed.pid !== pid || !isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) return null;
-    return { ...observed, source: "port-process" };
+    if (!observed || observed.pid !== pid) return null;
+    const observedStartToken = typeof observed.processStartToken === "string"
+        ? observed.processStartToken
+        : "";
+    const runtimeStartToken = typeof runtime?.processStartToken === "string"
+        ? runtime.processStartToken
+        : "";
+    const statusPid = Number(statusBroker?.process?.pid);
+    const statusStartToken = typeof statusBroker?.process?.startToken === "string"
+        ? statusBroker.process.startToken
+        : "";
+    const statusStartedAt = typeof statusBroker?.startedAt === "string" ? statusBroker.startedAt : "";
+    const runtimeStartedAt = typeof runtime?.startedAt === "string" ? runtime.startedAt : "";
+    const runtimeContinuity = observedStartToken.length > 0
+        && (observedStartToken === runtimeStartToken
+            || (!runtimeStartToken && statusStartedAt.length > 0 && statusStartedAt === runtimeStartedAt));
+    const statusProcessVerified = statusBroker?.name === BROKER_NAME
+        && statusBroker?.mode === "host-broker-daemon"
+        && Number(statusBroker?.port) === port
+        && statusPid === pid
+        && statusStartToken.length > 0
+        && observedStartToken === statusStartToken
+        && statusStartedAt.length > 0;
+    if (!statusProcessVerified) return null;
+    if (isBrokerServeCommandLine(observed.commandLine, port, expectedCliPath)) {
+        return runtimeContinuity
+            ? { ...observed, source: "port-process-plus-runtime-and-status" }
+            : null;
+    }
+    return !String(observed.commandLine || "").trim()
+        && runtimeContinuity
+        && statusStartedAt === runtimeStartedAt
+        ? { ...observed, source: "port-pid-plus-runtime-and-status" }
+        : null;
+}
+
+export const verifiedBrokerProcessForTest = verifiedBrokerProcess;
+
+function verifiedOwnedLegacyBrokerProcess(runtime, port, statusBroker, portProcessResolver = discoverBrokerPortProcess) {
+    if (runtime?.managedBy !== "device-lab-mcp"
+        || !Number.isInteger(Number(runtime.pid))
+        || typeof runtime.processStartToken !== "string"
+        || !runtime.processStartToken
+        || typeof runtime.startedAt !== "string"
+        || !runtime.startedAt
+        || statusBroker?.startedAt !== runtime.startedAt) {
+        return null;
+    }
+    const statusPid = Number(statusBroker?.process?.pid);
+    if (Number.isInteger(statusPid) && statusPid > 0 && statusPid !== Number(runtime.pid)) return null;
+    const observed = portProcessResolver(Number(port));
+    if (!observed
+        || observed.pid !== Number(runtime.pid)
+        || observed.processStartToken !== runtime.processStartToken
+        || !isBrokerServeCommandLine(observed.commandLine, Number(port), runtime.args?.[0])) {
+        return null;
+    }
+    return observed;
 }
 
 function reusableBrokerProcessVerification(runtime, port, host, options = {}) {
@@ -944,7 +1100,7 @@ function reusableBrokerProcessVerification(runtime, port, host, options = {}) {
         return { ok: true, source: "cross-host-container-boundary" };
     }
     const processVerifier = options.processVerifier || verifiedBrokerProcess;
-    const verified = processVerifier(runtime, port);
+    const verified = processVerifier(runtime, port, options.statusBroker || null);
     return verified
         ? { ok: true, source: verified.source, verified }
         : { ok: false, source: "unverified-broker-port-process" };
@@ -952,11 +1108,97 @@ function reusableBrokerProcessVerification(runtime, port, host, options = {}) {
 
 export const reusableBrokerProcessVerificationForTest = reusableBrokerProcessVerification;
 
-async function terminateVerifiedBrokerRuntime(runtime, timeoutMs = 3000) {
-    const verified = verifiedBrokerProcess(runtime);
+function persistVerifiedBrokerRuntime(runtime, processVerification, statusBroker) {
+    const processStartToken = typeof processVerification?.verified?.processStartToken === "string"
+        ? processVerification.verified.processStartToken
+        : typeof statusBroker?.process?.startToken === "string"
+            ? statusBroker.process.startToken
+            : null;
+    const startedAt = typeof statusBroker?.startedAt === "string"
+        ? statusBroker.startedAt
+        : runtime?.startedAt;
+    if (!runtime || !processStartToken || !startedAt) return runtime;
+    if (runtime.processStartToken === processStartToken && runtime.startedAt === startedAt) return runtime;
+    const verifiedRuntime = { ...runtime, processStartToken, startedAt };
+    writeBrokerRuntime(verifiedRuntime);
+    return verifiedRuntime;
+}
+
+function launchedBrokerProcessVerification(runtime, port, host, statusBroker, options = {}) {
+    const statusPid = Number(statusBroker?.process?.pid);
+    const statusStartedAt = typeof statusBroker?.startedAt === "string" ? statusBroker.startedAt : "";
+    const statusStartToken = typeof statusBroker?.process?.startToken === "string"
+        ? statusBroker.process.startToken
+        : "";
+    const runtimeStartToken = typeof runtime?.processStartToken === "string"
+        ? runtime.processStartToken
+        : "";
+    const attestedRuntime = statusPid === Number(runtime?.pid)
+        && statusStartedAt
+        && statusStartToken
+        && (!runtimeStartToken || runtimeStartToken === statusStartToken)
+        ? { ...runtime, startedAt: statusStartedAt, processStartToken: statusStartToken }
+        : runtime;
+    const verification = reusableBrokerProcessVerification(
+        attestedRuntime,
+        port,
+        host,
+        { ...options, statusBroker },
+    );
+    return { verification, runtime: attestedRuntime };
+}
+
+export const launchedBrokerProcessVerificationForTest = launchedBrokerProcessVerification;
+
+async function terminateVerifiedBrokerRuntime(runtime, timeoutMs = 3000, options = {}) {
+    const verified = verifiedBrokerProcess(
+        runtime,
+        Number(runtime?.port),
+        options.statusBroker || null,
+        options.portProcessResolver || discoverBrokerPortProcess,
+    );
     if (!verified) return { ok: false, pid: runtime?.pid, reason: "unverified-broker-port-process" };
-    const termination = await terminateBrokerProcess(verified.pid, timeoutMs);
+    const expectedStartToken = verified.processStartToken
+        || runtime?.processStartToken
+        || null;
+    if (!expectedStartToken) {
+        return { ok: false, pid: runtime?.pid, reason: "process-start-token-unavailable", verified };
+    }
+    const termination = await (options.terminator || terminateBrokerProcess)(
+        verified.pid,
+        timeoutMs,
+        expectedStartToken,
+    );
     return { ...termination, verified };
+}
+
+export const terminateVerifiedBrokerRuntimeForTest = terminateVerifiedBrokerRuntime;
+
+async function cleanupLaunchedBrokerRuntime(runtime, child, timeoutMs) {
+    if (!child?.pid) {
+        removeBrokerRuntime();
+        return { ok: true, stale: true, pid: null };
+    }
+    let termination;
+    try {
+        termination = await terminateBrokerProcess(
+            child.pid,
+            timeoutMs,
+            runtime?.processStartToken || null,
+        );
+    } catch (error) {
+        termination = {
+            ok: false,
+            pid: child.pid,
+            reason: "broker-launch-cleanup-failed",
+            detail: error?.message || String(error),
+        };
+    }
+    if (termination.ok) {
+        ownedBrokerChildren.delete(child.pid);
+        removeBrokerRuntime();
+    }
+    return termination;
 }
 
 export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
@@ -988,6 +1230,21 @@ export async function waitForBrokerOwnerResolve(host, port, timeoutMs) {
     };
 }
 
+async function replaceVerifiedOwnedLegacyBroker(runtime, port, statusBroker, options = {}) {
+    const verified = verifiedOwnedLegacyBrokerProcess(
+        runtime,
+        port,
+        statusBroker,
+        options.portProcessResolver || discoverBrokerPortProcess,
+    );
+    if (!verified) return false;
+    const termination = await terminateBrokerProcess(verified.pid, 3000, runtime.processStartToken);
+    if (!termination.ok) return false;
+    ownedBrokerChildren.delete(verified.pid);
+    removeBrokerRuntime();
+    return true;
+}
+
 async function ensureBroker(options = {}) {
     const owner = ownerId();
     const launch = normalizeLaunchOptions(options);
@@ -996,6 +1253,14 @@ async function ensureBroker(options = {}) {
         const existingRuntime = readBrokerRuntime();
         const compatibility = await probeCccHostBrokerCapabilities(before.selected.host, before.selected.port, launch.timeoutMs);
         if (!compatibility.ok) {
+            if (existingRuntime?.ownerId === owner && await replaceVerifiedOwnedLegacyBroker(
+                existingRuntime,
+                before.selected.port,
+                compatibility.body?.broker,
+                options,
+            )) {
+                return ensureBroker(options);
+            }
             return {
                 ok: false,
                 ownerId: owner,
@@ -1015,7 +1280,12 @@ async function ensureBroker(options = {}) {
             timeoutMs: launch.timeoutMs,
         });
         if (ownerResolve.ok) {
-            const processVerification = reusableBrokerProcessVerification(existingRuntime, before.selected.port, before.selected.host);
+            const processVerification = reusableBrokerProcessVerification(
+                existingRuntime,
+                before.selected.port,
+                before.selected.host,
+                { statusBroker: compatibility.body?.broker },
+            );
             if (!processVerification.ok) {
                 return {
                     ok: false,
@@ -1030,12 +1300,17 @@ async function ensureBroker(options = {}) {
                     attempts: [...before.attempts, { reason: "broker-reuse-process-unverified", processVerification }],
                 };
             }
+            const verifiedRuntime = persistVerifiedBrokerRuntime(
+                existingRuntime,
+                processVerification,
+                compatibility.body?.broker,
+            );
             return {
                 ok: true,
                 ownerId: owner,
                 launched: false,
                 reused: true,
-                runtime: readBrokerRuntime(),
+                runtime: verifiedRuntime,
                 host: before.selected.host,
                 port: before.selected.port,
                 attempts: [
@@ -1053,7 +1328,9 @@ async function ensureBroker(options = {}) {
             && Number(runtime.port) === Number(before.selected.port)
             && pidAlive(runtime.pid)
         ) {
-            const termination = await terminateVerifiedBrokerRuntime(runtime);
+            const termination = await terminateVerifiedBrokerRuntime(runtime, 3000, {
+                statusBroker: compatibility.body?.broker,
+            });
             attempts.push({ reason: "incompatible-broker-termination", runtime, termination });
             if (!termination.ok) {
                 return {
@@ -1116,6 +1393,14 @@ async function ensureBroker(options = {}) {
             if (existingProbe.available) {
                 const compatibility = await probeCccHostBrokerCapabilities(existingProbe.selected.host, existingProbe.selected.port, launch.timeoutMs);
                 if (!compatibility.ok) {
+                    if (await replaceVerifiedOwnedLegacyBroker(
+                        existing,
+                        existingProbe.selected.port,
+                        compatibility.body?.broker,
+                        options,
+                    )) {
+                        return ensureBroker(options);
+                    }
                     return {
                         ok: false,
                         ownerId: owner,
@@ -1135,7 +1420,12 @@ async function ensureBroker(options = {}) {
                     timeoutMs: launch.timeoutMs,
                 });
                 if (ownerResolve.ok) {
-                    const processVerification = reusableBrokerProcessVerification(existing, existingProbe.selected.port, existingProbe.selected.host);
+                    const processVerification = reusableBrokerProcessVerification(
+                        existing,
+                        existingProbe.selected.port,
+                        existingProbe.selected.host,
+                        { statusBroker: compatibility.body?.broker },
+                    );
                     if (!processVerification.ok) {
                         return {
                             ok: false,
@@ -1154,12 +1444,17 @@ async function ensureBroker(options = {}) {
                             ],
                         };
                     }
+                    const verifiedRuntime = persistVerifiedBrokerRuntime(
+                        existing,
+                        processVerification,
+                        compatibility.body?.broker,
+                    );
                     return {
                         ok: true,
                         ownerId: owner,
                         launched: false,
                         reused: true,
-                        runtime: existing,
+                        runtime: verifiedRuntime,
                         host: existingProbe.selected.host,
                         port: existingProbe.selected.port,
                         attempts: [
@@ -1171,7 +1466,9 @@ async function ensureBroker(options = {}) {
                     };
                 }
                 stale.push({ reason: "runtime-owner-resolve-incompatible", runtime: existing, attempts: existingProbe.attempts, ownerResolve });
-                const termination = await terminateVerifiedBrokerRuntime(existing, 1500);
+                const termination = await terminateVerifiedBrokerRuntime(existing, 1500, {
+                    statusBroker: compatibility.body?.broker,
+                });
                 stale.push({ reason: "runtime-owner-resolve-incompatible-termination", runtime: existing, termination });
                 if (!termination.ok) {
                     return {
@@ -1185,6 +1482,7 @@ async function ensureBroker(options = {}) {
                 ownedBrokerChildren.delete(existing.pid);
                 removeBrokerRuntime();
             } else {
+                let recoveryStatusBroker = null;
                 const recoveryProbe = await waitForBrokerHealth({
                     host: existing.host || launch.host,
                     port: existing.port || launch.port,
@@ -1192,7 +1490,16 @@ async function ensureBroker(options = {}) {
                 });
                 if (recoveryProbe.available) {
                     const compatibility = await probeCccHostBrokerCapabilities(recoveryProbe.selected.host, recoveryProbe.selected.port, launch.timeoutMs);
+                    recoveryStatusBroker = compatibility.body?.broker || null;
                     if (!compatibility.ok) {
+                        if (await replaceVerifiedOwnedLegacyBroker(
+                            existing,
+                            recoveryProbe.selected.port,
+                            compatibility.body?.broker,
+                            options,
+                        )) {
+                            return ensureBroker(options);
+                        }
                         return {
                             ok: false,
                             ownerId: owner,
@@ -1212,7 +1519,12 @@ async function ensureBroker(options = {}) {
                         timeoutMs: launch.timeoutMs,
                     });
                     if (ownerResolve.ok) {
-                        const processVerification = reusableBrokerProcessVerification(existing, recoveryProbe.selected.port, recoveryProbe.selected.host);
+                        const processVerification = reusableBrokerProcessVerification(
+                            existing,
+                            recoveryProbe.selected.port,
+                            recoveryProbe.selected.host,
+                            { statusBroker: compatibility.body?.broker },
+                        );
                         if (!processVerification.ok) {
                             return {
                                 ok: false,
@@ -1232,12 +1544,17 @@ async function ensureBroker(options = {}) {
                                 ],
                             };
                         }
+                        const verifiedRuntime = persistVerifiedBrokerRuntime(
+                            existing,
+                            processVerification,
+                            compatibility.body?.broker,
+                        );
                         return {
                             ok: true,
                             ownerId: owner,
                             launched: false,
                             reused: true,
-                            runtime: existing,
+                            runtime: verifiedRuntime,
                             host: recoveryProbe.selected.host,
                             port: recoveryProbe.selected.port,
                             attempts: [
@@ -1250,7 +1567,9 @@ async function ensureBroker(options = {}) {
                         };
                     }
                 }
-                const termination = await terminateVerifiedBrokerRuntime(existing);
+                const termination = await terminateVerifiedBrokerRuntime(existing, 3000, {
+                    statusBroker: recoveryStatusBroker,
+                });
                 stale.push({
                     reason: "runtime-health-check-failed",
                     runtime: existing,
@@ -1277,6 +1596,8 @@ async function ensureBroker(options = {}) {
     const startedAt = new Date().toISOString();
     let logPath = join(brokerLogsRoot(), `broker-${owner}-pending.log`);
     let logFd = null;
+    let launchedChild = null;
+    let launchedRuntime = null;
     try {
         if (!executableExists(launch.command)) {
             return {
@@ -1298,13 +1619,19 @@ async function ensureBroker(options = {}) {
             detached: false,
             windowsHide: true,
         });
+        launchedChild = child;
         child.once("exit", () => {
             ownedBrokerChildren.delete(child.pid);
         });
         child.once("error", () => {
             ownedBrokerChildren.delete(child.pid);
         });
-        if (child.pid) ownedBrokerChildren.set(child.pid, child);
+        let processStartToken = child.pid ? readBrokerProcessStartToken(child.pid) : null;
+        for (let attempt = 0; child.pid && !processStartToken && attempt < 20; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            processStartToken = readBrokerProcessStartToken(child.pid);
+        }
+        if (child.pid) ownedBrokerChildren.set(child.pid, { child, processStartToken });
         registerBrokerCleanup();
         const runtime = {
             name: BROKER_NAME,
@@ -1316,22 +1643,46 @@ async function ensureBroker(options = {}) {
             args: launch.args,
             logPath,
             startedAt,
+            processStartToken,
             managedBy: "device-lab-mcp",
         };
+        launchedRuntime = runtime;
         writeBrokerRuntime(runtime);
         const ready = await waitForBrokerHealth({ host: launch.host, port: launch.port, timeoutMs: launch.launchTimeoutMs });
         if (ready.available) {
             const ownerResolve = await waitForBrokerOwnerResolve(launch.host, launch.port, launch.launchTimeoutMs);
             if (ownerResolve.ok) {
-                const processVerification = reusableBrokerProcessVerification(runtime, launch.port, launch.host);
+                const compatibility = await probeCccHostBrokerCapabilities(launch.host, launch.port, launch.timeoutMs);
+                if (!compatibility.ok) {
+                    const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
+                    return {
+                        ok: false,
+                        ownerId: owner,
+                        launched: true,
+                        reused: false,
+                        error: "host-broker-incompatible",
+                        runtime,
+                        host: launch.host,
+                        port: launch.port,
+                        compatibility,
+                        launchCleanup,
+                        attempts: [
+                            ...before.attempts,
+                            ...stale,
+                            ...ready.attempts,
+                            { reason: "broker-launch-incompatible", compatibility },
+                        ],
+                    };
+                }
+                const launchProcessVerification = launchedBrokerProcessVerification(
+                    runtime,
+                    launch.port,
+                    launch.host,
+                    compatibility.body?.broker,
+                );
+                const processVerification = launchProcessVerification.verification;
                 if (!processVerification.ok) {
-                    try {
-                        if (child.pid) await terminateBrokerProcess(child.pid);
-                    } catch {
-                        // The bounded failure below is sufficient.
-                    }
-                    ownedBrokerChildren.delete(child.pid);
-                    removeBrokerRuntime();
+                    const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
                     return {
                         ok: false,
                         ownerId: owner,
@@ -1341,6 +1692,7 @@ async function ensureBroker(options = {}) {
                         runtime,
                         host: launch.host,
                         port: launch.port,
+                        launchCleanup,
                         attempts: [
                             ...before.attempts,
                             ...stale,
@@ -1349,6 +1701,8 @@ async function ensureBroker(options = {}) {
                         ],
                     };
                 }
+                Object.assign(runtime, launchProcessVerification.runtime);
+                writeBrokerRuntime(runtime);
                 return {
                     ok: true,
                     ownerId: ownerResolve.ownerId,
@@ -1366,13 +1720,7 @@ async function ensureBroker(options = {}) {
                     ],
                 };
             }
-            try {
-                if (child.pid) await terminateBrokerProcess(child.pid);
-            } catch {
-                // Readiness failure below remains authoritative.
-            }
-            if (child.pid) ownedBrokerChildren.delete(child.pid);
-            removeBrokerRuntime();
+            const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 3000);
             return {
                 ok: false,
                 ownerId: owner,
@@ -1381,27 +1729,25 @@ async function ensureBroker(options = {}) {
                     ? `${ownerResolve.error}: ${JSON.stringify(ownerResolve.selected)}`
                     : brokerLogTail(logPath) || `broker owner resolution did not become ready within ${launch.launchTimeoutMs}ms`,
                 runtime,
+                launchCleanup,
                 ownerResolve,
                 attempts: [...before.attempts, ...stale, ...ready.attempts, { reason: "broker-owner-resolve-readiness-timeout", ownerResolve }],
             };
         }
-        try {
-            if (child.pid) process.kill(child.pid, "SIGTERM");
-        } catch {
-            // Already gone.
-        }
-        if (child.pid) ownedBrokerChildren.delete(child.pid);
-        removeBrokerRuntime();
+        const launchCleanup = await cleanupLaunchedBrokerRuntime(runtime, child, 1500);
         return {
             ok: false,
             ownerId: owner,
             error: "broker-launch-health-timeout",
             detail: brokerLogTail(logPath) || `broker did not become healthy within ${launch.launchTimeoutMs}ms`,
             runtime,
+            launchCleanup,
             attempts: [...before.attempts, ...stale, ...ready.attempts],
         };
     } catch (error) {
-        removeBrokerRuntime();
+        const launchCleanup = launchedRuntime && launchedChild
+            ? await cleanupLaunchedBrokerRuntime(launchedRuntime, launchedChild, 1500)
+            : (removeBrokerRuntime(), null);
         return {
             ok: false,
             ownerId: owner,
@@ -1410,6 +1756,7 @@ async function ensureBroker(options = {}) {
             command: launch.command,
             args: launch.args,
             logPath,
+            ...(launchCleanup ? { launchCleanup } : {}),
             attempts: [...before.attempts, ...stale],
         };
     } finally {
@@ -1433,6 +1780,39 @@ export async function brokerShutdown(options = {}) {
     if (runtime.managedBy !== "device-lab-mcp") {
         return { ok: false, ownerId: owner, error: "runtime-not-managed-by-device-lab-mcp", runtime };
     }
+    const status = await probeCccHostBrokerCapabilities(
+        runtime.host || "127.0.0.1",
+        Number(runtime.port) || 17373,
+        options.timeoutMs || 1500,
+    );
+    const runtimeAlive = pidAlive(runtime.pid);
+    if (!runtimeAlive) {
+        ownedBrokerChildren.delete(runtime.pid);
+        removeBrokerRuntime();
+        return {
+            ok: true,
+            ownerId: owner,
+            stopped: false,
+            reason: "runtime-pid-not-alive",
+            runtime,
+        };
+    }
+    const verified = runtimeAlive
+        ? verifiedBrokerProcess(
+            runtime,
+            Number(runtime.port),
+            status.body?.broker || null,
+        )
+        : null;
+    if (runtimeAlive && !verified) {
+        return {
+            ok: false,
+            ownerId: owner,
+            error: "broker-runtime-process-unverified",
+            stopped: false,
+            runtime,
+        };
+    }
     const cleanup = await brokerRpcRequest({
         method: "broker.cleanup.owner",
         params: {
@@ -1443,22 +1823,41 @@ export async function brokerShutdown(options = {}) {
         hostCandidates: [runtime.host || "127.0.0.1"],
         port: runtime.port || 17373,
         timeoutMs: options.cleanupTimeoutMs || options.timeoutMs || 1500,
+        verifyBeforeAuthenticatedRequest: () => {
+            const current = verifiedBrokerProcess(
+                runtime,
+                Number(runtime.port),
+                status.body?.broker || null,
+            );
+            return Boolean(
+                current
+                && current.pid === verified?.pid
+                && current.processStartToken
+                && current.processStartToken === (verified?.processStartToken || runtime.processStartToken),
+            );
+        },
     });
     let signaled = false;
-    if (pidAlive(runtime.pid)) {
-        const verified = verifiedBrokerProcess(runtime);
-        if (!verified) {
-            return { ok: false, ownerId: owner, error: "broker-runtime-process-unverified", stopped: false, runtime, cleanup };
-        }
+    if (runtimeAlive && verified) {
         try {
-            process.kill(verified.pid, options.force === true ? "SIGKILL" : "SIGTERM");
+            const termination = await terminateBrokerProcess(
+                verified.pid,
+                options.force === true ? 500 : 1500,
+                verified.processStartToken || runtime.processStartToken || null,
+            );
+            if (!termination.ok) {
+                return {
+                    ok: false,
+                    ownerId: owner,
+                    error: termination.reason || "broker-shutdown-timeout",
+                    stopped: false,
+                    runtime,
+                    cleanup,
+                };
+            }
             signaled = true;
         } catch (error) {
             return { ok: false, ownerId: owner, error: "broker-shutdown-failed", detail: error?.message || String(error), runtime, cleanup };
-        }
-        const exited = await waitForProcessExit(verified.pid, options.force === true ? 500 : 1500);
-        if (!exited) {
-            return { ok: false, ownerId: owner, error: "broker-shutdown-timeout", stopped: false, runtime, cleanup };
         }
     }
     ownedBrokerChildren.delete(runtime.pid);
@@ -1613,6 +2012,67 @@ export async function brokerRpc(options = {}) {
     return brokerRpcRequest({ ...options, publicTool: true });
 }
 
+async function verifyAuthenticatedBrokerGeneration(host, port, launch, options) {
+    if (typeof options.verifyBeforeAuthenticatedRequest === "function"
+        && options.verifyBeforeAuthenticatedRequest() !== true) {
+        return null;
+    }
+    if (process.env.NODE_ENV === "test"
+        && (process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER === "1"
+            || options.autolaunch === false)) {
+        return { ...(launch?.runtime || readBrokerRuntime() || {}), testOnly: true };
+    }
+    const attestationTimeoutMs = Number.isFinite(Number(options.timeoutMs))
+        ? Math.min(5000, Math.max(1, Number(options.timeoutMs)))
+        : 5000;
+    const attestation = await probeCccHostBrokerCapabilities(host, port, attestationTimeoutMs);
+    const broker = attestation?.body?.broker;
+    const brokerPid = Number(broker?.process?.pid);
+    const brokerStartToken = typeof broker?.process?.startToken === "string" ? broker.process.startToken : "";
+    const brokerStartedAt = typeof broker?.startedAt === "string" ? broker.startedAt : "";
+    if (!attestation.ok || !Number.isInteger(brokerPid) || brokerPid <= 0 || !brokerStartToken || !brokerStartedAt) return null;
+    const runtime = launch?.runtime || readBrokerRuntime();
+    if (!runtime || (
+        Number(runtime.port) !== Number(port)
+        || Number(runtime.pid) !== brokerPid
+        || runtime.processStartToken !== brokerStartToken
+        || runtime.startedAt !== brokerStartedAt
+    )) return null;
+    const normalizedHost = String(host || "").trim().toLowerCase();
+    const loopback = normalizedHost === "127.0.0.1" || normalizedHost === "localhost" || normalizedHost === "::1";
+    if (!loopback) return runtime;
+    return verifiedBrokerProcess(runtime, Number(port), broker) ? runtime : null;
+}
+
+export const verifyAuthenticatedBrokerGenerationForTest = verifyAuthenticatedBrokerGeneration;
+
+function authenticatedBrokerHeaders(token, owner, runtime, body) {
+    if (runtime.testOnly === true && process.env.NODE_ENV === "test") {
+        return { "x-ccc-device-token": token };
+    }
+    const timestamp = String(Date.now());
+    const nonce = randomBytes(16).toString("hex");
+    const bodyHash = createHash("sha256").update(body).digest("hex");
+    const payload = [
+        "v1",
+        owner,
+        timestamp,
+        nonce,
+        runtime.startedAt,
+        runtime.processStartToken,
+        bodyHash,
+    ].join("\n");
+    return {
+        "x-ccc-device-auth": createHmac("sha256", token).update(payload).digest("hex"),
+        "x-ccc-device-auth-timestamp": timestamp,
+        "x-ccc-device-auth-nonce": nonce,
+        "x-ccc-device-broker-started-at": runtime.startedAt,
+        "x-ccc-device-broker-start-token": runtime.processStartToken,
+    };
+}
+
+export const authenticatedBrokerHeadersForTest = authenticatedBrokerHeaders;
+
 async function brokerRpcRequest(options = {}) {
     let owner = ownerId();
     const requestedHosts = Array.isArray(options.hostCandidates) ? options.hostCandidates.map(String) : [];
@@ -1746,6 +2206,18 @@ async function brokerRpcRequest(options = {}) {
         const endpoint = `http://${host}:${probeOptions.port}${rpcPath}`;
         const startedAt = Date.now();
         try {
+            const verifiedRuntime = await verifyAuthenticatedBrokerGeneration(host, probeOptions.port, launch, options);
+            if (!verifiedRuntime) {
+                return {
+                    ok: false,
+                    ownerId: owner,
+                    method,
+                    selected: null,
+                    error: "broker-runtime-process-unverified",
+                    ownerResolve: resolvedOwner,
+                    attempts,
+                };
+            }
             const response = await brokerRpcHttpJsonRequest({
                 host,
                 port: probeOptions.port,
@@ -1754,7 +2226,7 @@ async function brokerRpcRequest(options = {}) {
                 maxBytes: BROKER_RPC_RESPONSE_LIMIT_BYTES,
                 headers: {
                     "content-type": "application/json",
-                    "x-ccc-device-token": token,
+                    ...authenticatedBrokerHeaders(token, owner, verifiedRuntime, requestBody),
                 },
                 body: requestBody,
             });

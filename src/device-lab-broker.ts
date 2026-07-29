@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
@@ -13,8 +13,9 @@ import { assertOwnerDeviceStateWritable, ownerDeviceStateErrorCode, readOwnerDev
 import { readPhysicalLeaseStateFile, readWindowsSandboxLockStateFile, validatePhysicalLease, validateWindowsSandboxLock } from "./device-lab-ownership-state.js";
 import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from "./device-lab-project-state.js";
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
-import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
+import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, readDeviceRuntimeProcessStartToken, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript } from "./windows-system-powershell.js";
 import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
 import {
     assertNoSymlinkPathComponents,
@@ -155,6 +156,8 @@ const DEVICE_BROKER_CAPABILITY_HOST_APPIUM_PROCESS_IDENTITY = "host-appium-proce
 const DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY = "appium-port-process-identity-fencing-v1";
 const DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH = "broker-owned-owner-secret-provisioning-v1";
 const DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY = "host-broker-port-process-identity-v1";
+const DEVICE_BROKER_CAPABILITY_PROCESS_START_TOKEN = "host-broker-process-start-token-v1";
+const DEVICE_BROKER_CAPABILITY_OWNER_GENERATION_HMAC_AUTH = "owner-generation-hmac-auth-v1";
 const DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY = "direct-appium-process-identity-v1";
 const DEVICE_BROKER_CAPABILITY_OWNER_DEVICE_STATE_VALIDATION = "owner-device-state-validation-v1";
 const DEVICE_BROKER_CAPABILITY_OWNERSHIP_STATE_VALIDATION = "shared-device-ownership-state-validation-v1";
@@ -239,6 +242,8 @@ const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY,
     DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH,
     DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY,
+    DEVICE_BROKER_CAPABILITY_PROCESS_START_TOKEN,
+    DEVICE_BROKER_CAPABILITY_OWNER_GENERATION_HMAC_AUTH,
     DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY,
     DEVICE_BROKER_CAPABILITY_OWNER_DEVICE_STATE_VALIDATION,
     DEVICE_BROKER_CAPABILITY_OWNERSHIP_STATE_VALIDATION,
@@ -621,6 +626,7 @@ const DEVICE_BROKER_MUTATING_RPC_METHODS = new Set([
     "broker.appium.request",
 ]);
 const brokerOwnerMutationTails = new Map<string, Promise<void>>();
+const brokerAuthNonces = new Map<string, number>();
 const DEVICE_BROKER_SERVICE_ACTIONS = new Set(["status"]);
 const DEVICE_BROKER_APPLE_TRUST_ACTIONS = new Set(["status", "pair", "connect"]);
 const DEVICE_BROKER_RECORDING_PROVIDERS = new Map([
@@ -832,7 +838,12 @@ type ServiceOwnerRecord = {
     updatedAt: string;
 };
 type BrokerSpawn = typeof spawn;
-export type BrokerPortProcess = { pid: number; commandLine?: string | null; processIdentity?: DeviceRuntimeProcessIdentity | null };
+export type BrokerPortProcess = {
+    pid: number;
+    commandLine?: string | null;
+    processIdentity?: DeviceRuntimeProcessIdentity | null;
+    processStartToken?: string | null;
+};
 export type BrokerPortProcessResolver = (port: number, platform: NodeJS.Platform) => BrokerPortProcess | null;
 
 export interface HostDeviceBrokerOptions extends DeviceBrokerOptions {
@@ -843,6 +854,7 @@ export interface HostDeviceBrokerOptions extends DeviceBrokerOptions {
     spawnImpl?: BrokerSpawn;
     portProcessResolver?: BrokerPortProcessResolver;
     processIdentityReader?: (pid: number, platform: NodeJS.Platform) => DeviceRuntimeProcessIdentity | null;
+    processStartTokenReader?: (pid: number, platform: NodeJS.Platform) => string | null;
     env?: NodeJS.ProcessEnv;
     enabled?: boolean;
 }
@@ -1822,33 +1834,60 @@ async function stopIncompatibleHostBroker(
         return { stopped: true, restartable: true, reason: "runtime-pid-not-alive", runtime, compatibility };
     }
     const expectedIdentity = runtime.processIdentity as DeviceRuntimeProcessIdentity | undefined;
+    const expectedStartToken = typeof runtime.processStartToken === "string"
+        ? runtime.processStartToken
+        : null;
     const readCurrentIdentity = (value: number) => {
         const current = portProcessResolver(port, platform);
         if (!current || current.pid !== value) return null;
         return current.processIdentity || readDeviceRuntimeProcessIdentity(value, { platform });
     };
+    const readCurrentStartToken = (value: number) => {
+        const current = portProcessResolver(port, platform);
+        if (!current || current.pid !== value) return null;
+        return current.processStartToken
+            || current.processIdentity?.startToken
+            || readDeviceRuntimeProcessStartToken(value, { platform });
+    };
     const identityOptions = { platform, readIdentity: readCurrentIdentity };
-    const initialIdentity = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions);
-    if (initialIdentity.status !== "match") {
+    const initialIdentity = expectedIdentity
+        ? inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions)
+        : null;
+    const initialStartToken = expectedStartToken ? readCurrentStartToken(pid) : null;
+    if ((initialIdentity && initialIdentity.status !== "match")
+        || (!initialIdentity && (!expectedStartToken || initialStartToken !== expectedStartToken))) {
+        const status = initialIdentity?.status || (initialStartToken ? "mismatch" : "unavailable");
         return {
             stopped: false,
             restartable: false,
-            reason: initialIdentity.status === "exited"
+            reason: status === "exited"
                 ? "runtime-pid-not-alive"
-                : initialIdentity.status === "mismatch"
+                : status === "mismatch"
                     ? "runtime-process-identity-mismatch"
                     : "runtime-process-identity-unavailable",
             runtime,
             compatibility,
-            observation: initialIdentity,
+            observation: initialIdentity || { status, currentStartToken: initialStartToken },
         };
     }
     if (process.platform === "win32") {
-        const windowsIdentity = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions);
-        if (windowsIdentity.status !== "match") {
-            return { stopped: false, restartable: false, reason: `runtime-process-identity-${windowsIdentity.status}`, runtime, compatibility, observation: windowsIdentity };
+        const windowsIdentity = expectedIdentity
+            ? inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid, identityOptions)
+            : null;
+        const windowsStartToken = expectedStartToken ? readCurrentStartToken(pid) : null;
+        if ((windowsIdentity && windowsIdentity.status !== "match")
+            || (!windowsIdentity && windowsStartToken !== expectedStartToken)) {
+            const status = windowsIdentity?.status || (windowsStartToken ? "mismatch" : "unavailable");
+            return {
+                stopped: false,
+                restartable: false,
+                reason: `runtime-process-identity-${status}`,
+                runtime,
+                compatibility,
+                observation: windowsIdentity || { status, currentStartToken: windowsStartToken },
+            };
         }
-        const stopped = terminateWindowsProcessTree(pid, expectedIdentity);
+        const stopped = terminateWindowsProcessTree(pid, expectedIdentity, false, expectedStartToken || undefined);
         if (!stopped.ok) {
             return { stopped: false, restartable: false, reason: "runtime-stop-failed", runtime, compatibility, detail: stopped.error };
         }
@@ -1956,6 +1995,7 @@ function hostBrokerRuntimeFromStatus(ownerId: string, port: number, compatibilit
         args: serviceCommand.slice(1),
         cwd,
         startedAt: typeof record.startedAt === "string" ? record.startedAt : null,
+        processStartToken: typeof processRecord.startToken === "string" ? processRecord.startToken : null,
         source: "broker-status",
     };
 }
@@ -1976,18 +2016,46 @@ function hostBrokerRuntimeFromPortProcess(
     if (statusRuntime && Number(statusRuntime.pid) !== process.pid) return null;
     const commandLine = process.commandLine?.trim() || "";
     const commandLineVerified = isBrokerServeCommandLine(commandLine, port, expectedCliPath);
-    const metadataVerified = commandLine.length === 0
-        && persistedRuntime?.name === DEVICE_BROKER_NAME
+    const observedStartToken = process.processStartToken
+        || process.processIdentity?.startToken
+        || readDeviceRuntimeProcessStartToken(process.pid, { platform });
+    const persistedStartToken = typeof persistedRuntime?.processStartToken === "string"
+        ? persistedRuntime.processStartToken
+        : null;
+    const statusStartToken = typeof statusRuntime?.processStartToken === "string"
+        ? statusRuntime.processStartToken
+        : null;
+    const persistedMetadataMatches = persistedRuntime?.name === DEVICE_BROKER_NAME
         && persistedRuntime?.managedBy === "ccc-host"
         && Number(persistedRuntime?.pid) === process.pid
-        && Number(persistedRuntime?.port) === port
-        && statusRuntime?.name === DEVICE_BROKER_NAME
+        && Number(persistedRuntime?.port) === port;
+    const persistedContinuity = !persistedRuntime
+        || (persistedMetadataMatches
+            && observedStartToken !== null
+            && (observedStartToken === persistedStartToken
+                || (!persistedStartToken
+                    && typeof persistedRuntime.startedAt === "string"
+                    && persistedRuntime.startedAt === statusRuntime?.startedAt)));
+    const statusMetadataMatches = statusRuntime?.name === DEVICE_BROKER_NAME
         && statusRuntime?.managedBy === "ccc-host-status"
         && Number(statusRuntime?.pid) === process.pid
         && Number(statusRuntime?.port) === port;
-    if (!commandLineVerified && !metadataVerified) return null;
+    const statusIdentityVerified = statusMetadataMatches
+        && observedStartToken !== null
+        && observedStartToken === statusStartToken;
+    const legacyStatusWithoutToken = (!statusRuntime || statusMetadataMatches)
+        && !statusStartToken;
+    const legacyPersistedCommandContinuity = !persistedRuntime || persistedMetadataMatches;
+    const commandLineTrusted = commandLineVerified
+        && persistedContinuity
+        && (statusIdentityVerified || (legacyPersistedCommandContinuity && legacyStatusWithoutToken));
+    const metadataVerified = commandLine.length === 0
+        && Boolean(persistedRuntime)
+        && persistedContinuity
+        && statusIdentityVerified;
+    if (!commandLineTrusted && !metadataVerified) return null;
     const processIdentity = process.processIdentity || readDeviceRuntimeProcessIdentity(process.pid, { platform });
-    if (!processIdentity) return null;
+    if (!processIdentity && !metadataVerified) return null;
     return {
         name: DEVICE_BROKER_NAME,
         managedBy: commandLineVerified ? "ccc-host-port" : "ccc-host-port-metadata",
@@ -1996,7 +2064,8 @@ function hostBrokerRuntimeFromPortProcess(
         host: typeof record?.host === "string" ? record.host : null,
         port,
         commandLine: commandLine || null,
-        processIdentity,
+        ...(processIdentity ? { processIdentity } : {}),
+        processStartToken: observedStartToken,
         identitySource: commandLineVerified ? "port-command-line" : "port-pid-plus-runtime-and-status",
     };
 }
@@ -2074,23 +2143,67 @@ function discoverCommandBrokerPortProcess(command: string, args: string[], platf
     return { pid, commandLine: ps.stdout.trim(), processIdentity: readDeviceRuntimeProcessIdentity(pid, { platform }) };
 }
 
+export function parseWindowsBrokerNetstatListenerForTest(output: string, port: number): BrokerPortProcess | null {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+    for (const line of output.split(/\r?\n/)) {
+        const fields = line.trim().split(/\s+/);
+        if (fields.length < 5 || fields[0]?.toUpperCase() !== "TCP") continue;
+        const localPort = Number(/:(\d+)$/.exec(fields[1] || "")?.[1]);
+        const remotePort = Number(/:(\d+)$/.exec(fields[2] || "")?.[1]);
+        const pid = Number(fields.at(-1));
+        if (localPort === port && remotePort === 0 && Number.isInteger(pid) && pid > 0) {
+            return { pid, commandLine: "" };
+        }
+    }
+    return null;
+}
+
 function discoverWindowsBrokerPortProcess(port: number): BrokerPortProcess | null {
+    const powershell = canonicalWindowsPowerShellPath();
     const script = [
         `$c = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1`,
         "if (-not $c) { exit 1 }",
         "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"",
-        "[Console]::Out.Write(($c.OwningProcess.ToString()) + \"`n\" + ($p.CommandLine -replace \"`r?`n\", \" \"))",
+        "$h = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue",
+        "if (-not $p -or -not $h) { exit 1 }",
+        "[pscustomobject]@{ pid = [int]$c.OwningProcess; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
     ].join("; ");
-    const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    const result = powershell ? spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
         encoding: "utf8",
         windowsHide: true,
         timeout: 10000,
-    });
-    if (result.status !== 0 || !result.stdout) return null;
-    const [pidText, ...commandLines] = result.stdout.split(/\r?\n/);
-    const pid = Number(pidText);
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    return { pid, commandLine: commandLines.join(" ").trim(), processIdentity: readDeviceRuntimeProcessIdentity(pid, { platform: "win32" }) };
+    }) : { status: null, stdout: "" };
+    if (result.status === 0 && result.stdout) {
+        try {
+            const parsed = JSON.parse(result.stdout) as { pid?: unknown; commandLine?: unknown; startToken?: unknown };
+            const pid = Number(parsed.pid);
+            if (Number.isInteger(pid) && pid > 0) {
+                return {
+                    pid,
+                    commandLine: typeof parsed.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "",
+                    processIdentity: readDeviceRuntimeProcessIdentity(pid, { platform: "win32" }),
+                    processStartToken: typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : null,
+                };
+            }
+        } catch {
+            // Fall through to the locale-independent netstat listener lookup.
+        }
+    }
+    const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
+    const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 5000,
+    }) : { status: null, stdout: "" };
+    const listener = netstat.status === 0
+        ? parseWindowsBrokerNetstatListenerForTest(netstat.stdout || "", port)
+        : null;
+    if (!listener) return null;
+    return {
+        ...listener,
+        processIdentity: readDeviceRuntimeProcessIdentity(listener.pid, { platform: "win32" }),
+        processStartToken: readDeviceRuntimeProcessStartToken(listener.pid, { platform: "win32" }),
+    };
 }
 
 function hostBrokerCompatibilityDiagnostics(attempts: unknown[]): string[] {
@@ -2141,7 +2254,7 @@ function verifiedHostBrokerCapabilities(status: unknown): string[] {
     return Array.isArray(implemented) ? implemented.map(String) : [];
 }
 
-function verifiedHostBrokerIdentity(status: unknown): { pid: number; startedAt: string } | null {
+function verifiedHostBrokerIdentity(status: unknown): { pid: number; startedAt: string; processStartToken: string | null } | null {
     if (!status || typeof status !== "object") return null;
     const body = (status as { body?: unknown }).body;
     if (!body || typeof body !== "object") return null;
@@ -2149,12 +2262,19 @@ function verifiedHostBrokerIdentity(status: unknown): { pid: number; startedAt: 
     if (!broker || typeof broker !== "object") return null;
     const record = broker as { process?: unknown; startedAt?: unknown };
     const processRecord = record.process && typeof record.process === "object"
-        ? record.process as { pid?: unknown }
+        ? record.process as { pid?: unknown; startToken?: unknown }
         : null;
     const pid = Number(processRecord?.pid);
     const startedAt = typeof record.startedAt === "string" ? record.startedAt : "";
-    return Number.isInteger(pid) && pid > 0 && startedAt ? { pid, startedAt } : null;
+    const processStartToken = typeof processRecord?.startToken === "string"
+        ? processRecord.startToken
+        : "";
+    return Number.isInteger(pid) && pid > 0 && startedAt && processStartToken
+        ? { pid, startedAt, processStartToken }
+        : null;
 }
+
+export const verifiedHostBrokerIdentityForTest = verifiedHostBrokerIdentity;
 
 export function verifySpawnedHostBrokerListenerForTest(
     pid: number | null,
@@ -2163,15 +2283,36 @@ export function verifySpawnedHostBrokerListenerForTest(
     listenerIdentity: DeviceRuntimeProcessIdentity | null,
     port: number,
     cliPath: string,
+    startTokens: {
+        spawned?: string | null;
+        listener?: string | null;
+        status?: string | null;
+    } = {},
 ): boolean {
-    return Boolean(
+    const tokenEvidenceProvided = Boolean(startTokens.spawned || startTokens.listener || startTokens.status);
+    const startTokensVerified = !tokenEvidenceProvided || Boolean(
+        startTokens.spawned
+        && startTokens.spawned === startTokens.listener
+        && startTokens.spawned === startTokens.status,
+    );
+    const commandLineIdentityVerified = Boolean(
         pid
         && spawnedIdentity
         && listener?.pid === pid
         && listenerIdentity
         && deviceRuntimeProcessIdentityMatches(spawnedIdentity, listenerIdentity)
-        && isBrokerServeCommandLine(listener.commandLine?.trim() || "", port, cliPath),
+        && isBrokerServeCommandLine(listener.commandLine?.trim() || "", port, cliPath)
+        && startTokensVerified,
     );
+    const redactedStartTokenVerified = Boolean(
+        pid
+        && listener?.pid === pid
+        && !listener.commandLine?.trim()
+        && startTokens.spawned
+        && startTokens.spawned === startTokens.listener
+        && startTokens.spawned === startTokens.status,
+    );
+    return commandLineIdentityVerified || redactedStartTokenVerified;
 }
 
 async function waitForHostBrokerReady(host: string, port: number, timeoutMs: number, cwd: string, expectedOwnerId: string, profile?: string) {
@@ -2220,6 +2361,8 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
     const portProcessResolver = options.portProcessResolver || discoverBrokerPortProcess;
     const processIdentityReader = options.processIdentityReader
         || ((pid: number, platform: NodeJS.Platform) => readDeviceRuntimeProcessIdentity(pid, { platform }));
+    const processStartTokenReader = options.processStartTokenReader
+        || ((pid: number, platform: NodeJS.Platform) => readDeviceRuntimeProcessStartToken(pid, { platform }));
     if (before.available) {
         const compatibility = await probeHostBrokerStatus(probeHost, port, probeTimeoutMs, normalized.cwd, ownerId, options.profile);
         prelaunchAttempts.push(compatibility);
@@ -2243,6 +2386,20 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             || hostBrokerStatusMatchesRequiredBindHost(compatibility, port, bindHost))
             && verifiedRuntime
             && verifiedIdentity?.pid === Number(verifiedRuntime.pid)) {
+            writeHostBrokerRuntime({
+                ...(runtime || {}),
+                ...(statusRuntime || {}),
+                ...verifiedRuntime,
+                name: DEVICE_BROKER_NAME,
+                managedBy: "ccc-host",
+                ownerId,
+                pid: verifiedIdentity.pid,
+                host: typeof verifiedRuntime.host === "string" ? verifiedRuntime.host : bindHost,
+                probeHost,
+                port,
+                startedAt: verifiedIdentity.startedAt,
+                processStartToken: verifiedIdentity.processStartToken,
+            });
             return {
                 ok: true,
                 ownerId,
@@ -2254,6 +2411,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                 verifiedCapabilities: verifiedHostBrokerCapabilities(compatibility),
                 verifiedBrokerPid: verifiedIdentity.pid,
                 verifiedBrokerStartedAt: verifiedIdentity.startedAt,
+                verifiedBrokerProcessStartToken: verifiedIdentity.processStartToken,
                 attempts: prelaunchAttempts,
             };
         }
@@ -2307,7 +2465,6 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
 
     const command = process.execPath;
     const args = [normalized.cliPath, "devices", "broker", "serve", "--host", bindHost, "--port", String(port)];
-    const startedAt = new Date().toISOString();
     let logPath = join(brokerRoot(), "broker", "logs", "host-broker-pending.log");
     const spawnImpl = options.spawnImpl || spawn;
     const env: NodeJS.ProcessEnv = { ...process.env, ...(options.env || {}) };
@@ -2329,9 +2486,11 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         child.once("exit", () => { /* readiness probe below reports early exit as timeout */ });
         const pid = child.pid || null;
         let spawnedProcessIdentity = pid ? processIdentityReader(pid, normalized.platform) : null;
-        for (let attempt = 0; pid && !spawnedProcessIdentity && attempt < 5; attempt += 1) {
+        let spawnedProcessStartToken = pid ? processStartTokenReader(pid, normalized.platform) : null;
+        for (let attempt = 0; pid && (!spawnedProcessIdentity || !spawnedProcessStartToken) && attempt < 20; attempt += 1) {
             await new Promise((resolve) => setTimeout(resolve, 25));
-            spawnedProcessIdentity = processIdentityReader(pid, normalized.platform);
+            spawnedProcessIdentity ||= processIdentityReader(pid, normalized.platform);
+            spawnedProcessStartToken ||= processStartTokenReader(pid, normalized.platform);
         }
         child.unref();
 
@@ -2343,10 +2502,24 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                     platform: normalized.platform,
                     readIdentity: (value) => processIdentityReader(value, normalized.platform),
                 });
-                if (observation.status === "match") {
+                const currentStartToken = spawnedProcessStartToken
+                    ? processStartTokenReader(pid, normalized.platform)
+                    : null;
+                if (observation.status === "match"
+                    || (spawnedProcessStartToken && currentStartToken === spawnedProcessStartToken)) {
                     try {
-                        process.kill(pid, "SIGTERM");
-                        startupCleanup = { attempted: true, ok: true, pid, signal: "SIGTERM" };
+                        const result = process.platform === "win32"
+                            ? terminateWindowsProcessTree(pid, spawnedProcessIdentity || undefined, false, spawnedProcessStartToken || undefined)
+                            : currentStartToken === spawnedProcessStartToken
+                                ? (process.kill(pid, "SIGTERM"), { ok: true })
+                                : { ok: false, error: "runtime-process-start-token-mismatch" };
+                        startupCleanup = {
+                            attempted: true,
+                            ok: result.ok,
+                            pid,
+                            signal: "SIGTERM",
+                            ...("error" in result && result.error ? { error: result.error } : {}),
+                        };
                     } catch (error) {
                         startupCleanup = { attempted: true, ok: false, pid, signal: "SIGTERM", error: error instanceof Error ? error.message : String(error) };
                     }
@@ -2374,6 +2547,10 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
         const listener = portProcessResolver(port, normalized.platform);
         const listenerIdentity = listener?.processIdentity
             || (listener?.pid ? processIdentityReader(listener.pid, normalized.platform) : null);
+        const listenerStartToken = listener?.processStartToken
+            || listenerIdentity?.startToken
+            || (listener?.pid ? processStartTokenReader(listener.pid, normalized.platform) : null);
+        const verifiedIdentity = verifiedHostBrokerIdentity(ready.selected);
         const listenerVerified = verifySpawnedHostBrokerListenerForTest(
             pid,
             spawnedProcessIdentity,
@@ -2381,8 +2558,12 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             listenerIdentity,
             port,
             normalized.cliPath,
+            {
+                spawned: spawnedProcessStartToken,
+                listener: listenerStartToken,
+                status: verifiedIdentity?.processStartToken,
+            },
         );
-        const verifiedIdentity = verifiedHostBrokerIdentity(ready.selected);
         if (!listenerVerified || !verifiedIdentity || verifiedIdentity.pid !== pid) {
             const observation = pid
                 ? inspectDeviceRuntimeProcessIdentity(spawnedProcessIdentity, pid, {
@@ -2390,8 +2571,18 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
                     readIdentity: (value) => processIdentityReader(value, normalized.platform),
                 })
                 : { status: "unavailable", current: null };
-            if (pid && observation.status === "match") {
-                try { process.kill(pid, "SIGTERM"); } catch { /* bounded failure below is sufficient */ }
+            const currentStartToken = pid && spawnedProcessStartToken
+                ? processStartTokenReader(pid, normalized.platform)
+                : null;
+            if (pid && (observation.status === "match"
+                || (spawnedProcessStartToken && currentStartToken === spawnedProcessStartToken))) {
+                try {
+                    if (process.platform === "win32") {
+                        terminateWindowsProcessTree(pid, spawnedProcessIdentity || undefined, false, spawnedProcessStartToken || undefined);
+                    } else if (currentStartToken === spawnedProcessStartToken) {
+                        process.kill(pid, "SIGTERM");
+                    }
+                } catch { /* bounded failure below is sufficient */ }
             }
             return {
                 ok: false,
@@ -2425,7 +2616,8 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             cwd: normalized.cwd,
             profile: options.profile || null,
             logPath,
-            startedAt,
+            startedAt: verifiedIdentity.startedAt,
+            processStartToken: verifiedIdentity.processStartToken || listenerStartToken || null,
         };
         writeHostBrokerRuntime(runtime);
         return {
@@ -2441,6 +2633,7 @@ export async function ensureHostDeviceBroker(options: HostDeviceBrokerOptions = 
             ...(verifiedIdentity ? {
                 verifiedBrokerPid: verifiedIdentity.pid,
                 verifiedBrokerStartedAt: verifiedIdentity.startedAt,
+                verifiedBrokerProcessStartToken: verifiedIdentity.processStartToken,
             } : {}),
             attempts: [...prelaunchAttempts, ...ready.attempts],
         };
@@ -2493,6 +2686,34 @@ export async function invokeHostDeviceBrokerOwnerRpc(
             body: null,
             error: "error" in readiness && typeof readiness.error === "string" ? readiness.error : "host-broker-unavailable",
             ...(typeof readinessRecord.detail === "string" ? { detail: readinessRecord.detail } : {}),
+        };
+    }
+
+    const verifiedBrokerPid = Number(readinessRecord.verifiedBrokerPid);
+    const verifiedBrokerProcessStartToken = typeof readinessRecord.verifiedBrokerProcessStartToken === "string"
+        ? readinessRecord.verifiedBrokerProcessStartToken
+        : "";
+    const platform = options.platform || process.platform;
+    const portProcessResolver = options.portProcessResolver || discoverBrokerPortProcess;
+    const processStartTokenReader = options.processStartTokenReader
+        || ((pid: number, targetPlatform: NodeJS.Platform) => readDeviceRuntimeProcessStartToken(pid, { platform: targetPlatform }));
+    const listener = Number.isInteger(verifiedBrokerPid) && verifiedBrokerPid > 0
+        ? portProcessResolver(port, platform)
+        : null;
+    const listenerStartToken = listener?.processStartToken
+        || (listener?.pid ? processStartTokenReader(listener.pid, platform) : null);
+    if (!listener
+        || listener.pid !== verifiedBrokerPid
+        || !verifiedBrokerProcessStartToken
+        || listenerStartToken !== verifiedBrokerProcessStartToken) {
+        return {
+            ok: false,
+            status: null,
+            ownerId,
+            host,
+            port,
+            body: null,
+            error: "broker-runtime-process-unverified",
         };
     }
 
@@ -2562,6 +2783,7 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
         lazy: true,
         process: {
             pid: process.pid,
+            startToken: readDeviceRuntimeProcessStartToken(process.pid),
         },
         startupPolicy: "host ccc auto-starts the broker for containers; daemon startup never starts device providers",
         startedAt: normalized.startedAt,
@@ -2693,6 +2915,8 @@ export function deviceBrokerStatus(options: DeviceBrokerOptions = {}) {
             DEVICE_BROKER_CAPABILITY_APPIUM_PORT_PROCESS_IDENTITY,
             DEVICE_BROKER_CAPABILITY_BROKER_OWNED_OWNER_AUTH,
             DEVICE_BROKER_CAPABILITY_PORT_PROCESS_IDENTITY,
+            DEVICE_BROKER_CAPABILITY_PROCESS_START_TOKEN,
+            DEVICE_BROKER_CAPABILITY_OWNER_GENERATION_HMAC_AUTH,
             DEVICE_BROKER_CAPABILITY_DIRECT_APPIUM_PROCESS_IDENTITY,
             DEVICE_BROKER_CAPABILITY_OWNER_DEVICE_STATE_VALIDATION,
             DEVICE_BROKER_CAPABILITY_OWNERSHIP_STATE_VALIDATION,
@@ -7862,7 +8086,12 @@ export function windowsProcessTreeOutcome(status: number | null, output: string,
     };
 }
 
-function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRuntimeProcessIdentity, forceTreeAttempt = false) {
+function terminateWindowsProcessTree(
+    pid: number,
+    expectedIdentity?: DeviceRuntimeProcessIdentity,
+    forceTreeAttempt = false,
+    expectedStartToken?: string,
+) {
     if (expectedIdentity) {
         const observation = inspectDeviceRuntimeProcessIdentity(expectedIdentity, pid);
         if (observation.status === "exited" && !forceTreeAttempt) {
@@ -7903,20 +8132,38 @@ function terminateWindowsProcessTree(pid: number, expectedIdentity?: DeviceRunti
             error: undefined,
         };
     }
-    const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10000,
-    });
-    const output = `${result.stdout || ""}\n${result.stderr || ""}`;
-    const outcome = windowsProcessTreeOutcome(result.status, output, processIsAlive(pid));
+    if (expectedStartToken && readDeviceRuntimeProcessStartToken(pid, { platform: "win32" }) !== expectedStartToken) {
+        return {
+            attempted: false,
+            ok: false,
+            stale: false,
+            pid,
+            signal: "SIGTERM" as const,
+            status: null,
+            error: "runtime-process-start-token-mismatch",
+        };
+    }
+    const startToken = expectedStartToken || expectedIdentity?.startToken;
+    if (!startToken) {
+        return {
+            attempted: false,
+            ok: false,
+            stale: false,
+            pid,
+            signal: "SIGTERM" as const,
+            status: null,
+            error: "runtime-process-start-token-unavailable",
+        };
+    }
+    const result = terminateWindowsProcessByStartToken(pid, startToken);
     return {
         attempted: true,
-        ...outcome,
+        ok: result.ok,
+        stale: !processIsAlive(pid),
         pid,
         signal: "SIGTERM" as const,
         status: result.status,
-        error: outcome.ok ? undefined : output.trim() || result.error?.message || `taskkill exited ${result.status}`,
+        error: result.ok ? undefined : result.reason || result.error || `process handle termination exited ${result.status}`,
     };
 }
 
@@ -7973,7 +8220,12 @@ export function terminateBrokerSpawnedProcessTree(
         }
     }
     if (platform === "win32") {
-        const outcome = (options.terminateWindowsTree || ((value: number) => terminateWindowsProcessTree(value, undefined, true)))(pid);
+        const outcome = (options.terminateWindowsTree || ((value: number) => terminateWindowsProcessTree(
+            value,
+            options.expectedIdentity || undefined,
+            true,
+            options.expectedIdentity?.startToken,
+        )))(pid);
         return {
             attempted: outcome.attempted !== false,
             ok: outcome.ok,
@@ -9882,6 +10134,7 @@ async function defaultBrokerDeviceToolRunner(ownerId: string, parsed: DeviceTool
 }
 
 export function boundedProviderCommandRunnerScript() {
+    const windowsTerminationScript = JSON.stringify(windowsHandleBoundTerminationScript());
     return String.raw`
 const { spawn, spawnSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
@@ -9892,6 +10145,7 @@ const payload = workerData.payload;
 const control = new Int32Array(workerData.shared, 0, 4);
 const transport = new Uint8Array(workerData.shared, 16);
 const identityTransport = new Uint8Array(workerData.identityShared);
+const windowsTerminationScript = ${windowsTerminationScript};
 const outputLimit = Math.max(1, Number(payload.outputLimit) || 1);
 const cleanupGraceMs = Math.max(1, Number(payload.cleanupGraceMs) || 1000);
 let stdout = Buffer.alloc(0);
@@ -9929,8 +10183,9 @@ function processIdentity(pid) {
             startToken = fields[19] ? "linux:" + fields[19] : "";
             commandLine = readFileSync("/proc/" + pid + "/cmdline").toString("utf8").split("\0").filter(Boolean).join(" ");
         } else if (process.platform === "win32") {
+            if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) return null;
             const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
-            const observed = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 5000, windowsHide: true });
+            const observed = spawnSync(payload.windowsPowerShellPath, ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 5000, windowsHide: true });
             const parsed = observed.status === 0 && observed.stdout && observed.stdout.trim() ? JSON.parse(observed.stdout) : null;
             startToken = parsed && typeof parsed.startToken === "string" ? "windows:" + parsed.startToken : "";
             commandLine = parsed && typeof parsed.commandLine === "string" ? parsed.commandLine : "";
@@ -9976,22 +10231,32 @@ function terminateTree(pid, expectedIdentity) {
         return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "spawned-process-identity-mismatch" };
     }
     if (process.platform === "win32") {
-        const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
+            return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "windows-system-powershell-unavailable" };
+        }
+        const result = spawnSync(payload.windowsPowerShellPath, ["-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
             encoding: "utf8",
             windowsHide: true,
-            timeout: 10000,
+            timeout: 11000,
+            env: {
+                ...process.env,
+                CCC_WINDOWS_TERMINATE_PID: String(pid),
+                CCC_WINDOWS_TERMINATE_START_TOKEN: expectedIdentity.startToken,
+            },
         });
         const output = boundedText(String(result.stdout || "") + "\n" + String(result.stderr || ""));
-        const stale = /not found|no running instance|not running|cannot find|could not be found|0x8007012b/i.test(output);
-        const ok = result.status === 0 || stale;
+        const ok = result.status === 0;
         return {
             attempted: true,
             ok,
-            ...(stale ? { stale: true } : {}),
             pid,
             signal: "SIGKILL",
             platform: process.platform,
-            ...(ok ? {} : { error: output.trim() || (result.error && result.error.message) || "taskkill failed" }),
+            ...(ok ? {} : {
+                error: result.status === 3
+                    ? "spawned-process-identity-mismatch"
+                    : output.trim() || (result.error && result.error.message) || "process handle termination failed",
+            }),
         };
     }
     try {
@@ -10190,6 +10455,9 @@ export function defaultProviderCommandRunner(command: ProviderCommand, options: 
                     timeoutMs,
                     outputLimit,
                     cleanupGraceMs,
+                    windowsPowerShellPath: process.platform === "win32"
+                        ? canonicalWindowsPowerShellPath()
+                        : null,
                 },
             },
         });
@@ -10324,6 +10592,9 @@ export async function defaultProviderCommandRunnerAsync(command: ProviderCommand
                         timeoutMs,
                         outputLimit,
                         cleanupGraceMs,
+                        windowsPowerShellPath: process.platform === "win32"
+                            ? canonicalWindowsPowerShellPath()
+                            : null,
                     },
                 },
             });
@@ -14127,17 +14398,58 @@ async function handleBrokerRpc(ownerId: string, body: unknown, normalized: Norma
     }
 }
 
-function authorizeBrokerRpc(req: IncomingMessage, ownerId: string): { ok: true } | { ok: false; status: number; error: string } {
+function authorizeBrokerRpc(
+    req: IncomingMessage,
+    ownerId: string,
+    body: unknown,
+    startedAt: string,
+): { ok: true } | { ok: false; status: number; error: string } {
     const token = req.headers["x-ccc-device-token"];
     const expected = existingDeviceBrokerOwnerToken(ownerId);
-    if (typeof token !== "string" || !expected) {
+    if (!expected) {
         return { ok: false, status: 401, error: "invalid-owner-token" };
     }
-    const actualBytes = Buffer.from(token);
-    const expectedBytes = Buffer.from(expected);
+    if (typeof token === "string") {
+        const actualBytes = Buffer.from(token);
+        const expectedBytes = Buffer.from(expected);
+        if (actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes)) {
+            return { ok: true };
+        }
+    }
+    const signature = req.headers["x-ccc-device-auth"];
+    const timestamp = req.headers["x-ccc-device-auth-timestamp"];
+    const nonce = req.headers["x-ccc-device-auth-nonce"];
+    const claimedStartedAt = req.headers["x-ccc-device-broker-started-at"];
+    const claimedStartToken = req.headers["x-ccc-device-broker-start-token"];
+    const processStartToken = readDeviceRuntimeProcessStartToken(process.pid);
+    const timestampMs = typeof timestamp === "string" ? Number(timestamp) : Number.NaN;
+    if (typeof signature !== "string"
+        || !/^[a-f0-9]{64}$/.test(signature)
+        || !Number.isFinite(timestampMs)
+        || Math.abs(Date.now() - timestampMs) > 60_000
+        || typeof nonce !== "string"
+        || !/^[a-f0-9]{32}$/.test(nonce)
+        || claimedStartedAt !== startedAt
+        || typeof claimedStartToken !== "string"
+        || !processStartToken
+        || claimedStartToken !== processStartToken) {
+        return { ok: false, status: 401, error: "invalid-owner-token" };
+    }
+    const bodyHash = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    const payload = ["v1", ownerId, String(timestamp), nonce, startedAt, processStartToken, bodyHash].join("\n");
+    const expectedSignature = createHmac("sha256", expected).update(payload).digest("hex");
+    const actualBytes = Buffer.from(signature, "hex");
+    const expectedBytes = Buffer.from(expectedSignature, "hex");
     if (actualBytes.length !== expectedBytes.length || !timingSafeEqual(actualBytes, expectedBytes)) {
         return { ok: false, status: 401, error: "invalid-owner-token" };
     }
+    const now = Date.now();
+    for (const [key, acceptedAt] of brokerAuthNonces) {
+        if (now - acceptedAt > 60_000) brokerAuthNonces.delete(key);
+    }
+    const nonceKey = `${ownerId}:${nonce}`;
+    if (brokerAuthNonces.has(nonceKey)) return { ok: false, status: 409, error: "broker-auth-replay" };
+    brokerAuthNonces.set(nonceKey, now);
     return { ok: true };
 }
 
@@ -14192,9 +14504,11 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, 405, { ok: false, error: "method-not-allowed" }, { allow: "GET" });
                     return;
                 }
+                const address = server.address();
+                const activePort = address && typeof address === "object" ? address.port : normalized.port;
                 writeJson(res, 200, {
                     ok: true,
-                    broker: deviceBrokerStatus({ ...normalized, startedAt }),
+                    broker: deviceBrokerStatus({ ...normalized, port: activePort, startedAt }),
                 });
                 return;
             }
@@ -14268,9 +14582,8 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                     writeJson(res, 400, { ok: false, error: "invalid-owner-id" });
                     return;
                 }
-                const auth = authorizeBrokerRpc(req, ownerId);
-                if (!auth.ok) {
-                    writeJson(res, auth.status, { ok: false, error: auth.error });
+                if (!existingDeviceBrokerOwnerToken(ownerId)) {
+                    writeJson(res, 401, { ok: false, error: "invalid-owner-token" });
                     return;
                 }
                 let ownerRegistration: DeviceBrokerOwnerRegistration | null;
@@ -14294,6 +14607,11 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
                 const body = await readRequestJson(req, DEVICE_BROKER_RPC_BODY_LIMIT, normalized.requestBodyTimeoutMs);
                 if (!body.ok) {
                     writeJson(res, body.status, { ok: false, error: body.error }, body.error === "request-body-timeout" ? { connection: "close" } : {});
+                    return;
+                }
+                const auth = authorizeBrokerRpc(req, ownerId, body.body, startedAt);
+                if (!auth.ok) {
+                    writeJson(res, auth.status, { ok: false, error: auth.error });
                     return;
                 }
                 const result = brokerRpcMutatesOwnerState(body.body)

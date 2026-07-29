@@ -26,6 +26,50 @@ function validPid(pid: unknown): pid is number {
     return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
 }
 
+function linuxProcessStartToken(pid: number): string | null {
+    try {
+        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+        const close = stat.lastIndexOf(")");
+        if (close < 0) return null;
+        const fields = stat.slice(close + 1).trim().split(/\s+/);
+        return fields[19] ? `linux:${fields[19]}` : null;
+    } catch {
+        return null;
+    }
+}
+
+function windowsProcessStartToken(pid: number): string | null {
+    const powershell = canonicalWindowsPowerShellPath();
+    if (!powershell) return null;
+    const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
+    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+        encoding: "utf8",
+        timeout: 5000,
+        windowsHide: true,
+    });
+    const value = result.status === 0 ? result.stdout?.trim() : "";
+    return value ? `windows:${value}` : null;
+}
+
+function psProcessStartToken(pid: number, platform: NodeJS.Platform): string | null {
+    const executable = platform === "darwin" ? "/bin/ps" : "ps";
+    const result = spawnSync(executable, ["-p", String(pid), "-o", "lstart="], {
+        encoding: "utf8",
+        timeout: 5000,
+        windowsHide: true,
+    });
+    const value = result.status === 0 ? result.stdout?.trim() : "";
+    return value ? `ps:${value}` : null;
+}
+
+export function readDeviceRuntimeProcessStartToken(pid: unknown, options: Pick<ProcessIdentityOptions, "platform"> = {}): string | null {
+    if (!validPid(pid)) return null;
+    const platform = options.platform || process.platform;
+    if (platform === "linux") return linuxProcessStartToken(pid);
+    if (platform === "win32") return windowsProcessStartToken(pid);
+    return psProcessStartToken(pid, platform);
+}
+
 function identity(pid: number, startToken: string | null, commandLine: string | null): DeviceRuntimeProcessIdentity | null {
     if (!startToken || !commandLine) return null;
     return {
@@ -37,12 +81,8 @@ function identity(pid: number, startToken: string | null, commandLine: string | 
 
 function linuxProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | null {
     try {
-        const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
         const command = readFileSync(`/proc/${pid}/cmdline`).toString("utf8").split("\0").filter(Boolean).join(" ");
-        const close = stat.lastIndexOf(")");
-        if (close < 0) return null;
-        const fields = stat.slice(close + 1).trim().split(/\s+/);
-        return identity(pid, fields[19] ? `linux:${fields[19]}` : null, command);
+        return identity(pid, linuxProcessStartToken(pid), command);
     } catch {
         return null;
     }
@@ -62,8 +102,10 @@ function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | nul
 }
 
 function windowsProcessIdentityScript(pid: number): string {
-    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
+    return `$P = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue; $H = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P -and $H) { [pscustomobject]@{ startToken = $H.StartTime.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }`;
 }
+
+export const windowsProcessIdentityScriptForTest = windowsProcessIdentityScript;
 
 function parseWindowsProcessIdentity(pid: number, output: string): DeviceRuntimeProcessIdentity | null {
     try {
@@ -98,11 +140,9 @@ function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessI
 
 function psProcessIdentity(pid: number, platform: NodeJS.Platform): DeviceRuntimeProcessIdentity | null {
     const executable = platform === "darwin" ? "/bin/ps" : "ps";
-    const started = spawnSync(executable, ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", timeout: 5000, windowsHide: true });
     const command = spawnSync(executable, ["-p", String(pid), "-o", "command="], { encoding: "utf8", timeout: 5000, windowsHide: true });
-    const startToken = started.status === 0 ? started.stdout?.trim() : "";
     const commandLine = command.status === 0 ? command.stdout?.trim() : "";
-    return identity(pid, startToken ? `ps:${startToken}` : null, commandLine || null);
+    return identity(pid, psProcessStartToken(pid, platform), commandLine || null);
 }
 
 function execFileText(executable: string, args: string[]): Promise<string> {

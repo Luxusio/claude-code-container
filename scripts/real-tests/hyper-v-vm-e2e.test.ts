@@ -278,6 +278,32 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(1024);
     });
 
+    it("reports bounded broker process verification diagnostics", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "broker-runtime-process-unverified",
+            host: "https://token@host/C:\\Users\\Luxus\\private\\secret",
+            port: 17373,
+            runtime: {
+                pid: 4321,
+                command: "C:\\private\\node.exe",
+                args: ["C:\\private\\dist\\index.js"],
+            },
+            attempts: [{
+                reason: "broker-reuse-process-unverified",
+                processVerification: { ok: false, source: "unverified-broker-port-process" },
+            }],
+        }, "fallback");
+
+        expect(message).toContain("broker-runtime-process-unverified");
+        expect(message).toContain('"reason":"broker-reuse-process-unverified"');
+        expect(message).toContain('"source":"unverified-broker-port-process"');
+        expect(message).toContain('"runtimePid":4321');
+        expect(message).not.toContain("token@host");
+        expect(message).not.toContain("C:\\private");
+        expect(message).not.toContain("C:\\Users");
+    });
+
     it("reports bounded Hyper-V guest readiness diagnostics without exposing command output", () => {
         const message = formatBrokerToolFailure({
             ok: false,

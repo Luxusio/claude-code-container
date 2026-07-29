@@ -29,6 +29,12 @@ const HYPER_V_LIFECYCLE_TOOLS = new Set([
     "device_delete",
 ]);
 
+function boundedBrokerDiagnosticCode(value: unknown): string | undefined {
+    return typeof value === "string" && /^[a-z0-9-]{1,80}$/.test(value)
+        ? value
+        : undefined;
+}
+
 export function realMcpToolRequestTimeoutMs(name: string, args: Record<string, any> = {}) {
     const hyperVBackend = args?.backend === "windows-vm" || args?.backend === "linux-vm";
     if (hyperVBackend && name === "device_create") {
@@ -378,6 +384,14 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             timeoutMs: Number.isFinite(lastAttempt.timeoutMs) ? lastAttempt.timeoutMs : undefined,
         })
         : "";
+    const brokerProcessDiagnostic = lastAttempt?.processVerification
+        ? JSON.stringify({
+            reason: boundedBrokerDiagnosticCode(lastAttempt.reason),
+            source: boundedBrokerDiagnosticCode(lastAttempt.processVerification.source),
+            port: Number.isFinite(value?.port) ? value.port : undefined,
+            runtimePid: Number.isFinite(value?.runtime?.pid) ? value.runtime.pid : undefined,
+        })
+        : "";
     const boot = body?.result?.boot && typeof body.result.boot === "object" && !Array.isArray(body.result.boot)
         ? body.result.boot
         : value?.result?.boot && typeof value.result.boot === "object" && !Array.isArray(value.result.boot)
@@ -432,6 +446,7 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         bootDiagnostic ? "" : boundedDetail(body?.detail),
         diagnostic,
         transportDiagnostic,
+        brokerProcessDiagnostic,
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
     const message = [...new Set(parts)].join(": ") || fallback;
     return message.slice(0, 4095);

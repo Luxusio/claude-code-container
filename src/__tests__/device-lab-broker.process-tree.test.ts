@@ -112,7 +112,10 @@ describe("device broker timed-out process tree cleanup", () => {
     it("never bypasses worker process identity fencing with a direct child kill", () => {
         const script = boundedProviderCommandRunnerScript();
         expect(script).toContain("terminateTree(child.pid, spawnedIdentity)");
+        expect(script).toContain("$Descendants[$Index].Kill()");
+        expect(script).toContain("$Root.Kill()");
         expect(script).not.toContain("child.kill(");
+        expect(script).not.toContain("taskkill");
         expect(runBrokerBackendChild.toString()).not.toContain("child.kill(");
     });
 
@@ -152,6 +155,12 @@ describe("device broker timed-out process tree cleanup", () => {
 
         expect(cleanup).toMatchObject({ attempted: true, ok: true, pid: 654, platform: "win32" });
         expect(pids).toEqual([654]);
+    });
+
+    it("passes the verified Windows start token into the default tree terminator", () => {
+        const source = terminateBrokerSpawnedProcessTree.toString();
+        expect(source).toContain("options.expectedIdentity?.startToken");
+        expect(source).not.toContain("terminateWindowsProcessTree(value, undefined, true)");
     });
 
     it("refuses process-tree termination when the spawned process identity changed", () => {
@@ -215,17 +224,22 @@ describe("device broker timed-out process tree cleanup", () => {
                 error: "injected-tree-kill-failure",
             }),
         });
-
-        expect(Date.now() - startedAt).toBeLessThan(5000);
-        expect(result).toMatchObject({
-            timedOut: true,
-            status: null,
-            cleanup: { attempted: true, ok: false, error: "injected-tree-kill-failure" },
-        });
-        expect(result.error?.message).toContain("process-tree cleanup failed: injected-tree-kill-failure");
-        expect(existsSync(readyFile)).toBe(true);
-        const descendantPid = Number(readFileSync(readyFile, "utf8"));
-        terminateTestProcess(descendantPid);
+        const parentPid = Number(result.cleanup?.pid);
+        let descendantPid = 0;
+        try {
+            expect(Date.now() - startedAt).toBeLessThan(5000);
+            expect(result).toMatchObject({
+                timedOut: true,
+                status: null,
+                cleanup: { attempted: true, ok: false, error: "injected-tree-kill-failure" },
+            });
+            expect(result.error?.message).toContain("process-tree cleanup failed: injected-tree-kill-failure");
+            expect(existsSync(readyFile)).toBe(true);
+            descendantPid = Number(readFileSync(readyFile, "utf8"));
+        } finally {
+            if (Number.isInteger(parentPid) && parentPid > 0) terminateBrokerSpawnedProcessTree(parentPid);
+            if (Number.isInteger(descendantPid) && descendantPid > 0) terminateTestProcess(descendantPid);
+        }
     });
 
     it("prevents a provider descendant from surviving timeout cleanup on every platform", async () => {

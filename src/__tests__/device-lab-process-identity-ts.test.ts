@@ -3,7 +3,9 @@ import {
     deviceRuntimeProcessIdentityMatches,
     inspectDeviceRuntimeProcessIdentity,
     readDeviceRuntimeProcessIdentity,
+    readDeviceRuntimeProcessStartToken,
     signalDeviceRuntimeProcess,
+    windowsProcessIdentityScriptForTest,
 } from "../device-lab-process-identity.js";
 
 describe("broker device runtime process identity", () => {
@@ -14,6 +16,22 @@ describe("broker device runtime process identity", () => {
         expect(first?.commandHash).toMatch(/^[a-f0-9]{64}$/);
         expect(first).not.toHaveProperty("commandLine");
         expect(deviceRuntimeProcessIdentityMatches(first, second)).toBe(true);
+    });
+
+    it("reads a stable process start token independently of command visibility", () => {
+        const first = readDeviceRuntimeProcessStartToken(process.pid);
+        const second = readDeviceRuntimeProcessStartToken(process.pid);
+        expect(first).toBeTruthy();
+        expect(second).toBe(first);
+        expect(readDeviceRuntimeProcessStartToken(-1)).toBeNull();
+    });
+
+    it("uses the acquired Windows process handle as the canonical start-token source", () => {
+        const script = windowsProcessIdentityScriptForTest(321);
+        expect(script).toContain("$H = Get-Process -Id 321");
+        expect(script).toContain("startToken = $H.StartTime.ToUniversalTime().ToString('o')");
+        expect(script).toContain("commandLine = [string]$P.CommandLine");
+        expect(script).not.toContain("startToken = $P.CreationDate");
     });
 
     it("refuses to signal a reused pid", () => {

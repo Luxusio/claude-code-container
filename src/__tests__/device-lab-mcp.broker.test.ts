@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import { createHash, createHmac } from "crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { createServer } from "http";
 import { AddressInfo } from "net";
@@ -13,10 +14,11 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
-import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, reusableBrokerProcessVerificationForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
+import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, authenticatedBrokerHeadersForTest, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
 import { projectMountPath } from "../../device-lab-mcp/src/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
+const HOOK_TIMEOUT = Math.max(TIMEOUT, 60000);
 
 function provisionTestOwnerSecret(ownerId = TEST_BROKER_OWNER_ID) {
     const authRoot = join(homedir(), ".ccc", "devices", "broker", "auth");
@@ -43,6 +45,35 @@ function sendCurrentBrokerStatus(req: { url?: string }, res: { setHeader(name: s
 }
 
 describe("device-lab MCP", () => {
+    it("binds authenticated RPC headers to the broker generation without sending the owner token", () => {
+        const token = "a".repeat(64);
+        const owner = "1111111111111111";
+        const runtime = {
+            startedAt: "2026-07-29T00:00:00.000Z",
+            processStartToken: "windows:2026-07-29T00:00:00.0000000Z",
+        };
+        const body = JSON.stringify({ ownerId: owner, method: "broker.echo", params: { value: 1 } });
+        const headers = authenticatedBrokerHeadersForTest(token, owner, runtime, body);
+
+        expect(headers).not.toHaveProperty("x-ccc-device-token");
+        expect(headers["x-ccc-device-auth-nonce"]).toMatch(/^[a-f0-9]{32}$/);
+        const bodyHash = createHash("sha256").update(body).digest("hex");
+        const payload = [
+            "v1",
+            owner,
+            headers["x-ccc-device-auth-timestamp"],
+            headers["x-ccc-device-auth-nonce"],
+            runtime.startedAt,
+            runtime.processStartToken,
+            bodyHash,
+        ].join("\n");
+        expect(headers["x-ccc-device-auth"]).toBe(
+            createHmac("sha256", token).update(payload).digest("hex"),
+        );
+        expect(authenticatedBrokerHeadersForTest(token, owner, runtime, body)["x-ccc-device-auth-nonce"])
+            .not.toBe(headers["x-ccc-device-auth-nonce"]);
+    });
+
     it("keeps the unverified broker fixture escape disabled outside explicit test mode", () => {
         const originalNodeEnv = process.env.NODE_ENV;
         const originalEscape = process.env.CCC_DEVICE_LAB_TEST_ALLOW_UNVERIFIED_BROKER;
@@ -120,6 +151,192 @@ describe("device-lab MCP", () => {
         });
     });
 
+    it("parses IPv4 and IPv6 Windows netstat listeners without trusting unrelated rows", () => {
+        const output = [
+            "  TCP    0.0.0.0:17372          0.0.0.0:0              LISTENING       4000",
+            "  TCP    127.0.0.1:17373        0.0.0.0:0              수신 대기 중    4321",
+            "  TCP    [::]:17374             [::]:0                 LISTENING       5000",
+            "  TCP    127.0.0.1:17375        10.0.0.2:443           ESTABLISHED     6000",
+            "  UDP    0.0.0.0:17373          *:*                                    9999",
+        ].join("\r\n");
+
+        expect(parseWindowsNetstatListenerForTest(output, 17373)).toEqual({ pid: 4321, commandLine: "" });
+        expect(parseWindowsNetstatListenerForTest(output, 17374)).toEqual({ pid: 5000, commandLine: "" });
+        expect(parseWindowsNetstatListenerForTest(output, 17375)).toBeNull();
+    });
+
+    it("passes a newly launched broker status identity into process verification", () => {
+        const runtime = {
+            managedBy: "device-lab-mcp",
+            pid: 4321,
+            port: 17373,
+            startedAt: "stale-pre-spawn-value",
+            processStartToken: "windows:launch",
+        };
+        const statusBroker = {
+            name: "ccc-device-broker",
+            mode: "host-broker-daemon",
+            port: 17373,
+            process: { pid: 4321, startToken: "windows:launch" },
+            startedAt: "2026-07-29T00:00:00.000Z",
+        };
+        const processVerifier = vi.fn(() => ({ pid: 4321, source: "port-pid-plus-runtime-and-status" }));
+
+        const result = launchedBrokerProcessVerificationForTest(
+            runtime,
+            17373,
+            "127.0.0.1",
+            statusBroker,
+            {
+                nodeEnv: "production",
+                testEscape: "0",
+                containerBoundary: false,
+                processVerifier,
+            },
+        );
+
+        expect(result).toEqual({
+            verification: {
+                ok: true,
+                source: "port-pid-plus-runtime-and-status",
+                verified: { pid: 4321, source: "port-pid-plus-runtime-and-status" },
+            },
+            runtime: { ...runtime, startedAt: statusBroker.startedAt, processStartToken: statusBroker.process.startToken },
+        });
+        expect(processVerifier).toHaveBeenCalledWith(
+            { ...runtime, startedAt: statusBroker.startedAt, processStartToken: statusBroker.process.startToken },
+            17373,
+            statusBroker,
+        );
+    });
+
+    it("accepts a command-line-redacted Windows listener only when runtime and status identities match", () => {
+        const runtime = {
+            managedBy: "ccc-host",
+            pid: 4321,
+            port: 17373,
+            command: "C:\\Program Files\\nodejs\\node.exe",
+            args: ["C:\\ccc\\dist\\index.js", "devices", "broker", "serve", "--port", "17373"],
+            startedAt: "2026-07-29T00:00:00.000Z",
+            processStartToken: "windows:2026-07-29T00:00:00.000Z",
+        };
+        const statusBroker = {
+            name: "ccc-device-broker",
+            mode: "host-broker-daemon",
+            port: 17373,
+            process: { pid: 4321, startToken: runtime.processStartToken },
+            startedAt: runtime.startedAt,
+        };
+        const listener = () => ({ pid: 4321, commandLine: "", processStartToken: runtime.processStartToken });
+
+        expect(verifiedBrokerProcessForTest(runtime, 17373, statusBroker, listener)).toEqual({
+            pid: 4321,
+            commandLine: "",
+            processStartToken: runtime.processStartToken,
+            source: "port-pid-plus-runtime-and-status",
+        });
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            { ...statusBroker, process: { pid: 4322 } },
+            listener,
+        )).toBeNull();
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            { ...statusBroker, startedAt: "2026-07-29T00:00:01.000Z" },
+            listener,
+        )).toBeNull();
+    });
+
+    it("attests a command-visible broker from OS and status while rejecting token disagreement", () => {
+        const runtime = {
+            managedBy: "device-lab-mcp",
+            pid: 4321,
+            port: 17373,
+            command: "C:\\Program Files\\nodejs\\node.exe",
+            args: ["C:\\ccc\\dist\\index.js", "devices", "broker", "serve", "--port", "17373"],
+            startedAt: "2026-07-29T00:00:00.000Z",
+            processStartToken: "windows:original",
+        };
+        const commandLine = "\"C:\\Program Files\\nodejs\\node.exe\" C:\\ccc\\dist\\index.js devices broker serve --port 17373";
+        const statusBroker = {
+            name: "ccc-device-broker",
+            mode: "host-broker-daemon",
+            port: 17373,
+            process: { pid: runtime.pid, startToken: runtime.processStartToken },
+            startedAt: runtime.startedAt,
+        };
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            statusBroker,
+            () => ({ pid: runtime.pid, commandLine, processStartToken: runtime.processStartToken }),
+        )).toEqual(expect.objectContaining({ source: "port-process-plus-runtime-and-status" }));
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            { ...statusBroker, process: { pid: runtime.pid, startToken: "windows:successor" } },
+            () => ({ pid: runtime.pid, commandLine, processStartToken: "windows:successor" }),
+        )).toBeNull();
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            statusBroker,
+            () => ({ pid: runtime.pid, commandLine, processStartToken: "windows:successor" }),
+        )).toBeNull();
+        expect(verifiedBrokerProcessForTest(
+            runtime,
+            17373,
+            { ...statusBroker, process: { pid: runtime.pid, startToken: "windows:successor" } },
+            () => ({ pid: runtime.pid, commandLine, processStartToken: runtime.processStartToken }),
+        )).toBeNull();
+    });
+
+    it("terminates a command-line-redacted broker only after status and OS start-token attestation", async () => {
+        const runtime = {
+            managedBy: "device-lab-mcp",
+            pid: 4321,
+            port: 17373,
+            startedAt: "2026-07-29T00:00:00.000Z",
+            processStartToken: "windows:broker-start",
+        };
+        const statusBroker = {
+            name: "ccc-device-broker",
+            mode: "host-broker-daemon",
+            port: 17373,
+            process: { pid: runtime.pid, startToken: runtime.processStartToken },
+            startedAt: runtime.startedAt,
+        };
+        const terminator = vi.fn(async () => ({ ok: true, pid: runtime.pid }));
+
+        await expect(terminateVerifiedBrokerRuntimeForTest(runtime, 1500, {
+            statusBroker,
+            portProcessResolver: () => ({
+                pid: runtime.pid,
+                commandLine: "",
+                processStartToken: runtime.processStartToken,
+            }),
+            terminator,
+        })).resolves.toEqual(expect.objectContaining({ ok: true, pid: runtime.pid }));
+        expect(terminator).toHaveBeenCalledWith(runtime.pid, 1500, runtime.processStartToken);
+
+        terminator.mockClear();
+        await expect(terminateVerifiedBrokerRuntimeForTest(runtime, 1500, {
+            statusBroker,
+            portProcessResolver: () => ({
+                pid: runtime.pid,
+                commandLine: "",
+                processStartToken: "windows:reused-pid",
+            }),
+            terminator,
+        })).resolves.toEqual(expect.objectContaining({
+            ok: false,
+            reason: "unverified-broker-port-process",
+        }));
+        expect(terminator).not.toHaveBeenCalled();
+    });
+
     let context: DeviceLabMcpTestContext;
     let client: DeviceLabMcpTestContext["client"];
     let homeDir: string;
@@ -133,13 +350,13 @@ describe("device-lab MCP", () => {
         client = context.client;
         homeDir = context.homeDir;
         pathDir = context.pathDir;
-    }, TIMEOUT);
+    }, HOOK_TIMEOUT);
 
     afterAll(async () => {
         await cleanupDeviceLabMcpTestContext(context);
         if (originalBrokerAuthFile === undefined) delete process.env.CCC_DEVICE_BROKER_AUTH_FILE;
         else process.env.CCC_DEVICE_BROKER_AUTH_FILE = originalBrokerAuthFile;
-    }, TIMEOUT);
+    }, HOOK_TIMEOUT);
 
     it("launches the packaged CLI directly for Windows broker recovery", () => {
         const invocation = brokerLaunchInvocation("127.0.0.1", 17373, {
@@ -717,7 +934,7 @@ describe("device-lab MCP", () => {
             }
             if (req.url === "/status") {
                 res.setHeader("content-type", "application/json");
-                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -812,7 +1029,7 @@ describe("device-lab MCP", () => {
                     ok: false,
                     error: "host-broker-incompatible",
                     compatibility: expect.objectContaining({
-                        missingCapabilities: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"],
+                        missingCapabilities: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"],
                     }),
                 }),
             }));
@@ -1507,6 +1724,7 @@ const path = require("path");
 const args = process.argv.slice(2);
 const host = args[args.indexOf("--host") + 1] || "127.0.0.1";
 const port = Number(args[args.indexOf("--port") + 1] || 17373);
+const startedAt = new Date().toISOString();
 function send(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -1518,6 +1736,7 @@ function provisionOwnerSecret(ownerId) {
 }
 const server = http.createServer((req, res) => {
   if (req.url === "/health") return send(res, 200, { ok: true, name: "ccc-device-broker" });
+  if (req.url === "/status") return send(res, 200, { ok: true, broker: { name: "ccc-device-broker", mode: "host-broker-daemon", host, port, process: { pid: process.pid }, startedAt, implemented: ${JSON.stringify(REQUIRED_CCC_HOST_BROKER_CAPABILITIES)} } });
   if (req.url === "/v1/owner/resolve" && req.method === "POST") {
     const ownerId = ${JSON.stringify(TEST_BROKER_OWNER_ID)};
     provisionOwnerSecret(ownerId);
@@ -1794,7 +2013,7 @@ setInterval(() => {}, 1000);
             }
             if (req.url === "/status") {
                 res.setHeader("content-type", "application/json");
-                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -2001,7 +2220,7 @@ setInterval(() => {}, 1000);
             }
             if (req.url === "/status") {
                 res.setHeader("content-type", "application/json");
-                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -2141,7 +2360,7 @@ setInterval(() => {}, 1000);
             }
             if (req.url === "/status") {
                 res.setHeader("content-type", "application/json");
-                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;
@@ -2246,7 +2465,7 @@ setInterval(() => {}, 1000);
             }
             if (req.url === "/status") {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
+                res.end(JSON.stringify({ ok: true, broker: { implemented: ["windows-sandbox-window-minimize-v4", "constant-time-existing-owner-auth-v1", "atomic-owner-secret-provisioning-v1", "owner-mutation-serialization-v1", "atomic-owner-device-state-v1", "cross-process-owner-state-serialization-v1", "owner-device-identity-fencing-v1", "rpc-fault-containment-v1", "cross-owner-physical-lease-serialization-v1", "physical-lease-operation-fencing-v1", "physical-lifecycle-lease-fencing-v1", "physical-attach-detach-operation-serialization-v1", "physical-detach-runtime-cleanup-v1", "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1", "runtime-cleanup-failure-preservation-v1", "appium-runtime-generation-fencing-v1", "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-iso-unattend-v1", "hyper-v-boot-disk-generation-v1"] } }));
                 return;
             }
             if (sendTestOwnerResolve(req, res)) return;

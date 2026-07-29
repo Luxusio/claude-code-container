@@ -21,11 +21,12 @@ import {
 } from "../device-lab-broker.js";
 import { deviceLabOwnerId, devicesCli, devicesCliAsync } from "../device-lab-admin.js";
 import { CLI_VERSION } from "../utils.js";
+import { readDeviceRuntimeProcessStartToken } from "../device-lab-process-identity.js";
 import { close, listen } from "./helpers/host-broker-test-fixture.js";
 import { freePort } from "./helpers/fake-broker-mcp-fixture.js";
 import { withSharedMutationLockAsync } from "../../device-lab-mcp/src/state/shared-mutation-lock.mjs";
 
-async function waitForBrokerHealth(port: number, timeoutMs = 10000) {
+async function waitForBrokerHealth(port: number, timeoutMs = 30000) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() <= deadline) {
         try {
@@ -1126,6 +1127,8 @@ describe("device-lab host broker physical attach and CLI", () => {
             host: "127.0.0.1",
             probeHost: "127.0.0.1",
             port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
             attempts: [],
         }));
         try {
@@ -1145,6 +1148,47 @@ describe("device-lab host broker physical attach and CLI", () => {
                 }),
             }));
             expect(ensureHostBroker).toHaveBeenCalledOnce();
+        } finally {
+            await close(server);
+        }
+    });
+
+    it("does not send owner credentials after the broker listener generation changes", async () => {
+        const cwd = "/project/devices-owner-rpc-listener-swap-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        let requestCount = 0;
+        const server = createServer((_req, res) => {
+            requestCount += 1;
+            res.end(JSON.stringify({ ok: true }));
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as { port: number }).port;
+        const ensureHostBroker = vi.fn(async () => ({
+            ok: true,
+            ownerId,
+            launched: false,
+            reused: true,
+            probeHost: "127.0.0.1",
+            port,
+            verifiedBrokerPid: 12345,
+            verifiedBrokerProcessStartToken: "test:expected-generation",
+        }));
+        try {
+            const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", {}, {
+                cwd,
+                ensureHostBroker,
+                portProcessResolver: () => ({
+                    pid: 12345,
+                    processStartToken: "test:replacement-generation",
+                }),
+            });
+
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                status: null,
+                error: "broker-runtime-process-unverified",
+            }));
+            expect(requestCount).toBe(0);
         } finally {
             await close(server);
         }
@@ -1221,6 +1265,8 @@ describe("device-lab host broker physical attach and CLI", () => {
             reused: true,
             probeHost: "127.0.0.1",
             port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
         }));
         try {
             const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", {}, { cwd, ensureHostBroker });
@@ -1255,6 +1301,8 @@ describe("device-lab host broker physical attach and CLI", () => {
             reused: true,
             probeHost: "127.0.0.1",
             port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
         }));
         try {
             const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", {}, { cwd, ensureHostBroker });

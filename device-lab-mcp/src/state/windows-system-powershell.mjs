@@ -4,13 +4,13 @@ import { dirname, join, resolve } from "path";
 
 const WINDOWS_SYSTEM32_PATH = "\\\\?\\GLOBALROOT\\SystemRoot\\System32";
 
-export function spawnableWindowsExecutablePath(path: string): string | null {
+function spawnableWindowsExecutablePath(path) {
     if (/^\\\\\?\\[A-Za-z]:\\/.test(path)) return path.slice(4);
     if (/^[A-Za-z]:\\/.test(path)) return path;
     return null;
 }
 
-function assertPlainDirectoryPath(path: string): void {
+function assertPlainDirectoryPath(path) {
     let current = resolve(path);
     while (true) {
         const metadata = lstatSync(current);
@@ -21,17 +21,13 @@ function assertPlainDirectoryPath(path: string): void {
     }
 }
 
-export function canonicalWindowsSystemExecutablePath(relativePath: string, testSystemRoot?: string): string | null {
+export function canonicalWindowsSystemExecutablePath(relativePath, testSystemRoot) {
     const segments = relativePath.split(/[\\/]+/).filter(Boolean);
     if (segments.length === 0 || segments.some((segment) => segment === "." || segment === "..")) return null;
     const candidate = testSystemRoot
         ? join(resolve(testSystemRoot), "System32", ...segments)
         : join(WINDOWS_SYSTEM32_PATH, ...segments);
     try {
-        // path.resolve() cannot preserve the GLOBALROOT device alias while
-        // walking its parents. Resolve that trusted alias to its ordinary
-        // drive-qualified path first; injected roots still get checked before
-        // resolution so a symlink cannot be hidden by realpath.
         if (testSystemRoot) assertPlainDirectoryPath(dirname(candidate));
         const source = lstatSync(candidate);
         if (!source.isFile() || source.isSymbolicLink()) return null;
@@ -46,11 +42,11 @@ export function canonicalWindowsSystemExecutablePath(relativePath: string, testS
     }
 }
 
-export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string | null {
+export function canonicalWindowsPowerShellPath(testSystemRoot) {
     return canonicalWindowsSystemExecutablePath("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
 }
 
-export function windowsHandleBoundTerminationScript(): string {
+export function windowsHandleBoundTerminationScript() {
     return [
         "$ErrorActionPreference = 'Stop'",
         "$RootPid = [int]$env:CCC_WINDOWS_TERMINATE_PID",
@@ -90,18 +86,11 @@ export function windowsHandleBoundTerminationScript(): string {
 }
 
 export function terminateWindowsProcessByStartToken(
-    pid: number,
-    expectedStartToken: string,
+    pid,
+    expectedStartToken,
     timeoutMs = 10_000,
     powershellPath = canonicalWindowsPowerShellPath(),
-): {
-    ok: boolean;
-    pid: number;
-    status?: number | null;
-    method?: string;
-    reason?: string;
-    error?: string;
-} {
+) {
     if (!Number.isInteger(pid) || pid <= 0 || !expectedStartToken.startsWith("windows:") || !powershellPath) {
         return { ok: false, pid, reason: "windows-process-identity-unavailable" };
     }
