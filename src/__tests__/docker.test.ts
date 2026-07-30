@@ -2271,6 +2271,74 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it("restarts a stopped Docker Desktop container whose socket source is docker.sock.raw", () => {
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                dockerDesktop: true,
+            });
+            const inspected = JSON.parse(fullCredentialMountsJson(
+                process.env.SSH_AUTH_SOCK
+                    ? [{ Source: process.env.SSH_AUTH_SOCK, Destination: "/tmp/ssh-agent.sock" }]
+                    : [], {
+                status: "unsupported",
+                unsupportedReason: "docker-desktop is VM-backed; nested KVM is not exposed to CCC containers by default",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = "/var/run/docker.sock.raw";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
+                if (args[0] === "start" && args[1] === "abc123") return makeResult(0);
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+
+            expect(startProjectContainer(projectPath, ensureDirs)).toBe(getContainerName(projectPath));
+            expect(spawnSyncMock).toHaveBeenCalledWith("docker", ["start", "abc123"], { stdio: "inherit" });
+            expectNoContainerReplacement();
+        });
+
+        it.each([
+            ["native Docker", { runtime: "docker" as const, flavor: "docker-native" as const, remote: false, dockerDesktop: false }],
+            ["WSL2 native Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }],
+            ["remote Docker", { runtime: "docker" as const, flavor: "docker-desktop" as const, remote: true, dockerDesktop: false }],
+            ["Podman machine", { runtime: "podman" as const, flavor: "podman-machine" as const, remote: true, dockerDesktop: false }],
+        ])("rejects docker.sock.raw without Docker Desktop evidence for %s", (_name, runtime) => {
+            _setRuntimeInfoForTest(runtime);
+            const inspected = JSON.parse(fullCredentialMountsJson([], {
+                status: "unsupported",
+                kvmDevice: false,
+                groupAdd: [],
+            }));
+            const socketMount = inspected.Mounts.find(
+                (item: { Destination: string }) => item.Destination === "/var/run/docker.sock",
+            );
+            socketMount.Source = "/var/run/docker.sock.raw";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+        });
+
         it.each([
             ["strict contract", false],
             ["safe defer after additive mount drift", true],

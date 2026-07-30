@@ -330,6 +330,33 @@ describe("container-runtime", () => {
             expect(info.dockerDesktop).toBe(true);
         });
 
+        it("detects native Windows Docker Desktop from its exact local Linux-engine npipe when docker info is unavailable", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            process.env.CCC_RUNTIME = "docker";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(1, ""))
+                .mockReturnValueOnce(result(0, "npipe:////./pipe/dockerDesktopLinuxEngine\n"))
+                .mockReturnValue(result(1, ""));
+
+            const info = getRuntimeInfo();
+            expect(info.remote).toBe(true);
+            expect(info.flavor).toBe("docker-desktop");
+            expect(info.dockerDesktop).toBe(true);
+        });
+
+        it("does not infer Docker Desktop from a generic local Windows npipe", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            process.env.CCC_RUNTIME = "docker";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(1, ""))
+                .mockReturnValueOnce(result(0, "npipe:////./pipe/docker_engine\n"))
+                .mockReturnValue(result(1, ""));
+
+            expect(getRuntimeInfo().dockerDesktop).toBe(false);
+        });
+
         it.each([
             ["SSH context", undefined, "ssh://builder@example.test"],
             ["TCP DOCKER_HOST", "tcp://example.test:2376", undefined],

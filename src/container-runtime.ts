@@ -43,7 +43,7 @@ export interface RuntimeInfo {
     socketPath: string | null; // host-side path to the container-manager socket
     rootless: boolean;         // true iff the selected runtime is rootless
     remote: boolean;           // true iff Docker Desktop or podman machine (VM-backed)
-    dockerDesktop: boolean;    // true only when the daemon identifies itself as Docker Desktop
+    dockerDesktop: boolean;    // true only with Docker Desktop daemon or exact native Windows endpoint evidence
 }
 
 // === Module state (cache for process lifetime) ===
@@ -160,18 +160,26 @@ function detectVersion(runtime: RuntimeName): string | null {
  * Detect whether the resolved runtime is VM-backed (Docker Desktop / podman
  * machine). Called once and cached.
  */
-function dockerEndpointIsLocal(): boolean {
+function dockerEndpoint(): string | null {
     const configured = process.env.DOCKER_HOST?.trim();
-    if (configured) {
-        return /^(?:unix|npipe):\/\//i.test(configured);
-    }
+    if (configured) return configured;
     const result = spawnSync(
         "docker",
         ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    if (result.status !== 0) return false;
-    return /^(?:unix|npipe):\/\//i.test((result.stdout ?? "").trim());
+    if (result.status !== 0) return null;
+    return (result.stdout ?? "").trim() || null;
+}
+
+function dockerEndpointIsLocal(endpoint: string | null): boolean {
+    return endpoint !== null && /^(?:unix|npipe):\/\//i.test(endpoint);
+}
+
+function isNativeWindowsDockerDesktopEndpoint(endpoint: string | null): boolean {
+    return process.platform === "win32"
+        && endpoint?.replace(/\\/g, "/").toLowerCase()
+            === "npipe:////./pipe/dockerdesktoplinuxengine";
 }
 
 function detectDockerDesktop(runtime: RuntimeName): boolean {
@@ -181,9 +189,13 @@ function detectDockerDesktop(runtime: RuntimeName): boolean {
         ["info", "--format", "{{.OperatingSystem}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    return result.status === 0
-        && (result.stdout ?? "").toLowerCase().includes("docker desktop")
-        && dockerEndpointIsLocal();
+    const operatingSystemIsDesktop = result.status === 0
+        && (result.stdout ?? "").toLowerCase().includes("docker desktop");
+    if (!operatingSystemIsDesktop && process.platform !== "win32") return false;
+    const endpoint = dockerEndpoint();
+    if (!dockerEndpointIsLocal(endpoint)) return false;
+    return isNativeWindowsDockerDesktopEndpoint(endpoint)
+        || operatingSystemIsDesktop;
 }
 
 function detectRemote(runtime: RuntimeName, dockerDesktop: boolean): boolean {
