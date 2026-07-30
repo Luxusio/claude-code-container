@@ -50,6 +50,10 @@ export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string 
     return canonicalWindowsSystemExecutablePath("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
 }
 
+export function canonicalWindowsTasklistPath(testSystemRoot?: string): string | null {
+    return canonicalWindowsSystemExecutablePath("tasklist.exe", testSystemRoot);
+}
+
 export function windowsHandleBoundTerminationScript(): string {
     return [
         "$ErrorActionPreference = 'Stop'",

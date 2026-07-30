@@ -68,6 +68,7 @@ vi.mock("../device-lab-admin.js", () => ({
 
 vi.mock("../windows-system-powershell.js", () => ({
     canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    canonicalWindowsTasklistPath: () => "C:\\Windows\\System32\\tasklist.exe",
 }));
 
 const mockWithSharedMutationLock = vi.fn((_file: string, operation: () => unknown) => operation());
@@ -580,6 +581,87 @@ describe("session.ts", () => {
             });
 
             expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--unobservable.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("removes a Windows v2 lock when trusted tasklist proves the PID is absent", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--dead.lock"]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:known-start",
+            }));
+            mockSpawnSync
+                .mockReturnValueOnce({ status: 1, stdout: "", stderr: "denied" })
+                .mockReturnValueOnce({
+                    status: 0,
+                    stdout: '"System Idle Process","0","Services","0","8 K"\n"System","4","Services","0","1,000 K"\n',
+                    stderr: "",
+                });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual([]);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining("proj-abc--dead.lock"));
+        });
+
+        it("preserves a Windows v2 lock when tasklist sees the PID but cannot verify its start token", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--uncertain.lock"]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:known-start",
+            }));
+            mockSpawnSync
+                .mockReturnValueOnce({ status: 1, stdout: "", stderr: "denied" })
+                .mockReturnValueOnce({
+                    status: 0,
+                    stdout: '"node.exe","4242","Console","1","50,000 K"\n',
+                    stderr: "",
+                });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--uncertain.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it("keeps a Windows legacy lock active when tasklist sees its PID", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--legacy.lock"]);
+            mockReadFileSync.mockReturnValue("4242");
+            mockSpawnSync
+                .mockReturnValueOnce({ status: 1, stdout: "", stderr: "denied" })
+                .mockReturnValueOnce({
+                    status: 0,
+                    stdout: '"node.exe","4242","Console","1","50,000 K"\n',
+                    stderr: "",
+                });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--legacy.lock"]);
+            expect(mockUnlinkSync).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            "unexpected output\n",
+            '"System","4"\n',
+            '"System","4",garbage\n',
+            '"System","4","Services","0","1,000 K","extra"\n',
+        ])("preserves a Windows lock when tasklist output is malformed: %s", (tasklistOutput) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue(["proj-abc--uncertain.lock"]);
+            mockReadFileSync.mockReturnValue(JSON.stringify({
+                version: 2,
+                pid: 4242,
+                startToken: "windows:known-start",
+            }));
+            mockSpawnSync
+                .mockReturnValueOnce({ status: 1, stdout: "", stderr: "denied" })
+                .mockReturnValueOnce({ status: 0, stdout: tasklistOutput, stderr: "" });
+
+            expect(getActiveSessionsForContainer("proj-abc")).toEqual(["proj-abc--uncertain.lock"]);
             expect(mockUnlinkSync).not.toHaveBeenCalled();
         });
 

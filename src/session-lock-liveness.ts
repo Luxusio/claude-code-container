@@ -1,13 +1,34 @@
 import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
-import { canonicalWindowsPowerShellPath } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsTasklistPath } from "./windows-system-powershell.js";
 
 export type SessionLockLiveness = "active" | "stale" | "unknown";
 
 type ProcessStartObservation =
     | { status: "found"; token: string }
+    | { status: "present" }
     | { status: "missing" }
     | { status: "unknown" };
+
+function observeWindowsProcessPresence(pid: number): ProcessStartObservation {
+    const tasklist = canonicalWindowsTasklistPath();
+    if (!tasklist) return { status: "unknown" };
+    const result = spawnSync(tasklist, ["/FO", "CSV", "/NH"], {
+        encoding: "utf-8",
+        timeout: 5000,
+        windowsHide: true,
+    });
+    if (result.error || result.status !== 0 || result.stderr?.trim()) return { status: "unknown" };
+    const lines = (result.stdout ?? "").split(/\r?\n/).filter((line) => line.length > 0);
+    if (lines.length === 0) return { status: "unknown" };
+    let present = false;
+    for (const line of lines) {
+        const row = /^"(?:[^"]|"")*","([0-9]+)","(?:[^"]|"")*","(?:[^"]|"")*","(?:[^"]|"")*"$/.exec(line);
+        if (!row) return { status: "unknown" };
+        if (Number(row[1]) === pid) present = true;
+    }
+    return present ? { status: "present" } : { status: "missing" };
+}
 
 function observeProcessStart(pid: number): ProcessStartObservation {
     if (process.platform === "linux") {
@@ -29,7 +50,7 @@ function observeProcessStart(pid: number): ProcessStartObservation {
     try {
         if (process.platform === "win32") {
             const powershell = canonicalWindowsPowerShellPath();
-            if (!powershell) return { status: "unknown" };
+            if (!powershell) return observeWindowsProcessPresence(pid);
             const script = [
                 "$ErrorActionPreference = 'Stop'",
                 "$ProgressPreference = 'SilentlyContinue'",
@@ -45,7 +66,7 @@ function observeProcessStart(pid: number): ProcessStartObservation {
                 windowsHide: true,
             });
             if (result.error || result.status !== 0 || result.stderr?.trim()) {
-                return { status: "unknown" };
+                return observeWindowsProcessPresence(pid);
             }
             const value = result.stdout?.trim() ?? "";
             if (value === "MISSING") return { status: "missing" };
@@ -53,7 +74,7 @@ function observeProcessStart(pid: number): ProcessStartObservation {
             if (found) {
                 return { status: "found", token: `windows:${found[1]}` };
             }
-            return { status: "unknown" };
+            return observeWindowsProcessPresence(pid);
         }
         const result = spawnSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
             encoding: "utf-8",
@@ -101,7 +122,7 @@ function sessionLockRecord(content: string): { pid: number; startToken?: string 
 function legacyProcessLiveness(pid: number): SessionLockLiveness {
     if (process.platform === "win32") {
         const observed = observeProcessStart(pid);
-        return observed.status === "found"
+        return observed.status === "found" || observed.status === "present"
             ? "active"
             : observed.status === "missing" ? "stale" : "unknown";
     }
@@ -126,5 +147,6 @@ export function sessionLockLiveness(content: string): SessionLockLiveness {
     if (observed.status === "found") {
         return observed.token === record.startToken ? "active" : "stale";
     }
+    if (observed.status === "present") return "unknown";
     return "unknown";
 }

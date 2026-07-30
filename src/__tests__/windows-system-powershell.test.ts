@@ -4,6 +4,7 @@ import { dirname, join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
     canonicalWindowsPowerShellPath,
+    canonicalWindowsTasklistPath,
     canonicalWindowsSystemExecutablePath,
     spawnableWindowsExecutablePath,
     terminateWindowsProcessByStartToken,
@@ -53,6 +54,16 @@ describe("canonical Windows PowerShell", () => {
         expect(canonicalWindowsSystemExecutablePath("taskkill.exe", root)).toBe(taskkill);
         expect(canonicalWindowsSystemExecutablePath("../taskkill.exe", root)).toBeNull();
         expect(canonicalWindowsSystemExecutablePath("", root)).toBeNull();
+    });
+
+    it("resolves tasklist only through the verified System32 path", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-system-tasklist-"));
+        roots.push(root);
+        const tasklist = join(root, "System32", "tasklist.exe");
+        mkdirSync(dirname(tasklist), { recursive: true });
+        writeFileSync(tasklist, "test");
+
+        expect(canonicalWindowsTasklistPath(root)).toBe(tasklist);
     });
 
     it.runIf(process.platform !== "win32")("passes process identity through environment to handle-bound termination", () => {
