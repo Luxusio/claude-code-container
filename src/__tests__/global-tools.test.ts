@@ -42,11 +42,12 @@ describe("ensureTools (npm tools)", () => {
     it("does nothing when all tools already exist", () => {
         // Single combined check returns empty stdout (all present)
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested-tool proof
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // Only 1 combined check call, no install
-        expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+        // Combined check + exact requested-tool proof, no install
+        expect(spawnSyncMock).toHaveBeenCalledTimes(2);
         expect(console.log).not.toHaveBeenCalled();
     });
 
@@ -60,11 +61,12 @@ describe("ensureTools (npm tools)", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper gemini
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper opencode
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested-tool proof
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 2 cleanups + 1 install + 1 reshim + 3 wrappers = 8 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(8);
+        // 1 check + 2 cleanups + 1 install + 1 reshim + 3 wrappers + proof = 9 calls
+        expect(spawnSyncMock).toHaveBeenCalledTimes(9);
 
         // Verify install command uses mise exec node@22 (index 3 after cleanup)
         const installCall = spawnSyncMock.mock.calls[3];
@@ -96,11 +98,12 @@ describe("ensureTools (npm tools)", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
+        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested gemini proof
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 2 cleanups + 1 install + 1 reshim + 1 wrapper = 6 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(6);
+        // 1 check + 2 cleanups + 1 install + 1 reshim + 1 wrapper + proof = 7 calls
+        expect(spawnSyncMock).toHaveBeenCalledTimes(7);
 
         // Install only codex (index 3 after cleanup)
         const installCall = spawnSyncMock.mock.calls[3];
@@ -113,17 +116,20 @@ describe("ensureTools (npm tools)", () => {
         expect(console.log).toHaveBeenCalledWith("Installing codex...");
     });
 
-    it("warns and skips wrappers on install failure", () => {
+    it("warns, skips wrappers, and fails when install leaves the requested tool absent", () => {
         // Combined check returns all 3 missing
         spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
+        spawnSyncMock.mockReturnValueOnce(makeResult(1)); // requested-tool proof FAIL
 
-        ensureTools(container, getToolByName("gemini")!);
+        expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow(
+            "Requested tool gemini is unavailable after setup",
+        );
 
-        // 1 check + 2 cleanups + 1 install = 4 calls (no reshim/wrapper calls)
-        expect(spawnSyncMock).toHaveBeenCalledTimes(4);
+        // 1 check + 2 cleanups + 1 install + failed proof (no reshim/wrappers)
+        expect(spawnSyncMock).toHaveBeenCalledTimes(5);
         expect(console.warn).toHaveBeenCalledWith(
             "Warning: Failed to install some global npm tools (non-fatal)",
         );
@@ -131,6 +137,7 @@ describe("ensureTools (npm tools)", () => {
 
     it("checks all tools in single docker exec", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0));
 
         ensureTools(container, getToolByName("gemini")!);
 

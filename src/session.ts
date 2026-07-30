@@ -15,6 +15,10 @@ function containerLifecycleLock(containerPrefix: string): string {
     return join(locksDir, `${containerPrefix}.container-lifecycle.guard`);
 }
 
+function containerSetupLock(containerPrefix: string): string {
+    return join(locksDir, `${containerPrefix}.container-setup.guard`);
+}
+
 function projectFamilyLifecycleLock(projectId: string): string {
     return join(locksDir, `${projectId}.project-family-lifecycle.guard`);
 }
@@ -46,6 +50,11 @@ export async function withProjectFamilyLifecycleLockAsync<T>(projectId: string, 
 export async function withContainerLifecycleLockAsync<T>(containerPrefix: string, operation: () => Promise<T> | T): Promise<T> {
     ensureLocksDirectory();
     return withSharedMutationLockAsync(containerLifecycleLock(containerPrefix), operation, { waitMs: 180_000 });
+}
+
+export async function withContainerSetupLockAsync<T>(containerPrefix: string, operation: () => Promise<T> | T): Promise<T> {
+    ensureLocksDirectory();
+    return withSharedMutationLockAsync(containerSetupLock(containerPrefix), operation, { waitMs: 900_000 });
 }
 
 // Module state - managed via getter/setter for testability

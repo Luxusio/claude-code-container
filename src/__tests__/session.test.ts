@@ -97,6 +97,7 @@ const {
     cleanupSession,
     setupSignalHandlers,
     withContainerLifecycleLockAsync,
+    withContainerSetupLockAsync,
     withProjectFamilyLifecycleLockAsync,
 } = await import("../session.js");
 
@@ -162,6 +163,28 @@ describe("session.ts", () => {
         );
         release();
         await expect(execution).resolves.toBe("done");
+    });
+
+    it("uses a distinct bounded async setup lock until readiness settles", async () => {
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let completed = false;
+        const execution = withContainerSetupLockAsync("joining-project", async () => {
+            await gate;
+            completed = true;
+            return "ready";
+        });
+        await Promise.resolve();
+        expect(completed).toBe(false);
+        expect(mockWithSharedMutationLockAsync).toHaveBeenCalledWith(
+            expect.stringContaining("joining-project.container-setup.guard"),
+            expect.any(Function),
+            { waitMs: 900_000 },
+        );
+        expect(mockWithSharedMutationLockAsync.mock.calls[0]?.[0]).not.toContain("container-lifecycle.guard");
+
+        release();
+        await expect(execution).resolves.toBe("ready");
     });
 
     it("holds the async project-family lock across worktree preparation", async () => {

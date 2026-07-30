@@ -95,6 +95,7 @@ import {
     getSessionLockClaimsForProjectFamily,
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
+    withContainerSetupLockAsync,
     withProjectFamilyLifecycleLock,
     withProjectFamilyLifecycleLockAsync,
     cleanupSession,
@@ -105,6 +106,55 @@ import {
 
 export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
 export const CONTAINER_SETUP_RESTART_MESSAGE = "Container became unavailable during setup, restarting...";
+
+export function ensureSetupContainerAvailable(
+    containerId: string,
+    restart: () => string,
+    runningProbe: typeof isContainerRunning = isContainerRunning,
+    log: (message: string) => void = console.log,
+): string {
+    if (runningProbe(containerId, "id")) return containerId;
+    log(CONTAINER_SETUP_RESTART_MESSAGE);
+    return restart();
+}
+
+type ContainerSetupLock = <T>(
+    containerPrefix: string,
+    operation: () => Promise<T> | T,
+) => Promise<T>;
+
+export async function withContainerSetupReadiness<T>(
+    containerPrefix: string,
+    operation: () => Promise<T> | T,
+    setupLock: ContainerSetupLock = withContainerSetupLockAsync,
+): Promise<T> {
+    return setupLock(containerPrefix, operation);
+}
+
+export function ensureToolsForSetupContainer(
+    containerId: string,
+    setupTool: ToolDefinition,
+    restart: () => string,
+    runningProbe: typeof isContainerRunning = isContainerRunning,
+    installer: typeof ensureTools = ensureTools,
+): string {
+    let readyContainerId = containerId;
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        readyContainerId = ensureSetupContainerAvailable(
+            readyContainerId,
+            restart,
+            runningProbe,
+        );
+        try {
+            installer(readyContainerId, setupTool);
+            return readyContainerId;
+        } catch (error) {
+            lastError = error;
+        }
+    }
+    throw new Error("Failed to install tools in container", { cause: lastError });
+}
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 import {
@@ -590,7 +640,7 @@ async function exec(
         mounts = worktreeMounts.length > 0 ? worktreeMounts : undefined,
         portFile: string | undefined = clipboardPortFile,
         onRecreate: (() => void) | undefined = () => { wasAlreadyRunning = false; },
-    ) => {
+    ): string => {
         return withContainerLifecycleLock(sessionContainerPrefix, () => {
             let readyContainerId: string | null = null;
             startProjectContainer(
@@ -612,66 +662,95 @@ async function exec(
             return readyContainerId;
         });
     };
-    let containerName = startContainer();
-    restoreCodexConfigHostOwnership(containerName);
+    const projectMountPath = `/project/${projectId}`;
+    const runMiseInstall = (readyContainerName: string) => {
+        // Keep mise's stderr visible — that's where it streams download/build
+        // progress. This remains non-fatal by design, but simultaneous joiners
+        // must not pass the setup lock while the first install is still active.
+        spawnSync(
+            runtimeCli(),
+            [
+                "exec", "-w", projectMountPath, readyContainerName,
+                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true",
+            ],
+            { stdio: "inherit" },
+        );
+    };
+    // A running container is not necessarily setup-ready. Hold the distinct
+    // setup lock from start/handoff through the complete preparation phase, so
+    // a simultaneous joiner cannot exec while the creator is still installing
+    // commands or configuring the container.
+    progress("Synchronizing container setup...");
+    let containerName = await withContainerSetupReadiness(sessionContainerPrefix, async () => {
+        let readyContainerName = startContainer();
+        restoreCodexConfigHostOwnership(readyContainerName);
 
-    // Skip heavy setup if container was already running (another session set it up)
-    if (!wasAlreadyRunning) {
-        // Ensure tools are installed (claude via curl + npm tools from registry).
-        // Retry once if the container became unavailable during setup.
-        progress("Checking tools...");
-        if (shouldEnsureTool) {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                if (!isContainerRunning(containerName, "id")) {
-                    console.log(CONTAINER_SETUP_RESTART_MESSAGE);
-                    containerName = startContainer(undefined, undefined, undefined);
-                }
-                try {
-                    ensureTools(containerName, setupTool);
-                    break;
-                } catch {
-                    if (attempt === 1) {
-                        console.error("Failed to install tools in container");
-                        process.exit(1);
-                    }
-                }
+        // Skip heavy setup if the container was already running before this
+        // launch; the setup lock guarantees a simultaneous creator has finished
+        // that work before this joiner reaches the lightweight path.
+        if (!wasAlreadyRunning) {
+            // Setup steps. spawnSync blocks the event loop so wrapping in Promise.all
+            // doesn't actually parallelize — run each step with its own progress line
+            // so the user can see exactly where time is being spent.
+            progress("Ensuring uv...");
+            ensureUvAvailable(readyContainerName);
+
+            progress("Syncing clipboard shims...");
+            syncClipboardShims(readyContainerName, __dirname);
+
+            progress("Building MCP config...");
+            const forwardedMcp = await buildMcpConfig(profile);
+
+            progress("Setting up localhost proxy...");
+            setupLocalhostProxy(readyContainerName);
+
+            if (forwardedMcp.length > 0) {
+                console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+            }
+
+            // Verify container is still running before exec.
+            readyContainerName = ensureSetupContainerAvailable(
+                readyContainerName,
+                () => startContainer(undefined, undefined, undefined),
+            );
+        } else {
+            // Container already running — only rebuild MCP config (lightweight, may have changed)
+            const forwardedMcp = await buildMcpConfig(profile);
+            if (forwardedMcp.length > 0) {
+                console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
             }
         }
 
-        // Setup steps. spawnSync blocks the event loop so wrapping in Promise.all
-        // doesn't actually parallelize — run each step with its own progress line
-        // so the user can see exactly where time is being spent.
-        progress("Ensuring uv...");
-        ensureUvAvailable(containerName);
-
-        progress("Syncing clipboard shims...");
-        syncClipboardShims(containerName, __dirname);
-
-        progress("Building MCP config...");
-        const forwardedMcp = buildMcpConfig(profile);
-
-        progress("Setting up localhost proxy...");
-        setupLocalhostProxy(containerName);
-
-        if (forwardedMcp.length > 0) {
-            console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+        if (!wasAlreadyRunning) {
+            progress("Installing project tools (mise)...");
+            runMiseInstall(readyContainerName);
         }
 
-        // Verify container is still running before exec.
-        if (!isContainerRunning(containerName, "id")) {
-            console.log("Container was stopped during setup, restarting...");
-            containerName = startContainer(undefined, undefined, undefined);
+        // This is deliberately the final restart-capable readiness step. A
+        // late setup checkpoint may have returned a replacement container, so
+        // prove/install the requested command against that final pinned ID.
+        if (shouldEnsureTool) {
+            progress("Checking tools...");
+            readyContainerName = ensureToolsForSetupContainer(
+                readyContainerName,
+                setupTool,
+                () => startContainer(undefined, undefined, undefined),
+            );
         }
-    } else {
-        // Container already running — only rebuild MCP config (lightweight, may have changed)
-        const forwardedMcp = await buildMcpConfig(profile);
-        if (forwardedMcp.length > 0) {
-            console.error(`MCP forwarded: ${forwardedMcp.join(", ")}`);
+        if (commandTool?.name === "claude") {
+            // Re-verify after mise because a project shim can replace the fixed
+            // command path while setup owns the readiness lock.
+            ensureClaudeInContainer(readyContainerName);
+        } else if (commandTool?.name === "codex") {
+            prepareCodexConfigForContainer(readyContainerName);
         }
-    }
+        return readyContainerName;
+    }).catch((error) => {
+        const detail = error instanceof Error ? `: ${error.message}` : "";
+        throw new Error(`Container setup failed${detail}`, { cause: error });
+    });
 
     // Build docker exec command
-    const projectMountPath = `/project/${projectId}`;
     const clipboardHost = clipboardPort
         ? ((process.platform === "linux" && !isDockerDesktop()) ? "127.0.0.1" : "host.docker.internal")
         : null;
@@ -778,52 +857,10 @@ async function exec(
 
     execArgs.push(containerName);
 
-    // Run mise setup and the user command as SEPARATE docker exec calls.
-    // mise install can be slow on first run (downloads tool binaries).
-    // Running them in a single sh -c caused mise's shell hooks to intercept
-    // the exec syscall, producing spurious "Argument list too long" errors.
-    //
-    // Trust is handled via MISE_TRUSTED_CONFIG_PATHS baked into `docker run`
-    // (see docker.ts), so `mise trust` is no longer needed here.
-    // `mise install -y` auto-reshims when it installs anything, so an
-    // explicit `mise reshim` would be redundant — dropped.
-    const runMiseInstall = () => {
-        // Keep mise's stderr visible — that's where it streams download/build
-        // progress (e.g. "downloading node@22…"). `|| true` already makes the
-        // step non-fatal; muting stderr just hid the install activity and made
-        // long first-run installs look hung.
-        spawnSync(
-            runtimeCli(),
-            [
-                "exec", "-w", projectMountPath, containerName,
-                "sh", "-c", "mise trust -a >/dev/null 2>&1 || true; mise install -y || true",
-            ],
-            { stdio: "inherit" },
-        );
-    };
-
     if (commandTool?.name === "claude") {
-        // Always refresh the fixed claude path before exec.
-        // Existing running containers may predate the current install policy.
-        progress("Checking claude install...");
-        ensureClaudeInContainer(containerName);
-
-        if (!wasAlreadyRunning) {
-            progress("Installing project tools (mise)...");
-            runMiseInstall();
-            // Re-verify claude wasn't overwritten by a mise shim at the path.
-            ensureClaudeInContainer(containerName);
-        }
-
         // Run claude directly (no shell wrapper — avoids mise interception)
         execArgs.push(CLAUDE_BIN_PATH, ...cmd.slice(1));
     } else {
-        if (!wasAlreadyRunning) {
-            runMiseInstall();
-        }
-        if (commandTool?.name === "codex") {
-            prepareCodexConfigForContainer(containerName);
-        }
         execArgs.push(...resolvedCmd);
     }
 

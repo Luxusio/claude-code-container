@@ -140,6 +140,21 @@ export function ensureTools(containerName: string, activeTool: ToolDefinition): 
         ensureClaudeInContainer(containerName);
     }
     ensureNpmTools(containerName);
+
+    // tool-registry and this module intentionally share the fixed Claude path;
+    // use it directly to avoid depending on that circular import's init order.
+    const configuredBinary = activeTool.binary || activeTool.name;
+    const executablePath = activeTool.name === "claude"
+        ? CLAUDE_BIN_PATH
+        : `/home/ccc/.local/bin/${configuredBinary}`;
+    const ready = spawnSync(
+        runtimeCli(),
+        ["exec", containerName, "test", "-x", executablePath],
+        { stdio: "ignore" },
+    );
+    if (ready.error || ready.status !== 0) {
+        throw new Error(`Requested tool ${activeTool.name} is unavailable after setup`);
+    }
 }
 
 /**

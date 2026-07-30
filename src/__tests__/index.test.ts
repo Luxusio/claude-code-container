@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, CONTAINER_SETUP_RESTART_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -690,6 +690,102 @@ describe('auto container version-up', () => {
   it('setup restart message reports unavailability without inventing a concurrent session', () => {
     expect(CONTAINER_SETUP_RESTART_MESSAGE).toContain('became unavailable during setup')
     expect(CONTAINER_SETUP_RESTART_MESSAGE).not.toContain('concurrent session')
+  })
+
+  it('uses exact-ID liveness and one state-accurate restart path at every setup checkpoint', () => {
+    const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
+    const runningProbe = vi.fn(() => false)
+    const restart = vi.fn(() => 'replacement-id')
+    const log = vi.fn()
+
+    expect(ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe('replacement-id')
+    expect(runningProbe).toHaveBeenCalledWith(containerId, 'id')
+    expect(restart).toHaveBeenCalledOnce()
+    expect(log).toHaveBeenCalledWith(CONTAINER_SETUP_RESTART_MESSAGE)
+  })
+
+  it('keeps an available pinned container without restarting it', () => {
+    const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
+    const runningProbe = vi.fn(() => true)
+    const restart = vi.fn(() => 'replacement-id')
+    const log = vi.fn()
+
+    expect(ensureSetupContainerAvailable(containerId, restart, runningProbe, log)).toBe(containerId)
+    expect(restart).not.toHaveBeenCalled()
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('installs and proves the requested tool on a late replacement container ID', () => {
+    const originalId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
+    const replacementId = '296c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
+    const runningProbe = vi.fn(() => false)
+    const restart = vi.fn(() => replacementId)
+    const installer = vi.fn()
+
+    expect(ensureToolsForSetupContainer(
+      originalId,
+      getToolByName('codex')!,
+      restart,
+      runningProbe,
+      installer,
+    )).toBe(replacementId)
+    expect(runningProbe).toHaveBeenCalledWith(originalId, 'id')
+    expect(restart).toHaveBeenCalledOnce()
+    expect(installer).toHaveBeenCalledWith(replacementId, getToolByName('codex')!)
+  })
+
+  it('serializes requested-tool readiness for simultaneous container joiners', async () => {
+    let releaseFirst!: () => void
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    let lockTail: Promise<void> = Promise.resolve()
+    let claimant = 0
+    const setupLock = vi.fn((_prefix: string, operation: () => string) => {
+      const current = lockTail.then(async () => {
+        const result = operation()
+        claimant += 1
+        if (claimant === 1) await firstGate
+        return result
+      })
+      lockTail = current.then(() => undefined, () => undefined)
+      return current
+    })
+    const firstSetup = vi.fn(() => 'first-container-id')
+    const secondSetup = vi.fn(() => 'first-container-id')
+
+    const first = withContainerSetupReadiness(
+      'project-prefix', firstSetup, setupLock as any,
+    )
+    await Promise.resolve()
+    expect(firstSetup).toHaveBeenCalledTimes(1)
+
+    const second = withContainerSetupReadiness(
+      'project-prefix', secondSetup, setupLock as any,
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(secondSetup).not.toHaveBeenCalled()
+
+    releaseFirst()
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      'first-container-id',
+      'first-container-id',
+    ])
+    expect(setupLock).toHaveBeenNthCalledWith(1, 'project-prefix', expect.any(Function))
+    expect(setupLock).toHaveBeenNthCalledWith(2, 'project-prefix', expect.any(Function))
+    expect(firstSetup).toHaveBeenCalledTimes(1)
+    expect(secondSetup).toHaveBeenCalledTimes(1)
+  })
+
+  it('propagates setup failure instead of allowing the caller to exec', async () => {
+    const setupLock = async (_prefix: string, operation: () => string) => operation()
+    const setup = vi.fn(() => { throw new Error('codex install incomplete') })
+
+    await expect(withContainerSetupReadiness(
+      'project-prefix',
+      setup,
+      setupLock as any,
+    )).rejects.toThrow('codex install incomplete')
+    expect(setup).toHaveBeenCalledOnce()
   })
 
   it('does not invoke automatic replacement unless the container is confirmed stopped', () => {
