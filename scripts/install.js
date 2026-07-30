@@ -3,7 +3,7 @@
 import { existsSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, chmodSync, cpSync, rmSync, readFileSync, readdirSync } from "fs";
 import { createHash } from "crypto";
 import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { execSync, execFileSync, spawnSync } from "child_process";
 import { homedir } from "os";
 
@@ -228,6 +228,41 @@ function tryRemoveInstallDirFromUserPath(installDir) {
     }
 }
 
+export function materializeUnixInstallPayload(sourceRoot, targetDir) {
+    const resolvedSourceRoot = resolve(sourceRoot);
+    const resolvedTargetDir = resolve(targetDir);
+    if (resolvedTargetDir === dirname(resolvedTargetDir) || resolvedTargetDir === resolvedSourceRoot) {
+        throw new Error(`Refusing unsafe global install payload target: ${resolvedTargetDir}`);
+    }
+
+    rmSync(resolvedTargetDir, { recursive: true, force: true });
+    mkdirSync(resolvedTargetDir, { recursive: true });
+    cpSync(join(resolvedSourceRoot, "dist"), join(resolvedTargetDir, "dist"), { recursive: true });
+    cpSync(join(resolvedSourceRoot, "Dockerfile"), join(resolvedTargetDir, "Dockerfile"));
+    cpSync(join(resolvedSourceRoot, "Containerfile"), join(resolvedTargetDir, "Containerfile"));
+    cpSync(join(resolvedSourceRoot, "scripts"), join(resolvedTargetDir, "scripts"), { recursive: true });
+
+    const deviceLabTarget = join(resolvedTargetDir, "device-lab-mcp");
+    mkdirSync(deviceLabTarget, { recursive: true });
+    for (const file of ["package.json", "package-lock.json", "server.mjs"]) {
+        cpSync(join(resolvedSourceRoot, "device-lab-mcp", file), join(deviceLabTarget, file));
+    }
+    cpSync(
+        join(resolvedSourceRoot, "device-lab-mcp", "src"),
+        join(deviceLabTarget, "src"),
+        { recursive: true },
+    );
+
+    const sourcePackage = JSON.parse(readFileSync(join(resolvedSourceRoot, "package.json"), "utf-8"));
+    const packageContent = JSON.stringify({ type: "module", version: sourcePackage.version }, null, 2);
+    writeFileSync(join(resolvedTargetDir, "package.json"), packageContent);
+}
+
+export function unixWrapperContent(targetDir) {
+    const entryPoint = join(resolve(targetDir), "dist", "index.js");
+    return `#!/usr/bin/env node\nimport(${JSON.stringify(pathToFileURL(entryPoint).href)});\n`;
+}
+
 function linkBinary() {
     const installDir = getInstallDir();
 
@@ -252,20 +287,8 @@ function linkBinary() {
             if (e.code !== "ENOENT") throw e;
         }
 
-        if (existsSync(targetDir)) rmSync(targetDir, { recursive: true });
-        cpSync(join(projectRoot, "dist"), targetDir, { recursive: true });
-        cpSync(join(projectRoot, "Dockerfile"), join(targetDir, "Dockerfile"));
-        cpSync(join(projectRoot, "Containerfile"), join(targetDir, "Containerfile"));
-        cpSync(join(projectRoot, "scripts"), join(targetDir, "scripts"), { recursive: true });
-
-        const srcPkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
-        const pkgContent = JSON.stringify({ type: "module", version: srcPkg.version }, null, 2);
-        writeFileSync(join(targetDir, "package.json"), pkgContent);
-
-        const wrapperContent = `#!/usr/bin/env node
-import("${targetDir}/index.js");
-`;
-        writeFileSync(targetBin, wrapperContent);
+        materializeUnixInstallPayload(projectRoot, targetDir);
+        writeFileSync(targetBin, unixWrapperContent(targetDir));
         chmodSync(targetBin, 0o755);
         console.log(`Installed: ${targetBin}`);
     } catch (e) {
@@ -343,11 +366,15 @@ function uninstall() {
     }
 }
 
-const args = process.argv.slice(2);
-if (args.includes("--uninstall") || args.includes("-u")) {
-    uninstall();
-} else if (args.includes("--postinstall")) {
-    postinstall();
-} else {
-    install();
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
+const modulePath = fileURLToPath(import.meta.url);
+if (invokedPath && (isWindows ? invokedPath.toLowerCase() === modulePath.toLowerCase() : invokedPath === modulePath)) {
+    const args = process.argv.slice(2);
+    if (args.includes("--uninstall") || args.includes("-u")) {
+        uninstall();
+    } else if (args.includes("--postinstall")) {
+        postinstall();
+    } else {
+        install();
+    }
 }

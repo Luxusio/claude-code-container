@@ -1,9 +1,10 @@
 import { execFileSync, spawn } from "child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { pathToFileURL } from "url";
 import { describe, expect, it } from "vitest";
+import { materializeUnixInstallPayload, unixWrapperContent } from "../../scripts/install.js";
 
 const repoRoot = join(__dirname, "../..");
 const HIDDEN_LEGACY_TRANSPORT_KEYS = new Set([
@@ -25,6 +26,28 @@ function schemaProperties(inputSchema: unknown): Record<string, unknown> {
 }
 
 describe("npm package contents", () => {
+    it("materializes a self-contained Unix global install payload", async () => {
+        const installRoot = mkdtempSync(join(tmpdir(), "ccc-global-install-"));
+        const packageRoot = join(installRoot, "ccc-dist");
+        try {
+            materializeUnixInstallPayload(repoRoot, packageRoot);
+
+            const brokerPath = join(packageRoot, "dist", "device-lab-broker.js");
+            const androidStoragePath = join(packageRoot, "device-lab-mcp", "src", "state", "android-avd-storage.mjs");
+            expect(existsSync(brokerPath)).toBe(true);
+            expect(existsSync(androidStoragePath)).toBe(true);
+            expect(unixWrapperContent(packageRoot)).toContain(pathToFileURL(join(packageRoot, "dist", "index.js")).href);
+            await expect(import(`${pathToFileURL(brokerPath).href}?installed=${Date.now()}`)).resolves.toBeDefined();
+
+            writeFileSync(join(packageRoot, "stale-install-marker"), "stale");
+            materializeUnixInstallPayload(repoRoot, packageRoot);
+            expect(existsSync(join(packageRoot, "stale-install-marker"))).toBe(false);
+            expect(existsSync(androidStoragePath)).toBe(true);
+        } finally {
+            rmSync(installRoot, { recursive: true, force: true });
+        }
+    });
+
     it("locks a reproducible, patched Appium broker runtime", () => {
         const manifest = JSON.parse(readFileSync(join(repoRoot, "device-lab-mcp", "package.json"), "utf-8")) as {
             dependencies?: Record<string, string>;
