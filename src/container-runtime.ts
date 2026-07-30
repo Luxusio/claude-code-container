@@ -189,8 +189,11 @@ function detectDockerDesktop(runtime: RuntimeName): boolean {
         ["info", "--format", "{{.OperatingSystem}}"],
         { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
     );
-    const operatingSystemIsDesktop = result.status === 0
-        && (result.stdout ?? "").toLowerCase().includes("docker desktop");
+    const operatingSystem = result.status === 0
+        ? (result.stdout ?? "").trim().toLowerCase()
+        : "";
+    const operatingSystemIsDesktop = operatingSystem.includes("docker desktop");
+    if (operatingSystem && !operatingSystemIsDesktop) return false;
     if (!operatingSystemIsDesktop && process.platform !== "win32") return false;
     const endpoint = dockerEndpoint();
     if (!dockerEndpointIsLocal(endpoint)) return false;

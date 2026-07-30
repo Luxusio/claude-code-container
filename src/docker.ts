@@ -159,11 +159,20 @@ function containerSeesCurrentBindSource(
             const markerContent = randomBytes(32).toString("hex");
             writeFileSync(markerPath, markerContent, { flag: "wx", mode: 0o600 });
             assertBindMountSourceIdentity(hostPath, expected);
-            const result = spawnSync(
+            let result = spawnSync(
                 runtimeCli(),
                 ["exec", containerId, "cat", posix.join(containerPath, markerName)],
                 { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
             );
+            if ((result.error || result.status !== 0)
+                && canExecContainerAfterBriefRetry(containerId)) {
+                assertBindMountSourceIdentity(hostPath, expected);
+                result = spawnSync(
+                    runtimeCli(),
+                    ["exec", containerId, "cat", posix.join(containerPath, markerName)],
+                    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                );
+            }
             verified = !result.error
                 && result.status === 0
                 && (result.stdout ?? "") === markerContent;
@@ -171,7 +180,7 @@ function containerSeesCurrentBindSource(
             if (observed.size > 1024 * 1024) return false;
             const expectedContent = readFileSync(expected.realpath);
             assertBindMountSourceIdentity(hostPath, expected);
-            const result = spawnSync(
+            let result = spawnSync(
                 runtimeCli(),
                 ["exec", containerId, "cat", containerPath],
                 {
@@ -180,6 +189,19 @@ function containerSeesCurrentBindSource(
                     maxBuffer: 1024 * 1024 + 1,
                 },
             );
+            if ((result.error || result.status !== 0)
+                && canExecContainerAfterBriefRetry(containerId)) {
+                assertBindMountSourceIdentity(hostPath, expected);
+                result = spawnSync(
+                    runtimeCli(),
+                    ["exec", containerId, "cat", containerPath],
+                    {
+                        encoding: null,
+                        stdio: ["pipe", "pipe", "pipe"],
+                        maxBuffer: 1024 * 1024 + 1,
+                    },
+                );
+            }
             verified = !result.error
                 && result.status === 0
                 && Buffer.isBuffer(result.stdout)

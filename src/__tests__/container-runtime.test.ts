@@ -357,6 +357,23 @@ describe("container-runtime", () => {
             expect(getRuntimeInfo().dockerDesktop).toBe(false);
         });
 
+        it("does not let the Desktop npipe override a successful non-Desktop daemon identity", () => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+            process.env.CCC_RUNTIME = "docker";
+            process.env.DOCKER_HOST = "npipe:////./pipe/dockerDesktopLinuxEngine";
+            spawnSyncMock
+                .mockReturnValueOnce(result(0, "Docker version 27.1.1\n"))
+                .mockReturnValueOnce(result(0, "Windows Server 2025\n"))
+                .mockReturnValue(result(1, ""));
+
+            expect(getRuntimeInfo().dockerDesktop).toBe(false);
+            expect(spawnSyncMock).not.toHaveBeenCalledWith(
+                "docker",
+                ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+                expect.any(Object),
+            );
+        });
+
         it.each([
             ["SSH context", undefined, "ssh://builder@example.test"],
             ["TCP DOCKER_HOST", "tcp://example.test:2376", undefined],

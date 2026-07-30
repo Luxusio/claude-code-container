@@ -2733,6 +2733,40 @@ describe("docker.ts module exports", () => {
             })).toBe(false);
         });
 
+        it("retries readiness before verifying live bind mount identities", () => {
+            autoReadMountMarkers = false;
+            let readinessAttempts = 0;
+            const inspected = fullCredentialMountsJson(
+                process.env.SSH_AUTH_SOCK
+                    ? [{ Source: process.env.SSH_AUTH_SOCK, Destination: "/tmp/ssh-agent.sock" }]
+                    : [],
+            );
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, inspected);
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args.at(-1) === "true") {
+                    readinessAttempts += 1;
+                    return makeResult(readinessAttempts >= 3 ? 0 : 1);
+                }
+                if (args[0] === "exec" && args[2] === "cat" && args[3]?.includes("/.ccc-mount-identity-")) {
+                    const markerName = args[3].slice(args[3].lastIndexOf("/") + 1);
+                    return readinessAttempts >= 3
+                        ? makeResult(0, mountMarkers.get(markerName) ?? "")
+                        : makeResult(1);
+                }
+                return makeResult(0);
+            });
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
+            )).toBe(getContainerName(projectPath));
+            expect(readinessAttempts).toBeGreaterThanOrEqual(3);
+            expectNoContainerReplacement();
+        });
+
         it("preserves an active container when mount identity changes before readiness validation", () => {
             let identityChanged = false;
             mockLstatSync.mockImplementation((path: string) => ({
