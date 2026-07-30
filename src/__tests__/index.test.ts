@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -620,6 +620,36 @@ describe('container locale and timezone defaults', () => {
 })
 
 describe('auto container version-up', () => {
+  it('reports when replacement cannot prove the container stopped', () => {
+    expect(stoppedContainerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      () => false,
+      () => { throw new Error('session probe must not run') },
+    )).toBe('the container is not confirmed stopped')
+  })
+
+  it('reports the number of live or indeterminate foreign session claims', () => {
+    expect(stoppedContainerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      () => true,
+      () => ['project--current.lock', 'project--foreign.lock'],
+    )).toBe('1 live or indeterminate session lock claim(s) remain')
+  })
+
+  it('authorizes replacement diagnostics when only the current claim remains', () => {
+    expect(stoppedContainerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      () => true,
+      () => ['project--current.lock'],
+    )).toBeNull()
+  })
+
   it('isContainerImageOutdated is exported from docker module', () => {
     expect(typeof isContainerImageOutdated).toBe('function')
   })

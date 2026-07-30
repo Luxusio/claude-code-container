@@ -8,7 +8,7 @@ import {
     readFileSync,
     unlinkSync,
 } from "fs";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import {
     formatScannedFiles,
@@ -91,8 +91,8 @@ import {
 } from "./container-setup.js";
 import {
     createSessionLock,
+    getActiveSessionsForContainer,
     getSessionLockClaimsForProjectFamily,
-    hasOtherActiveSessions,
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
     withProjectFamilyLifecycleLock,
@@ -212,6 +212,23 @@ export function replaceStoppedContainerWithoutInterruptingSessions(
             return true;
         },
     );
+}
+
+export function stoppedContainerReplacementBlockReason(
+    containerName: string,
+    containerPrefix: string,
+    currentLockFile: string,
+    stoppedProbe: typeof isContainerConfirmedStopped = isContainerConfirmedStopped,
+    sessionProbe: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
+): string | null {
+    if (!stoppedProbe(containerName)) {
+        return "the container is not confirmed stopped";
+    }
+    const currentLockName = basename(currentLockFile);
+    const otherClaims = sessionProbe(containerPrefix).filter((claim) => claim !== currentLockName);
+    return otherClaims.length > 0
+        ? `${otherClaims.length} live or indeterminate session lock claim(s) remain`
+        : null;
 }
 
 
@@ -556,11 +573,15 @@ async function exec(
         console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
-        if (!isContainerConfirmedStopped(targetContainer)) return false;
-        // A crashed CCC process can leave a lock behind. Once the exact
-        // container is confirmed stopped, discard only locks whose process
-        // identity is provably stale; unknown/live claims still block removal.
-        if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
+        const blockedReason = stoppedContainerReplacementBlockReason(
+            targetContainer,
+            sessionContainerPrefix,
+            sessionLockFile,
+        );
+        if (blockedReason) {
+            console.error(`[ccc] Automatic stopped-container replacement blocked: ${blockedReason}.`);
+            return false;
+        }
         recreate();
         return true;
     };

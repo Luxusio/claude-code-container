@@ -1602,7 +1602,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 undefined,
                 () => false,
-            )).toThrow("contract failed safety validation");
+            )).toThrow("bind mount identity could not be verified for /project/repo/.git");
             expect([...mountChallengePaths].some((path) => (
                 path.startsWith(`${extraMount.containerPath}/.ccc-mount-identity-`)
             ))).toBe(true);
