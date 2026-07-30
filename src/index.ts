@@ -92,7 +92,7 @@ import {
 import {
     createSessionLock,
     getSessionLockClaimsForProjectFamily,
-    hasOtherSessionClaims,
+    hasOtherActiveSessions,
     recreateContainerWithoutInterruptingSessions,
     withContainerLifecycleLock,
     withProjectFamilyLifecycleLock,
@@ -557,7 +557,10 @@ async function exec(
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
         if (!isContainerConfirmedStopped(targetContainer)) return false;
-        if (hasOtherSessionClaims(sessionContainerPrefix, sessionLockFile)) return false;
+        // A crashed CCC process can leave a lock behind. Once the exact
+        // container is confirmed stopped, discard only locks whose process
+        // identity is provably stale; unknown/live claims still block removal.
+        if (hasOtherActiveSessions(sessionContainerPrefix, sessionLockFile)) return false;
         recreate();
         return true;
     };

@@ -242,7 +242,11 @@ export function recreateContainerWithoutInterruptingSessions(
 ): boolean {
     return withContainerLifecycleLock(containerPrefix, () => {
         if (!replacementAllowed()) return false;
-        if (hasOtherSessionClaims(containerPrefix, currentLockFile)) return false;
+        // Replacement is already restricted to a caller-proven stopped
+        // container. Prune only locks whose PID/start-token observation proves
+        // that their owner exited; unreadable or unknown claims remain live and
+        // continue to block the destructive operation.
+        if (hasOtherActiveSessions(containerPrefix, currentLockFile)) return false;
         recreate();
         return true;
     });

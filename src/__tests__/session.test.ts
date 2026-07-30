@@ -1065,7 +1065,7 @@ describe("session.ts", () => {
             expect(recreate).not.toHaveBeenCalled();
         });
 
-        it("preserves stale-looking foreign claims and refuses automatic replacement", () => {
+        it("prunes a provably stale foreign claim before replacing a confirmed-stopped container", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--current.lock", "proj-abc--stale.lock"]);
             mockReadFileSync.mockImplementation((path: string) => (
@@ -1083,10 +1083,10 @@ describe("session.ts", () => {
                 "proj-abc",
                 "/locks/proj-abc--current.lock",
                 recreate,
-            )).toBe(false);
-            expect(recreate).not.toHaveBeenCalled();
-            expect(mockReadFileSync).not.toHaveBeenCalled();
-            expect(mockUnlinkSync).not.toHaveBeenCalled();
+            )).toBe(true);
+            expect(recreate).toHaveBeenCalledOnce();
+            expect(mockReadFileSync).toHaveBeenCalled();
+            expect(mockUnlinkSync).toHaveBeenCalledWith(expect.stringContaining("proj-abc--stale.lock"));
         });
 
         it("does not let a base-project lock block replacement of an isolated profile container", () => {
