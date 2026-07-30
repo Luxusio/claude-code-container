@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -692,6 +692,67 @@ describe('auto container version-up', () => {
       () => true,
       () => ['project--current.lock'],
     )).toBeNull()
+  })
+
+  it('authorizes exact running-container recovery when only the current session remains', () => {
+    const statusProbe = vi.fn(() => ({
+      exists: true,
+      running: true,
+      containerId: 'container-id',
+      imageId: 'sha256:old',
+    }))
+
+    expect(containerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      'container-id',
+      () => ['project--current.lock'],
+      statusProbe,
+    )).toBeNull()
+    expect(statusProbe).toHaveBeenCalledWith('ccc-project')
+  })
+
+  it('blocks running-container recovery when a foreign session remains', () => {
+    const statusProbe = vi.fn()
+
+    expect(containerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      'container-id',
+      () => ['project--current.lock', 'project--foreign.lock'],
+      statusProbe,
+    )).toBe('1 live or indeterminate session lock claim(s) remain')
+    expect(statusProbe).not.toHaveBeenCalled()
+  })
+
+  it('blocks running-container recovery when the current session lock is missing', () => {
+    const statusProbe = vi.fn()
+
+    expect(containerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      'container-id',
+      () => [],
+      statusProbe,
+    )).toBe('the current session lock ownership could not be verified')
+    expect(statusProbe).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['missing container', { exists: false, running: false, containerId: null, imageId: null }, 'the container identity could not be verified'],
+    ['same-name successor', { exists: true, running: true, containerId: 'successor-id', imageId: 'sha256:old' }, 'the container identity changed before replacement'],
+  ])('fails closed when idle recovery observes %s', (_name, status, reason) => {
+    expect(containerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      'container-id',
+      () => ['project--current.lock'],
+      () => status,
+    )).toBe(reason)
   })
 
   it('isContainerImageOutdated is exported from docker module', () => {

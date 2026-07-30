@@ -298,6 +298,34 @@ export function stoppedContainerReplacementBlockReason(
         : null;
 }
 
+export function containerReplacementBlockReason(
+    containerName: string,
+    containerPrefix: string,
+    currentLockFile: string,
+    expectedContainerId: string,
+    sessionProbe: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
+    statusProbe: typeof getContainerStatus = getContainerStatus,
+): string | null {
+    const currentLockName = basename(currentLockFile);
+    const claims = sessionProbe(containerPrefix);
+    const currentClaims = claims.filter((claim) => claim === currentLockName);
+    if (currentClaims.length !== 1) {
+        return "the current session lock ownership could not be verified";
+    }
+    const otherClaims = claims.filter((claim) => claim !== currentLockName);
+    if (otherClaims.length > 0) {
+        return `${otherClaims.length} live or indeterminate session lock claim(s) remain`;
+    }
+    const status = statusProbe(containerName);
+    if (!status.exists || !status.containerId) {
+        return "the container identity could not be verified";
+    }
+    if (status.containerId !== expectedContainerId) {
+        return "the container identity changed before replacement";
+    }
+    return null;
+}
+
 
 // === Helpers ===
 function ensureDirs(profile?: string): void {
@@ -643,16 +671,16 @@ async function exec(
         console.warn(`[ccc] WARNING: device broker auto-start failed (${error instanceof Error ? error.message : String(error)}). Host-backed device MCP tools may be unavailable.`);
     });
     const recreateInsideLifecycleLock = (recreate: () => void) => {
-        const blockedReason = stoppedContainerReplacementBlockReason(
+        const blockedReason = containerReplacementBlockReason(
             targetContainer,
             sessionContainerPrefix,
             sessionLockFile,
-            isContainerConfirmedStopped,
+            containerStatus.containerId ?? "",
             getActiveSessionsForContainer,
-            containerStatus.running,
+            getContainerStatus,
         );
         if (blockedReason) {
-            console.error(`[ccc] Automatic stopped-container replacement blocked: ${blockedReason}.`);
+            console.error(`[ccc] Automatic container replacement blocked: ${blockedReason}.`);
             return false;
         }
         recreate();

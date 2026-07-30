@@ -1778,16 +1778,40 @@ function recreateContainerWithSessionGuard(
     onRecreate: (() => void) | undefined,
     guard: ((recreate: () => void) => boolean) | undefined,
     expectedContainerId?: string,
+    managedProjectPath?: string,
+    runningRecoveryContainerId?: string,
 ): boolean {
     if (!guard) {
         throw new Error("Container replacement requires a lifecycle/session guard.");
     }
     const initialIdentity = getContainerIdentity(containerName);
-    if (!initialIdentity || initialIdentity.running) return false;
+    if (!initialIdentity) return false;
     const pinnedContainerId = expectedContainerId ?? initialIdentity.containerId;
     if (initialIdentity.containerId !== pinnedContainerId) return false;
     let replacementConfirmed = false;
     const guarded = guard(() => {
+        const startupAuthorizedRunningRecovery = runningRecoveryContainerId === pinnedContainerId;
+        if (startupAuthorizedRunningRecovery) {
+            if (!managedProjectPath) return;
+            const currentIdentity = getManagedProjectContainerIdentity(
+                pinnedContainerId,
+                managedProjectPath,
+            );
+            if (!currentIdentity || currentIdentity.containerId !== pinnedContainerId) return;
+            if (currentIdentity.running) {
+                const stopped = spawnSync(runtimeCli(), ["stop", pinnedContainerId], {
+                    encoding: "utf-8",
+                    stdio: ["ignore", "pipe", "pipe"],
+                });
+                if (stopped.error || stopped.status !== 0) {
+                    throw new Error("Container replacement aborted because the idle running container could not be stopped.");
+                }
+            }
+        } else if (initialIdentity.running) {
+            // This invocation did not observe the container running at startup.
+            // A later external start must retain the stopped-path no-stop fence.
+            return;
+        }
         recreateContainer(pinnedContainerId, reason, onRecreate);
         replacementConfirmed = true;
     });
@@ -1822,9 +1846,9 @@ export function startProjectContainer(
      */
     onRecreate?: () => void,
     /**
-     * Re-evaluated immediately before replacing a stopped container. Running
-     * containers are always preserved; callers additionally protect stopped
-     * containers whose lifecycle is still owned by another live CCC session.
+     * Re-evaluated immediately before replacing an existing container. The
+     * caller must hold the lifecycle lock and deny replacement while another
+     * live or indeterminate CCC session owns the container.
      */
     recreateRunningContainer?: (recreate: () => void) => boolean,
     /** Receives the exact running container ID before the lifecycle lock is released. */
@@ -2012,6 +2036,8 @@ export function startProjectContainer(
                     markRecreated,
                     recreateRunningContainer,
                     listedContainer.containerId,
+                    fullPath,
+                    initiallyRunningContainerId,
                 );
                 if (!recreated) {
                     let unsafeDeferReason = "unknown safety mismatch";
@@ -2059,6 +2085,8 @@ export function startProjectContainer(
                         markRecreated,
                         recreateRunningContainer,
                         lifecycleContainerId,
+                        fullPath,
+                        initiallyRunningContainerId,
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during validation; preserving the existing running container without joining it.");
@@ -2077,6 +2105,8 @@ export function startProjectContainer(
                         markRecreated,
                         recreateRunningContainer,
                         lifecycleContainerId,
+                        fullPath,
+                        initiallyRunningContainerId,
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during synchronization; preserving the existing running container without joining it.");
@@ -2093,6 +2123,8 @@ export function startProjectContainer(
                     markRecreated,
                     recreateRunningContainer,
                     lifecycleContainerId,
+                    fullPath,
+                    initiallyRunningContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
@@ -2113,6 +2145,8 @@ export function startProjectContainer(
                 markRecreated,
                 recreateRunningContainer,
                 lifecycleContainerId,
+                fullPath,
+                initiallyRunningContainerId,
             );
             if (!recreated) {
                 throw new Error("Device-lab mount source changed; automatic replacement was not authorized.");
@@ -2132,6 +2166,8 @@ export function startProjectContainer(
                     markRecreated,
                     recreateRunningContainer,
                     lifecycleContainerId,
+                    fullPath,
+                    initiallyRunningContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Restarted container is unavailable; automatic replacement was refused.");
@@ -2147,6 +2183,8 @@ export function startProjectContainer(
                     markRecreated,
                     recreateRunningContainer,
                     lifecycleContainerId,
+                    fullPath,
+                    initiallyRunningContainerId,
                 );
                 if (!recreated) {
                     throw new Error("Device-lab mount source changed during restart; automatic replacement was refused.");

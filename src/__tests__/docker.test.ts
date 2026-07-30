@@ -1855,7 +1855,7 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
-        it("preserves a running container with safe VM metadata drift even when the current CCC session is alone", () => {
+        it("preserves a running container with safe VM metadata drift when another session blocks replacement", () => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             inspected.Config.Env = inspected.Config.Env.map((entry: string) => (
                 entry.startsWith("CCC_LAB_RUNNER_STATUS=")
@@ -1875,7 +1875,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0));
 
             const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-            const guard = vi.fn(() => true);
+            const guard = vi.fn(() => false);
             const name = startProjectContainer(
                 projectPath,
                 ensureDirs,
@@ -1887,7 +1887,7 @@ describe("docker.ts module exports", () => {
             );
 
             expect(name).toBe(getContainerName(projectPath));
-            expect(guard).not.toHaveBeenCalled();
+            expect(guard).toHaveBeenCalledOnce();
             expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("existing container is running"));
             expect(warnSpy).toHaveBeenCalledWith(expect.not.stringContaining("active CCC sessions"));
             const readinessCalls = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
@@ -2697,6 +2697,272 @@ describe("docker.ts module exports", () => {
             expect(guard).toHaveBeenCalledOnce();
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "stop")).toBe(false);
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (call[1] as string[])?.[0] === "rm")).toBe(true);
+        });
+
+        it("stops and replaces an exact running container when the lifecycle guard approves idle recovery", () => {
+            let removed = false;
+            const driftContract = JSON.parse(fullCredentialMountsJson());
+            driftContract.State = { Running: true };
+            driftContract.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            ).Source = "/legacy/.claude.json";
+            const driftMountsJson = JSON.stringify(driftContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return removed ? makeResult(1) : makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "stop") return makeResult(0, "abc123\n");
+                if (args[0] === "rm") {
+                    removed = true;
+                    return makeResult(0, "abc123\n");
+                }
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                expectNoContainerReplacement();
+                replace();
+                return true;
+            });
+
+            startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                guard,
+                undefined,
+                "abc123",
+            );
+
+            expect(guard).toHaveBeenCalledOnce();
+            const destructiveCalls = spawnSyncMock.mock.calls
+                .map((call: unknown[]) => call[1] as string[])
+                .filter((args) => args[0] === "stop" || args[0] === "rm");
+            expect(destructiveCalls).toEqual([
+                ["stop", "abc123"],
+                ["rm", "abc123"],
+            ]);
+        });
+
+        it("replaces an idle running container with the obsolete host-stage gitconfig mount", () => {
+            let removed = false;
+            const driftContract = JSON.parse(fullCredentialMountsJson());
+            driftContract.State = { Running: true };
+            driftContract.Mounts.push({
+                Source: "/host/.gitconfig",
+                Destination: "/host-stage/gitconfig",
+                Type: "bind",
+                RW: false,
+            });
+            const driftContractJson = JSON.stringify(driftContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return removed ? makeResult(1) : makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, driftContractJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "stop") return makeResult(0, "abc123\n");
+                if (args[0] === "rm") {
+                    removed = true;
+                    return makeResult(0, "abc123\n");
+                }
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
+                return makeResult(0);
+            });
+
+            startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                (replace) => {
+                    replace();
+                    return true;
+                },
+                undefined,
+                "abc123",
+            );
+
+            expect(spawnSyncMock.mock.calls
+                .map((call: unknown[]) => call[1] as string[])
+                .filter((args) => args[0] === "stop" || args[0] === "rm"))
+                .toEqual([["stop", "abc123"], ["rm", "abc123"]]);
+        });
+
+        it("fails closed without remove when an approved idle container cannot be stopped", () => {
+            const driftContract = JSON.parse(fullCredentialMountsJson());
+            driftContract.State = { Running: true };
+            driftContract.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            ).Source = "/legacy/.claude.json";
+            const driftMountsJson = JSON.stringify(driftContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "stop") return makeResult(1, "", "stop failed");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                replace();
+                return true;
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                guard,
+                undefined,
+                "abc123",
+            )).toThrow("idle running container could not be stopped");
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "rm" || args[0] === "run";
+            })).toBe(false);
+        });
+
+        it("does not stop or remove a foreign same-name running container even when the lifecycle guard approves", () => {
+            const foreignContract = JSON.parse(fullCredentialMountsJson());
+            foreignContract.State = { Running: true };
+            foreignContract.Config.Labels["ccc.managed"] = "false";
+            const foreignContractJson = JSON.stringify(foreignContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, foreignContractJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                replace();
+                return true;
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                guard,
+                undefined,
+                "abc123",
+            )).toThrow("container is not CCC-managed");
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "stop" || args[0] === "rm" || args[0] === "run";
+            })).toBe(false);
+        });
+
+        it("does not remove a foreign same-name container that stops before recovery validation", () => {
+            const foreignContract = JSON.parse(fullCredentialMountsJson());
+            foreignContract.State = { Running: false };
+            foreignContract.Config.Labels["ccc.managed"] = "false";
+            const foreignContractJson = JSON.stringify(foreignContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|false\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, foreignContractJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                replace();
+                return true;
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                guard,
+                undefined,
+                "abc123",
+            )).toThrow("container is not CCC-managed");
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "stop" || args[0] === "rm" || args[0] === "run";
+            })).toBe(false);
+        });
+
+        it("does not stop a container that was initially stopped but started before replacement", () => {
+            const driftContract = JSON.parse(fullCredentialMountsJson());
+            driftContract.State = { Running: true };
+            driftContract.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            ).Source = "/legacy/.claude.json";
+            const driftContractJson = JSON.stringify(driftContract);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, driftContractJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn((replace: () => void) => {
+                replace();
+                return true;
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                guard,
+            )).toThrow("preserving the existing running container without joining it");
+            expect(guard).toHaveBeenCalledOnce();
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "stop" || args[0] === "rm" || args[0] === "run";
+            })).toBe(false);
         });
 
         it("does not apply an inspected contract decision to a same-name successor", () => {
