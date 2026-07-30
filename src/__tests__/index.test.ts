@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, CONTAINER_SETUP_RESTART_MESSAGE } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -685,6 +685,11 @@ describe('auto container version-up', () => {
     expect(message).toContain("existing container is running")
     expect(message).toContain("after the container stops")
     expect(message).not.toContain("active CCC sessions")
+  })
+
+  it('setup restart message reports unavailability without inventing a concurrent session', () => {
+    expect(CONTAINER_SETUP_RESTART_MESSAGE).toContain('became unavailable during setup')
+    expect(CONTAINER_SETUP_RESTART_MESSAGE).not.toContain('concurrent session')
   })
 
   it('does not invoke automatic replacement unless the container is confirmed stopped', () => {

@@ -293,6 +293,8 @@ function containerManagerSocketTargetsCurrentDockerDaemon(containerId: string): 
         runtimeCli(),
         [
             "exec",
+            "--user",
+            "root",
             containerId,
             "/usr/bin/docker",
             "--host",
@@ -810,10 +812,17 @@ export function ensureDockerRunning(): void {
     }
 }
 
-export function isContainerRunning(containerName: string): boolean {
+export function isContainerRunning(
+    containerIdentifier: string,
+    identifierKind: "name" | "id" = "name",
+): boolean {
+    if (identifierKind === "id" && !/^[a-f0-9]{64}$/i.test(containerIdentifier)) return false;
+    const containerFilter = identifierKind === "id"
+        ? `id=${containerIdentifier}`
+        : `name=^${containerIdentifier}$`;
     const result = spawnSync(
         runtimeCli(),
-        ["ps", "-q", "-f", `name=^${containerName}$`],
+        ["ps", "-q", "-f", containerFilter],
         { encoding: "utf-8" },
     );
     return (result.stdout ?? "").trim().length > 0;

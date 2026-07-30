@@ -458,6 +458,33 @@ describe("docker.ts module exports", () => {
         it("returns true when container found in docker ps", () => {
             spawnSyncMock.mockReturnValue(makeResult(0, "abc123\n"));
             expect(isContainerRunning("my-container")).toBe(true);
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "docker",
+                ["ps", "-q", "-f", "name=^my-container$"],
+                { encoding: "utf-8" },
+            );
+        });
+
+        it("checks a pinned container ID by ID instead of treating it as a name", () => {
+            const containerId = "196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                return args.at(-1) === `id=${containerId}`
+                    ? makeResult(0, `${containerId}\n`)
+                    : makeResult(0, "");
+            });
+
+            expect(isContainerRunning(containerId, "id")).toBe(true);
+            expect(spawnSyncMock).toHaveBeenCalledWith(
+                "docker",
+                ["ps", "-q", "-f", `id=${containerId}`],
+                { encoding: "utf-8" },
+            );
+        });
+
+        it("rejects a short ID prefix without querying Docker", () => {
+            expect(isContainerRunning("196c8453339a", "id")).toBe(false);
+            expect(spawnSyncMock).not.toHaveBeenCalled();
         });
 
         it("returns false when container not in docker ps", () => {
@@ -2372,10 +2399,12 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "info" && args[1] === "--format") return makeResult(0, "daemon-current\n");
                 if (
                     args[0] === "exec"
-                    && args[2] === "/usr/bin/docker"
-                    && args[3] === "--host"
-                    && args[4] === "unix:///var/run/docker.sock"
-                    && args[5] === "info"
+                    && args[1] === "--user"
+                    && args[2] === "root"
+                    && args[4] === "/usr/bin/docker"
+                    && args[5] === "--host"
+                    && args[6] === "unix:///var/run/docker.sock"
+                    && args[7] === "info"
                 ) {
                     return makeResult(0, "daemon-current\n");
                 }
@@ -2387,6 +2416,14 @@ describe("docker.ts module exports", () => {
             expect(startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, () => false,
             )).toBe(getContainerName(projectPath));
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "exec"
+                    && args[1] === "--user"
+                    && args[2] === "root"
+                    && args[4] === "/usr/bin/docker"
+                    && args[7] === "info";
+            })).toBe(true);
             if (defer) {
                 expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("Container update deferred"));
             }
@@ -2418,10 +2455,12 @@ describe("docker.ts module exports", () => {
                 if (args[0] === "info" && args[1] === "--format") return makeResult(0, "daemon-current\n");
                 if (
                     args[0] === "exec"
-                    && args[2] === "/usr/bin/docker"
-                    && args[3] === "--host"
-                    && args[4] === "unix:///var/run/docker.sock"
-                    && args[5] === "info"
+                    && args[1] === "--user"
+                    && args[2] === "root"
+                    && args[4] === "/usr/bin/docker"
+                    && args[5] === "--host"
+                    && args[6] === "unix:///var/run/docker.sock"
+                    && args[7] === "info"
                 ) {
                     return makeResult(0, "daemon-foreign\n");
                 }

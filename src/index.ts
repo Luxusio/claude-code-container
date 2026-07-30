@@ -104,6 +104,7 @@ import {
 } from "./session.js";
 
 export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
+export const CONTAINER_SETUP_RESTART_MESSAGE = "Container became unavailable during setup, restarting...";
 import { buildMcpConfig } from "./mcp-forward.js";
 import { setupLocalhostProxy } from "./localhost-proxy-setup.js";
 import {
@@ -617,12 +618,12 @@ async function exec(
     // Skip heavy setup if container was already running (another session set it up)
     if (!wasAlreadyRunning) {
         // Ensure tools are installed (claude via curl + npm tools from registry).
-        // Retry once if a concurrent session stopped the container during setup.
+        // Retry once if the container became unavailable during setup.
         progress("Checking tools...");
         if (shouldEnsureTool) {
             for (let attempt = 0; attempt < 2; attempt++) {
-                if (!isContainerRunning(containerName)) {
-                    console.log("Container stopped during setup (concurrent session), restarting...");
+                if (!isContainerRunning(containerName, "id")) {
+                    console.log(CONTAINER_SETUP_RESTART_MESSAGE);
                     containerName = startContainer(undefined, undefined, undefined);
                 }
                 try {
@@ -657,7 +658,7 @@ async function exec(
         }
 
         // Verify container is still running before exec.
-        if (!isContainerRunning(containerName)) {
+        if (!isContainerRunning(containerName, "id")) {
             console.log("Container was stopped during setup, restarting...");
             containerName = startContainer(undefined, undefined, undefined);
         }
