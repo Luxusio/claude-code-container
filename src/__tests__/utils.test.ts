@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
     hashPath,
     getProjectId,
+    projectIdentityPath,
     DATA_DIR,
     CLAUDE_DIR,
     CLAUDE_JSON_FILE,
@@ -147,6 +148,26 @@ describe('hashPath', () => {
 });
 
 describe('getProjectId', () => {
+    it('uses the legacy lexical resolved path as its durable identity', () => {
+        const lexicalPath = '/logical/project/Repo';
+        const resolver = vi.fn(() => lexicalPath);
+
+        expect(projectIdentityPath('./repo', resolver)).toBe(lexicalPath);
+        expect(getProjectId('./repo', resolver))
+            .toBe(`repo-${hashPath(lexicalPath)}`);
+        expect(resolver).toHaveBeenCalledWith('./repo');
+    });
+
+    it('does not derive its ID from canonical filesystem identity', () => {
+        const lexicalPath = '/junction/project/Repo';
+        const canonicalPath = '/physical/project/Repo';
+
+        expect(getProjectId('./repo', () => lexicalPath))
+            .toBe(`repo-${hashPath(lexicalPath)}`);
+        expect(getProjectId('./repo', () => lexicalPath))
+            .not.toBe(`repo-${hashPath(canonicalPath)}`);
+    });
+
     it('generates name-hash format', () => {
         const result = getProjectId('/home/user/my-project');
         expect(result).toMatch(/^my-project-[a-f0-9]{12}$/);

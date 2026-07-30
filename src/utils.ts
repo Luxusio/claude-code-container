@@ -105,12 +105,28 @@ export function projectPathsEquivalent(
 }
 
 /**
- * Generate project ID in format: name-hash
+ * Resolve the durable logical path used by container names, session locks, and
+ * container working directories. This must remain filesystem-independent:
+ * canonical filesystem identity is validated separately by
+ * canonicalProjectPath/projectPathsEquivalent.
  */
-export function getProjectId(projectPath: string): string {
-    const canonicalPath = canonicalProjectPath(projectPath);
-    const name = basename(canonicalPath).toLowerCase().replace(/[^a-z0-9-]/g, "-");
-    const hash = hashPath(canonicalPath);
+export function projectIdentityPath(
+    projectPath: string,
+    pathResolver: (path: string) => string = resolve,
+): string {
+    return pathResolver(projectPath);
+}
+
+/**
+ * Generate project ID in format: name-hash.
+ */
+export function getProjectId(
+    projectPath: string,
+    pathResolver: (path: string) => string = resolve,
+): string {
+    const identityPath = projectIdentityPath(projectPath, pathResolver);
+    const name = basename(identityPath).toLowerCase().replace(/[^a-z0-9-]/g, "-");
+    const hash = hashPath(identityPath);
     return `${name}-${hash}`;
 }
 

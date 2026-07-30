@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { canonicalProjectPath, projectPathsEquivalent, hashPath, getProjectId } from '../utils.js'
+import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
 import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE } from '../index.js'
@@ -35,6 +35,17 @@ describe('hashPath', () => {
 })
 
 describe('getProjectId', () => {
+  it('keeps durable identity lexical while canonical aliases remain a safety concern', () => {
+    const lexicalPath = '/junction/project/repo'
+    const physicalPath = '/physical/project/repo'
+
+    expect(projectIdentityPath('./repo', () => lexicalPath)).toBe(lexicalPath)
+    expect(getProjectId('./repo', () => lexicalPath))
+      .toBe(`repo-${hashPath(lexicalPath)}`)
+    expect(getProjectId('./repo', () => lexicalPath))
+      .not.toBe(`repo-${hashPath(physicalPath)}`)
+  })
+
   it('generates correct format', () => {
     const result = getProjectId('/home/user/my-project')
     expect(result).toMatch(/^my-project-[a-f0-9]{12}$/)
