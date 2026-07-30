@@ -1527,6 +1527,29 @@ describe("docker.ts module exports", () => {
             mockExistsSync.mockReturnValue(true);
         });
 
+        it("does not create a replacement when the initially running container disappears", () => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                "initial-running-id",
+            )).toThrow("Container observed running at startup became unavailable or changed identity");
+            expectNoContainerReplacement();
+        });
+
         it("returns container name when container is already running", () => {
             // Call sequence (no extraMounts):
             // #1 isImageExists, #2 getImageLabel (dev build), #3 isContainerExists,

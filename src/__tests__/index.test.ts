@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
+import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -620,6 +620,50 @@ describe('container locale and timezone defaults', () => {
 })
 
 describe('auto container version-up', () => {
+  it('reports the initial running observation when that fence defers an upgrade', () => {
+    expect(containerUpdateDeferredMessage(true))
+      .toBe(INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE)
+    expect(containerUpdateDeferredMessage(false))
+      .toBe(RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE)
+  })
+
+  it('does not upgrade a container that was running at the initial snapshot', () => {
+    const replace = vi.fn()
+    const replacementGuard = vi.fn()
+    const statusProbe = vi.fn()
+
+    expect(replaceStoppedContainerWithoutInterruptingSessions(
+      'ccc-project',
+      'project',
+      '/locks/current.lock',
+      'container-id',
+      'sha256:old',
+      replace,
+      replacementGuard,
+      statusProbe,
+      true,
+    )).toBe(false)
+    expect(replacementGuard).not.toHaveBeenCalled()
+    expect(statusProbe).not.toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('preserves a container that was running when this invocation started', () => {
+    const stoppedProbe = vi.fn(() => true)
+    const sessionProbe = vi.fn(() => ['/locks/current.lock'])
+
+    expect(stoppedContainerReplacementBlockReason(
+      'ccc-project',
+      'project',
+      '/locks/project--current.lock',
+      stoppedProbe,
+      sessionProbe,
+      true,
+    )).toBe('the container was running when this session started')
+    expect(stoppedProbe).not.toHaveBeenCalled()
+    expect(sessionProbe).not.toHaveBeenCalled()
+  })
+
   it('reports when replacement cannot prove the container stopped', () => {
     expect(stoppedContainerReplacementBlockReason(
       'ccc-project',

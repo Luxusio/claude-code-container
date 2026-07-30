@@ -105,7 +105,14 @@ import {
 } from "./session.js";
 
 export const RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the existing container is running. It will be applied after the container stops.";
+export const INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE = "Update available; deferred because the container was running when this session started. Restart ccc after that session exits to upgrade.";
 export const CONTAINER_SETUP_RESTART_MESSAGE = "Container became unavailable during setup, restarting...";
+
+export function containerUpdateDeferredMessage(containerWasInitiallyRunning: boolean): string {
+    return containerWasInitiallyRunning
+        ? INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE
+        : RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE;
+}
 
 export function ensureSetupContainerAvailable(
     containerId: string,
@@ -245,7 +252,9 @@ export function replaceStoppedContainerWithoutInterruptingSessions(
     replace: (containerId: string) => void,
     replacementGuard: typeof recreateContainerWithoutInterruptingSessions = recreateContainerWithoutInterruptingSessions,
     statusProbe: typeof getContainerStatus = getContainerStatus,
+    containerWasInitiallyRunning = false,
 ): boolean {
+    if (containerWasInitiallyRunning) return false;
     let stoppedContainerId: string | null = null;
     return replacementGuard(
         containerPrefix,
@@ -271,7 +280,14 @@ export function stoppedContainerReplacementBlockReason(
     currentLockFile: string,
     stoppedProbe: typeof isContainerConfirmedStopped = isContainerConfirmedStopped,
     sessionProbe: typeof getActiveSessionsForContainer = getActiveSessionsForContainer,
+    containerWasInitiallyRunning = false,
 ): string | null {
+    // A later stopped observation must not let this invocation reverse the
+    // ownership decision it made after finding an already-running container.
+    // The next CCC invocation can recover it after taking a fresh baseline.
+    if (containerWasInitiallyRunning) {
+        return "the container was running when this session started";
+    }
     if (!stoppedProbe(containerName)) {
         return "the container is not confirmed stopped";
     }
@@ -584,6 +600,9 @@ async function exec(
             containerStatus.containerId!,
             containerStatus.imageId!,
             recreate,
+            recreateContainerWithoutInterruptingSessions,
+            getContainerStatus,
+            containerStatus.running,
         )
     );
 
@@ -612,7 +631,7 @@ async function exec(
                 }
             });
             if (!recreated) {
-                console.log(RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE);
+                console.log(containerUpdateDeferredMessage(containerStatus.running));
             }
         }
     }
@@ -628,6 +647,9 @@ async function exec(
             targetContainer,
             sessionContainerPrefix,
             sessionLockFile,
+            isContainerConfirmedStopped,
+            getActiveSessionsForContainer,
+            containerStatus.running,
         );
         if (blockedReason) {
             console.error(`[ccc] Automatic stopped-container replacement blocked: ${blockedReason}.`);
@@ -655,6 +677,7 @@ async function exec(
                     readyContainerId = containerId;
                     setSessionContainerId(containerId);
                 },
+                containerStatus.running ? containerStatus.containerId ?? undefined : undefined,
             );
             if (!readyContainerId) {
                 throw new Error("Container became unavailable before the session handoff.");

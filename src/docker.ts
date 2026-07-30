@@ -1829,6 +1829,8 @@ export function startProjectContainer(
     recreateRunningContainer?: (recreate: () => void) => boolean,
     /** Receives the exact running container ID before the lifecycle lock is released. */
     onContainerReady?: (containerId: string) => void,
+    /** Existing container ID observed running before this lifecycle operation began. */
+    initiallyRunningContainerId?: string,
 ): string {
     ensureDirs();
     mkdirSync(CLIPBOARD_FILES_DIR, { recursive: true });
@@ -1894,6 +1896,12 @@ export function startProjectContainer(
     };
     if (!listedContainer.known) {
         throw new Error("Container identity inspection failed; the existing container was preserved.");
+    }
+    if (initiallyRunningContainerId && listedContainer.containerId !== initiallyRunningContainerId) {
+        throw new Error(
+            "Container observed running at startup became unavailable or changed identity; "
+            + "refusing to create a replacement in the same invocation.",
+        );
     }
     if (listedContainer.containerId) {
         const gitIdentityMounts = getHostGitIdentityMounts();
