@@ -6,12 +6,21 @@ import { join } from "path";
 
 // Mock child_process before importing
 const spawnSyncMock = vi.fn<(...args: unknown[]) => SpawnSyncReturns<string>>();
+const TEST_CONTAINER_SHORT_ID = "abc123";
+const TEST_CONTAINER_ID = TEST_CONTAINER_SHORT_ID.padEnd(64, "a");
+const TEST_CREATED_CONTAINER_SHORT_ID = "c0ffee123456";
+const TEST_CREATED_CONTAINER_ID = TEST_CREATED_CONTAINER_SHORT_ID.padEnd(64, "e");
+let expandShortContainerIds = false;
 let latestCreatedContainer: { id: string; runArgs: string[] } | null = null;
 let autoInspectCreatedContainer = true;
+let autoInspectCreatedContainerFailuresRemaining = 0;
+const createdContainerInspectIds: string[] = [];
 let autoReadMountMarkers = true;
+let autoReadMountMarkerFailuresRemaining = 0;
 const mountMarkers = new Map<string, string>();
 const mountChallengeContainerIds = new Set<string>();
 const mountChallengePaths = new Set<string>();
+const mismatchingMountChallengeContainerIds = new Set<string>();
 vi.mock("child_process", async (importOriginal) => {
     const actual = (await importOriginal()) as Record<string, unknown>;
     return {
@@ -23,10 +32,16 @@ vi.mock("child_process", async (importOriginal) => {
                 && argv?.[0] === "inspect"
                 && argv.includes("{{json .}}")
                 && argv.includes(latestCreatedContainer.id)) {
+                createdContainerInspectIds.push(latestCreatedContainer.id);
+                if (autoInspectCreatedContainerFailuresRemaining > 0) {
+                    autoInspectCreatedContainerFailuresRemaining -= 1;
+                    return makeResult(1, "", "container is not inspect-ready");
+                }
                 const mounts: Array<{
                     Source: string;
                     Destination: string;
                     Type: "bind";
+                    RW: boolean;
                 }> = [];
                 const labels: Record<string, string> = {};
                 for (let index = 0; index < latestCreatedContainer.runArgs.length; index += 1) {
@@ -39,6 +54,7 @@ vi.mock("child_process", async (importOriginal) => {
                                 Source: match[1],
                                 Destination: match[2],
                                 Type: "bind",
+                                RW: !volume.endsWith(":ro"),
                             });
                         }
                     }
@@ -63,9 +79,64 @@ vi.mock("child_process", async (importOriginal) => {
                 const markerName = argv[3].slice(argv[3].lastIndexOf("/") + 1);
                 mountChallengeContainerIds.add(argv[1]);
                 mountChallengePaths.add(argv[3]);
-                return makeResult(0, mountMarkers.get(markerName) ?? "");
+                if (autoReadMountMarkerFailuresRemaining > 0) {
+                    autoReadMountMarkerFailuresRemaining -= 1;
+                    return makeResult(1, "", "mount marker is not visible yet");
+                }
+                return makeResult(
+                    0,
+                    mismatchingMountChallengeContainerIds.has(argv[1])
+                        ? "wrong-mounted-directory"
+                        : mountMarkers.get(markerName) ?? "",
+                );
             }
-            const result = spawnSyncMock(...args);
+            const mockArgv = argv?.map((argument) => (
+                expandShortContainerIds && argument === TEST_CONTAINER_ID
+                    ? TEST_CONTAINER_SHORT_ID
+                    : expandShortContainerIds && argument.startsWith(`${TEST_CONTAINER_ID}:`)
+                        ? `${TEST_CONTAINER_SHORT_ID}${argument.slice(TEST_CONTAINER_ID.length)}`
+                        : argument
+            ));
+            const result = spawnSyncMock(args[0], mockArgv, ...args.slice(2));
+            if (expandShortContainerIds
+                && argv?.[0] === "run"
+                && result.status === 0
+                && result.stdout.trim() === TEST_CREATED_CONTAINER_SHORT_ID) {
+                latestCreatedContainer = { id: TEST_CREATED_CONTAINER_ID, runArgs: [...argv] };
+                return { ...result, stdout: `${TEST_CREATED_CONTAINER_ID}\n` };
+            }
+            if (expandShortContainerIds && typeof result.stdout === "string") {
+                let stdout = result.stdout;
+                if (argv[0] === "inspect" && argv.includes("{{json .}}")) {
+                    try {
+                        const inspected = JSON.parse(stdout) as { Id?: unknown };
+                        if (inspected.Id === TEST_CONTAINER_SHORT_ID) {
+                            inspected.Id = TEST_CONTAINER_ID;
+                            stdout = JSON.stringify(inspected);
+                        }
+                    } catch {
+                        // Preserve malformed fixture output for fail-closed tests.
+                    }
+                } else if (argv[0] === "inspect" && stdout.startsWith(`${TEST_CONTAINER_SHORT_ID}|`)) {
+                    stdout = `${TEST_CONTAINER_ID}${stdout.slice(TEST_CONTAINER_SHORT_ID.length)}`;
+                }
+                if (stdout !== result.stdout) return { ...result, stdout };
+            }
+            if (expandShortContainerIds
+                && argv?.[0] === "ps"
+                && argv[1] === "-aq"
+                && argv.includes("--no-trunc")
+                && result.stdout.trim() === TEST_CONTAINER_SHORT_ID) {
+                return { ...result, stdout: `${TEST_CONTAINER_ID}\n` };
+            }
+            if (argv?.[0] === "exec"
+                && argv[2] === "cat"
+                && !argv[3]?.includes("/.ccc-mount-identity-")
+                && result.status === 0
+                && typeof result.stdout === "string"
+                && result.stdout.length === 0) {
+                return { ...result, stdout: mockReadFileSync(argv[3]) as unknown as string };
+            }
             if (argv?.[0] === "run" && result.status === 0) {
                 const id = (result.stdout ?? "").trim().split(/\s+/)
                     .find((line) => /^[a-f0-9]{12,64}$/i.test(line));
@@ -316,14 +387,20 @@ function fullCredentialMountsJson(
 
 describe("docker.ts module exports", () => {
     beforeEach(() => {
+        expandShortContainerIds = false;
         spawnSyncMock.mockReset();
         spawnSyncMock.mockReturnValue(makeResult(0));
         latestCreatedContainer = null;
         autoInspectCreatedContainer = true;
+        autoInspectCreatedContainerFailuresRemaining = 0;
+        createdContainerInspectIds.length = 0;
         autoReadMountMarkers = true;
+        autoReadMountMarkerFailuresRemaining = 0;
         mountMarkers.clear();
         mountChallengeContainerIds.clear();
         mountChallengePaths.clear();
+        mismatchingMountChallengeContainerIds.clear();
+        delete process.env.SSH_AUTH_SOCK;
         mockCleanupOwnerDevices.mockReset();
         mockGetSessionLockClaimsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
@@ -620,6 +697,7 @@ describe("docker.ts module exports", () => {
                             Source: projectPath,
                             Destination: `/project/${getProjectId(projectPath)}`,
                             Type: "bind",
+                            RW: true,
                         }],
                         Config: {
                             Labels: {
@@ -657,6 +735,7 @@ describe("docker.ts module exports", () => {
                             Source: projectPath,
                             Destination: `/project/${getProjectId(projectPath)}`,
                             Type: "bind",
+                            RW: true,
                         }],
                         Config: {
                             Labels: {
@@ -1522,6 +1601,10 @@ describe("docker.ts module exports", () => {
             })).toBe(false);
         }
 
+        function makeMountedBindProofDisagree(): void {
+            mismatchingMountChallengeContainerIds.add(TEST_CONTAINER_ID);
+        }
+
         type TestRunContract = {
             State: { Running: boolean };
             Mounts: Array<{
@@ -1588,6 +1671,7 @@ describe("docker.ts module exports", () => {
         }
 
         beforeEach(() => {
+            expandShortContainerIds = true;
             ensureDirs.mockReset();
             mockExistsSync.mockReturnValue(true);
         });
@@ -1635,6 +1719,332 @@ describe("docker.ts module exports", () => {
             })).toHaveLength(2);
         });
 
+        it("joins a macOS credential bind alias after live proof without invoking replacement guard", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const claudeMount = inspected.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude",
+            );
+            if (!claudeMount) throw new Error("test fixture is missing the Claude credential mount");
+            const lexicalSource = claudeMount.Source;
+            mockRealpathSync.mockImplementation((path: string) => (
+                path === lexicalSource ? `/System/Volumes/Data${path}` : path
+            ));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => false);
+
+            expect(startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toBe(getContainerName(projectPath));
+
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expect([...mountChallengePaths].some((path) => (
+                path.startsWith("/home/ccc/.claude/.ccc-mount-identity-")
+            ))).toBe(true);
+            expectNoContainerReplacement();
+        });
+
+        it("keeps canonical alias observation errors retryable and out of replacement", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const claudeMount = inspected.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude",
+            );
+            if (!claudeMount) throw new Error("test fixture is missing the Claude credential mount");
+            claudeMount.Source = `/System/Volumes/Data${claudeMount.Source}`;
+            mockRealpathSync.mockImplementation((path: string) => {
+                if (path === claudeMount.Source) {
+                    const error = new Error("temporary canonicalization failure") as NodeJS.ErrnoException;
+                    error.code = "EIO";
+                    throw error;
+                }
+                return path;
+            });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => true);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, replacementGuard,
+            )).toThrow("temporarily unavailable");
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+        });
+
+        it("joins a macOS credential file alias only when stable file content is visible", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const claudeJsonMount = inspected.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            );
+            if (!claudeJsonMount) throw new Error("test fixture is missing the Claude JSON mount");
+            const lexicalSource = claudeJsonMount.Source;
+            mockRealpathSync.mockImplementation((path: string) => (
+                path === lexicalSource ? `/System/Volumes/Data${path}` : path
+            ));
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: 1,
+                size: 1024,
+            }));
+            const expectedContent = Buffer.from("stable-credential-file");
+            mockReadFileSync.mockReturnValue(expectedContent);
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args[2] === "cat" && args[3] === "/home/ccc/.claude.json") {
+                    return { ...makeResult(0), stdout: expectedContent } as unknown as SpawnSyncReturns<string>;
+                }
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => false);
+
+            expect(startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toBe(getContainerName(projectPath));
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+        });
+
+        it("rejects a credential file alias whose mounted content differs", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const claudeJsonMount = inspected.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            );
+            if (!claudeJsonMount) throw new Error("test fixture is missing the Claude JSON mount");
+            const lexicalSource = claudeJsonMount.Source;
+            mockRealpathSync.mockImplementation((path: string) => (
+                path === lexicalSource ? `/System/Volumes/Data${path}` : path
+            ));
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: 1,
+                size: 1024,
+            }));
+            mockReadFileSync.mockReturnValue(Buffer.from("current-host-content"));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                if (args[0] === "exec" && args[2] === "cat" && args[3] === "/home/ccc/.claude.json") {
+                    return { ...makeResult(0), stdout: Buffer.from("foreign-content") } as unknown as SpawnSyncReturns<string>;
+                }
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toThrow("bind file content changed for /home/ccc/.claude.json");
+            expectNoContainerReplacement();
+        });
+
+        it("rejects an arbitrary credential-file source even when its bytes match", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const claudeJsonMount = inspected.Mounts.find(
+                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
+            );
+            if (!claudeJsonMount) throw new Error("test fixture is missing the Claude JSON mount");
+            claudeJsonMount.Source = "/foreign/.claude.json";
+            mockLstatSync.mockImplementation((path: string) => ({
+                isFile: () => path.endsWith(".json"),
+                isDirectory: () => !path.endsWith(".json"),
+                isSymbolicLink: () => false,
+                dev: 1,
+                ino: 1,
+                size: 1024,
+            }));
+            mockReadFileSync.mockReturnValue(Buffer.from("same-bytes"));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toThrow("bind source changed for /home/ccc/.claude.json");
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "exec" && args[2] === "cat" && args[3] === "/home/ccc/.claude.json";
+            })).toBe(false);
+            expectNoContainerReplacement();
+        });
+
+        it("classifies a ready container's invisible same-source marker as stale", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            autoReadMountMarkerFailuresRemaining = 10_000;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => false);
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toThrow("bind marker is not visible");
+
+            expect(replacementGuard).toHaveBeenCalledOnce();
+            expectNoContainerReplacement();
+        });
+
+        it("waits through brief nonce propagation lag on an exec-ready container", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            autoReadMountMarkerFailuresRemaining = 2;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return makeResult(0, "abc123|true\n");
+                }
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "exec" && args.at(-1) === "true") return makeResult(0);
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => true);
+
+            expect(startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, replacementGuard,
+            )).toBe(getContainerName(projectPath));
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+        });
+
+        it("keeps missing marker proof retryable while container exec readiness is unavailable", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            autoReadMountMarkerFailuresRemaining = 100;
+            let readinessProbeCount = 0;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "exec" && args.at(-1) === "true") {
+                    readinessProbeCount += 1;
+                    return makeResult(1);
+                }
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => true);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, replacementGuard,
+            )).toThrow("temporarily unavailable");
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expect(readinessProbeCount).toBe(15);
+            expectNoContainerReplacement();
+        });
+
+        it("does not invoke replacement when host identity observation is transient", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            let projectIdentityReads = 0;
+            mockRealpathSync.mockImplementation((path: string) => {
+                if (path === projectPath) {
+                    projectIdentityReads += 1;
+                    if (projectIdentityReads === 5) {
+                        const error = new Error("temporary filesystem I/O failure") as NodeJS.ErrnoException;
+                        error.code = "EIO";
+                        throw error;
+                    }
+                }
+                return path;
+            });
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                return makeResult(0);
+            });
+            const replacementGuard = vi.fn(() => true);
+
+            expect(startProjectContainer(
+                projectPath,
+                ensureDirs,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                replacementGuard,
+            )).toBe(getContainerName(projectPath));
+            expect(replacementGuard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
+        });
+
         it("joins a pre-identity-label container after a live bind challenge", () => {
             const extraMount = {
                 hostPath: "/home/user/repo/.git",
@@ -1671,7 +2081,7 @@ describe("docker.ts module exports", () => {
                 [extraMount],
             )).toMatch(/^ccc-/);
             expectNoContainerReplacement();
-            expect(mountChallengeContainerIds.has("abc123")).toBe(true);
+            expect(mountChallengeContainerIds.has(TEST_CONTAINER_ID)).toBe(true);
             expect([...mountChallengePaths].some((path) => (
                 path.startsWith(`${extraMount.containerPath}/.ccc-mount-identity-`)
             ))).toBe(true);
@@ -1717,7 +2127,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 undefined,
                 () => false,
-            )).toThrow("bind mount identity could not be verified for /project/repo/.git");
+            )).toThrow("bind marker content changed for /project/repo/.git");
             expect([...mountChallengePaths].some((path) => (
                 path.startsWith(`${extraMount.containerPath}/.ccc-mount-identity-`)
             ))).toBe(true);
@@ -1762,7 +2172,7 @@ describe("docker.ts module exports", () => {
                 () => false,
             ))
                 .toThrow("contract failed safety validation");
-            expect(mountChallengeContainerIds.has("abc123")).toBe(true);
+            expect(mountChallengeContainerIds.has(TEST_CONTAINER_ID)).toBe(true);
             expect(spawnSyncMock.mock.calls.some((call) => {
                 const args = call[1] as string[];
                 return ["stop", "rm", "run"].includes(args[0]);
@@ -1789,7 +2199,7 @@ describe("docker.ts module exports", () => {
             );
 
             expect(ready).toHaveBeenCalledOnce();
-            expect(ready).toHaveBeenCalledWith("abc123");
+            expect(ready).toHaveBeenCalledWith(TEST_CONTAINER_ID);
             const targeted = spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
                 return ["exec", "cp", "start"].includes(args[0]);
@@ -1801,7 +2211,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("requests untruncated IDs before comparing the listed and inspected identities", () => {
-            const fullId = "a".repeat(64);
+            const fullId = TEST_CONTAINER_ID;
             const ready = vi.fn();
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -1827,6 +2237,24 @@ describe("docker.ts module exports", () => {
             });
             expect(listCalls.length).toBeGreaterThan(0);
             expect(listCalls.every((call: unknown[]) => (call[1] as string[]).includes("--no-trunc"))).toBe(true);
+        });
+
+        it("rejects a truncated listed ID before lifecycle verification", () => {
+            expandShortContainerIds = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+            const guard = vi.fn(() => true);
+
+            expect(() => startProjectContainer(
+                projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
+            )).toThrow("Container identity inspection failed");
+            expect(guard).not.toHaveBeenCalled();
+            expectNoContainerReplacement();
         });
 
         it("refuses session handoff when the pinned container identity changes", () => {
@@ -2189,9 +2617,10 @@ describe("docker.ts module exports", () => {
                 const mount = value.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.ssh");
                 mount.Source = "/foreign/.ssh";
             }],
-        ])("fails closed on %s while the container is running", (_name, mutate) => {
+        ])("fails closed on %s while the container is running", (name, mutate) => {
             const inspected = JSON.parse(fullCredentialMountsJson());
             mutate(inspected);
+            if (name.includes("source substitution")) makeMountedBindProofDisagree();
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
@@ -2688,7 +3117,7 @@ describe("docker.ts module exports", () => {
         it.each([
             ["source substitution", (mount: { Source: string; RW: boolean }) => { mount.Source = "/foreign/.gitconfig"; }],
             ["writable access", (mount: { Source: string; RW: boolean }) => { mount.RW = true; }],
-        ])("fails closed on Git identity %s while the container is running", (_name, mutate) => {
+        ])("fails closed on Git identity %s while the container is running", (name, mutate) => {
             mockExistsSync.mockImplementation((path: string) => path.endsWith("/.config/git"));
             const inspected = JSON.parse(fullCredentialMountsJson([], {
                 status: "unsupported",
@@ -2697,6 +3126,7 @@ describe("docker.ts module exports", () => {
             }));
             const gitMount = inspected.Mounts.find((item: { Destination: string }) => item.Destination === "/home/ccc/.config/git");
             mutate(gitMount);
+            if (name === "source substitution") makeMountedBindProofDisagree();
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
                 if (args[0] === "images") return makeResult(0, "sha256:abc\n");
@@ -2725,7 +3155,7 @@ describe("docker.ts module exports", () => {
 
             expect(() => startProjectContainer(
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, guard,
-            )).toThrow("Container contract inspection failed; the existing container was preserved.");
+            )).toThrow("Container contract verification is temporarily unavailable");
             expect(guard).not.toHaveBeenCalled();
             expectNoContainerReplacement();
         });
@@ -2766,6 +3196,7 @@ describe("docker.ts module exports", () => {
 
         it("stops and replaces an exact running container when the lifecycle guard approves idle recovery", () => {
             const driftContractJson = makeCredentialSourceDriftContract();
+            makeMountedBindProofDisagree();
             mockReplacementRuntime(driftContractJson);
             const guard = vi.fn((replace: () => void) => {
                 expectNoContainerReplacement();
@@ -2782,7 +3213,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 guard,
                 undefined,
-                "abc123",
+                TEST_CONTAINER_ID,
             );
 
             expect(guard).toHaveBeenCalledOnce();
@@ -2818,7 +3249,7 @@ describe("docker.ts module exports", () => {
                     return true;
                 },
                 undefined,
-                "abc123",
+                TEST_CONTAINER_ID,
             );
 
             expect(spawnSyncMock.mock.calls
@@ -2829,6 +3260,7 @@ describe("docker.ts module exports", () => {
 
         it("fails closed without remove when an approved idle container cannot be stopped", () => {
             const driftContractJson = makeCredentialSourceDriftContract();
+            makeMountedBindProofDisagree();
             mockReplacementRuntime(driftContractJson, { stopStatus: 1 });
             const guard = vi.fn((replace: () => void) => {
                 replace();
@@ -2844,7 +3276,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 guard,
                 undefined,
-                "abc123",
+                TEST_CONTAINER_ID,
             )).toThrow("idle running container could not be stopped");
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
                 const args = call[1] as string[];
@@ -2871,7 +3303,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 guard,
                 undefined,
-                "abc123",
+                TEST_CONTAINER_ID,
             )).toThrow("container is not CCC-managed");
             expect(guard).toHaveBeenCalledOnce();
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
@@ -2899,7 +3331,7 @@ describe("docker.ts module exports", () => {
                 undefined,
                 guard,
                 undefined,
-                "abc123",
+                TEST_CONTAINER_ID,
             )).toThrow("container is not CCC-managed");
             expect(guard).toHaveBeenCalledOnce();
             expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
@@ -2910,6 +3342,7 @@ describe("docker.ts module exports", () => {
 
         it("does not stop a container that was initially stopped but started before replacement", () => {
             const driftContractJson = makeCredentialSourceDriftContract();
+            makeMountedBindProofDisagree();
             mockReplacementRuntime(driftContractJson);
             const guard = vi.fn((replace: () => void) => {
                 replace();
@@ -3277,6 +3710,7 @@ describe("docker.ts module exports", () => {
             const ownerDestination = `/home/ccc/.ccc/devices/owners/${deviceLabOwnerId(projectPath)}`;
             const ownerMount = inspected.Mounts.find((mount) => mount.Destination === ownerDestination);
             if (ownerMount) ownerMount.Source = join(homedir(), ".ccc", "devices", "owners", "foreign-owner");
+            makeMountedBindProofDisagree();
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
@@ -3300,6 +3734,7 @@ describe("docker.ts module exports", () => {
             };
             const authMount = inspected.Mounts.find((mount) => mount.Destination === "/run/ccc-device-broker-auth/owner.json");
             if (authMount) authMount.Source = join(homedir(), ".ccc", "devices", "broker", "auth", "foreign-owner.json");
+            makeMountedBindProofDisagree();
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
@@ -3569,7 +4004,7 @@ describe("docker.ts module exports", () => {
             expect(runCall).toBeDefined();
             expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
                 const args = call[1] as string[];
-                return args[0] === "cp" && args[2]?.startsWith("c0ffee123456:/tmp/ccc-managed-");
+                return args[0] === "cp" && args[2]?.startsWith(`${TEST_CREATED_CONTAINER_ID}:/tmp/ccc-managed-`);
             })).toHaveLength(2);
             const runArgs = runCall![1] as string[];
             expect(runArgs.some((arg) => /^CCC_DEVICE_LAB_OWNER_BASIS=/.test(arg))).toBe(false);
@@ -3583,8 +4018,65 @@ describe("docker.ts module exports", () => {
             expect(runArgs).not.toContain("--privileged");
         });
 
+        it("rejects a short created-container ID without targeting it for cleanup", () => {
+            expandShortContainerIds = false;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${TEST_CREATED_CONTAINER_SHORT_ID}\n`));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs))
+                .toThrow("created container bind mount identity verification failed");
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "rm" && args.includes(TEST_CREATED_CONTAINER_SHORT_ID);
+            })).toBe(false);
+        });
+
+        it("retries transient bind identity inspection for the exact newly-created container", () => {
+            const createdId = TEST_CREATED_CONTAINER_ID;
+            autoInspectCreatedContainerFailuresRemaining = 1;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${createdId}\n`));
+
+            expect(startProjectContainer(projectPath, ensureDirs)).toMatch(/^ccc-/);
+            expect(createdContainerInspectIds).toEqual([createdId, createdId]);
+            expect(mountChallengeContainerIds).toEqual(new Set([createdId]));
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[2] === createdId
+            ))).toBe(false);
+        });
+
+        it("retries the complete bind proof when a new container's marker is transiently unavailable", () => {
+            const createdId = TEST_CREATED_CONTAINER_ID;
+            autoReadMountMarkerFailuresRemaining = 2;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${createdId}\n`));
+
+            expect(startProjectContainer(projectPath, ensureDirs)).toMatch(/^ccc-/);
+            expect(createdContainerInspectIds).toEqual([createdId, createdId]);
+            expect(mountChallengeContainerIds).toEqual(new Set([createdId]));
+        });
+
         it("removes a newly created container whose project bind source fails inspection", () => {
-            const createdId = "c0ffee123456";
+            const createdId = TEST_CREATED_CONTAINER_ID;
             const ready = vi.fn();
             autoInspectCreatedContainer = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
@@ -3636,7 +4128,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("rejects a mount swapped only during container creation", () => {
-            const createdId = "c0ffee123456";
+            const createdId = TEST_CREATED_CONTAINER_ID;
             autoReadMountMarkers = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -3661,7 +4153,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("reports when a rejected created container cannot be removed", () => {
-            const createdId = "c0ffee123456";
+            const createdId = TEST_CREATED_CONTAINER_ID;
             autoInspectCreatedContainer = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -3683,10 +4175,16 @@ describe("docker.ts module exports", () => {
 
             expect(() => startProjectContainer(projectPath, ensureDirs))
                 .toThrow(`failed to remove rejected container ${createdId}`);
+            expect(spawnSyncMock.mock.calls.filter((call: unknown[]) => {
+                const args = call[1] as string[];
+                return args[0] === "inspect"
+                    && args.includes("{{json .}}")
+                    && args.includes(createdId);
+            })).toHaveLength(5);
         });
 
         it("accepts rejected-container cleanup only when inspect explicitly proves absence", () => {
-            const createdId = "c0ffee123456";
+            const createdId = TEST_CREATED_CONTAINER_ID;
             autoInspectCreatedContainer = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -3719,7 +4217,7 @@ describe("docker.ts module exports", () => {
         });
 
         it("reports rejected-container cleanup as unverified after an ambiguous inspect failure", () => {
-            const createdId = "c0ffee123456";
+            const createdId = TEST_CREATED_CONTAINER_ID;
             autoInspectCreatedContainer = false;
             spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
                 const args = argsValue as string[];
@@ -3945,7 +4443,7 @@ describe("docker.ts module exports", () => {
                     && (c[1] as string[])[0] === "exec",
             );
             expect(gitConfigInstall?.[1]).toEqual(expect.arrayContaining([
-                "exec", "--user", "root", "c0ffee123456",
+                "exec", "--user", "root", TEST_CREATED_CONTAINER_ID,
             ]));
             expect((gitConfigInstall?.[1] as string[]).at(-1)).toContain("chown ccc:ccc /home/ccc/.gitconfig");
         });
@@ -4391,6 +4889,7 @@ describe("docker.ts module exports", () => {
             const mountsJson = fullCredentialMountsJson([
                 { Source: "/different/repo/.git", Destination: "/Users/me/repo/.git", Type: "bind", RW: true },
             ]);
+            makeMountedBindProofDisagree();
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
@@ -4447,7 +4946,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0));                  // docker run
 
             expect(() => startWithApprovedReplacement(extraMounts)).toThrow(
-                "Container contract inspection failed; the existing container was preserved.",
+                "Container contract verification is temporarily unavailable",
             );
             expectNoContainerReplacement();
         });
@@ -4469,7 +4968,7 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0));                  // docker run
 
             expect(() => startWithApprovedReplacement(extraMounts)).toThrow(
-                "Container contract inspection failed; the existing container was preserved.",
+                "Container contract verification is temporarily unavailable",
             );
             expectNoContainerReplacement();
         });
