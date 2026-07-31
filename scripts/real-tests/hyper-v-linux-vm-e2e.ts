@@ -60,6 +60,14 @@ export function assertHyperVLinuxCreateContract(device: any, expectedDeviceId: s
     ));
 }
 
+export function hyperVLinuxBrokerArgs(tool: string, args: Record<string, unknown>) {
+    return {
+        ...args,
+        viaBroker: true,
+        ...(tool === "device_create" ? { provider: "hyper-v" } : {}),
+    };
+}
+
 function commandAvailable(command: string, options: any = {}) {
     if (options[command]) return options[command];
     const result = (options.spawnSyncImpl || hiddenSpawnSync)("where.exe", [`${command}.exe`], {
@@ -116,7 +124,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
     return withDeviceLabMcp(async ({ callTool: rawCallTool }) => {
         const callTool = async (tool: string, args: any) => {
             if (CAPABILITIES.includes(tool)) calledCapabilities.add(tool);
-            return rawCallTool(tool, args);
+            return rawCallTool(tool, hyperVLinuxBrokerArgs(tool, args));
         };
         const direct: Record<string, unknown> = { backend: "linux-vm", deviceId };
         try {

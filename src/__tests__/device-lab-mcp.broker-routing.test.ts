@@ -2578,6 +2578,27 @@ describe("device-lab MCP broker routing", () => {
                 error: "broker-rpc-unavailable",
                 routedBy: "device-lifecycle-broker-implicit",
             }));
+
+            const hyperVLinux = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "linux-vm",
+                    provider: "hyper-v",
+                    deviceId: "hyper-v-linux-no-direct-fallback",
+                    name: "Hyper-V Linux no direct fallback",
+                    viaBroker: true,
+                    autolaunch: false,
+                    hostCandidates: ["127.0.0.1"],
+                    brokerPort: 9,
+                    timeoutMs: 50,
+                },
+            });
+            expect(hyperVLinux.isError).not.toBe(true);
+            expect(JSON.parse(((hyperVLinux.content as Array<{ text?: string }>)[0].text ?? "{}"))).toEqual(expect.objectContaining({
+                ok: false,
+                error: "broker-rpc-unavailable",
+                routedBy: "device-lifecycle-broker",
+            }));
         } finally {
             rmSync(join(ownerRoot, "windows"), { recursive: true, force: true });
         }

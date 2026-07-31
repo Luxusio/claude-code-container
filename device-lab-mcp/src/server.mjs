@@ -1321,6 +1321,14 @@ const HYPER_V_LINUX_TOOLS = new Set([
 
 async function maybeHandleHyperVLinuxVmTool(name, args = {}) {
     if (args?.backend !== "linux-vm" || !HYPER_V_LINUX_TOOLS.has(name) || optsOutOfImplicitBroker(args)) return null;
+    const explicitHyperVBroker = args?.provider === "hyper-v"
+        || wantsBrokerLifecycle(name, args)
+        || wantsBrokerDeviceTool(name, args);
+    if (explicitHyperVBroker) {
+        return BROKER_LIFECYCLE_COMMANDS.has(name)
+            ? handleBrokerLifecycleTool(name, args)
+            : handleBrokerDeviceTool(name, args);
+    }
     const probeArgs = name === "device_create"
         ? { ...(args || {}), port: args?.brokerPort }
         : args || {};

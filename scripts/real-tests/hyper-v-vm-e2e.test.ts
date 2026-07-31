@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
-import { assertHyperVLinuxCreateContract, hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
     hyperVWindowsVmE2ECapability,
@@ -242,6 +242,25 @@ describe("Hyper-V E2E zero-config image selection", () => {
             networkAddress: "172.29.0.10",
         };
         expect(() => assertHyperVLinuxCreateContract(device, device.id)).not.toThrow();
+    });
+
+    it("forces every Hyper-V Linux E2E operation through the broker", () => {
+        expect(hyperVLinuxBrokerArgs("device_create", {
+            backend: "linux-vm",
+            provider: "container-qemu",
+            viaBroker: false,
+        })).toEqual({
+            backend: "linux-vm",
+            provider: "hyper-v",
+            viaBroker: true,
+        });
+        expect(hyperVLinuxBrokerArgs("device_status", {
+            backend: "linux-vm",
+            viaBroker: false,
+        })).toEqual({
+            backend: "linux-vm",
+            viaBroker: true,
+        });
     });
 
     it("bounds Hyper-V Linux create response diagnostics", () => {
