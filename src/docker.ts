@@ -1772,30 +1772,34 @@ function recreateContainer(containerId: string, reason: string, onRecreate?: () 
     onRecreate?.();
 }
 
+interface ContainerReplacementContext {
+    expectedContainerId?: string;
+    managedProjectPath?: string;
+    initiallyRunningContainerId?: string;
+}
+
 function recreateContainerWithSessionGuard(
     containerName: string,
     reason: string,
     onRecreate: (() => void) | undefined,
     guard: ((recreate: () => void) => boolean) | undefined,
-    expectedContainerId?: string,
-    managedProjectPath?: string,
-    runningRecoveryContainerId?: string,
+    context: ContainerReplacementContext = {},
 ): boolean {
     if (!guard) {
         throw new Error("Container replacement requires a lifecycle/session guard.");
     }
     const initialIdentity = getContainerIdentity(containerName);
     if (!initialIdentity) return false;
-    const pinnedContainerId = expectedContainerId ?? initialIdentity.containerId;
+    const pinnedContainerId = context.expectedContainerId ?? initialIdentity.containerId;
     if (initialIdentity.containerId !== pinnedContainerId) return false;
     let replacementConfirmed = false;
     const guarded = guard(() => {
-        const startupAuthorizedRunningRecovery = runningRecoveryContainerId === pinnedContainerId;
+        const startupAuthorizedRunningRecovery = context.initiallyRunningContainerId === pinnedContainerId;
         if (startupAuthorizedRunningRecovery) {
-            if (!managedProjectPath) return;
+            if (!context.managedProjectPath) return;
             const currentIdentity = getManagedProjectContainerIdentity(
                 pinnedContainerId,
-                managedProjectPath,
+                context.managedProjectPath,
             );
             if (!currentIdentity || currentIdentity.containerId !== pinnedContainerId) return;
             if (currentIdentity.running) {
@@ -2035,9 +2039,11 @@ export function startProjectContainer(
                     contractMismatchReason,
                     markRecreated,
                     recreateRunningContainer,
-                    listedContainer.containerId,
-                    fullPath,
-                    initiallyRunningContainerId,
+                    {
+                        expectedContainerId: listedContainer.containerId,
+                        managedProjectPath: fullPath,
+                        initiallyRunningContainerId,
+                    },
                 );
                 if (!recreated) {
                     let unsafeDeferReason = "unknown safety mismatch";
@@ -2084,9 +2090,11 @@ export function startProjectContainer(
                         "device-lab mount source identity changed",
                         markRecreated,
                         recreateRunningContainer,
-                        lifecycleContainerId,
-                        fullPath,
-                        initiallyRunningContainerId,
+                        {
+                            expectedContainerId: lifecycleContainerId,
+                            managedProjectPath: fullPath,
+                            initiallyRunningContainerId,
+                        },
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during validation; preserving the existing running container without joining it.");
@@ -2104,9 +2112,11 @@ export function startProjectContainer(
                         "device-lab mount source identity changed",
                         markRecreated,
                         recreateRunningContainer,
-                        lifecycleContainerId,
-                        fullPath,
-                        initiallyRunningContainerId,
+                        {
+                            expectedContainerId: lifecycleContainerId,
+                            managedProjectPath: fullPath,
+                            initiallyRunningContainerId,
+                        },
                     );
                     if (!recreated) {
                         throw new Error("Device-lab mount source changed during synchronization; preserving the existing running container without joining it.");
@@ -2122,9 +2132,11 @@ export function startProjectContainer(
                     "container exec failed",
                     markRecreated,
                     recreateRunningContainer,
-                    lifecycleContainerId,
-                    fullPath,
-                    initiallyRunningContainerId,
+                    {
+                        expectedContainerId: lifecycleContainerId,
+                        managedProjectPath: fullPath,
+                        initiallyRunningContainerId,
+                    },
                 );
                 if (!recreated) {
                     throw new Error("Running container is unavailable; automatic destructive recovery was refused.");
@@ -2144,9 +2156,11 @@ export function startProjectContainer(
                 "device-lab mount source identity changed",
                 markRecreated,
                 recreateRunningContainer,
-                lifecycleContainerId,
-                fullPath,
-                initiallyRunningContainerId,
+                {
+                    expectedContainerId: lifecycleContainerId,
+                    managedProjectPath: fullPath,
+                    initiallyRunningContainerId,
+                },
             );
             if (!recreated) {
                 throw new Error("Device-lab mount source changed; automatic replacement was not authorized.");
@@ -2165,9 +2179,11 @@ export function startProjectContainer(
                     "container exec failed after restart",
                     markRecreated,
                     recreateRunningContainer,
-                    lifecycleContainerId,
-                    fullPath,
-                    initiallyRunningContainerId,
+                    {
+                        expectedContainerId: lifecycleContainerId,
+                        managedProjectPath: fullPath,
+                        initiallyRunningContainerId,
+                    },
                 );
                 if (!recreated) {
                     throw new Error("Restarted container is unavailable; automatic replacement was refused.");
@@ -2182,9 +2198,11 @@ export function startProjectContainer(
                     "device-lab mount source identity changed",
                     markRecreated,
                     recreateRunningContainer,
-                    lifecycleContainerId,
-                    fullPath,
-                    initiallyRunningContainerId,
+                    {
+                        expectedContainerId: lifecycleContainerId,
+                        managedProjectPath: fullPath,
+                        initiallyRunningContainerId,
+                    },
                 );
                 if (!recreated) {
                     throw new Error("Device-lab mount source changed during restart; automatic replacement was refused.");

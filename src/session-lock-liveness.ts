@@ -98,7 +98,12 @@ export function processStartToken(pid: number): string | null {
     return observed.status === "found" ? observed.token : null;
 }
 
-function sessionLockRecord(content: string): { pid: number; startToken?: string } | null {
+export interface SessionLockOwner {
+    pid: number;
+    startToken?: string;
+}
+
+export function sessionLockOwner(content: string): SessionLockOwner | null {
     try {
         const parsed = JSON.parse(content) as unknown;
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
@@ -138,7 +143,7 @@ function legacyProcessLiveness(pid: number): SessionLockLiveness {
 }
 
 export function sessionLockLiveness(content: string): SessionLockLiveness {
-    const record = sessionLockRecord(content.trim());
+    const record = sessionLockOwner(content.trim());
     if (!record) return "unknown";
     if (!record.startToken) return legacyProcessLiveness(record.pid);
 

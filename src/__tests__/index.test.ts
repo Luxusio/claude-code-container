@@ -723,7 +723,7 @@ describe('auto container version-up', () => {
       'container-id',
       () => ['project--current.lock', 'project--foreign.lock'],
       statusProbe,
-    )).toBe('1 live or indeterminate session lock claim(s) remain')
+    )).toBe('1 live or indeterminate session lock claim(s) remain: project--foreign.lock')
     expect(statusProbe).not.toHaveBeenCalled()
   })
 

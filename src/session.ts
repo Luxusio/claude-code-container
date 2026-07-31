@@ -7,7 +7,7 @@ import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "./device-lab-shared-state.js";
-import { processStartToken, sessionLockLiveness } from "./session-lock-liveness.js";
+import { processStartToken, sessionLockLiveness, sessionLockOwner } from "./session-lock-liveness.js";
 
 const locksDir = join(DATA_DIR, "locks");
 
@@ -122,7 +122,10 @@ export function removeSessionLock(lockFile: string): void {
  * For profile containers (e.g. "projectId--p--work"), returns files that match
  * `${containerPrefix}--<sessionId>.lock`.
  */
-export function getActiveSessionsForContainer(containerPrefix: string): string[] {
+export function getActiveSessionsForContainer(
+    containerPrefix: string,
+    currentLockFile?: string,
+): string[] {
     let entries: string[];
     try {
         ensureLocksDirectory();
@@ -132,7 +135,10 @@ export function getActiveSessionsForContainer(containerPrefix: string): string[]
         // including a concurrent ENOENT, must not authorize container cleanup.
         throw error;
     }
-    return filterLiveSessionLocks(sessionLockClaimsForContainer(entries, containerPrefix));
+    return filterLiveSessionLocks(
+        sessionLockClaimsForContainer(entries, containerPrefix),
+        currentLockFile,
+    );
 }
 
 function sessionLockClaimsForContainer(entries: string[], containerPrefix: string): string[] {
@@ -182,11 +188,34 @@ export function getSessionLockClaimsForProjectFamily(projectId: string): string[
     );
 }
 
-function filterLiveSessionLocks(locks: string[]): string[] {
+function filterLiveSessionLocks(locks: string[], currentLockFile?: string): string[] {
+    const currentLockName = currentLockFile ? basename(currentLockFile) : null;
+    let currentOwnerPid: number | null = null;
+    if (currentLockName && locks.includes(currentLockName)) {
+        try {
+            const currentOwner = sessionLockOwner(
+                readFileSync(join(locksDir, currentLockName), "utf-8").trim(),
+            );
+            if (currentOwner?.pid === process.pid) currentOwnerPid = currentOwner.pid;
+        } catch {
+            // Without a valid current ownership record, preserve every claim.
+        }
+    }
     return locks.filter((f) => {
         const lockPath = join(locksDir, f);
         try {
             const content = readFileSync(lockPath, "utf-8").trim();
+            const owner = sessionLockOwner(content);
+            if (f !== currentLockName
+                && currentOwnerPid === process.pid
+                && owner?.pid === currentOwnerPid
+                && !owner.startToken) {
+                // Host PIDs are unique. Once this invocation's current lock
+                // proves ownership of the PID, an older PID-only claim for the
+                // same PID is a superseded legacy lock, not another process.
+                try { unlinkSync(lockPath); } catch { /* ignore */ }
+                return false;
+            }
             const liveness = sessionLockLiveness(content);
             if (liveness === "stale") {
                 try { unlinkSync(lockPath); } catch { /* ignore */ }

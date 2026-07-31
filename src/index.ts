@@ -307,14 +307,14 @@ export function containerReplacementBlockReason(
     statusProbe: typeof getContainerStatus = getContainerStatus,
 ): string | null {
     const currentLockName = basename(currentLockFile);
-    const claims = sessionProbe(containerPrefix);
+    const claims = sessionProbe(containerPrefix, currentLockFile);
     const currentClaims = claims.filter((claim) => claim === currentLockName);
     if (currentClaims.length !== 1) {
         return "the current session lock ownership could not be verified";
     }
     const otherClaims = claims.filter((claim) => claim !== currentLockName);
     if (otherClaims.length > 0) {
-        return `${otherClaims.length} live or indeterminate session lock claim(s) remain`;
+        return `${otherClaims.length} live or indeterminate session lock claim(s) remain: ${otherClaims.join(", ")}`;
     }
     const status = statusProbe(containerName);
     if (!status.exists || !status.containerId) {

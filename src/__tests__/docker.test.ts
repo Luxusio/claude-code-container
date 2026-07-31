@@ -1522,6 +1522,71 @@ describe("docker.ts module exports", () => {
             })).toBe(false);
         }
 
+        type TestRunContract = {
+            State: { Running: boolean };
+            Mounts: Array<{
+                Source: string;
+                Destination: string;
+                Type: string;
+                RW: boolean;
+            }>;
+            Config: { Labels: Record<string, string> };
+        };
+
+        function makeDriftedRunningContract(
+            mutate: (contract: TestRunContract) => void,
+            running = true,
+        ): string {
+            const contract = JSON.parse(fullCredentialMountsJson()) as TestRunContract;
+            contract.State = { Running: running };
+            mutate(contract);
+            return JSON.stringify(contract);
+        }
+
+        function makeCredentialSourceDriftContract(): string {
+            return makeDriftedRunningContract((contract) => {
+                const claudeJsonMount = contract.Mounts.find(
+                    (mount) => mount.Destination === "/home/ccc/.claude.json",
+                );
+                if (!claudeJsonMount) throw new Error("test fixture is missing the Claude JSON mount");
+                claudeJsonMount.Source = "/legacy/.claude.json";
+            });
+        }
+
+        function mockReplacementRuntime(
+            contractJson: string,
+            options: { identityRunning?: boolean; stopStatus?: number } = {},
+        ): void {
+            const identityRunning = options.identityRunning ?? true;
+            let removed = false;
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
+                    return removed
+                        ? makeResult(1)
+                        : makeResult(0, `abc123|${identityRunning ? "true" : "false"}\n`);
+                }
+                if (args[0] === "inspect") return makeResult(0, contractJson);
+                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
+                if (args[0] === "ps" && args[1] === "-q") {
+                    return makeResult(0, !removed && identityRunning ? "abc123\n" : "");
+                }
+                if (args[0] === "stop") {
+                    return options.stopStatus && options.stopStatus !== 0
+                        ? makeResult(options.stopStatus, "", "stop failed")
+                        : makeResult(0, "abc123\n");
+                }
+                if (args[0] === "rm") {
+                    removed = true;
+                    return makeResult(0, "abc123\n");
+                }
+                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
+                return makeResult(0);
+            });
+        }
+
         beforeEach(() => {
             ensureDirs.mockReset();
             mockExistsSync.mockReturnValue(true);
@@ -2700,31 +2765,8 @@ describe("docker.ts module exports", () => {
         });
 
         it("stops and replaces an exact running container when the lifecycle guard approves idle recovery", () => {
-            let removed = false;
-            const driftContract = JSON.parse(fullCredentialMountsJson());
-            driftContract.State = { Running: true };
-            driftContract.Mounts.find(
-                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
-            ).Source = "/legacy/.claude.json";
-            const driftMountsJson = JSON.stringify(driftContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return removed ? makeResult(1) : makeResult(0, "abc123|true\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
-                if (args[0] === "stop") return makeResult(0, "abc123\n");
-                if (args[0] === "rm") {
-                    removed = true;
-                    return makeResult(0, "abc123\n");
-                }
-                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
-                return makeResult(0);
-            });
+            const driftContractJson = makeCredentialSourceDriftContract();
+            mockReplacementRuntime(driftContractJson);
             const guard = vi.fn((replace: () => void) => {
                 expectNoContainerReplacement();
                 replace();
@@ -2754,34 +2796,15 @@ describe("docker.ts module exports", () => {
         });
 
         it("replaces an idle running container with the obsolete host-stage gitconfig mount", () => {
-            let removed = false;
-            const driftContract = JSON.parse(fullCredentialMountsJson());
-            driftContract.State = { Running: true };
-            driftContract.Mounts.push({
-                Source: "/host/.gitconfig",
-                Destination: "/host-stage/gitconfig",
-                Type: "bind",
-                RW: false,
+            const driftContractJson = makeDriftedRunningContract((contract) => {
+                contract.Mounts.push({
+                    Source: "/host/.gitconfig",
+                    Destination: "/host-stage/gitconfig",
+                    Type: "bind",
+                    RW: false,
+                });
             });
-            const driftContractJson = JSON.stringify(driftContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return removed ? makeResult(1) : makeResult(0, "abc123|true\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, driftContractJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, removed ? "" : "abc123\n");
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, removed ? "" : "abc123\n");
-                if (args[0] === "stop") return makeResult(0, "abc123\n");
-                if (args[0] === "rm") {
-                    removed = true;
-                    return makeResult(0, "abc123\n");
-                }
-                if (args[0] === "run") return makeResult(0, "c0ffee123456\n");
-                return makeResult(0);
-            });
+            mockReplacementRuntime(driftContractJson);
 
             startProjectContainer(
                 projectPath,
@@ -2805,24 +2828,8 @@ describe("docker.ts module exports", () => {
         });
 
         it("fails closed without remove when an approved idle container cannot be stopped", () => {
-            const driftContract = JSON.parse(fullCredentialMountsJson());
-            driftContract.State = { Running: true };
-            driftContract.Mounts.find(
-                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
-            ).Source = "/legacy/.claude.json";
-            const driftMountsJson = JSON.stringify(driftContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return makeResult(0, "abc123|true\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, driftMountsJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
-                if (args[0] === "stop") return makeResult(1, "", "stop failed");
-                return makeResult(0);
-            });
+            const driftContractJson = makeCredentialSourceDriftContract();
+            mockReplacementRuntime(driftContractJson, { stopStatus: 1 });
             const guard = vi.fn((replace: () => void) => {
                 replace();
                 return true;
@@ -2846,22 +2853,10 @@ describe("docker.ts module exports", () => {
         });
 
         it("does not stop or remove a foreign same-name running container even when the lifecycle guard approves", () => {
-            const foreignContract = JSON.parse(fullCredentialMountsJson());
-            foreignContract.State = { Running: true };
-            foreignContract.Config.Labels["ccc.managed"] = "false";
-            const foreignContractJson = JSON.stringify(foreignContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return makeResult(0, "abc123|true\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, foreignContractJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
-                return makeResult(0);
+            const foreignContractJson = makeDriftedRunningContract((contract) => {
+                contract.Config.Labels["ccc.managed"] = "false";
             });
+            mockReplacementRuntime(foreignContractJson);
             const guard = vi.fn((replace: () => void) => {
                 replace();
                 return true;
@@ -2886,22 +2881,10 @@ describe("docker.ts module exports", () => {
         });
 
         it("does not remove a foreign same-name container that stops before recovery validation", () => {
-            const foreignContract = JSON.parse(fullCredentialMountsJson());
-            foreignContract.State = { Running: false };
-            foreignContract.Config.Labels["ccc.managed"] = "false";
-            const foreignContractJson = JSON.stringify(foreignContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return makeResult(0, "abc123|false\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, foreignContractJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "");
-                return makeResult(0);
-            });
+            const foreignContractJson = makeDriftedRunningContract((contract) => {
+                contract.Config.Labels["ccc.managed"] = "false";
+            }, false);
+            mockReplacementRuntime(foreignContractJson, { identityRunning: false });
             const guard = vi.fn((replace: () => void) => {
                 replace();
                 return true;
@@ -2926,24 +2909,8 @@ describe("docker.ts module exports", () => {
         });
 
         it("does not stop a container that was initially stopped but started before replacement", () => {
-            const driftContract = JSON.parse(fullCredentialMountsJson());
-            driftContract.State = { Running: true };
-            driftContract.Mounts.find(
-                (mount: { Destination: string }) => mount.Destination === "/home/ccc/.claude.json",
-            ).Source = "/legacy/.claude.json";
-            const driftContractJson = JSON.stringify(driftContract);
-            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
-                const args = argsValue as string[];
-                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
-                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
-                if (args[0] === "inspect" && args.includes("{{.Id}}|{{.State.Running}}")) {
-                    return makeResult(0, "abc123|true\n");
-                }
-                if (args[0] === "inspect") return makeResult(0, driftContractJson);
-                if (args[0] === "ps" && args[1] === "-aq") return makeResult(0, "abc123\n");
-                if (args[0] === "ps" && args[1] === "-q") return makeResult(0, "abc123\n");
-                return makeResult(0);
-            });
+            const driftContractJson = makeCredentialSourceDriftContract();
+            mockReplacementRuntime(driftContractJson);
             const guard = vi.fn((replace: () => void) => {
                 replace();
                 return true;

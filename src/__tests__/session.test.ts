@@ -425,6 +425,23 @@ describe("session.ts", () => {
             expect(result).toEqual(["proj-abc--alivesession1122334455667788.lock"]);
         });
 
+        it("prunes a superseded legacy lock when its PID was reused by the current invocation", () => {
+            const currentLock = "/fake/locks/proj-abc--current.lock";
+            mockExistsSync.mockReturnValue(true);
+            mockReaddirSync.mockReturnValue([
+                "proj-abc--current.lock",
+                "proj-abc--legacy-stale.lock",
+            ]);
+            mockReadFileSync.mockReturnValue(String(process.pid));
+            vi.spyOn(process, "kill").mockImplementation(() => true);
+
+            expect(getActiveSessionsForContainer("proj-abc", currentLock))
+                .toEqual(["proj-abc--current.lock"]);
+            expect(mockUnlinkSync).toHaveBeenCalledWith(
+                expect.stringContaining("proj-abc--legacy-stale.lock"),
+            );
+        });
+
         it("keeps a live lock when Windows process observation returns EPERM", () => {
             mockExistsSync.mockReturnValue(true);
             mockReaddirSync.mockReturnValue(["proj-abc--live.lock"]);
