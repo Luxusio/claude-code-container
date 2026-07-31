@@ -91,9 +91,51 @@ type MountSourceIdentity = {
     ino: string;
 };
 
-type MountProofAttemptContext = {
+type DirectoryMountChallenge = {
+    markerName: string;
+    markerPath: string;
+    markerContent: string;
+};
+
+type MountVerificationSession = {
+    directoryChallenges: Map<string, DirectoryMountChallenge>;
     containerExecReady?: boolean;
 };
+
+function createMountVerificationSession(): MountVerificationSession {
+    return { directoryChallenges: new Map() };
+}
+
+function cleanupMountVerificationSession(session: MountVerificationSession): void {
+    let cleanupError: unknown;
+    for (const challenge of session.directoryChallenges.values()) {
+        try {
+            rmSync(challenge.markerPath, { force: true });
+        } catch (error) {
+            cleanupError ??= error;
+        }
+    }
+    session.directoryChallenges.clear();
+    if (cleanupError) throw cleanupError;
+}
+
+function getDirectoryMountChallenge(
+    session: MountVerificationSession,
+    expected: BindMountSourceIdentity,
+    containerPath: string,
+): DirectoryMountChallenge {
+    const existing = session.directoryChallenges.get(containerPath);
+    if (existing) return existing;
+    const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
+    const challenge = {
+        markerName,
+        markerPath: join(expected.realpath, markerName),
+        markerContent: randomBytes(32).toString("hex"),
+    };
+    writeFileSync(challenge.markerPath, challenge.markerContent, { flag: "wx", mode: 0o600 });
+    session.directoryChallenges.set(containerPath, challenge);
+    return challenge;
+}
 
 export type BindMountSourceIdentity = {
     realpath: string;
@@ -212,15 +254,13 @@ function proveContainerSeesCurrentBindSource(
     hostPath: string,
     containerPath: string,
     expected: BindMountSourceIdentity,
-    mountsMayBeSettling = false,
+    session: MountVerificationSession,
     finalProofAttempt = false,
-    attemptContext: MountProofAttemptContext = {},
 ): LiveSourceProof {
     let verification: LiveSourceProof = {
         kind: "retryable",
         reason: `bind source proof unavailable for ${containerPath}`,
     };
-    let markerPath: string | null = null;
     try {
         const initialIdentity = observeBindMountSourceIdentity(hostPath, expected);
         if (initialIdentity.kind !== "verified") return initialIdentity;
@@ -229,38 +269,26 @@ function proveContainerSeesCurrentBindSource(
             return { kind: "mismatch", reason: `bind source identity changed for ${containerPath}` };
         }
         if (typeof observed.isDirectory === "function" && observed.isDirectory()) {
-            const markerName = `.ccc-mount-identity-${randomBytes(16).toString("hex")}`;
-            markerPath = join(expected.realpath, markerName);
-            const markerContent = randomBytes(32).toString("hex");
-            writeFileSync(markerPath, markerContent, { flag: "wx", mode: 0o600 });
+            const challenge = getDirectoryMountChallenge(session, expected, containerPath);
             const markerIdentity = observeBindMountSourceIdentity(hostPath, expected);
             if (markerIdentity.kind !== "verified") return markerIdentity;
             let result = spawnSync(
                 runtimeCli(),
-                ["exec", containerId, "cat", posix.join(containerPath, markerName)],
+                ["exec", containerId, "cat", posix.join(containerPath, challenge.markerName)],
                 { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
             );
             let containerExecReady = false;
             if (result.error || result.status !== 0) {
-                attemptContext.containerExecReady ??= canExecContainerAfterBriefRetry(containerId);
-                containerExecReady = attemptContext.containerExecReady;
-            }
-            if ((result.error || result.status !== 0) && containerExecReady) {
-                const retryIdentity = observeBindMountSourceIdentity(hostPath, expected);
-                if (retryIdentity.kind !== "verified") return retryIdentity;
-                result = spawnSync(
-                    runtimeCli(),
-                    ["exec", containerId, "cat", posix.join(containerPath, markerName)],
-                    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-                );
+                session.containerExecReady ??= canExecContainer(containerId, 200);
+                containerExecReady = session.containerExecReady;
             }
             if (result.error) {
                 verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
             } else if (result.status !== 0) {
-                verification = containerExecReady && !mountsMayBeSettling && finalProofAttempt
+                verification = containerExecReady && finalProofAttempt
                     ? { kind: "mismatch", reason: `bind marker is not visible for ${containerPath}` }
                     : { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
-            } else if ((result.stdout ?? "") !== markerContent) {
+            } else if ((result.stdout ?? "") !== challenge.markerContent) {
                 verification = { kind: "mismatch", reason: `bind marker content changed for ${containerPath}` };
             } else {
                 verification = { kind: "verified", via: "identity" };
@@ -283,26 +311,13 @@ function proveContainerSeesCurrentBindSource(
             );
             let containerExecReady = false;
             if (result.error || result.status !== 0) {
-                attemptContext.containerExecReady ??= canExecContainerAfterBriefRetry(containerId);
-                containerExecReady = attemptContext.containerExecReady;
-            }
-            if ((result.error || result.status !== 0) && containerExecReady) {
-                const retryIdentity = observeBindMountSourceIdentity(hostPath, expected);
-                if (retryIdentity.kind !== "verified") return retryIdentity;
-                result = spawnSync(
-                    runtimeCli(),
-                    ["exec", containerId, "cat", containerPath],
-                    {
-                        encoding: null,
-                        stdio: ["pipe", "pipe", "pipe"],
-                        maxBuffer: 1024 * 1024 + 1,
-                    },
-                );
+                session.containerExecReady ??= canExecContainer(containerId, 200);
+                containerExecReady = session.containerExecReady;
             }
             if (result.error) {
                 verification = { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
             } else if (result.status !== 0) {
-                verification = containerExecReady && !mountsMayBeSettling && finalProofAttempt
+                verification = containerExecReady && finalProofAttempt
                     ? { kind: "mismatch", reason: `bind file is not readable for ${containerPath}` }
                     : { kind: "retryable", reason: `container exec unavailable for ${containerPath}` };
             } else {
@@ -324,7 +339,6 @@ function proveContainerSeesCurrentBindSource(
             reason: `bind source proof failed for ${containerPath}`,
         };
     } finally {
-        if (markerPath) rmSync(markerPath, { force: true });
         const finalIdentity = observeBindMountSourceIdentity(hostPath, expected);
         verification = combineLiveSourceProof(verification, finalIdentity.kind === "verified"
             ? finalIdentity
@@ -370,6 +384,35 @@ export function bindSourcePathsEquivalent(actual: string, expected: string): boo
     return normalizedHostPath(actual) === normalizedHostPath(expected);
 }
 
+type NativeMacDockerDesktopBindSource =
+    | { kind: "not-alias" }
+    | { kind: "candidate"; hostPath: string }
+    | { kind: "mismatch" };
+
+function pathHasTraversalSegments(path: string): boolean {
+    return path.replace(/\\/g, "/").split("/")
+        .some((segment) => segment === "." || segment === "..");
+}
+
+function nativeMacDockerDesktopBindSource(path: string): NativeMacDockerDesktopBindSource {
+    if (process.platform !== "darwin") return { kind: "not-alias" };
+    const prefixes = ["/host_mnt", "/run/desktop/mnt/host"];
+    const prefix = prefixes.find((candidate) => path.startsWith(`${candidate}/`));
+    if (!prefix) return { kind: "not-alias" };
+    const runtime = getRuntimeInfo();
+    if (runtime.runtime !== "docker"
+        || !runtime.dockerDesktop) {
+        return { kind: "mismatch" };
+    }
+    const hostPath = path.slice(prefix.length);
+    if (!hostPath.startsWith("/")
+        || hostPath.startsWith("//")
+        || pathHasTraversalSegments(hostPath)) {
+        return { kind: "mismatch" };
+    }
+    return { kind: "candidate", hostPath };
+}
+
 type FilesystemAliasVerification = "match" | "mismatch" | "retryable";
 
 function bindSourceIsTrustedFilesystemAlias(
@@ -377,18 +420,30 @@ function bindSourceIsTrustedFilesystemAlias(
     hostPath: string,
     expected: BindMountSourceIdentity,
 ): FilesystemAliasVerification {
-    if (bindSourcePathsEquivalent(observedSource, hostPath)
-        || bindSourcePathsEquivalent(observedSource, expected.realpath)) {
+    if (pathHasTraversalSegments(observedSource)) return "mismatch";
+    const nativeMacSource = nativeMacDockerDesktopBindSource(observedSource);
+    if (nativeMacSource.kind === "mismatch") return "mismatch";
+    const candidates = nativeMacSource.kind === "candidate"
+        ? [nativeMacSource.hostPath]
+        : [observedSource];
+    if (candidates.some((candidate) => (
+        bindSourcePathsEquivalent(candidate, hostPath)
+        || bindSourcePathsEquivalent(candidate, expected.realpath)
+    ))) {
         return "match";
     }
-    try {
-        return bindSourcePathsEquivalent(canonicalHostPath(observedSource), expected.realpath)
-            ? "match"
-            : "mismatch";
-    } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
-        return code === "ENOENT" || code === "ENOTDIR" ? "mismatch" : "retryable";
+    let canonicalizationUnavailable = false;
+    for (const candidate of candidates) {
+        try {
+            if (bindSourcePathsEquivalent(canonicalHostPath(candidate), expected.realpath)) {
+                return "match";
+            }
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException | undefined)?.code;
+            canonicalizationUnavailable ||= code !== "ENOENT" && code !== "ENOTDIR";
+        }
     }
+    return canonicalizationUnavailable ? "retryable" : "mismatch";
 }
 
 function dockerDaemonIdentity(result: ReturnType<typeof spawnSync>): string | null {
@@ -1327,9 +1382,8 @@ function collectMountEvidence(
     required: RequiredContainerMount,
     observed: InspectedContainerMount | undefined,
     policy: MountPresencePolicy,
-    mountsMayBeSettling: boolean,
     finalProofAttempt: boolean,
-    attemptContext: MountProofAttemptContext,
+    session: MountVerificationSession,
 ): MountEvidence {
     if (!observed) return {};
     if (required.type === "volume") {
@@ -1357,9 +1411,8 @@ function collectMountEvidence(
                     required.hostPath,
                     required.containerPath,
                     proof.identity,
-                    mountsMayBeSettling,
+                    session,
                     finalProofAttempt,
-                    attemptContext,
                 )
                 : { kind: "mismatch", reason: `bind source changed for ${required.containerPath}` } as const;
         return { sourcePathMatches, liveProof };
@@ -1399,16 +1452,16 @@ function verifyRequiredContainerMountsOnce(
     observedMounts: InspectedContainerMount[],
     requiredMounts: RequiredContainerMount[],
     policy: MountPresencePolicy,
+    session: MountVerificationSession,
     allowUnexpected = false,
-    mountsMayBeSettling = false,
     finalProofAttempt = false,
 ): MountVerification {
+    session.containerExecReady = undefined;
     const contracts = requiredMounts.map(mountContract);
     const shape = validateObservedMountSet(contracts, observedMounts, allowUnexpected);
     if (shape.kind === "mismatch") return shape;
     const observedByPath = new Map(observedMounts.map((mount) => [mount.Destination, mount]));
     const evidence = new Map<string, MountEvidence>();
-    const attemptContext: MountProofAttemptContext = {};
     for (const required of requiredMounts) {
         evidence.set(
             required.containerPath,
@@ -1417,9 +1470,8 @@ function verifyRequiredContainerMountsOnce(
                 required,
                 observedByPath.get(required.containerPath),
                 policy,
-                mountsMayBeSettling,
                 finalProofAttempt,
-                attemptContext,
+                session,
             ),
         );
     }
@@ -1432,65 +1484,78 @@ function verifyRequiredContainerMounts(
     requiredMounts: RequiredContainerMount[],
     policy: MountPresencePolicy,
     allowUnexpected = false,
-    mountsMayBeSettling = false,
 ): MountVerification {
-    return withBoundedVerificationRetry(
-        (finalAttempt) => verifyRequiredContainerMountsOnce(
-            containerId,
-            observedMounts,
-            requiredMounts,
-            policy,
-            allowUnexpected,
-            mountsMayBeSettling,
-            finalAttempt,
-        ),
-        (verification) => verification.kind === "retryable",
-    );
+    const session = createMountVerificationSession();
+    try {
+        return withBoundedVerificationRetry(
+            (finalAttempt) => verifyRequiredContainerMountsOnce(
+                containerId,
+                observedMounts,
+                requiredMounts,
+                policy,
+                session,
+                allowUnexpected,
+                finalAttempt,
+            ),
+            (verification) => verification.kind === "retryable",
+        );
+    } finally {
+        cleanupMountVerificationSession(session);
+    }
 }
-
-type CreatedContainerBindMountVerification = "match" | "retryable" | "mismatch";
 
 function inspectCreatedContainerBindMounts(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
-): CreatedContainerBindMountVerification {
+    finalProofAttempt: boolean,
+    session: MountVerificationSession,
+): MountVerification {
     const inspected = inspectContainerJsonOnce(containerId) as {
         Id?: unknown;
         Mounts?: InspectedContainerMount[];
         Config?: { Labels?: Record<string, string> };
     } | null;
-    if (!inspected) return "retryable";
-    if (inspected.Id !== containerId
-        || inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
-        return "mismatch";
+    if (!inspected) {
+        return { kind: "retryable", reason: "created container inspection is temporarily unavailable" };
     }
-    const verification = verifyRequiredContainerMountsOnce(
+    if (inspected.Id !== containerId) {
+        return { kind: "mismatch", reason: "created container identity changed during inspection" };
+    }
+    if (inspected.Config?.Labels?.[PROJECT_MOUNT_IDENTITY_LABEL] !== projectMountIdentity) {
+        return { kind: "mismatch", reason: "created container project mount identity label changed" };
+    }
+    return verifyRequiredContainerMountsOnce(
         containerId,
         inspected.Mounts ?? [],
         requiredMounts,
         "strict",
+        session,
         true,
-        true,
+        finalProofAttempt,
     );
-    if (verification.kind === "verified") return "match";
-    if (verification.kind === "retryable") return "retryable";
-    return "mismatch";
 }
 
-function createdContainerBindMountsMatch(
+function verifyCreatedContainerBindMounts(
     containerId: string,
     requiredMounts: RequiredContainerMount[],
     projectMountIdentity: string,
-): boolean {
-    return withBoundedVerificationRetry(
-        () => inspectCreatedContainerBindMounts(
-            containerId,
-            requiredMounts,
-            projectMountIdentity,
-        ),
-        (verification) => verification === "retryable",
-    ) === "match";
+): MountVerification {
+    const session = createMountVerificationSession();
+    try {
+        return withBoundedVerificationRetry(
+            (finalAttempt) => inspectCreatedContainerBindMounts(
+                containerId,
+                requiredMounts,
+                projectMountIdentity,
+                finalAttempt,
+                session,
+            ),
+            (verification) => verification.kind === "retryable",
+        );
+    } finally {
+        cleanupMountVerificationSession(session);
+    }
 }
 
 function containerInspectExplicitlyNotFound(
@@ -2457,12 +2522,17 @@ export function startProjectContainer(
         assertPreparedProjectMountSources();
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         assertRequiredFilesystemMountSources();
-        if (!createdContainerId || !createdContainerBindMountsMatch(
-            createdContainerId,
-            requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"),
-            projectMountIdentity,
-        )) {
-            throw new Error("created container bind mount identity verification failed");
+        const verification = createdContainerId
+            ? verifyCreatedContainerBindMounts(
+                createdContainerId,
+                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"),
+                projectMountIdentity,
+            )
+            : { kind: "mismatch", reason: "container runtime did not return an exact 64-hex container ID" } as const;
+        if (verification.kind !== "verified") {
+            throw new Error(
+                `created container bind mount identity verification failed (${verification.reason})`,
+            );
         }
     } catch (error) {
         if (createdContainerId) {

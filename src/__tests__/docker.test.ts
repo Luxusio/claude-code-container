@@ -14,10 +14,13 @@ let expandShortContainerIds = false;
 let latestCreatedContainer: { id: string; runArgs: string[] } | null = null;
 let autoInspectCreatedContainer = true;
 let autoInspectCreatedContainerFailuresRemaining = 0;
+let autoInspectCreatedMountSource = (source: string, _destination: string): string => source;
 const createdContainerInspectIds: string[] = [];
 let autoReadMountMarkers = true;
 let autoReadMountMarkerFailuresRemaining = 0;
+let autoReadMountMarkerFailuresPerMarker = 0;
 const mountMarkers = new Map<string, string>();
+const mountMarkerReadAttempts = new Map<string, number>();
 const mountChallengeContainerIds = new Set<string>();
 const mountChallengePaths = new Set<string>();
 const mismatchingMountChallengeContainerIds = new Set<string>();
@@ -51,7 +54,7 @@ vi.mock("child_process", async (importOriginal) => {
                         const match = volume.match(/^(.*):(\/[^:]+)(?::ro)?$/);
                         if (match) {
                             mounts.push({
-                                Source: match[1],
+                                Source: autoInspectCreatedMountSource(match[1], match[2]),
                                 Destination: match[2],
                                 Type: "bind",
                                 RW: !volume.endsWith(":ro"),
@@ -79,6 +82,11 @@ vi.mock("child_process", async (importOriginal) => {
                 const markerName = argv[3].slice(argv[3].lastIndexOf("/") + 1);
                 mountChallengeContainerIds.add(argv[1]);
                 mountChallengePaths.add(argv[3]);
+                const markerReadAttempt = (mountMarkerReadAttempts.get(markerName) ?? 0) + 1;
+                mountMarkerReadAttempts.set(markerName, markerReadAttempt);
+                if (markerReadAttempt <= autoReadMountMarkerFailuresPerMarker) {
+                    return makeResult(1, "", "mount marker is not visible yet");
+                }
                 if (autoReadMountMarkerFailuresRemaining > 0) {
                     autoReadMountMarkerFailuresRemaining -= 1;
                     return makeResult(1, "", "mount marker is not visible yet");
@@ -393,10 +401,13 @@ describe("docker.ts module exports", () => {
         latestCreatedContainer = null;
         autoInspectCreatedContainer = true;
         autoInspectCreatedContainerFailuresRemaining = 0;
+        autoInspectCreatedMountSource = (source: string): string => source;
         createdContainerInspectIds.length = 0;
         autoReadMountMarkers = true;
         autoReadMountMarkerFailuresRemaining = 0;
+        autoReadMountMarkerFailuresPerMarker = 0;
         mountMarkers.clear();
+        mountMarkerReadAttempts.clear();
         mountChallengeContainerIds.clear();
         mountChallengePaths.clear();
         mismatchingMountChallengeContainerIds.clear();
@@ -2004,7 +2015,7 @@ describe("docker.ts module exports", () => {
                 projectPath, ensureDirs, undefined, undefined, undefined, undefined, replacementGuard,
             )).toThrow("temporarily unavailable");
             expect(replacementGuard).not.toHaveBeenCalled();
-            expect(readinessProbeCount).toBe(15);
+            expect(readinessProbeCount).toBe(5);
             expectNoContainerReplacement();
         });
 
@@ -4018,6 +4029,116 @@ describe("docker.ts module exports", () => {
             expect(runArgs).not.toContain("--privileged");
         });
 
+        it.each([
+            "/host_mnt",
+            "/run/desktop/mnt/host",
+        ])("accepts a native macOS Docker Desktop bind source through %s and still proves it live", (prefix) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                dockerDesktop: true,
+            });
+            autoInspectCreatedMountSource = (source, destination) => (
+                source.startsWith("/") && destination !== "/var/run/docker.sock"
+                    ? `${prefix}${source}`
+                    : source
+            );
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`));
+
+            expect(startProjectContainer(projectPath, ensureDirs)).toMatch(/^ccc-/);
+            expect(mountChallengeContainerIds).toEqual(new Set([TEST_CREATED_CONTAINER_ID]));
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[2] === TEST_CREATED_CONTAINER_ID
+            ))).toBe(false);
+        });
+
+        it.each([
+            "/host_mnt/home/user/my-project",
+            "/host_mnt/../home/user/my-project",
+            "/run/desktop/mnt/host/../../../../home/user/my-project",
+        ])("rejects the macOS Docker Desktop VM bind source %s without native Docker Desktop evidence", (observedProjectSource) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-native",
+                remote: false,
+                dockerDesktop: false,
+            });
+            const projectMountPath = `/project/${getProjectId(projectPath)}`;
+            autoInspectCreatedMountSource = (source, destination) => (
+                destination === projectMountPath ? observedProjectSource : source
+            );
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                `created container bind mount identity verification failed (bind source changed for ${projectMountPath})`,
+            );
+            expect([...mountChallengePaths].some((path) => (
+                path.startsWith(`${projectMountPath}/`)
+            ))).toBe(false);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[1] === "-f"
+                && (call[1] as string[])[2] === TEST_CREATED_CONTAINER_ID
+            ))).toBe(true);
+        });
+
+        it.each([
+            "/host_mnt/home/user/foreign-project",
+            "/host_mnt/home/user/foreign/../my-project",
+            "/host_mnt/../home/user/my-project",
+            "/run/desktop/mnt/host/../../../../home/user/my-project",
+        ])("rejects a non-exact native macOS Docker Desktop bind source %s", (observedProjectSource) => {
+            vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+            _setRuntimeInfoForTest({
+                runtime: "docker",
+                flavor: "docker-desktop",
+                remote: true,
+                dockerDesktop: true,
+            });
+            const projectMountPath = `/project/${getProjectId(projectPath)}`;
+            autoInspectCreatedMountSource = (source, destination) => (
+                destination === projectMountPath ? observedProjectSource : source
+            );
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${TEST_CREATED_CONTAINER_ID}\n`));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                `created container bind mount identity verification failed (bind source changed for ${projectMountPath})`,
+            );
+            expect([...mountChallengePaths].some((path) => (
+                path.startsWith(`${projectMountPath}/`)
+            ))).toBe(false);
+            expect(spawnSyncMock.mock.calls.some((call: unknown[]) => (
+                (call[1] as string[])[0] === "rm"
+                && (call[1] as string[])[1] === "-f"
+                && (call[1] as string[])[2] === TEST_CREATED_CONTAINER_ID
+            ))).toBe(true);
+        });
+
         it("rejects a short created-container ID without targeting it for cleanup", () => {
             expandShortContainerIds = false;
             mockExistsSync.mockReturnValue(false);
@@ -4075,6 +4196,55 @@ describe("docker.ts module exports", () => {
             expect(mountChallengeContainerIds).toEqual(new Set([createdId]));
         });
 
+        it("reuses each directory challenge while Docker Desktop propagates a fresh bind marker", () => {
+            const createdId = TEST_CREATED_CONTAINER_ID;
+            autoReadMountMarkerFailuresPerMarker = 2;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${createdId}\n`));
+
+            expect(startProjectContainer(projectPath, ensureDirs)).toMatch(/^ccc-/);
+            expect(createdContainerInspectIds.length).toBeGreaterThanOrEqual(2);
+            expect(mountChallengeContainerIds).toEqual(new Set([createdId]));
+            expect([...mountMarkerReadAttempts.values()].every((attempts) => attempts >= 3)).toBe(true);
+            const markerWrites = mockWriteFileSync.mock.calls.filter((call: unknown[]) => (
+                typeof call[0] === "string" && call[0].includes(".ccc-mount-identity-")
+            ));
+            expect(markerWrites).toHaveLength(mountChallengePaths.size);
+            expect(mockRmSync.mock.calls.filter((call: unknown[]) => (
+                typeof call[0] === "string" && call[0].includes(".ccc-mount-identity-")
+            ))).toHaveLength(markerWrites.length);
+        });
+
+        it("reports a permanently invisible created-container marker after the bounded retry", () => {
+            const createdId = TEST_CREATED_CONTAINER_ID;
+            autoReadMountMarkerFailuresPerMarker = 10_000;
+            mockExistsSync.mockReturnValue(false);
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(0, "sha256:abc\n"))
+                .mockReturnValueOnce(makeResult(0, "<no value>\n"))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValueOnce(makeResult(0, ""))
+                .mockReturnValue(makeResult(0, `${createdId}\n`));
+
+            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow(
+                `created container bind mount identity verification failed (bind marker is not visible for /project/${getProjectId(projectPath)})`,
+            );
+            expect(createdContainerInspectIds).toHaveLength(5);
+            const markerWrites = mockWriteFileSync.mock.calls.filter((call: unknown[]) => (
+                typeof call[0] === "string" && call[0].includes(".ccc-mount-identity-")
+            ));
+            expect(mockRmSync.mock.calls.filter((call: unknown[]) => (
+                typeof call[0] === "string" && call[0].includes(".ccc-mount-identity-")
+            ))).toHaveLength(markerWrites.length);
+        });
+
         it("removes a newly created container whose project bind source fails inspection", () => {
             const createdId = TEST_CREATED_CONTAINER_ID;
             const ready = vi.fn();
@@ -4094,6 +4264,7 @@ describe("docker.ts module exports", () => {
                             Source: "/foreign/project",
                             Destination: `/project/${getProjectId(projectPath)}`,
                             Type: "bind",
+                            RW: true,
                         }],
                         Config: {
                             Labels: {
@@ -4118,7 +4289,9 @@ describe("docker.ts module exports", () => {
                 undefined,
                 undefined,
                 ready,
-            )).toThrow("created container bind mount identity verification failed");
+            )).toThrow(
+                `created container bind mount identity verification failed (bind source changed for /project/${getProjectId(projectPath)})`,
+            );
             expect(ready).not.toHaveBeenCalled();
             expect(spawnSyncMock.mock.calls.some((call) => (
                 (call[1] as string[])[0] === "rm"
