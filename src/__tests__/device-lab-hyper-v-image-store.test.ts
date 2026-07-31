@@ -1,10 +1,15 @@
-import { readFileSync } from "fs";
+import { createHash } from "crypto";
+import { existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { describe, expect, it } from "vitest";
 import {
+    cleanupIncompleteHyperVImageArtifacts,
     hyperVImageProfile,
     hyperVImageProfileRoot,
     hyperVImageRoot,
     hyperVOwnerImageProfileRoot,
+    resolveHyperVImageForCreate,
 } from "../device-lab/broker/hyper-v/image-store.js";
 
 describe("Hyper-V image store module", () => {
@@ -32,5 +37,124 @@ describe("Hyper-V image store module", () => {
         );
 
         expect(source).not.toContain("device-lab-broker");
+    });
+
+    it("preserves a regular retry-cache candidate for checksum verification on the next attempt", () => {
+        const profileRoot = join(tmpdir(), `ccc-hyper-v-image-cleanup-${process.pid}-${Date.now()}`);
+        mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
+        writeFileSync(join(profileRoot, "source.vhdx.zip"), "verified-archive");
+        writeFileSync(join(profileRoot, "base.partial.vhdx"), "partial-image");
+
+        try {
+            cleanupIncompleteHyperVImageArtifacts(profileRoot);
+
+            expect(readFileSync(join(profileRoot, "source.vhdx.zip"), "utf8")).toBe("verified-archive");
+            expect(existsSync(join(profileRoot, "base.partial.vhdx"))).toBe(false);
+            expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
+        } finally {
+            rmSync(profileRoot, { recursive: true, force: true });
+        }
+    });
+
+    const invalidCacheKinds = process.platform === "win32"
+        ? (["directory", "hardlink", "empty", "oversized"] as const)
+        : (["directory", "symlink", "hardlink", "empty", "oversized"] as const);
+
+    it.each(invalidCacheKinds)(
+        "removes an invalid %s retry cache during failure cleanup",
+        (kind) => {
+            const root = join(tmpdir(), `ccc-hyper-v-invalid-cache-${kind}-${process.pid}-${Date.now()}`);
+            const profileRoot = join(root, "profile");
+            const sourceArchivePath = join(profileRoot, "source.vhdx.zip");
+            mkdirSync(profileRoot, { recursive: true });
+
+            try {
+                if (kind === "directory") {
+                    mkdirSync(sourceArchivePath);
+                    writeFileSync(join(sourceArchivePath, "unexpected"), "content");
+                } else if (kind === "symlink") {
+                    const target = join(root, "outside.zip");
+                    writeFileSync(target, "outside");
+                    symlinkSync(target, sourceArchivePath);
+                } else if (kind === "hardlink") {
+                    const target = join(profileRoot, "other.zip");
+                    writeFileSync(target, "linked");
+                    linkSync(target, sourceArchivePath);
+                } else if (kind === "oversized") {
+                    writeFileSync(sourceArchivePath, "oversized");
+                    truncateSync(sourceArchivePath, (6 * 1024 * 1024 * 1024) + 1);
+                } else {
+                    writeFileSync(sourceArchivePath, "");
+                }
+
+                cleanupIncompleteHyperVImageArtifacts(profileRoot);
+
+                expect(existsSync(sourceArchivePath)).toBe(false);
+                if (kind === "symlink") {
+                    expect(readFileSync(join(root, "outside.zip"), "utf8")).toBe("outside");
+                }
+            } finally {
+                rmSync(root, { recursive: true, force: true });
+            }
+        },
+    );
+
+    it("retains the bounded source archive and removes transient work after committing an automatic image manifest", async () => {
+        const privateRoot = join(tmpdir(), `ccc-hyper-v-image-success-${process.pid}-${Date.now()}`);
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        const sourceArchivePath = join(profileRoot, "source.vhdx.zip");
+        const image = Buffer.from("automatic-hyper-v-image");
+        const sha256 = createHash("sha256").update(image).digest("hex");
+        mkdirSync(profileRoot, { recursive: true });
+
+        try {
+            const result = await resolveHyperVImageForCreate(
+                "0123456789abcdef",
+                { backend: "linux-vm", dryRun: false, create: { profile: "ubuntu-lts" } },
+                {},
+                {
+                    cwd: privateRoot,
+                    privateRoot,
+                    resolveExecutable: () => "powershell.exe",
+                    run: async () => {
+                        mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
+                        writeFileSync(join(profileRoot, ".acquire-work", "extracted.vhdx"), "temporary");
+                        writeFileSync(imagePath, image);
+                        writeFileSync(sourceArchivePath, "verified-archive");
+                        return {
+                            mode: "exec",
+                            provider: "hyper-v",
+                            status: 0,
+                            stdout: JSON.stringify({
+                                ok: true,
+                                profile: "ubuntu-lts",
+                                imagePath,
+                                sha256,
+                                sizeBytes: image.length,
+                                virtualSizeBytes: 32 * 1024 * 1024 * 1024,
+                                vhdType: "Dynamic",
+                                generation: 2,
+                                reused: false,
+                            }),
+                            stderr: "",
+                        };
+                    },
+                    limits: {
+                        acquireTimeoutMs: 60_000,
+                        prepareTimeoutMs: 60_000,
+                        lockWaitMs: 60_000,
+                        commandOutputBytes: 64 * 1024,
+                    },
+                },
+            );
+
+            expect(result).toEqual(expect.objectContaining({ ok: true, prepared: true }));
+            expect(readFileSync(join(profileRoot, "manifest.json"), "utf8")).toContain(sha256);
+            expect(readFileSync(sourceArchivePath, "utf8")).toBe("verified-archive");
+            expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
+        } finally {
+            rmSync(privateRoot, { recursive: true, force: true });
+        }
     });
 });

@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
@@ -230,14 +230,18 @@ describe("Hyper-V provider adapter", () => {
         const acquireScript = scriptOf(acquire);
         expect(acquireScript).toContain("Save-BoundedDownload");
         expect(acquireScript).toContain("CCC_HYPER_V_RESULT_B64:");
+        expect(acquireScript).toContain("function Set-CccAcquireStage");
+        expect(acquireScript).toContain("throw $script:CccAcquireStage");
+        expect(acquireScript.indexOf("try {"))
+            .toBeLessThan(acquireScript.indexOf("Import-Module Hyper-V -ErrorAction Stop"));
         const acquireStages = [
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-hash-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-archive-check-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-extract-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-normalize-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed",
-            "CCC_HYPER_V_STAGE:hyper-v-base-image-finalize-failed",
+            "Set-CccAcquireStage 'hyper-v-base-image-download-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-hash-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-archive-check-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-extract-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-normalize-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-finalize-failed'",
         ];
         for (let index = 1; index < acquireStages.length; index++) {
             expect(acquireScript.indexOf(acquireStages[index - 1]))
@@ -281,6 +285,62 @@ describe("Hyper-V provider adapter", () => {
         expect(runtimeFailure.status).toBe(1);
         expect(runtimeFailure.stderr).toContain("hyper-v-powershell-execution-failed");
         expect(runtimeFailure.stderr).not.toContain("secret-bearing");
+
+        for (const stage of ["download", "hash", "archive-check", "extract", "normalize", "inspection", "finalize"]) {
+            const diagnostic = `hyper-v-base-image-${stage}-failed`;
+            const stageFailure = run(encoded([
+                `$script:CccAcquireStage = '${diagnostic}'`,
+                "try { throw 'untrusted stage failure' } catch {",
+                "  $FailureMessage = [string]$_.Exception.Message",
+                "  if ($FailureMessage -match '^hyper-v-[a-z0-9-]{3,128}$') { throw $FailureMessage }",
+                "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $script:CccAcquireStage))",
+                "  throw $script:CccAcquireStage",
+                "}",
+            ].join("\n")));
+            expect(stageFailure.status).toBe(1);
+            expect(stageFailure.stdout).toContain(`CCC_HYPER_V_STAGE:${diagnostic}`);
+            expect(stageFailure.stderr).toContain(diagnostic);
+            expect(stageFailure.stderr).not.toContain("untrusted stage failure");
+        }
+    });
+
+    it.skipIf(process.platform !== "win32")("keeps a Canonical ZIP readable by tar while a non-delete-sharing handle is held", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-archive-lock-"));
+        const payload = join(root, "payload.txt");
+        const archive = join(root, "source.vhdx.zip");
+        writeFileSync(payload, "archive-lock-probe");
+        try {
+            const created = spawnSync("tar.exe", ["-a", "-cf", archive, "-C", root, "payload.txt"], {
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 30_000,
+            });
+            expect(created.status, created.stderr || created.error?.message).toBe(0);
+            const escapedArchive = archive.replace(/'/g, "''");
+            const probe = [
+                "$ErrorActionPreference = 'Stop'",
+                `$Archive = '${escapedArchive}'`,
+                "$Handle = [IO.File]::Open($Archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)",
+                "try { & tar.exe -tf $Archive; if ($LASTEXITCODE -ne 0) { throw 'tar-read-failed' } } finally { $Handle.Dispose() }",
+            ].join("\n");
+            const result = spawnSync("powershell.exe", [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                Buffer.from(probe, "utf16le").toString("base64"),
+            ], {
+                encoding: "utf8",
+                windowsHide: true,
+                timeout: 30_000,
+            });
+            expect(result.status, result.stderr || result.error?.message).toBe(0);
+            expect(result.stdout).toContain("payload.txt");
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it.skipIf(process.platform !== "win32")("creates an unencrypted SSH key through PowerShell 5.1 without native empty-argument rewriting", () => {
@@ -541,9 +601,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("$HostName.EndsWith('.microsoft.com')");
         expect(script).not.toMatch(/\$ValidateMicrosoftVhdx[^\n]+aka\.ms/);
         expect(script).toContain("AbsolutePath.EndsWith('.vhdx'");
-        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-download-failed"))
-            .toBeLessThan(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed"));
-        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-inspection-failed"))
+        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-download-failed'"))
+            .toBeLessThan(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'"));
+        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'"))
             .toBeLessThan(script.indexOf("Assert-BaseVhd $PartialPath"));
         expect(script).toContain("Assert-BaseVhd $PartialPath");
         expect(script).toContain("base.partial.vhdx");
@@ -563,6 +623,25 @@ describe("Hyper-V provider adapter", () => {
             imageRoot: "/state/images/hyper-v",
         });
         const script = scriptOf(command);
+        expect(script).toContain("$SourceArchivePath =");
+        expect(script).toContain("source.vhdx.zip");
+        expect(script).toContain("$ArchiveDownloadPath = Join-Path $WorkPath 'source.download.zip'");
+        expect(script).toContain("Test-Path -LiteralPath $ArchivePath -PathType Container");
+        expect(script).toContain("Test-Path -LiteralPath $ArchivePath -PathType Leaf");
+        expect(script).toContain("$ArchiveReady = $CachedHash -eq $UbuntuArchiveSha256");
+        expect(script).toContain("[IO.FileShare]::Read");
+        expect(script).toContain("$ArchiveHandle = [IO.File]::Open($ArchivePath");
+        expect(script).toContain("$LockedHash = (Get-FileHash -LiteralPath $ArchivePath");
+        expect(script).toContain("$DiscardArchive = $true");
+        expect(script).toContain("if ($ArchiveHandle) { $ArchiveHandle.Dispose(); $ArchiveHandle = $null }");
+        expect(script).toContain("if ($DiscardArchive -and (Test-Path -LiteralPath $SourceArchivePath -PathType Leaf))");
+        expect(script).toContain("Move-Item -LiteralPath $ArchiveDownloadPath -Destination $ArchivePath");
+        expect(script.indexOf("Get-FileHash -LiteralPath $ArchiveDownloadPath"))
+            .toBeLessThan(script.indexOf("Move-Item -LiteralPath $ArchiveDownloadPath -Destination $ArchivePath"));
+        expect(script.indexOf("Move-Item -LiteralPath $ArchiveDownloadPath -Destination $ArchivePath"))
+            .toBeLessThan(script.indexOf("$LockedHash = (Get-FileHash -LiteralPath $ArchivePath"));
+        expect(script.indexOf("$LockedHash = (Get-FileHash -LiteralPath $ArchivePath"))
+            .toBeLessThan(script.indexOf("tar.exe -tf $ArchivePath"));
         expect(script).toContain("tar.exe -tf $ArchivePath");
         expect(script).toContain("tar.exe -tvf $ArchivePath");
         expect(script).toContain("& tar.exe -xf $ArchivePath -C $ExtractPath");
@@ -578,11 +657,12 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256");
         expect(script).toContain("hyper-v-base-image-checksum-mismatch");
         expect(script).toContain("hyper-v-base-image-hash-failed");
+        expect(script).toContain("Set-CccAcquireStage 'hyper-v-base-image-hash-failed'");
         expect(script).toContain("hyper-v-base-image-archive-check-failed");
         expect(script).toContain("hyper-v-base-image-extract-failed");
-        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-archive-check-failed"))
+        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-archive-check-failed'"))
             .toBeLessThan(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"));
-        expect(script.indexOf("CCC_HYPER_V_STAGE:hyper-v-base-image-extract-failed"))
+        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-extract-failed'"))
             .toBeLessThan(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"));
         expect(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"))
             .toBeLessThan(script.indexOf("if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-extract-failed' }"));
@@ -591,6 +671,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$MaximumArchiveEntries = 64");
         expect(script).toContain("$MaximumRegularFiles = 8");
         expect(script).toContain("$MaximumExtractedBytes = [long]64GB");
+        expect(script).toContain("$RequiredExtractionBytes = [long]($ExpectedVhdxBytes * 2) + [long]2GB");
+        expect(script).toContain("if ([long]$ProfileDrive.AvailableFreeSpace -lt $RequiredExtractionBytes)");
         expect(script).toContain("hyper-v-base-image-archive-size-rejected");
         expect(script).toContain("hyper-v-base-image-archive-size-mismatch");
         expect(script).toContain("Get-ChildItem -LiteralPath $ExtractPath -Recurse -File -Force");
@@ -607,7 +689,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-base-image-archive-vhdx-count-invalid");
         expect(script).toContain("Get-CccVhdGeneration $ImagePath");
         expect(script).toContain("hyper-v-base-image-dismount-failed");
-        expect(script).toContain("Remove-Item -LiteralPath $WorkPath -Recurse -Force -ErrorAction SilentlyContinue");
+        expect(script).toContain("if (Test-Path -LiteralPath $WorkPath) { throw 'hyper-v-base-image-work-path-not-clean' }");
+        expect(script).not.toContain("Remove-Item -LiteralPath $WorkPath -Recurse");
+        expect(script).toContain("if ($FailureMessage -match '^hyper-v-[a-z0-9-]{3,128}$') { throw $FailureMessage }");
+        expect(script).toContain("[Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $script:CccAcquireStage))");
+        expect(script).toContain("throw $script:CccAcquireStage");
     });
 
     it("rejects non-automatic acquisition profiles and unsafe image roots", () => {

@@ -26,6 +26,7 @@ import {
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;
+const HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES = 6 * 1024 * 1024 * 1024;
 const HYPER_V_IMAGE_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 
 export type HyperVImageProfile = "windows-11" | "windows-server" | "ubuntu-lts";
@@ -108,6 +109,27 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
             assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cleanup");
             assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
         });
+    }
+    const sourceArchive = join(profileRoot, "source.vhdx.zip");
+    try {
+        const archiveMetadata = lstatSync(sourceArchive);
+        const validRetryCache = archiveMetadata.isFile()
+            && !archiveMetadata.isSymbolicLink()
+            && archiveMetadata.nlink === 1
+            && archiveMetadata.size > 0
+            && archiveMetadata.size <= HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES;
+        if (!validRetryCache) {
+            if (archiveMetadata.isDirectory() && !archiveMetadata.isSymbolicLink()) {
+                quarantineAndRemoveDirectory(sourceArchive, (path) => {
+                    assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cache-cleanup");
+                    assertNoSymlinkPathComponents(path, "hyper-v-base-image-cache-cleanup");
+                });
+            } else {
+                rmSync(sourceArchive, { force: true });
+            }
+        }
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }
     if (!existsSync(join(profileRoot, "manifest.json"))) rmSync(join(profileRoot, "base.vhdx"), { force: true });
 }
@@ -531,6 +553,7 @@ export async function resolveHyperVImageForCreate(
                     }
                     const manifest = hyperVImageManifest(profile, imagePath, observation, true);
                     writeJsonFileAtomically(join(globalProfileRoot, "manifest.json"), manifest);
+                    cleanupIncompleteHyperVImageArtifacts(globalProfileRoot);
                     return {
                         ok: true as const,
                         params: { ...input, profile, image: imagePath, baseImageSha256: observation.sha256, baseImageGeneration: observation.generation, diskMaxBytes: observation.virtualSizeBytes },
