@@ -694,7 +694,13 @@ describe("buildDockerRunArgs — container labels", () => {
         const labels = extractLabels(args);
         expect(labels["ccc.managed"]).toBe("true");
         expect(labels["ccc.project.path"]).toBe("/home/user/myproject");
+        expect(labels["ccc.profile"]).toBe("");
         expect(labels["ccc.cli.version"]).toBeDefined();
+    });
+
+    it("records the explicit profile namespace", () => {
+        const labels = extractLabels(buildDockerRunArgs(makeOpts({ profile: "work" })));
+        expect(labels["ccc.profile"]).toBe("work");
     });
 
     it("sets com.docker.compose.service to the container name", () => {

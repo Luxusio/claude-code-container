@@ -196,9 +196,13 @@ vi.mock("../device-lab-admin.js", () => ({
 
 const mockGetSessionLockClaimsForContainer = vi.fn<(...args: unknown[]) => string[]>();
 const mockWithContainerLifecycleLock = vi.fn((_: string, operation: () => unknown) => operation());
+const mockWithProjectFamilyLifecycleLock = vi.fn((_: string, operation: () => unknown) => operation());
 vi.mock("../session.js", () => ({
     getSessionLockClaimsForContainer: (...args: unknown[]) => mockGetSessionLockClaimsForContainer(...args),
     withContainerLifecycleLock: (...args: [string, () => unknown]) => mockWithContainerLifecycleLock(...args),
+    withProjectFamilyLifecycleLock: (...args: [string, () => unknown]) => (
+        mockWithProjectFamilyLifecycleLock(...args)
+    ),
 }));
 
 // Import AFTER mocks
@@ -234,6 +238,7 @@ const {
     bindSourcePathsEquivalent,
     bindMountSourceIdentityDigest,
     projectPathIdentityMatches,
+    findManagedProjectNamespaceCollision,
     startProjectContainer,
     stopProjectContainer,
     removeProjectContainer,
@@ -415,6 +420,7 @@ describe("docker.ts module exports", () => {
         mockCleanupOwnerDevices.mockReset();
         mockGetSessionLockClaimsForContainer.mockReset().mockReturnValue([]);
         mockWithContainerLifecycleLock.mockClear();
+        mockWithProjectFamilyLifecycleLock.mockClear();
         mockExistsSync.mockReset().mockReturnValue(true);
         mockCloseSync.mockReset();
         mockOpenSync.mockReset().mockReturnValue(17);
@@ -496,6 +502,153 @@ describe("docker.ts module exports", () => {
                 "/run/desktop/mnt/host/c/Users/Luxus/Project/other",
                 "C:\\Users\\Luxus\\Project\\catchy",
             )).toBe(false);
+        });
+    });
+
+    describe("findManagedProjectNamespaceCollision", () => {
+        const projectPath = "C:\\Users\\Luxus\\Project\\repo";
+        const physicalPath = "C:\\Users\\Luxus\\Project\\repo";
+        const sourceIdentity = { realpath: physicalPath, dev: "1", ino: "1" };
+        const mountIdentity = bindMountSourceIdentityDigest(sourceIdentity);
+        const legacyContainerId = "a".repeat(64);
+
+        function withWindowsPlatform<T>(operation: () => T): T {
+            const originalPlatform = process.platform;
+            try {
+                Object.defineProperty(process, "platform", { value: "win32" });
+                return operation();
+            } finally {
+                Object.defineProperty(process, "platform", { value: originalPlatform });
+            }
+        }
+
+        function legacyInspection(
+            containerName: string,
+            labeledPath: string,
+            labels: Record<string, string> = {},
+        ): string {
+            return JSON.stringify({
+                Id: legacyContainerId,
+                Name: `/${containerName}`,
+                Config: {
+                    Labels: {
+                        "ccc.managed": "true",
+                        "ccc.project.path": labeledPath,
+                        ...labels,
+                    },
+                },
+                Mounts: [{
+                    Source: labeledPath,
+                    Destination: "/project/repo-deadbeef0000",
+                    Type: "bind",
+                    RW: true,
+                }],
+            });
+        }
+
+        it("finds a canonical-era default-profile container for the same physical project", () => {
+            const canonicalAlias = "C:\\Users\\LUXUS\\PROJECT\\repo";
+            mockRealpathSync.mockImplementation((path: string) => (
+                path === projectPath || path === canonicalAlias ? physicalPath : path
+            ));
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "ps") return makeResult(0, `${legacyContainerId}\n`);
+                if (args[0] === "inspect") {
+                    return makeResult(
+                        0,
+                        legacyInspection("ccc-repo-deadbeef0000", canonicalAlias),
+                    );
+                }
+                return makeResult(1);
+            });
+
+            expect(withWindowsPlatform(() => findManagedProjectNamespaceCollision(
+                projectPath,
+                mountIdentity,
+                sourceIdentity,
+            ))).toEqual({
+                containerId: legacyContainerId,
+                containerName: "ccc-repo-deadbeef0000",
+                projectPath: canonicalAlias,
+            });
+            expect(spawnSyncMock.mock.calls.some((call) => {
+                const args = call[1] as string[];
+                return args[0] === "stop" || args[0] === "rm" || args[0] === "run";
+            })).toBe(false);
+        });
+
+        it("uses a physical mount identity label even when lexical paths differ", () => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "ps") return makeResult(0, `${legacyContainerId}\n`);
+                if (args[0] === "inspect") {
+                    return makeResult(0, legacyInspection(
+                        "ccc-repo-deadbeef0000",
+                        "D:\\junction\\repo",
+                        { "ccc.project.mount-identity": mountIdentity },
+                    ));
+                }
+                return makeResult(1);
+            });
+
+            expect(withWindowsPlatform(() => findManagedProjectNamespaceCollision(
+                projectPath,
+                mountIdentity,
+                sourceIdentity,
+            ))?.containerName).toBe("ccc-repo-deadbeef0000");
+        });
+
+        it("allows a different explicit profile for the same physical project", () => {
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "ps") return makeResult(0, `${legacyContainerId}\n`);
+                if (args[0] === "inspect") {
+                    return makeResult(0, legacyInspection(
+                        "ccc-repo-deadbeef0000--p--work",
+                        projectPath,
+                        {
+                            "ccc.project.mount-identity": mountIdentity,
+                            "ccc.profile": "work",
+                        },
+                    ));
+                }
+                return makeResult(1);
+            });
+
+            expect(withWindowsPlatform(() => findManagedProjectNamespaceCollision(
+                projectPath,
+                mountIdentity,
+                sourceIdentity,
+            ))).toBeNull();
+            expect(withWindowsPlatform(() => findManagedProjectNamespaceCollision(
+                projectPath,
+                mountIdentity,
+                sourceIdentity,
+                "work",
+            ))?.profile).toBe("work");
+        });
+
+        it.each([
+            ["inventory failure", makeResult(1, "", "daemon unavailable")],
+            ["malformed inventory", makeResult(0, "short-id\n")],
+        ])("fails closed on %s", (_name, listedResult) => {
+            spawnSyncMock.mockReturnValue(listedResult);
+
+            expect(() => withWindowsPlatform(() => findManagedProjectNamespaceCollision(
+                projectPath,
+                mountIdentity,
+                sourceIdentity,
+            ))).toThrow("refusing duplicate container creation");
+        });
+
+        it("does not enumerate global namespaces outside Windows", () => {
+            expect(findManagedProjectNamespaceCollision(
+                "/home/user/repo",
+                mountIdentity,
+                { realpath: "/home/user/repo", dev: "1", ino: "1" },
+            )).toBeNull();
+            expect(spawnSyncMock).not.toHaveBeenCalled();
         });
     });
 
@@ -1685,6 +1838,58 @@ describe("docker.ts module exports", () => {
             expandShortContainerIds = true;
             ensureDirs.mockReset();
             mockExistsSync.mockReturnValue(true);
+        });
+
+        it("preserves a canonical-era Windows container instead of creating a duplicate", () => {
+            const existingId = "b".repeat(64);
+            const existingName = "ccc-my-project-deadbeef0000";
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") {
+                    return makeResult(0, "<no value>\n");
+                }
+                if (args[0] === "ps"
+                    && args.includes("--filter")
+                    && args.includes("label=ccc.managed=true")) {
+                    return makeResult(0, `${existingId}\n`);
+                }
+                if (args[0] === "ps") return makeResult(0, "");
+                if (args[0] === "inspect" && args.includes(existingId)) {
+                    return makeResult(0, JSON.stringify({
+                        Id: existingId,
+                        Name: `/${existingName}`,
+                        Config: {
+                            Labels: {
+                                "ccc.managed": "true",
+                                "ccc.project.path": projectPath.toUpperCase(),
+                                "ccc.project.mount-identity": defaultProjectMountIdentity(projectPath),
+                            },
+                        },
+                        Mounts: [{
+                            Source: projectPath,
+                            Destination: "/project/my-project-deadbeef0000",
+                            Type: "bind",
+                            RW: true,
+                        }],
+                    }));
+                }
+                return makeResult(0);
+            });
+            const originalPlatform = process.platform;
+            try {
+                Object.defineProperty(process, "platform", { value: "win32" });
+                expect(() => startProjectContainer(projectPath, ensureDirs))
+                    .toThrow(`CCC container ${existingName} already owns this physical project`);
+            } finally {
+                Object.defineProperty(process, "platform", { value: originalPlatform });
+            }
+
+            expect(mockWithProjectFamilyLifecycleLock).toHaveBeenCalledWith(
+                expect.stringMatching(/^mount-[a-f0-9]{64}$/),
+                expect.any(Function),
+            );
+            expectNoContainerReplacement();
         });
 
         it("does not create a replacement when the initially running container disappears", () => {
@@ -4646,8 +4851,18 @@ describe("docker.ts module exports", () => {
             expect((execCall![1] as string[])).toContain("sh");
         });
 
-        it("calls process.exit(1) when container creation fails", () => {
+        it("releases the physical project lock when container creation fails", () => {
             mockExistsSync.mockReturnValue(false);
+            let lockReleased = false;
+            mockWithProjectFamilyLifecycleLock.mockImplementationOnce(
+                (_key: string, operation: () => unknown) => {
+                    try {
+                        return operation();
+                    } finally {
+                        lockReleased = true;
+                    }
+                },
+            );
 
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(0, "sha256:abc\n")) // isImageExists
@@ -4657,12 +4872,9 @@ describe("docker.ts module exports", () => {
                 .mockReturnValueOnce(makeResult(0, ""))             // isContainerExists -> false
                 .mockReturnValue(makeResult(1));                     // docker run -> fail
 
-            const mockExit = vi.spyOn(process, "exit").mockImplementation(() => {
-                throw new Error("process.exit");
-            });
-            expect(() => startProjectContainer(projectPath, ensureDirs)).toThrow("process.exit");
-            expect(mockExit).toHaveBeenCalledWith(1);
-            mockExit.mockRestore();
+            expect(() => startProjectContainer(projectPath, ensureDirs))
+                .toThrow("Failed to create container");
+            expect(lockReleased).toBe(true);
         });
 
         it("uses darwin SSH agent socket on darwin platform", () => {

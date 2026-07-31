@@ -50,7 +50,11 @@ import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { deviceLabContainerName, deviceLabOwnerId } from "./device-lab-owner.js";
 import { getAllCredentialMounts } from "./tool-registry.js";
 import type { CredentialMount } from "./tool-registry.js";
-import { getSessionLockClaimsForContainer, withContainerLifecycleLock } from "./session.js";
+import {
+    getSessionLockClaimsForContainer,
+    withContainerLifecycleLock,
+    withProjectFamilyLifecycleLock,
+} from "./session.js";
 import {
     validateObservedMountSet,
     verifyMountSet,
@@ -643,6 +647,7 @@ export interface DockerRunArgsOptions {
     containerName: string;
     fullPath: string;
     projectMountPath: string;
+    profile?: string;
     credentialMounts: Array<{ hostPath: string; containerPath: string }>;
     gitIdentityMounts?: Array<{ hostPath: string; containerPath: string }>;
     claudeJsonFile: string;
@@ -695,6 +700,7 @@ function getComposeLabels(
     containerName: string,
     fullPath: string,
     projectMountIdentity?: string,
+    profile?: string,
 ): string[] {
     const labels = [
         "--label", "com.docker.compose.project=ccc",
@@ -704,6 +710,7 @@ function getComposeLabels(
         "--label", "com.docker.compose.container-number=1",
         "--label", "ccc.managed=true",
         "--label", `ccc.project.path=${fullPath}`,
+        "--label", `ccc.profile=${profile ?? ""}`,
         "--label", `ccc.cli.version=${CLI_VERSION}`,
     ];
     if (projectMountIdentity) {
@@ -831,6 +838,7 @@ export function buildDockerRunArgs(opts: DockerRunArgsOptions): string[] {
         opts.containerName,
         opts.fullPath,
         opts.projectMountIdentity,
+        opts.profile,
     ));
     if (opts.deviceLabMountIdentity) {
         args.push("--label", `${DEVICE_LAB_MOUNT_IDENTITY_LABEL}=${opts.deviceLabMountIdentity}`);
@@ -922,6 +930,132 @@ function resolveHostSocketPath(): string {
 
 export function getContainerName(projectPath: string, profile?: string): string {
     return deviceLabContainerName(projectPath, profile);
+}
+
+const MANAGED_CONTAINER_NAME_PATTERN =
+    /^ccc-[a-z0-9-]*-[a-f0-9]{12}(?:--p--([a-z0-9][a-z0-9_.-]{0,63}))?$/;
+
+export interface ManagedProjectNamespaceCollision {
+    containerId: string;
+    containerName: string;
+    projectPath: string;
+    profile?: string;
+}
+
+function managedContainerProfile(
+    containerName: string,
+    labels: Record<string, string>,
+): string | undefined | null {
+    const nameMatch = MANAGED_CONTAINER_NAME_PATTERN.exec(containerName);
+    if (!nameMatch) return null;
+    const nameProfile = nameMatch[1] || undefined;
+    if (!Object.hasOwn(labels, "ccc.profile")) return nameProfile;
+    const labelProfile = labels["ccc.profile"] || undefined;
+    if (labelProfile !== undefined
+        && !/^[a-z0-9][a-z0-9_.-]{0,63}$/.test(labelProfile)) {
+        return null;
+    }
+    return labelProfile === nameProfile ? labelProfile : null;
+}
+
+/**
+ * A short-lived release derived container names from canonical Windows paths.
+ * Preserve an existing same-profile namespace instead of creating a duplicate.
+ */
+export function findManagedProjectNamespaceCollision(
+    projectPath: string,
+    projectMountIdentity: string,
+    projectMountSourceIdentity: BindMountSourceIdentity,
+    profile?: string,
+): ManagedProjectNamespaceCollision | null {
+    if (process.platform !== "win32") return null;
+    const listed = spawnSync(
+        runtimeCli(),
+        ["ps", "-aq", "--no-trunc", "--filter", "label=ccc.managed=true"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) {
+        throw new Error(
+            "Unable to inspect existing CCC container namespaces; refusing duplicate container creation.",
+        );
+    }
+    const ids = (listed.stdout ?? "").trim().split(/\s+/).filter(Boolean);
+    if (ids.some((id) => !/^[a-f0-9]{64}$/i.test(id)) || new Set(ids).size !== ids.length) {
+        throw new Error(
+            "Existing CCC container namespace inventory was malformed; refusing duplicate container creation.",
+        );
+    }
+    for (const containerId of ids) {
+        const inspected = inspectContainerJsonWithRetry(containerId) as {
+            Id?: unknown;
+            Name?: unknown;
+            Config?: { Labels?: Record<string, string> };
+            Mounts?: InspectedContainerMount[];
+        } | null;
+        if (!inspected
+            || inspected.Id !== containerId
+            || typeof inspected.Name !== "string"
+            || !inspected.Name.startsWith("/")) {
+            throw new Error(
+                "Existing CCC container namespace could not be verified; refusing duplicate container creation.",
+            );
+        }
+        const containerName = inspected.Name.slice(1);
+        const labels = inspected.Config?.Labels;
+        if (!labels || labels["ccc.managed"] !== "true") {
+            throw new Error(
+                "Existing CCC container ownership labels could not be verified; refusing duplicate container creation.",
+            );
+        }
+        const labeledPath = labels["ccc.project.path"];
+        if (typeof labeledPath !== "string" || labeledPath.length === 0) {
+            throw new Error(
+                "Existing CCC container project identity could not be verified; refusing duplicate container creation.",
+            );
+        }
+        const labeledMountIdentity = labels[PROJECT_MOUNT_IDENTITY_LABEL];
+        let samePhysicalProject = labeledMountIdentity === projectMountIdentity;
+        if (!labeledMountIdentity) {
+            samePhysicalProject = projectPathIdentityMatches(labeledPath, projectPath);
+            if (!samePhysicalProject) {
+                const projectMounts = (inspected.Mounts ?? []).filter((mount) => (
+                    mount.Type === "bind"
+                    && typeof mount.Source === "string"
+                    && typeof mount.Destination === "string"
+                    && mount.Destination.startsWith("/project/")
+                ));
+                if (projectMounts.length === 1) {
+                    const sourceMatch = bindSourceIsTrustedFilesystemAlias(
+                        projectMounts[0].Source!,
+                        projectPath,
+                        projectMountSourceIdentity,
+                    );
+                    if (sourceMatch === "retryable") {
+                        throw new Error(
+                            "Existing CCC container project source could not be verified; refusing duplicate container creation.",
+                        );
+                    }
+                    samePhysicalProject = sourceMatch === "match";
+                }
+            }
+        }
+        if (!samePhysicalProject) continue;
+
+        const candidateProfile = managedContainerProfile(containerName, labels);
+        if (candidateProfile === null) {
+            throw new Error(
+                "Existing CCC container profile identity could not be verified; refusing duplicate container creation.",
+            );
+        }
+        if (candidateProfile !== profile) continue;
+        return {
+            containerId,
+            containerName,
+            projectPath: labeledPath,
+            ...(candidateProfile ? { profile: candidateProfile } : {}),
+        };
+    }
+    return null;
 }
 
 // === Runtime Status Checks ===
@@ -2463,107 +2597,124 @@ export function startProjectContainer(
         }
     }
 
-    if (lifecycleContainerId || isContainerExists(containerName)) {
-        console.error(`Failed to remove unhealthy container ${containerName}`);
-        process.exit(1);
-    }
+    return withProjectFamilyLifecycleLock(`mount-${projectMountIdentity}`, () => {
+        if (lifecycleContainerId || isContainerExists(containerName)) {
+            throw new Error(
+                `Container namespace ${containerName} appeared during creation preflight; refusing replacement.`,
+            );
+        }
+        const collision = findManagedProjectNamespaceCollision(
+            fullPath,
+            projectMountIdentity,
+            projectMountSourceIdentity,
+            profile,
+        );
+        if (collision) {
+            const profileName = profile ?? "default";
+            throw new Error(
+                `CCC container ${collision.containerName} already owns this physical project `
+                + `for profile ${profileName}; refusing duplicate container creation. `
+                + "The existing container was preserved.",
+            );
+        }
+        if (debug) {
+            console.error(`[ccc:debug] Container ${containerName} not found, creating`);
+        }
+        console.log("Creating container...");
 
-    if (debug) {
-        console.error(`[ccc:debug] Container ${containerName} not found, creating`);
-    }
-    console.log("Creating container...");
+        if (isLabRunnerProfile(profile) && labRunner.status === "unsupported") {
+            console.warn(`[ccc] lab-runner profile requested but nested VM support is unavailable: ${labRunner.unsupportedReason}`);
+            console.warn("[ccc] lab state volume will still be mounted; device-lab should report linux-vm as unsupported/SKIP.");
+        }
 
-    if (isLabRunnerProfile(profile) && labRunner.status === "unsupported") {
-        console.warn(`[ccc] lab-runner profile requested but nested VM support is unavailable: ${labRunner.unsupportedReason}`);
-        console.warn("[ccc] lab state volume will still be mounted; device-lab should report linux-vm as unsupported/SKIP.");
-    }
+        const args = buildDockerRunArgs({
+            containerName,
+            fullPath,
+            projectMountPath,
+            profile,
+            credentialMounts,
+            gitIdentityMounts,
+            claudeJsonFile: getClaudeJsonFile(profile),
+            miseVolumeName: MISE_VOLUME_NAME,
+            pidsLimit: CONTAINER_PID_LIMIT,
+            imageName: IMAGE_NAME,
+            hostSshDir,
+            sshAgentSocket,
+            extraMounts: preparedExtraMounts,
+            projectMountIdentity,
+            clipboardPortFile,
+            clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
+            labRunner,
+            deviceLabStateHostDir,
+            deviceLabOwnerId: currentDeviceLabOwnerId,
+            deviceLabOwnerAuthFile: currentDeviceLabOwnerAuthFile,
+            deviceLabMountIdentity: preparedDeviceLabSources.contractIdentity,
+            // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
+            // heuristics get it wrong (exotic VPN/networking setups, mirrored
+            // mode we failed to recognize, etc).
+            proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
+        });
 
-    const args = buildDockerRunArgs({
-        containerName,
-        fullPath,
-        projectMountPath,
-        credentialMounts,
-        gitIdentityMounts,
-        claudeJsonFile: getClaudeJsonFile(profile),
-        miseVolumeName: MISE_VOLUME_NAME,
-        pidsLimit: CONTAINER_PID_LIMIT,
-        imageName: IMAGE_NAME,
-        hostSshDir,
-        sshAgentSocket,
-        extraMounts: preparedExtraMounts,
-        projectMountIdentity,
-        clipboardPortFile,
-        clipboardFilesHostDir: CLIPBOARD_FILES_DIR,
-        labRunner,
-        deviceLabStateHostDir,
-        deviceLabOwnerId: currentDeviceLabOwnerId,
-        deviceLabOwnerAuthFile: currentDeviceLabOwnerAuthFile,
-        deviceLabMountIdentity: preparedDeviceLabSources.contractIdentity,
-        // CCC_DISABLE_PROXY is the escape hatch when the runtime-detect
-        // heuristics get it wrong (exotic VPN/networking setups, mirrored
-        // mode we failed to recognize, etc).
-        proxyEnabled: (process.platform !== "linux" || isContainerHostRemote()) && process.env.CCC_DISABLE_PROXY !== "1",
-    });
-
-    assertPreparedProjectMountSources();
-    assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
-    assertRequiredFilesystemMountSources();
-    const result = spawnSync(cli, args, {
-        encoding: "utf-8",
-        stdio: ["inherit", "pipe", "inherit"],
-    });
-    if (result.status !== 0) {
-        console.error("Failed to create container");
-        process.exit(1);
-    }
-    const createdContainerId = (result.stdout ?? "").trim().split(/\s+/).find((line) => /^[a-f0-9]{64}$/i.test(line)) ?? null;
-
-    try {
         assertPreparedProjectMountSources();
         assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
         assertRequiredFilesystemMountSources();
-        const verification = createdContainerId
-            ? verifyCreatedContainerBindMounts(
-                createdContainerId,
-                requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"),
-                projectMountIdentity,
-            )
-            : { kind: "mismatch", reason: "container runtime did not return an exact 64-hex container ID" } as const;
-        if (verification.kind !== "verified") {
-            throw new Error(
-                `created container bind mount identity verification failed (${verification.reason})`,
-            );
+        const result = spawnSync(cli, args, {
+            encoding: "utf-8",
+            stdio: ["inherit", "pipe", "inherit"],
+        });
+        if (result.status !== 0) {
+            throw new Error("Failed to create container");
         }
-    } catch (error) {
-        if (createdContainerId) {
-            spawnSync(
-                cli,
-                ["rm", "-f", createdContainerId],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-            );
-            const remaining = spawnSync(
-                cli,
-                ["inspect", "-f", "{{.Id}}", createdContainerId],
-                { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-            );
-            if (!containerInspectExplicitlyNotFound(remaining)) {
+        const createdContainerId = (result.stdout ?? "").trim().split(/\s+/)
+            .find((line) => /^[a-f0-9]{64}$/i.test(line)) ?? null;
+
+        try {
+            assertPreparedProjectMountSources();
+            assertPreparedDeviceLabMountSources(preparedDeviceLabSources);
+            assertRequiredFilesystemMountSources();
+            const verification = createdContainerId
+                ? verifyCreatedContainerBindMounts(
+                    createdContainerId,
+                    requiredMounts.filter((mount) => mount.sourceProof?.kind === "filesystem"),
+                    projectMountIdentity,
+                )
+                : { kind: "mismatch", reason: "container runtime did not return an exact 64-hex container ID" } as const;
+            if (verification.kind !== "verified") {
                 throw new Error(
-                    `${(error as Error).message}; failed to remove rejected container ${createdContainerId}`,
-                    { cause: error },
+                    `created container bind mount identity verification failed (${verification.reason})`,
                 );
             }
+        } catch (error) {
+            if (createdContainerId) {
+                spawnSync(
+                    cli,
+                    ["rm", "-f", createdContainerId],
+                    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                );
+                const remaining = spawnSync(
+                    cli,
+                    ["inspect", "-f", "{{.Id}}", createdContainerId],
+                    { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+                );
+                if (!containerInspectExplicitlyNotFound(remaining)) {
+                    throw new Error(
+                        `${(error as Error).message}; failed to remove rejected container ${createdContainerId}`,
+                        { cause: error },
+                    );
+                }
+            }
+            throw error;
         }
-        throw error;
-    }
 
-    if (!createdContainerId) {
-        throw new Error("Container runtime did not return the created container ID; refusing an unpinned session.");
-    }
-    syncManagedMcpBundles(createdContainerId);
-    syncHostGitConfig(createdContainerId);
-    fixSshPermissions(createdContainerId);
+        if (!createdContainerId) {
+            throw new Error("Container runtime did not return the created container ID; refusing an unpinned session.");
+        }
+        syncManagedMcpBundles(createdContainerId);
+        syncHostGitConfig(createdContainerId);
+        fixSshPermissions(createdContainerId);
 
-    return finish(createdContainerId);
+        return finish(createdContainerId);
+    });
 }
 
 type DestructiveContainerOptions = { force?: boolean };
