@@ -1321,7 +1321,10 @@ const HYPER_V_LINUX_TOOLS = new Set([
 
 async function maybeHandleHyperVLinuxVmTool(name, args = {}) {
     if (args?.backend !== "linux-vm" || !HYPER_V_LINUX_TOOLS.has(name) || optsOutOfImplicitBroker(args)) return null;
-    const probe = implicitBrokerProbeOptions(name === "device_create" ? { ...(args || {}), port: undefined } : args || {});
+    const probeArgs = name === "device_create"
+        ? { ...(args || {}), port: args?.brokerPort }
+        : args || {};
+    const probe = implicitBrokerProbeOptions(probeArgs);
     if (!probe) return null;
     const backends = await brokerRpc({ ...probe, method: "broker.backends" });
     const advertised = backends.ok && Array.isArray(backends.result?.backends)

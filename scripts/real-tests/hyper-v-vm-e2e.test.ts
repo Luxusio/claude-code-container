@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
-import { hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
     hyperVWindowsVmE2ECapability,
@@ -219,6 +219,42 @@ describe("Hyper-V E2E zero-config image selection", () => {
             scp: "scp.exe",
             spawnSyncImpl: spawnReady,
         })).toMatchObject({ available: true, sourceImage: "" });
+    });
+
+    it("reports the exact missing Hyper-V Linux create response field", () => {
+        const device = {
+            id: "linux-hyper-v-real-e2e-contract",
+            guestTransport: "ssh",
+            switchName: "CCC Device Lab",
+            networkAddress: "172.29.0.10",
+        };
+        expect(() => assertHyperVLinuxCreateContract(device, device.id)).toThrow(
+            "hyper-v-linux-create-response-invalid: guestProvisioned expected true, received missing",
+        );
+    });
+
+    it("accepts the complete sanitized Hyper-V Linux create response", () => {
+        const device = {
+            id: "linux-hyper-v-real-e2e-contract",
+            guestProvisioned: true,
+            guestTransport: "ssh",
+            switchName: "CCC Device Lab",
+            networkAddress: "172.29.0.10",
+        };
+        expect(() => assertHyperVLinuxCreateContract(device, device.id)).not.toThrow();
+    });
+
+    it("bounds Hyper-V Linux create response diagnostics", () => {
+        const hugeField = "x".repeat(10_000);
+        let diagnostic = "";
+        try {
+            assertHyperVLinuxCreateContract({ [hugeField]: true }, "linux-hyper-v-real-e2e-contract");
+        } catch (error) {
+            diagnostic = error instanceof Error ? error.message : String(error);
+        }
+        expect(diagnostic).toContain("hyper-v-linux-create-response-invalid");
+        expect(diagnostic.length).toBeLessThan(1_500);
+        expect(diagnostic).not.toContain("x".repeat(65));
     });
 
     it("keeps broker transport timeout fields out of public device_create calls", () => {

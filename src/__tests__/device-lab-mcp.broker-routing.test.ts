@@ -178,6 +178,79 @@ describe("device-lab MCP broker routing", () => {
         }
     });
 
+    it("preserves the Hyper-V Linux create response contract across MCP broker routing", { timeout: TIMEOUT }, async () => {
+        const device = {
+            id: "hyper-v-linux-create-response",
+            backend: "linux-vm",
+            provider: "hyper-v",
+            guestProvisioned: true,
+            guestTransport: "ssh",
+            switchName: "CCC Device Lab",
+            networkAddress: "172.29.0.10",
+        };
+        const authRoot = join(homeDir, ".ccc", "devices", "broker", "auth");
+        const authFile = join(authRoot, `${brokerOwnerId()}.json`);
+        mkdirSync(authRoot, { recursive: true });
+        writeFileSync(authFile, JSON.stringify({ ownerId: brokerOwnerId(), secret: "b".repeat(64), version: 1 }), { mode: 0o600 });
+        const server = createServer((req, res) => {
+            if (req.url === "/health") {
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({ ok: true, name: "ccc-device-broker", mode: "host-broker-daemon" }));
+                return;
+            }
+            if (req.url === "/status") {
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({
+                    ok: true,
+                    name: "ccc-device-broker",
+                    mode: "host-broker-daemon",
+                    broker: { implemented: REQUIRED_CCC_HOST_BROKER_CAPABILITIES },
+                }));
+                return;
+            }
+            if (sendOwnerResolve(req, res)) return;
+            let body = "";
+            req.on("data", (chunk) => { body += chunk.toString(); });
+            req.on("end", () => {
+                const parsed = JSON.parse(body || "{}");
+                res.setHeader("content-type", "application/json");
+                if (parsed.method === "broker.backends") {
+                    res.end(JSON.stringify({
+                        ok: true,
+                        result: { backends: [{ name: "linux-vm", provider: "hyper-v" }] },
+                    }));
+                    return;
+                }
+                res.end(JSON.stringify({ ok: true, result: { device } }));
+            });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+        try {
+            const result = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "linux-vm",
+                    deviceId: device.id,
+                    name: "Hyper-V Linux create response",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    brokerPort: address.port,
+                },
+            });
+            expect(result.isError).not.toBe(true);
+            const payload = JSON.parse(((result.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(payload).toEqual(expect.objectContaining({
+                ok: true,
+                routedBy: "device-lifecycle-broker",
+                result: { device },
+            }));
+        } finally {
+            rmSync(authFile, { force: true });
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
     it("rejects caller-selected broker hosts before owner tokens can be sent", { timeout: TIMEOUT }, async () => {
         const result = await client.callTool({
             name: "device_status",
@@ -2422,7 +2495,7 @@ describe("device-lab MCP broker routing", () => {
                             "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1",
                             "runtime-cleanup-failure-preservation-v1",
                             "appium-runtime-generation-fencing-v1",
-                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1",
+                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1", "hyper-v-linux-create-response-v1",
                         ],
                     },
                 }));

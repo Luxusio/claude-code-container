@@ -25,6 +25,41 @@ function resultValue(value: any) {
     return value?.result && typeof value.result === "object" ? value.result : value;
 }
 
+function contractValue(value: unknown) {
+    if (value === undefined) return "missing";
+    if (value === null) return "null";
+    if (typeof value === "string") return JSON.stringify(value.slice(0, 128));
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    return typeof value;
+}
+
+export function assertHyperVLinuxCreateContract(device: any, expectedDeviceId: string) {
+    const fields = device && typeof device === "object" && !Array.isArray(device)
+        ? Object.keys(device)
+            .sort()
+            .slice(0, 64)
+            .map((field) => field.slice(0, 64))
+            .join(",")
+            .slice(0, 1024)
+        : "none";
+    const requireField = (field: string, expected: unknown, valid: (value: unknown) => boolean) => {
+        const actual = device?.[field];
+        if (!valid(actual)) {
+            throw new Error(
+                `hyper-v-linux-create-response-invalid: ${field} expected ${contractValue(expected)}, received ${contractValue(actual)}; fields=${fields}`,
+            );
+        }
+    };
+    requireField("id", expectedDeviceId, (value) => value === expectedDeviceId);
+    requireField("guestProvisioned", true, (value) => value === true);
+    requireField("guestTransport", "ssh", (value) => value === "ssh");
+    requireField("switchName", "CCC Device Lab", (value) => value === "CCC Device Lab");
+    requireField("networkAddress", "managed IPv4 address", (value) => (
+        typeof value === "string"
+        && /^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/.test(value)
+    ));
+}
+
 function commandAvailable(command: string, options: any = {}) {
     if (options[command]) return options[command];
     const result = (options.spawnSyncImpl || hiddenSpawnSync)("where.exe", [`${command}.exe`], {
@@ -100,12 +135,8 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             })), "device_create");
             direct.incarnationId = createdDevice.incarnationId;
             created = true;
-            assert.strictEqual(createdDevice.id, deviceId);
-            assert.strictEqual(createdDevice.guestProvisioned, true);
-            assert.strictEqual(createdDevice.guestTransport, "ssh");
-            assert.strictEqual(createdDevice.switchName, "CCC Device Lab");
+            assertHyperVLinuxCreateContract(createdDevice, deviceId);
             const networkAddress = String(createdDevice.networkAddress || "");
-            assert.match(networkAddress, /^172\.29\.0\.(?:[1-9]\d?|1\d\d|2[0-4]\d|250)$/);
 
             currentStep = "inventory VM";
             const inventory = resultValue(payload(await callTool("device_inventory", { backend: "linux-vm" })));

@@ -93,6 +93,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-windows-specialize-account-v1",
     "hyper-v-windows-boot-contract-v1",
     "hyper-v-boot-disk-generation-v1",
+    "hyper-v-linux-create-response-v1",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 const MAX_RPC_TIMEOUT_MS = 21615000;
