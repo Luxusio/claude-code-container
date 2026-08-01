@@ -226,11 +226,15 @@ describe("Hyper-V provider adapter", () => {
         const loader = Buffer.from(acquire.args.at(-1)!, "base64").toString("utf16le");
         expect(loader).toContain("$E=[Console]::In.ReadToEnd().Trim()");
         expect(loader).toContain("[ScriptBlock]::Create($P)");
+        expect(loader).toContain("$env:CCC_HYPER_V_STAGE=$null");
+        expect(loader).toContain("$S=$env:CCC_HYPER_V_STAGE");
         expect(acquire.input).toMatch(/^[A-Za-z0-9+/=]+$/);
         const acquireScript = scriptOf(acquire);
         expect(acquireScript).toContain("Save-BoundedDownload");
         expect(acquireScript).toContain("CCC_HYPER_V_RESULT_B64:");
         expect(acquireScript).toContain("function Set-CccAcquireStage");
+        expect(acquireScript).toContain("$env:CCC_HYPER_V_STAGE = $script:CccAcquireStage");
+        expect(acquireScript).toContain("$env:CCC_HYPER_V_STAGE = $Stage");
         expect(acquireScript).toContain("throw $script:CccAcquireStage");
         expect(acquireScript.indexOf("try {"))
             .toBeLessThan(acquireScript.indexOf("Import-Module Hyper-V -ErrorAction Stop"));
@@ -289,19 +293,24 @@ describe("Hyper-V provider adapter", () => {
         for (const stage of ["download", "hash", "archive-check", "extract", "normalize", "inspection", "finalize"]) {
             const diagnostic = `hyper-v-base-image-${stage}-failed`;
             const stageFailure = run(encoded([
-                `$script:CccAcquireStage = '${diagnostic}'`,
-                "try { throw 'untrusted stage failure' } catch {",
-                "  $FailureMessage = [string]$_.Exception.Message",
-                "  if ($FailureMessage -match '^hyper-v-[a-z0-9-]{3,128}$') { throw $FailureMessage }",
-                "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $script:CccAcquireStage))",
-                "  throw $script:CccAcquireStage",
-                "}",
+                `$env:CCC_HYPER_V_STAGE = '${diagnostic}'`,
+                "throw 'untrusted stage failure'",
             ].join("\n")));
             expect(stageFailure.status).toBe(1);
-            expect(stageFailure.stdout).toContain(`CCC_HYPER_V_STAGE:${diagnostic}`);
             expect(stageFailure.stderr).toContain(diagnostic);
             expect(stageFailure.stderr).not.toContain("untrusted stage failure");
         }
+
+        const inheritedStage = spawnSync(acquire.executable, acquire.args, {
+            input: encoded("throw 'untrusted inherited-stage failure'"),
+            encoding: "utf8",
+            windowsHide: true,
+            timeout: 15_000,
+            env: { ...process.env, CCC_HYPER_V_STAGE: "hyper-v-base-image-hash-failed" },
+        });
+        expect(inheritedStage.status).toBe(1);
+        expect(inheritedStage.stderr).toContain("hyper-v-powershell-execution-failed");
+        expect(inheritedStage.stderr).not.toContain("hyper-v-base-image-hash-failed");
     });
 
     it.skipIf(process.platform !== "win32")("keeps a Canonical ZIP readable by tar while a non-delete-sharing handle is held", () => {
@@ -799,6 +808,11 @@ describe("Hyper-V provider adapter", () => {
             stdout: "CCC_HYPER_V_STAGE:hyper-v-guest-provision-media-build-command-failed",
             stderr: "hyper-v-powershell-execution-failed",
         })).toBe("hyper-v-guest-provision-media-build-command-failed");
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-powershell-execution-failed",
+            stdout: "",
+            stderr: "hyper-v-base-image-archive-check-failed",
+        })).toBe("hyper-v-base-image-archive-check-failed");
         expect(() => hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
@@ -1685,9 +1699,9 @@ describe("Hyper-V provider adapter", () => {
         const loader = loaderOf(command);
         expect(loader).toContain("hyper-v-powershell-parse-failed");
         expect(loader).toContain("hyper-v-powershell-execution-failed");
-        expect(loader).toContain("CCC_HYPER_V_STAGE:hyper-v-powershell-parse-failed");
-        expect(loader).toContain("CCC_HYPER_V_STAGE:hyper-v-powershell-execution-failed");
-        expect(loader).toContain("if($M -match '^hyper-v-[a-z0-9-]{3,128}$')");
+        expect(loader).toContain("$env:CCC_HYPER_V_STAGE=$null");
+        expect(loader).toContain("if($M-match'^hyper-v-[a-z0-9-]{3,128}$')");
+        expect(loader).toContain("$S=$env:CCC_HYPER_V_STAGE;if($S-match'^hyper-v-[a-z0-9-]{3,128}$'){throw $S}");
         expect(loader).not.toContain(guestPassword);
         expect(parseHyperVGuestProvisionObservation(JSON.stringify({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath })))
             .toEqual({ ok: true, vmId, vmName, guestUsername: "ccc01234567", credentialPath, unattendPath: provisioningMediaPath });

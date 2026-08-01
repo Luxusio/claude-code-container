@@ -433,14 +433,15 @@ function command(executable: string, script: string, input?: string): HyperVProv
                 script,
             ].join("\n");
         const loader = [
-            "$ErrorActionPreference = 'Stop'",
+            "$ErrorActionPreference='Stop'",
             "$E=[Console]::In.ReadToEnd().Trim()",
-            "if(-not $E -or $E.Length -gt 16777216){throw 'hyper-v-powershell-program-invalid'}",
+            "if(!$E -or $E.Length -gt 16777216){throw 'hyper-v-powershell-program-invalid'}",
             "try{$D=[Convert]::FromBase64String($E)}catch{throw 'hyper-v-powershell-program-invalid'}",
-            "if($D.Length -eq 0 -or $D.Length -gt 12582912){throw 'hyper-v-powershell-program-invalid'}",
+            "if(!$D.Length -or $D.Length -gt 12582912){throw 'hyper-v-powershell-program-invalid'}",
             "$P=[Text.Encoding]::UTF8.GetString($D);$E=$null;$D=$null",
-            "try{$B=[ScriptBlock]::Create($P)}catch{echo 'CCC_HYPER_V_STAGE:hyper-v-powershell-parse-failed';throw 'hyper-v-powershell-parse-failed'}",
-            "try{&$B}catch{$M=[string]$_.Exception.Message;if($M -match '^hyper-v-[a-z0-9-]{3,128}$'){throw $M};echo 'CCC_HYPER_V_STAGE:hyper-v-powershell-execution-failed';throw 'hyper-v-powershell-execution-failed'}",
+            "$env:CCC_HYPER_V_STAGE=$null",
+            "try{$B=[ScriptBlock]::Create($P)}catch{throw 'hyper-v-powershell-parse-failed'}",
+            "try{&$B}catch{$M=[string]$_.Exception.Message;if($M-match'^hyper-v-[a-z0-9-]{3,128}$'){throw $M};$S=$env:CCC_HYPER_V_STAGE;if($S-match'^hyper-v-[a-z0-9-]{3,128}$'){throw $S};throw 'hyper-v-powershell-execution-failed'}",
         ].join("\n");
         return {
             mode: "exec",
@@ -1680,9 +1681,11 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "$WindowsMaxBytes = [long]16GB",
         "$UbuntuMaxBytes = [long]6GB",
         "$script:CccAcquireStage = 'hyper-v-base-image-download-failed'",
+        "$env:CCC_HYPER_V_STAGE = $script:CccAcquireStage",
         "function Set-CccAcquireStage([string]$Stage) {",
         "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|inspection|finalize)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
         "  $script:CccAcquireStage = $Stage",
+        "  $env:CCC_HYPER_V_STAGE = $Stage",
         "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $Stage))",
         "}",
         "$ArchiveHandle = $null",
