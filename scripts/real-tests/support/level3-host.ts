@@ -6,6 +6,7 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-vm-managed-auto-images-v20",
     "hyper-v-windows-boot-contract-v1",
     "hyper-v-linux-create-response-v1",
+    "hyper-v-image-acquisition-stage-cache-v1",
 ];
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
