@@ -221,6 +221,25 @@ describe("device-lab MCP broker routing", () => {
                     }));
                     return;
                 }
+                if (parsed.method === "broker.command.invoke"
+                    && parsed.params?.deviceId === "hyper-v-network-diagnostic-failure") {
+                    res.statusCode = 502;
+                    res.end(JSON.stringify({
+                        ok: false,
+                        error: "hyper-v-network-setup-failed",
+                        detail: "hyper-v-network-pipe-handshake-timeout",
+                        execution: {
+                            mode: "exec",
+                            provider: "hyper-v",
+                            status: 1,
+                            stdoutPresent: true,
+                            stderrPresent: true,
+                            outputRedacted: true,
+                            diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
+                        },
+                    }));
+                    return;
+                }
                 res.end(JSON.stringify({ ok: true, result: { device } }));
             });
         });
@@ -245,6 +264,30 @@ describe("device-lab MCP broker routing", () => {
                 routedBy: "device-lifecycle-broker",
                 result: { device },
             }));
+            const failed = await client.callTool({
+                name: "device_create",
+                arguments: {
+                    backend: "linux-vm",
+                    deviceId: "hyper-v-network-diagnostic-failure",
+                    name: "Hyper-V Linux diagnostic failure",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    brokerPort: address.port,
+                },
+            });
+            const failedPayload = JSON.parse(((failed.content as Array<{ text?: string }>)[0].text || "{}"));
+            expect(failedPayload).toEqual(expect.objectContaining({
+                ok: false,
+                detail: "hyper-v-network-pipe-handshake-timeout",
+                body: expect.objectContaining({
+                    execution: expect.objectContaining({
+                        outputRedacted: true,
+                        diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
+                    }),
+                }),
+                routedBy: "device-lifecycle-broker",
+            }));
+            expect(JSON.stringify(failedPayload)).not.toContain("sensitive-network");
         } finally {
             rmSync(authFile, { force: true });
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -2495,7 +2538,7 @@ describe("device-lab MCP broker routing", () => {
                             "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1",
                             "runtime-cleanup-failure-preservation-v1",
                             "appium-runtime-generation-fencing-v1",
-                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1", "hyper-v-linux-create-response-v1", "hyper-v-image-acquisition-stage-cache-v1", "hyper-v-powershell-stage-propagation-v1", "hyper-v-provider-image-finalization-v2",
+                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v3", "hyper-v-guest-readiness-diagnostics-v1", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1", "hyper-v-linux-create-response-v1", "hyper-v-image-acquisition-stage-cache-v1", "hyper-v-powershell-stage-propagation-v1", "hyper-v-provider-image-finalization-v2", "hyper-v-network-failure-diagnostics-v1",
                         ],
                     },
                 }));

@@ -9,6 +9,7 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
     "hyper-v-provider-image-finalization-v2",
+    "hyper-v-network-failure-diagnostics-v1",
 ];
 export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v2";
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;

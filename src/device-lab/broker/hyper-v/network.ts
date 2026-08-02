@@ -34,6 +34,7 @@ export type HyperVNetworkCommandResult = {
     stdout?: string;
     stderr?: string;
     error?: string;
+    timedOut?: boolean;
 };
 
 export interface HyperVNetworkStateRuntime {
@@ -271,7 +272,7 @@ export async function ensureHyperVNetworkAllocation(
     deadlineAt = Number.POSITIVE_INFINITY,
 ): Promise<
     | { ok: true; switchName: string; address: string; macAddress: string; gateway: string; prefix: string; outboundPolicy: "nat" }
-    | { ok: false; status: number; error: string; detail?: string; preserveEvidence?: boolean }
+    | { ok: false; status: number; error: string; detail?: string; execution?: Record<string, unknown>; preserveEvidence?: boolean }
 > {
     const powershell = runtime.resolveExecutable("powershell.exe")
         || runtime.resolveExecutable("pwsh")
@@ -337,6 +338,7 @@ export async function ensureHyperVNetworkAllocation(
             status: 502,
             error: "hyper-v-network-setup-failed",
             detail: hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed"),
+            execution: redactProviderCommandInput(execution, true, "hyper-v-network-setup-failed"),
             preserveEvidence: true,
         };
     }

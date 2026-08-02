@@ -835,6 +835,20 @@ describe("Hyper-V provider adapter", () => {
             stdout: "",
             stderr: "hyper-v-base-image-archive-check-failed",
         })).toBe("hyper-v-base-image-archive-check-failed");
+        for (const code of [
+            "hyper-v-network-elevation-cancelled",
+            "hyper-v-network-elevation-failed",
+            "hyper-v-network-pipe-handshake-timeout",
+            "hyper-v-network-subnet-conflict",
+            "hyper-v-network-gateway-conflict",
+            "hyper-v-network-nat-prefix-conflict",
+        ]) {
+            expect(hyperVProviderDiagnosticCode({
+                error: "hyper-v-powershell-execution-failed",
+                stdout: "",
+                stderr: `${code}:bounded-detail`,
+            })).toBe(code);
+        }
         expect(() => hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
@@ -1259,6 +1273,16 @@ describe("Hyper-V provider adapter", () => {
         expect(elevatedInner).toContain("StartTime.ToUniversalTime().Ticks -eq $SelfStartTicks");
         expect(elevatedInner).toContain("$ObservedWatchdog.StartTime.ToUniversalTime().Ticks -eq $WatchdogStartTicks");
         expect(elevated).not.toContain("RedirectStandardOutput");
+        const networkDiagnosticCodes = [...new Set(
+            [script, cleanupScript, elevated, elevatedInner]
+                .flatMap((source) => [...source.matchAll(/\bhyper-v-network-[a-z0-9-]{3,128}\b/g)])
+                .map((match) => match[0]),
+        )];
+        expect(networkDiagnosticCodes.length).toBeGreaterThan(20);
+        for (const code of networkDiagnosticCodes) {
+            expect(hyperVProviderDiagnosticCode({ stderr: code, stdout: "" }))
+                .toBe(code);
+        }
     });
 
     it.skipIf(process.platform !== "win32")("computes IPv4 prefix masks on Windows PowerShell 5.1 without signed overflow", () => {

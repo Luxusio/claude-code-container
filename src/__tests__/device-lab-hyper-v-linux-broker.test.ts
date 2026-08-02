@@ -153,7 +153,15 @@ describe("device-lab Hyper-V broker", () => {
             }
             if (script.includes("New-NetNat -Name $NatName")) {
                 networkScripts.push(script);
-                if (networkScripts.length === 1) return { ...command, status: null, stdout: "", stderr: "", error: "simulated timeout", timedOut: true };
+                if (networkScripts.length === 1) return {
+                    ...command,
+                    status: 1,
+                    stdout: "sensitive-network-output",
+                    stderr: "hyper-v-network-pipe-handshake-timeout sensitive-network-error",
+                    error: "provider command failed",
+                    timedOut: true,
+                    input: "sensitive-network-input",
+                };
                 expect(script).toContain("$AllowExistingNat = $true");
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command, { createdSwitch: false, createdNat: false })), stderr: "" };
             }
@@ -178,7 +186,27 @@ describe("device-lab Hyper-V broker", () => {
             });
             const first = await invoke();
             expect(first.status, JSON.stringify(await first.clone().json())).toBe(502);
-            expect(await first.json()).toEqual(expect.objectContaining({ error: "hyper-v-network-setup-failed" }));
+            const firstBody = await first.json();
+            expect(firstBody).toEqual(expect.objectContaining({
+                error: "hyper-v-network-setup-failed",
+                detail: "hyper-v-network-pipe-handshake-timeout",
+                execution: expect.objectContaining({
+                    provider: "hyper-v",
+                    status: 1,
+                    timedOut: true,
+                    stdoutPresent: true,
+                    stderrPresent: true,
+                    outputRedacted: true,
+                    diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
+                    inputConfigured: true,
+                }),
+            }));
+            expect(firstBody.execution).not.toHaveProperty("command");
+            expect(firstBody.execution).not.toHaveProperty("args");
+            expect(firstBody.execution).not.toHaveProperty("input");
+            expect(firstBody.execution).not.toHaveProperty("stdout");
+            expect(firstBody.execution).not.toHaveProperty("stderr");
+            expect(JSON.stringify(firstBody)).not.toContain("sensitive-network");
             const intentPath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v-intent.json");
             const intent = JSON.parse(readFileSync(intentPath, "utf8"));
             expect(intent).toEqual(expect.objectContaining({
