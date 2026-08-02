@@ -12,6 +12,7 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-network-failure-diagnostics-v1",
 ];
 export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v2";
+export const HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT = "hyper-v-network-failure-diagnostics-v1";
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
 const HOST_BROKER_REPAIR_TIMEOUT_MS = 180000;
@@ -185,7 +186,7 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             && confirmedPid === observed.pid
             && verifiedStartedAt === observed.startedAt
             && confirmedStartedAt === observed.startedAt) {
-            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt} providerContract=${HYPER_V_LEVEL3_PROVIDER_CONTRACT}\n`);
+            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt} providerContract=${HYPER_V_LEVEL3_PROVIDER_CONTRACT} networkDiagnostics=${HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT}\n`);
             return 0;
         }
         process.stderr.write([

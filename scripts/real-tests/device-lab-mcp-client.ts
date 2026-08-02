@@ -339,21 +339,34 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
     const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body)
         ? value.body
         : null;
-    const execution = value?.provisioning && typeof value.provisioning === "object"
+    const provisioning = value?.provisioning && typeof value.provisioning === "object"
         ? value.provisioning
         : body?.provisioning && typeof body.provisioning === "object"
             ? body.provisioning
             : null;
-    const diagnostic = execution
+    const executionCandidate = value?.execution && typeof value.execution === "object"
+        ? value.execution
+        : body?.execution && typeof body.execution === "object"
+            ? body.execution
+            : null;
+    const redactedExecution = executionCandidate?.outputRedacted === true ? executionCandidate : null;
+    const diagnostic = provisioning
         ? JSON.stringify({
-            status: execution.status,
-            signal: execution.signal,
-            error: execution.error,
-            diagnosticCode: execution.diagnosticCode,
-            stdout: String(execution.stdout || "").slice(-1024),
-            stderr: String(execution.stderr || "").slice(-2048),
+            status: provisioning.status,
+            signal: provisioning.signal,
+            error: provisioning.error,
+            diagnosticCode: provisioning.diagnosticCode,
+            stdout: typeof provisioning.stdout === "string" ? provisioning.stdout.slice(-1024) : undefined,
+            stderr: typeof provisioning.stderr === "string" ? provisioning.stderr.slice(-2048) : undefined,
         })
-        : "";
+        : redactedExecution
+            ? JSON.stringify({
+                status: Number.isSafeInteger(redactedExecution.status) ? redactedExecution.status : undefined,
+                signal: boundedBrokerDiagnosticCode(redactedExecution.signal),
+                timedOut: typeof redactedExecution.timedOut === "boolean" ? redactedExecution.timedOut : undefined,
+                diagnosticCode: boundedBrokerDiagnosticCode(redactedExecution.diagnosticCode),
+            })
+            : "";
     const attempts = Array.isArray(value?.attempts)
         ? value.attempts
         : Array.isArray(value?.launch?.attempts)

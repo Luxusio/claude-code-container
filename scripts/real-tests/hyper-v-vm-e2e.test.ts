@@ -304,6 +304,60 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(4096);
     });
 
+    it("reports redacted Hyper-V network execution diagnostics", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "hyper-v-network-setup-failed",
+            body: {
+                error: "hyper-v-network-setup-failed",
+                detail: "hyper-v-network-pipe-handshake-timeout",
+                execution: {
+                    mode: "exec",
+                    provider: "hyper-v",
+                    status: 1,
+                    stdoutPresent: true,
+                    stderrPresent: true,
+                    outputRedacted: true,
+                    diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
+                    error: "token=secret-error",
+                    stdout: "token=secret-stdout",
+                    stderr: "token=secret-stderr",
+                },
+            },
+            attempts: [{
+                port: 17373,
+                status: 502,
+                durationMs: 35120,
+                timeoutMs: 21615000,
+            }],
+        }, "fallback");
+        expect(message).toContain("hyper-v-network-setup-failed");
+        expect(message).toContain("hyper-v-network-pipe-handshake-timeout");
+        expect(message).toContain('"diagnosticCode":"hyper-v-network-pipe-handshake-timeout"');
+        expect(message).not.toContain("stdoutPresent");
+        expect(message).not.toContain("stderrPresent");
+        expect(message).not.toContain("token=secret");
+        expect(message.length).toBeLessThan(1024);
+    });
+
+    it("ignores unredacted network execution objects", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "hyper-v-network-setup-failed",
+            body: {
+                execution: {
+                    outputRedacted: false,
+                    diagnosticCode: "hyper-v-network-pipe-handshake-timeout",
+                    stdout: "token=secret-stdout",
+                    stderr: "token=secret-stderr",
+                },
+            },
+        }, "fallback");
+        expect(message).toBe("hyper-v-network-setup-failed");
+        expect(message).not.toContain("diagnosticCode");
+        expect(message).not.toContain("token=secret");
+    });
+
     it("reports the bounded final broker transport attempt without exposing endpoints or bodies", () => {
         const message = formatBrokerToolFailure({
             ok: false,
