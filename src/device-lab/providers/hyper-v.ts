@@ -48,6 +48,7 @@ export const HYPER_V_NETWORK_MARKER = "ccc-device-lab:hyper-v-network:v1";
 export const HYPER_V_NETWORK_PREFIX = "172.29.0.0/24";
 export const HYPER_V_NETWORK_GATEWAY = "172.29.0.1";
 export const HYPER_V_NETWORK_PREFIX_LENGTH = 24;
+export const HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT = "hyper-v-provider-image-finalization-v2";
 
 export type HyperVVmObservation = {
     ok: boolean;

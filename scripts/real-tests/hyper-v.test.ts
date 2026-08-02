@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { basename } from "path";
 import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
 import {
+    buildLevel3Artifacts,
     ensureHostBrokerReady,
     HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+    HYPER_V_LEVEL3_PROVIDER_CONTRACT,
     probeHostBrokerCapabilities,
 } from "./support/level3-host.ts";
 
@@ -21,6 +23,29 @@ function brokerStatusOutput(capabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABI
 }
 
 describe("Hyper-V Level 3 launcher", () => {
+    it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {
+        const reads = new Map([
+            ["/repo/dist/device-lab/providers/hyper-v.js", "export const oldContract = true;"],
+        ]);
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = buildLevel3Artifacts("/repo", {
+                spawn: () => ({ status: 0, stdout: "", stderr: "" }),
+                readFile: (path: string) => reads.get(path) || "{}",
+                writeFile: () => undefined,
+            });
+            expect(status).toBe(1);
+            expect(diagnostic).toContain(HYPER_V_LEVEL3_PROVIDER_CONTRACT);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
     it("selects both Hyper-V providers by default", () => {
         expect(hyperVTestFiles("all").map((file) => basename(file))).toEqual([
             "level2-hyper-v-windows-vm.ts",

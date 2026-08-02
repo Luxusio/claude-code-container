@@ -8,14 +8,17 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-linux-create-response-v1",
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
-    "hyper-v-automatic-image-finalization-v1",
+    "hyper-v-provider-image-finalization-v2",
 ];
+export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v2";
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
 const HOST_BROKER_REPAIR_TIMEOUT_MS = 180000;
 
 export function buildLevel3Artifacts(repoRoot, options: any = {}) {
     const spawn = options.spawn || spawnSync;
+    const readFile = options.readFile || readFileSync;
+    const writeFile = options.writeFile || writeFileSync;
     const env = options.env || process.env;
     const tsc = join(repoRoot, "node_modules", "typescript", "bin", "tsc");
     const compiled = spawn(process.execPath, [tsc], { cwd: repoRoot, env, encoding: "utf-8", windowsHide: true });
@@ -23,14 +26,20 @@ export function buildLevel3Artifacts(repoRoot, options: any = {}) {
         process.stderr.write(compiled.stderr || compiled.stdout || "CCC host broker build failed\n");
         return compiled.status ?? 1;
     }
+    const builtHyperVProvider = join(repoRoot, "dist", "device-lab", "providers", "hyper-v.js");
+    const providerArtifact = readFile(builtHyperVProvider, "utf-8");
+    if (!providerArtifact.includes(HYPER_V_LEVEL3_PROVIDER_CONTRACT)) {
+        process.stderr.write(`Hyper-V provider build attestation failed; missing ${HYPER_V_LEVEL3_PROVIDER_CONTRACT} in ${builtHyperVProvider}\n`);
+        return 1;
+    }
     const realTestsTypecheck = spawn(process.execPath, [tsc, "-p", join(repoRoot, "tsconfig.real-tests.json")], { cwd: repoRoot, env, encoding: "utf-8", windowsHide: true });
     if (realTestsTypecheck.status !== 0) {
         process.stderr.write(realTestsTypecheck.stderr || realTestsTypecheck.stdout || "Level 3 real-test typecheck failed\n");
         return realTestsTypecheck.status ?? 1;
     }
-    const packageVersion = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8")).version;
+    const packageVersion = JSON.parse(readFile(join(repoRoot, "package.json"), "utf-8")).version;
     const builtUtils = join(repoRoot, "dist", "utils.js");
-    writeFileSync(builtUtils, readFileSync(builtUtils, "utf-8").replace("__CLI_VERSION__", packageVersion));
+    writeFile(builtUtils, readFile(builtUtils, "utf-8").replace("__CLI_VERSION__", packageVersion));
     const esbuild = join(repoRoot, "node_modules", "esbuild-wasm", "bin", "esbuild");
     const bundled = spawn(process.execPath, [esbuild, "device-lab-mcp/server.mjs", "--bundle", "--platform=node", "--format=esm", "--outfile=dist/device-lab-mcp/server.mjs", "--banner:js=// device-lab-mcp-version: 1"], {
         cwd: repoRoot, env, encoding: "utf-8", windowsHide: true,
@@ -175,6 +184,7 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             && confirmedPid === observed.pid
             && verifiedStartedAt === observed.startedAt
             && confirmedStartedAt === observed.startedAt) {
+            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt} providerContract=${HYPER_V_LEVEL3_PROVIDER_CONTRACT}\n`);
             return 0;
         }
         process.stderr.write([
