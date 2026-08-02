@@ -370,6 +370,7 @@ export function readHyperVImageManifestMetadata(
             || manifest.sourceUrl !== catalog.sourceUrl
             || manifest.sourceFormat !== catalog.sourceFormat
             || manifest.licenseId !== catalog.licenseId
+            || manifest.generation !== catalog.generation
             || manifest.secureBootTemplate !== catalog.secureBootTemplate) {
             throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
         }
@@ -527,6 +528,7 @@ export async function resolveHyperVImageForCreate(
                     executable: powershell,
                     profile: automaticProfile,
                     imageRoot: hyperVImageRoot(runtime.privateRoot),
+                    expectedGeneration: HYPER_V_IMAGE_CATALOG[automaticProfile].generation,
                 }), {
                     timeoutMs: hyperVRemainingTimeout(deadlineAt, runtime.limits.acquireTimeoutMs),
                     outputLimit: runtime.limits.commandOutputBytes,
@@ -543,6 +545,7 @@ export async function resolveHyperVImageForCreate(
                     const observation = parseHyperVBaseImageObservation(execution.stdout || "");
                     if (!observation
                         || observation.profile !== profile
+                        || observation.generation !== HYPER_V_IMAGE_CATALOG[automaticProfile].generation
                         || resolve(observation.imagePath) !== resolve(imagePath)) {
                         throw new Error("hyper-v-base-image-acquire-invalid-result");
                     }

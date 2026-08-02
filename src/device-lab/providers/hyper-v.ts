@@ -280,6 +280,7 @@ export type HyperVAcquireBaseImageOptions = {
     executable: string;
     profile: HyperVAutomaticBaseImageProfile;
     imageRoot: string;
+    expectedGeneration: 1 | 2;
 };
 
 type HyperVLinuxSeedOptions = HyperVCommandOptions & {
@@ -1659,6 +1660,9 @@ export function hyperVPrepareBaseImageCommand(options: HyperVBaseImageOptions): 
 
 export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOptions): HyperVProviderCommand {
     const imageRoot = assertPlainPath(options.imageRoot, "base-image-root");
+    if (options.expectedGeneration !== 1 && options.expectedGeneration !== 2) {
+        throw new Error("hyper-v-base-image-generation-invalid");
+    }
     if (options.profile !== "windows-server" && options.profile !== "ubuntu-lts") {
         throw new Error("hyper-v-base-image-profile-not-automatic");
     }
@@ -1675,6 +1679,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         `$PartialPath = ${psQuote(partialPath)}`,
         `$WorkPath = ${psQuote(workPath)}`,
         `$SourceArchivePath = ${psQuote(sourceArchivePath)}`,
+        `$ExpectedGeneration = ${options.expectedGeneration}`,
         "$WindowsUrl = 'https://go.microsoft.com/fwlink/?clcid=0x409&country=us&culture=en-us&linkid=2345826'",
         "$UbuntuArchiveUrl = 'https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip'",
         "$UbuntuArchiveSha256 = '545865cc2bd0ad6a2d16843c914289b601a7d07a6ec4f88c1d202acb180ecf1e'",
@@ -1683,7 +1688,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "$script:CccAcquireStage = 'hyper-v-base-image-download-failed'",
         "$env:CCC_HYPER_V_STAGE = $script:CccAcquireStage",
         "function Set-CccAcquireStage([string]$Stage) {",
-        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|inspection|finalize)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
+        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|inspection|final-move|final-inspection|final-observation)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
         "  $script:CccAcquireStage = $Stage",
         "  $env:CCC_HYPER_V_STAGE = $Stage",
         "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $Stage))",
@@ -1720,9 +1725,8 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "  if ($InspectionError) { throw $InspectionError }",
         "  return $Generation",
         "}",
-        "function Write-BaseObservation([object]$Vhd, [bool]$Reused) {",
+        "function Write-BaseObservation([object]$Vhd, [int]$Generation, [bool]$Reused) {",
         "  $Hash = (Get-FileHash -LiteralPath $ImagePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
-        "  $Generation = Get-CccVhdGeneration $ImagePath",
         "  $Result = [ordered]@{ ok = $true; profile = $Profile; imagePath = $ImagePath; sha256 = $Hash; sizeBytes = [long](Get-Item -LiteralPath $ImagePath -ErrorAction Stop).Length; virtualSizeBytes = [long]$Vhd.Size; vhdType = [string]$Vhd.VhdType; generation = $Generation; reused = $Reused }",
         "  $Json = $Result | ConvertTo-Json -Compress -Depth 5",
         `  [Console]::Out.WriteLine('${HYPER_V_RESULT_MARKER}' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Json)))`,
@@ -1903,12 +1907,16 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "  }",
         "  if ($Profile -eq 'windows-server') { Set-CccAcquireStage 'hyper-v-base-image-inspection-failed' }",
         "  $Vhd = Assert-BaseVhd $PartialPath",
+        "  $Generation = if ($Profile -eq 'ubuntu-lts') { $ExpectedGeneration } else { Get-CccVhdGeneration $PartialPath }",
+        "  if ($Generation -ne $ExpectedGeneration) { throw 'hyper-v-base-image-generation-mismatch' }",
         "  Assert-NoReparsePath $PartialPath",
         "  Assert-NoReparsePath $ImagePath",
-        "  Set-CccAcquireStage 'hyper-v-base-image-finalize-failed'",
+        "  Set-CccAcquireStage 'hyper-v-base-image-final-move-failed'",
         "  Move-Item -LiteralPath $PartialPath -Destination $ImagePath -ErrorAction Stop",
+        "  Set-CccAcquireStage 'hyper-v-base-image-final-inspection-failed'",
         "  $Vhd = Get-VHD -Path $ImagePath -ErrorAction Stop",
-        "  Write-BaseObservation $Vhd $false",
+        "  Set-CccAcquireStage 'hyper-v-base-image-final-observation-failed'",
+        "  Write-BaseObservation $Vhd $Generation $false",
         "} catch {",
         "  $FailureMessage = [string]$_.Exception.Message",
         "  if ($FailureMessage -match '^hyper-v-[a-z0-9-]{3,128}$') { throw $FailureMessage }",

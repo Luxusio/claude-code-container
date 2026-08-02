@@ -219,6 +219,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/cache",
+            expectedGeneration: 2,
         });
 
         expect(acquire.args).toContain("-EncodedCommand");
@@ -245,7 +246,9 @@ describe("Hyper-V provider adapter", () => {
             "Set-CccAcquireStage 'hyper-v-base-image-extract-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-normalize-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'",
-            "Set-CccAcquireStage 'hyper-v-base-image-finalize-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-final-move-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-final-inspection-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-final-observation-failed'",
         ];
         for (let index = 1; index < acquireStages.length; index++) {
             expect(acquireScript.indexOf(acquireStages[index - 1]))
@@ -260,6 +263,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-loader-probe",
+            expectedGeneration: 2,
         });
         const run = (input: string) => spawnSync(acquire.executable, acquire.args, {
             input,
@@ -541,6 +545,9 @@ describe("Hyper-V provider adapter", () => {
         const script = scriptOf(command);
         expect(script).toContain("Get-FileHash -LiteralPath $SourceImage -Algorithm SHA256");
         expect(script).toContain("Get-VHD -Path $TempPath");
+        expect(script).toContain("function Get-CccVhdGeneration");
+        expect(script).toContain("Mount-VHD -Path $Path -ReadOnly -NoDriveLetter");
+        expect(script.match(/Get-CccVhdGeneration \$ImagePath/g)).toHaveLength(2);
         expect(script).toContain("hyper-v-base-image-profile-conflict");
         expect(script.match(/hyper-v-base-image-invalid-parent/g)).toHaveLength(2);
         expect(script).toContain("hyper-v-base-image-copy-hash-mismatch");
@@ -592,6 +599,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "windows-server",
             imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 2,
         });
         const script = scriptOf(command);
         expect(command).toMatchObject({ mode: "exec", provider: "hyper-v", executable: "powershell.exe" });
@@ -630,6 +638,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 2,
         });
         const script = scriptOf(command);
         expect(script).toContain("$SourceArchivePath =");
@@ -676,7 +685,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"))
             .toBeLessThan(script.indexOf("if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-extract-failed' }"));
         expect(script).toContain("hyper-v-base-image-inspection-failed");
-        expect(script).toContain("hyper-v-base-image-finalize-failed");
+        expect(script).toContain("hyper-v-base-image-final-move-failed");
+        expect(script).toContain("hyper-v-base-image-final-inspection-failed");
+        expect(script).toContain("hyper-v-base-image-final-observation-failed");
         expect(script).toContain("$MaximumArchiveEntries = 64");
         expect(script).toContain("$MaximumRegularFiles = 8");
         expect(script).toContain("$MaximumExtractedBytes = [long]64GB");
@@ -696,8 +707,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Move-Item -LiteralPath $SourcePath -Destination $PartialPath");
         expect(script).not.toContain("Convert-VHD -Path $SourcePath");
         expect(script).toContain("hyper-v-base-image-archive-vhdx-count-invalid");
-        expect(script).toContain("Get-CccVhdGeneration $ImagePath");
-        expect(script).toContain("hyper-v-base-image-dismount-failed");
+        expect(script).toContain("$ExpectedGeneration = 2");
+        expect(script).toContain("$Generation = if ($Profile -eq 'ubuntu-lts') { $ExpectedGeneration } else { Get-CccVhdGeneration $PartialPath }");
+        expect(script).toContain("hyper-v-base-image-generation-mismatch");
+        expect(script).toContain("Write-BaseObservation $Vhd $Generation $false");
+        expect(script).not.toContain("Mount-VHD -Path $ImagePath");
         expect(script).toContain("if (Test-Path -LiteralPath $WorkPath) { throw 'hyper-v-base-image-work-path-not-clean' }");
         expect(script).not.toContain("Remove-Item -LiteralPath $WorkPath -Recurse");
         expect(script).toContain("if ($FailureMessage -match '^hyper-v-[a-z0-9-]{3,128}$') { throw $FailureMessage }");
@@ -710,12 +724,20 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "windows-11" as "windows-server",
             imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 2,
         })).toThrow("hyper-v-base-image-profile-not-automatic");
         expect(() => hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "relative/images",
+            expectedGeneration: 2,
         })).toThrow("hyper-v-base-image-root-invalid");
+        expect(() => hyperVAcquireBaseImageCommand({
+            executable: "powershell.exe",
+            profile: "ubuntu-lts",
+            imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 3 as 2,
+        })).toThrow("hyper-v-base-image-generation-invalid");
     });
 
     it("creates an owner-scoped VM matching the boot disk generation with rollback and secure defaults", () => {

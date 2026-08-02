@@ -31,6 +31,7 @@ export const HYPER_V_IMAGE_CATALOG = {
         sourceFormat: "vhdx",
         licenseId: HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
         secureBootTemplate: "MicrosoftWindows",
+        generation: 2,
     },
     "ubuntu-lts": {
         catalogId: "canonical-ubuntu-24.04-lts-hyper-v-vhdx-20260724",
@@ -38,6 +39,7 @@ export const HYPER_V_IMAGE_CATALOG = {
         sourceFormat: "vhdx-zip",
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
+        generation: 2,
     },
 } as const;
 

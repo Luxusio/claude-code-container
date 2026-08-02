@@ -9,8 +9,10 @@ import {
     hyperVImageProfileRoot,
     hyperVImageRoot,
     hyperVOwnerImageProfileRoot,
+    readHyperVImageManifestMetadata,
     resolveHyperVImageForCreate,
 } from "../device-lab/broker/hyper-v/image-store.js";
+import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 
 describe("Hyper-V image store module", () => {
     it("keeps image cache paths below the injected private root", () => {
@@ -153,6 +155,96 @@ describe("Hyper-V image store module", () => {
             expect(readFileSync(join(profileRoot, "manifest.json"), "utf8")).toContain(sha256);
             expect(readFileSync(sourceArchivePath, "utf8")).toBe("verified-archive");
             expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
+        } finally {
+            rmSync(privateRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects an automatic image manifest whose generation differs from the catalog", () => {
+        const privateRoot = join(tmpdir(), `ccc-hyper-v-generation-manifest-${process.pid}-${Date.now()}`);
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        const catalog = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
+        mkdirSync(profileRoot, { recursive: true });
+        writeFileSync(imagePath, "automatic-hyper-v-image");
+        writeFileSync(join(profileRoot, "manifest.json"), JSON.stringify({
+            version: 3,
+            profile: "ubuntu-lts",
+            catalogId: catalog.catalogId,
+            sourceUrl: catalog.sourceUrl,
+            sourceFormat: catalog.sourceFormat,
+            licenseId: catalog.licenseId,
+            generation: 1,
+            secureBootTemplate: catalog.secureBootTemplate,
+            preparationVersion: 1,
+            imagePath,
+            sha256: "a".repeat(64),
+            sizeBytes: 23,
+            virtualSizeBytes: 32 * 1024 * 1024 * 1024,
+            vhdType: "Dynamic",
+            preparedAt: new Date().toISOString(),
+        }));
+
+        try {
+            expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
+                .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
+        } finally {
+            rmSync(privateRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects an automatic provider observation whose generation differs from the catalog", async () => {
+        const privateRoot = join(tmpdir(), `ccc-hyper-v-generation-observation-${process.pid}-${Date.now()}`);
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        const image = Buffer.from("automatic-hyper-v-image");
+        const sha256 = createHash("sha256").update(image).digest("hex");
+
+        try {
+            const result = await resolveHyperVImageForCreate(
+                "0123456789abcdef",
+                { backend: "linux-vm", dryRun: false, create: { profile: "ubuntu-lts" } },
+                {},
+                {
+                    cwd: privateRoot,
+                    privateRoot,
+                    resolveExecutable: () => "powershell.exe",
+                    run: async () => {
+                        mkdirSync(profileRoot, { recursive: true });
+                        writeFileSync(imagePath, image);
+                        return {
+                            mode: "exec",
+                            provider: "hyper-v",
+                            status: 0,
+                            stdout: JSON.stringify({
+                                ok: true,
+                                profile: "ubuntu-lts",
+                                imagePath,
+                                sha256,
+                                sizeBytes: image.length,
+                                virtualSizeBytes: 32 * 1024 * 1024 * 1024,
+                                vhdType: "Dynamic",
+                                generation: 1,
+                                reused: false,
+                            }),
+                            stderr: "",
+                        };
+                    },
+                    limits: {
+                        acquireTimeoutMs: 60_000,
+                        prepareTimeoutMs: 60_000,
+                        lockWaitMs: 60_000,
+                        commandOutputBytes: 64 * 1024,
+                    },
+                },
+            );
+
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "hyper-v-base-image-prepare-failed",
+                detail: "hyper-v-base-image-acquire-invalid-result",
+            }));
+            expect(existsSync(imagePath)).toBe(false);
         } finally {
             rmSync(privateRoot, { recursive: true, force: true });
         }
