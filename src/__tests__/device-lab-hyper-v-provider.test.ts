@@ -434,6 +434,7 @@ describe("Hyper-V provider adapter", () => {
         const setup = hyperVSetupCommand("powershell.exe");
         const script = scriptOf(setup);
         expect(script).toContain("Start-Process -FilePath $Executable -Verb RunAs");
+        expect(script.match(/-WindowStyle Hidden -PassThru/g)).toHaveLength(2);
         const innerEncoded = /\$InnerEncoded = '([^']+)'/.exec(script)?.[1];
         expect(innerEncoded).toBeTruthy();
         const innerScript = Buffer.from(innerEncoded!, "base64").toString("utf16le");
@@ -1287,6 +1288,7 @@ describe("Hyper-V provider adapter", () => {
         expect(elevatedCommand.input).toMatch(/^[A-Za-z0-9+/=]+$/);
         expect(elevatedCommand.args.join(" ").length).toBeLessThan(2048);
         expect(elevated).toContain("Start-Process -FilePath $Executable -Verb RunAs");
+        expect(elevated).toContain("-WindowStyle Hidden -PassThru");
         expect(elevated).toContain("GetNamedPipeClientProcessId");
         expect(elevated).toContain("$ClientProcessId -ne [uint32]$Child.Id");
         expect(elevated).toContain("$ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks");

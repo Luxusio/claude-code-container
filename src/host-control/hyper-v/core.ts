@@ -359,7 +359,7 @@ export function elevatedNetworkCommand(executable: string, networkScript: string
         "  $HandshakeRemainingMs = $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
         "  if ($HandshakeRemainingMs -le 0) { throw 'hyper-v-network-operation-deadline-exceeded' }",
         "  $Wait = $Pipe.BeginWaitForConnection($null, $null)",
-        "  try { $Child = Start-Process -FilePath $Executable -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$InnerEncoded) -PassThru -ErrorAction Stop } catch { if ($_.Exception -is [ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 1223) { throw 'hyper-v-network-elevation-cancelled' }; $ElevationHResult = [Math]::Abs([long]$_.Exception.HResult); throw ('hyper-v-network-elevation-failed:' + $ElevationHResult) }",
+        "  try { $Child = Start-Process -FilePath $Executable -Verb RunAs -ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',$InnerEncoded) -WindowStyle Hidden -PassThru -ErrorAction Stop } catch { if ($_.Exception -is [ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 1223) { throw 'hyper-v-network-elevation-cancelled' }; $ElevationHResult = [Math]::Abs([long]$_.Exception.HResult); throw ('hyper-v-network-elevation-failed:' + $ElevationHResult) }",
         "  $ChildStartTicks = $Child.StartTime.ToUniversalTime().Ticks",
         "  $HandshakeWaitMs = [int][Math]::Min([long]120000, [Math]::Max([long]1, $HandshakeRemainingMs))",
         "  if (-not $Wait.AsyncWaitHandle.WaitOne($HandshakeWaitMs)) { throw 'hyper-v-network-pipe-handshake-timeout' }",

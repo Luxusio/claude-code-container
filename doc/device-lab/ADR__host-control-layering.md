@@ -103,6 +103,11 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   attempted. Timeouts, other backends, and all other commands are never replayed
   automatically. Both attempts retain bounded transport and broker diagnostic
   codes.
+- Non-interactive Windows host-control children, including elevated Hyper-V
+  setup and network PowerShell processes, launch with hidden window style in
+  addition to Node's `windowsHide` fencing. Provider UI that is itself the
+  requested device surface, such as Windows Sandbox, remains visible by
+  explicit provider policy.
 
 ## Follow-Up Order
 

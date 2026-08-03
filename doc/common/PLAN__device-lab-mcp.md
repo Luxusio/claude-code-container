@@ -1697,16 +1697,20 @@ Batched target-neutral flow status:
   replaced automatically. On Windows, replacement uses `taskkill /T` and also
   removes a surviving CCC-managed Appium listener on the reserved port, which
   migrates orphan processes created by older releases without manual cleanup.
-  The host broker advertises `windows-hidden-provider-children-v5` as a
+  The host broker advertises `windows-hidden-provider-children-v6` as a
   required compatibility capability, so a same-package-version broker that was
   started before this policy is automatically restarted instead of reused.
-  The v5 policy is inherited by every broker provider process, including the
+  The v6 policy is inherited by every broker provider process, including the
   npm Appium runtime installer, backend Node children, the Appium server, and
   Appium's adb/java descendants; sync and detached launches both retain
   `windowsHide: true` and the Node preload is de-duplicated in `NODE_OPTIONS`.
   The preload calls `syncBuiltinESMExports()` after patching `child_process`,
   ensuring ESM consumers such as the MCP SDK do not retain their original
   visible-window `spawn` binding.
+  Hyper-V setup and network elevation also pass `-WindowStyle Hidden` to their
+  nested `Start-Process` calls, preventing transient PowerShell console windows
+  that bypass Node's outer `windowsHide` option. Intentional provider UI, such
+  as the Windows Sandbox window, remains visible.
   When MCP reaches a broker without owner-resolve, it may replace `ccc-host` or
   MCP-managed runtime metadata only when owner and port both match. Windows
   replacement waits for `taskkill /T` process-tree exit before launching the

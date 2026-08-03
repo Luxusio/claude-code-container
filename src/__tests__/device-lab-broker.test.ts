@@ -363,7 +363,7 @@ describe("device-lab host broker daemon", () => {
                 "http-windows-sandbox-helper-config",
                 "http-android-device-tool-proxy",
                 "http-broker-version-reporting",
-                "windows-hidden-provider-children-v5",
+                "windows-hidden-provider-children-v6",
                 "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
                 "appium3-scoped-security-npm-cwd-v1",
                 "constant-time-existing-owner-auth-v1",
@@ -874,7 +874,7 @@ describe("device-lab host broker daemon", () => {
             expect(statusPayload.broker.implemented).toContain("http-windows-sandbox-helper-config");
             expect(statusPayload.broker.implemented).toContain("http-android-device-tool-proxy");
             expect(statusPayload.broker.implemented).toContain("http-broker-version-reporting");
-            expect(statusPayload.broker.implemented).toContain("windows-hidden-provider-children-v5");
+            expect(statusPayload.broker.implemented).toContain("windows-hidden-provider-children-v6");
             expect(statusPayload.broker.implemented).toContain("windows-sandbox-window-minimize-v4");
             expect(statusPayload.broker.implemented).toContain("appium3-scoped-security-npm-cwd-v1");
             expect(statusPayload.broker.implemented).toContain("constant-time-existing-owner-auth-v1");
@@ -1093,11 +1093,12 @@ describe("device-lab host broker daemon", () => {
     });
 
     it.each([
-        ["image acquisition", "hyper-v-image-acquisition-stage-cache-v1"],
-        ["PowerShell stage propagation", "hyper-v-powershell-stage-propagation-v1"],
-        ["provider-bound automatic image finalization", "hyper-v-provider-image-finalization-v2"],
-        ["redacted Hyper-V network failure diagnostics", "hyper-v-network-failure-diagnostics-v1"],
-    ])("replaces a same-version broker missing the Hyper-V %s contract", async (_label, missingCapability) => {
+        ["image acquisition", "hyper-v-image-acquisition-stage-cache-v1", null],
+        ["PowerShell stage propagation", "hyper-v-powershell-stage-propagation-v1", null],
+        ["provider-bound automatic image finalization", "hyper-v-provider-image-finalization-v2", null],
+        ["redacted Hyper-V network failure diagnostics", "hyper-v-network-failure-diagnostics-v1", null],
+        ["hidden elevated PowerShell children", "windows-hidden-provider-children-v6", "windows-hidden-provider-children-v5"],
+    ])("replaces a same-version broker missing the Hyper-V %s contract", async (_label, missingCapability, previousCapability) => {
         const ownerId = "2222222222222222";
         const currentCapabilities = deviceBrokerStatus({ ownerId }).implemented;
         const stalePid = 43210;
@@ -1105,6 +1106,7 @@ describe("device-lab host broker daemon", () => {
         const staleStartedAt = "2026-07-27T00:00:00.000Z";
         const staleHyperVCapabilities = currentCapabilities.filter((capability) =>
             capability !== missingCapability);
+        if (previousCapability) staleHyperVCapabilities.push(previousCapability);
         const incompatible = createServer((req, res) => {
             if (req.url === "/health") {
                 res.writeHead(200, { "content-type": "application/json" });
@@ -1265,7 +1267,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1434,7 +1436,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1598,7 +1600,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1679,7 +1681,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1952,7 +1954,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -2039,7 +2041,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v5",
+            "windows-hidden-provider-children-v6",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",

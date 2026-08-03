@@ -386,6 +386,7 @@ describe("Hyper-V host setup CLI", () => {
             ? Buffer.from(runner.mock.calls[0][3], "base64").toString("utf8")
             : Buffer.from(runner.mock.calls[0][1].at(-1), "base64").toString("utf16le");
         expect(encodedScript).toContain("Start-Process -FilePath $Executable -Verb RunAs");
+        expect(encodedScript).toContain("-WindowStyle Hidden -PassThru");
         expect(encodedScript).not.toContain("Restart-Computer");
     });
 
@@ -479,6 +480,7 @@ describe("Hyper-V host setup CLI", () => {
             expect(outerScript).not.toContain("Microsoft.PowerShell.LocalAccounts\\Get-LocalGroupMember");
             expect(outerScript).not.toContain("Hyper-V\\Get-VM");
             expect(outerScript).toContain("Start-Process -FilePath $Executable -Verb RunAs");
+            expect(outerScript.match(/-WindowStyle Hidden -PassThru/g)).toHaveLength(2);
             expect(outerScript).toContain("[IO.Pipes.PipeSecurity]::new()");
             expect(outerScript).toContain("[IO.Pipes.PipeAccessRule]::new($ElevatedAdministratorsSid");
             expect(outerScript).toContain("CCC_HYPER_V_SETUP_PIPE_NAME");
