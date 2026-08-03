@@ -81,6 +81,17 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   rollback removes only resources created by that transaction. Destructive
   switch or gateway cleanup additionally requires the persisted switch ID.
   Foreign or ambiguous host objects fail closed.
+- Broker transport replay is not a general lifecycle policy. The sole automatic
+  replay is one retry of a Hyper-V `device_create` request with an explicit
+  `deviceId` after a non-timeout connection reset, refusal, broken pipe, or
+  aborted response. The retry targets only the host whose request disconnected;
+  it does not repeat discovery across every host candidate. Hyper-V creation is
+  serialized by the owner/device operation lock. A completed create is returned
+  idempotently from owner device state, while an interrupted create is reconciled
+  from its incarnation-fenced provider residue before another provider create is
+  attempted. Timeouts, other backends, and all other commands are never replayed
+  automatically. Both attempts retain bounded transport and broker diagnostic
+  codes.
 
 ## Follow-Up Order
 

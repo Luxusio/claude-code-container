@@ -14,7 +14,7 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 import { freePort, installFakeCccBroker, installIgnoringCccBroker, pidAlive, waitForHealthUnavailable } from "./helpers/fake-broker-mcp-fixture.js";
-import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, authenticatedBrokerHeadersForTest, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
+import { BROKER_CONTROL_RESPONSE_LIMIT_BYTES, BROKER_RPC_RESPONSE_LIMIT_BYTES, REQUIRED_CCC_HOST_BROKER_CAPABILITIES, authenticatedBrokerHeadersForTest, brokerCommand, brokerLaunchInvocation, brokerLogTail, brokerRpc, brokerStatus, implicitBrokerProbeOptions, launchedBrokerProcessVerificationForTest, parseWindowsNetstatListenerForTest, reusableBrokerProcessVerificationForTest, terminateVerifiedBrokerRuntimeForTest, verifiedBrokerProcessForTest, waitForBrokerOwnerResolve } from "../../device-lab-mcp/src/broker.mjs";
 import { projectMountPath } from "../../device-lab-mcp/src/context.mjs";
 
 const TEST_BROKER_OWNER_ID = "1111111111111111";
@@ -916,6 +916,138 @@ describe("device-lab MCP", () => {
                     }),
                 ],
             }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("retries one journaled Hyper-V create after a transport disconnect", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        let rpcRequests = 0;
+        let providerCreates = 0;
+        let created = false;
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            rpcRequests += 1;
+            if (rpcRequests === 1) {
+                if (!created) {
+                    providerCreates += 1;
+                    created = true;
+                }
+                // The provider side effect completed, but its response was lost.
+                req.socket.destroy();
+                return;
+            }
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ ok: true, result: { idempotent: true, invoked: false, device: { id: "linux-retry" } } }));
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const result = await brokerCommand({
+                action: "invoke",
+                backend: "linux-vm",
+                command: "device_create",
+                deviceId: "linux-retry",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(rpcRequests).toBe(2);
+            expect(providerCreates).toBe(1);
+            expect(result).toEqual(expect.objectContaining({
+                ok: true,
+                result: { idempotent: true, invoked: false, device: { id: "linux-retry" } },
+                attempts: [
+                    expect.objectContaining({ status: null, transportRetryable: true }),
+                    expect.objectContaining({ status: 200, ok: true }),
+                ],
+                transportRecovery: expect.objectContaining({
+                    attempted: true,
+                    recovered: true,
+                    initial: expect.objectContaining({ error: "connection-reset" }),
+                }),
+            }));
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("does not replay a non-Hyper-V RPC after a transport disconnect", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        let rpcRequests = 0;
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            rpcRequests += 1;
+            req.socket.destroy();
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const result = await brokerCommand({
+                action: "invoke",
+                backend: "android-emulator",
+                command: "device_create",
+                deviceId: "no-retry",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(rpcRequests).toBe(1);
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "broker-rpc-unavailable",
+            }));
+            expect(result).not.toHaveProperty("transportRecovery");
+        } finally {
+            await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+        }
+    });
+
+    it("bounds a disconnected Hyper-V create to one transport retry", async () => {
+        const ownerId = TEST_BROKER_OWNER_ID;
+        provisionTestOwnerSecret(ownerId);
+        let rpcRequests = 0;
+        const server = createServer((req, res) => {
+            if (sendTestOwnerResolve(req, res)) return;
+            rpcRequests += 1;
+            req.socket.destroy();
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as AddressInfo).port;
+
+        try {
+            const result = await brokerCommand({
+                action: "invoke",
+                backend: "windows-vm",
+                command: "device_create",
+                deviceId: "windows-retry",
+                hostCandidates: ["127.0.0.1"],
+                port,
+                rpcTimeoutMs: 1000,
+                timeoutMs: 1000,
+                autolaunch: false,
+            });
+            expect(rpcRequests).toBe(2);
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "broker-rpc-unavailable",
+                transportRecovery: {
+                    attempted: true,
+                    recovered: false,
+                    initial: expect.objectContaining({ error: "connection-reset" }),
+                    retry: expect.objectContaining({ error: "connection-reset" }),
+                },
+            }));
+            expect(result.attempts).toHaveLength(2);
         } finally {
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
         }

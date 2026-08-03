@@ -387,6 +387,42 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message.length).toBeLessThan(1024);
     });
 
+    it("reports bounded Hyper-V transport recovery without exposing raw transport details", () => {
+        const message = formatBrokerToolFailure({
+            ok: false,
+            error: "broker-rpc-unavailable",
+            transportRecovery: {
+                attempted: true,
+                recovered: false,
+                initial: {
+                    port: 17373,
+                    error: "connection-reset",
+                    brokerPid: 29744,
+                    brokerDiagnostics: ["hyper-v-network-setup-failed"],
+                },
+                retry: {
+                    port: 17373,
+                    error: "connection-refused",
+                    brokerDiagnostics: [],
+                },
+            },
+            attempts: [{
+                port: 17373,
+                transportCode: "connection-refused",
+                error: "socket detail token=secret C:\\Users\\Luxus\\private",
+                durationMs: 4426,
+                timeoutMs: 21615000,
+            }],
+        }, "fallback");
+
+        expect(message).toContain('"attempted":true');
+        expect(message).toContain('"recovered":false');
+        expect(message).toContain('"error":"connection-reset"');
+        expect(message).toContain("hyper-v-network-setup-failed");
+        expect(message).not.toContain("token=secret");
+        expect(message).not.toContain("C:\\Users");
+    });
+
     it("reports bounded broker process verification diagnostics", () => {
         const message = formatBrokerToolFailure({
             ok: false,

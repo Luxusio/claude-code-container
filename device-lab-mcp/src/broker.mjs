@@ -489,6 +489,63 @@ function normalizeRpcTimeoutMs(options = {}, fallbackMs) {
         : fallbackMs;
 }
 
+function brokerTransportFailure(error) {
+    const message = error?.name === "AbortError" ? "timeout" : error?.message || String(error);
+    const rawCode = typeof error?.code === "string" && /^[A-Z0-9_]{2,32}$/.test(error.code)
+        ? error.code
+        : "";
+    const normalized = String(message).toLowerCase();
+    const transportCode = message === "timeout"
+        ? "timeout"
+        : rawCode === "ECONNRESET" || normalized.includes("socket hang up")
+            ? "connection-reset"
+            : rawCode === "ECONNREFUSED" || normalized.includes("connection refused")
+                ? "connection-refused"
+                : rawCode === "EPIPE"
+                    ? "broken-pipe"
+                    : normalized.includes("response aborted")
+                        ? "response-aborted"
+                        : "transport-error";
+    return {
+        error: message,
+        transportCode,
+        retryable: ["connection-reset", "connection-refused", "broken-pipe", "response-aborted"].includes(transportCode),
+    };
+}
+
+function hyperVCreateTransportRetryEligible(options, method, attempts) {
+    const params = options?.params;
+    const lastAttempt = attempts.at(-1);
+    return options?.__hyperVCreateTransportRetryAttempted !== true
+        && method === "broker.command.invoke"
+        && params && typeof params === "object"
+        && ["windows-vm", "linux-vm"].includes(params.backend)
+        && params.command === "device_create"
+        && typeof params.deviceId === "string"
+        && params.deviceId.length > 0
+        && lastAttempt?.status === null
+        && lastAttempt?.transportRetryable === true;
+}
+
+function brokerLogDiagnosticCodes(launch) {
+    const logPath = launch?.runtime?.logPath || launch?.logPath;
+    const log = brokerLogTail(logPath, BROKER_LOG_TAIL_READ_LIMIT_BYTES);
+    const matches = log.match(/\b(?:appium|broker|hyper-v|powershell|ssh)-[a-z0-9-]{2,128}\b/g) || [];
+    return [...new Set(matches)].slice(-8);
+}
+
+function summarizeBrokerTransportFailure(attempts, launch) {
+    const lastAttempt = attempts.at(-1);
+    return {
+        host: lastAttempt?.host,
+        port: lastAttempt?.port,
+        error: lastAttempt?.transportCode || "transport-error",
+        durationMs: lastAttempt?.durationMs,
+        brokerPid: Number.isSafeInteger(launch?.runtime?.pid) ? launch.runtime.pid : undefined,
+        brokerDiagnostics: brokerLogDiagnosticCodes(launch),
+    };
+}
+
 function boundedBrokerRawText(text) {
     const bytes = Buffer.from(text, "utf8");
     if (bytes.length <= BROKER_INVALID_RESPONSE_RAW_LIMIT_BYTES) return text;
@@ -2286,6 +2343,7 @@ async function brokerRpcRequest(options = {}) {
                 attempts,
             };
         } catch (error) {
+            const failure = brokerTransportFailure(error);
             attempts.push({
                 host,
                 port: probeOptions.port,
@@ -2294,9 +2352,33 @@ async function brokerRpcRequest(options = {}) {
                 status: null,
                 durationMs: Date.now() - startedAt,
                 timeoutMs: rpcTimeoutMs,
-                error: error?.name === "AbortError" ? "timeout" : error?.message || String(error),
+                error: failure.error,
+                transportCode: failure.transportCode,
+                transportRetryable: failure.retryable,
             });
         }
+    }
+    if (hyperVCreateTransportRetryEligible(options, method, attempts)) {
+        const initial = summarizeBrokerTransportFailure(attempts, launch);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const retried = await brokerRpcRequest({
+            ...options,
+            hostCandidates: [initial.host],
+            port: initial.port,
+            __hyperVCreateTransportRetryAttempted: true,
+        });
+        return {
+            ...retried,
+            attempts: [...attempts, ...(Array.isArray(retried.attempts) ? retried.attempts : [])],
+            transportRecovery: {
+                attempted: true,
+                recovered: retried.ok === true,
+                initial,
+                ...(retried.ok === true
+                    ? {}
+                    : { retry: summarizeBrokerTransportFailure(retried.attempts || [], retried.launch) }),
+            },
+        };
     }
     return {
         ok: false,

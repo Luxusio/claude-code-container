@@ -377,7 +377,9 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? attempts[attempts.length - 1]
         : null;
     const transportError = String(lastAttempt?.error || "").toLowerCase();
-    const transportErrorCode = transportError.includes("timeout")
+    const transportErrorCode = typeof lastAttempt?.transportCode === "string"
+        ? lastAttempt.transportCode
+        : transportError.includes("timeout")
         ? "timeout"
         : transportError.includes("econnrefused") || transportError.includes("connection refused")
             ? "connection-refused"
@@ -395,6 +397,14 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             error: transportErrorCode,
             durationMs: Number.isFinite(lastAttempt.durationMs) ? lastAttempt.durationMs : undefined,
             timeoutMs: Number.isFinite(lastAttempt.timeoutMs) ? lastAttempt.timeoutMs : undefined,
+        })
+        : "";
+    const transportRecovery = value?.transportRecovery && typeof value.transportRecovery === "object"
+        ? JSON.stringify({
+            attempted: value.transportRecovery.attempted === true,
+            recovered: value.transportRecovery.recovered === true,
+            initial: value.transportRecovery.initial,
+            retry: value.transportRecovery.retry,
         })
         : "";
     const brokerProcessDiagnostic = lastAttempt?.processVerification
@@ -458,6 +468,7 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         bootDiagnostic ? "" : boundedDetail(value?.detail),
         bootDiagnostic ? "" : boundedDetail(body?.detail),
         diagnostic,
+        transportRecovery,
         transportDiagnostic,
         brokerProcessDiagnostic,
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);

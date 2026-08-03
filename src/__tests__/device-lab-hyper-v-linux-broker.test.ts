@@ -1754,10 +1754,12 @@ describe("device-lab Hyper-V broker", () => {
             expect(createdBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');
 
+            const callsAfterCreate = commandRunner.mock.calls.length;
             const repeatedCreate = await invoke({ backend: "linux-vm", command: "device_create", deviceId, name: "Ubuntu Hyper-V", memoryMb: 2048, cpus: 2 });
             expect(repeatedCreate.status, JSON.stringify(await repeatedCreate.clone().json())).toBe(200);
             const repeatedCreateBody = await repeatedCreate.json();
             expect(repeatedCreateBody).toEqual(expect.objectContaining({ result: expect.objectContaining({ idempotent: true, invoked: false }) }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsAfterCreate);
             expect(repeatedCreateBody.result.device).not.toHaveProperty("privateRoot");
             expect(repeatedCreateBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(repeatedCreateBody)).not.toContain('"sshPrivateKeyPath"');
