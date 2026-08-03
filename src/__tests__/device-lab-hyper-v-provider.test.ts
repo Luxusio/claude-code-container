@@ -1208,6 +1208,24 @@ describe("Hyper-V provider adapter", () => {
         expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
+
+        const persistedIdentityAdoptionScript = scriptOf(hyperVEnsureNetworkCommand({
+            executable: "powershell.exe",
+            switchName: "CCC Device Lab",
+            natName: "CCCDeviceLab",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            allowExistingNat: true,
+            allowCccOwnedNetworkAdoption: true,
+            expectedSwitchId: vmId,
+            expectedNatInstanceId: "ccc-nat-instance-1",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            prefixLength: 24,
+        }));
+        expect(persistedIdentityAdoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(persistedIdentityAdoptionScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
+        expect(persistedIdentityAdoptionScript).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-1'");
+        expect(persistedIdentityAdoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(parseHyperVNetworkObservation(JSON.stringify({
             ok: true,
             switchName: "CCC Device Lab",

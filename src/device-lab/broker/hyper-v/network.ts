@@ -440,6 +440,7 @@ export async function ensureHyperVNetworkAllocation(
         };
     }
     const canReconcileNetworkIdentity = !current || current.allocations.length === 0;
+    const canAdoptPersistedCccMarker = Boolean(current?.switchId && current?.natInstanceId);
     const networkOptions = {
         executable: powershell,
         switchName: current?.switchName || intent!.switchName,
@@ -449,7 +450,7 @@ export async function ensureHyperVNetworkAllocation(
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
         allowExistingNat: Boolean(current?.natInstanceId) && !canReconcileNetworkIdentity,
-        allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity,
+        allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity || canAdoptPersistedCccMarker,
         expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
@@ -478,11 +479,18 @@ export async function ensureHyperVNetworkAllocation(
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
     const observedMarker = observation?.marker || current?.marker || intent!.marker;
     const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
+    const observedPersistedIdentityMatches = Boolean(current
+        && !canReconcileNetworkIdentity
+        && observation
+        && current.switchId.toLowerCase() === observation.switchId.toLowerCase()
+        && current.natInstanceId
+        && current.natInstanceId === observation.natInstanceId);
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
         || (current
             ? (!canReconcileNetworkIdentity
-                && (observation.natName !== current.natName || observedMarker !== current.marker))
+                && (observation.natName !== current.natName || observedMarker !== current.marker)
+                && !(observedPersistedIdentityMatches && observedIdentityIsCccOwned))
                 || (canReconcileNetworkIdentity && !observedIdentityIsCccOwned)
             : !observedIdentityIsCccOwned)
         || observation.prefix !== HYPER_V_NETWORK_PREFIX
@@ -496,10 +504,8 @@ export async function ensureHyperVNetworkAllocation(
         if (current?.natInstanceId && !canReconcileNetworkIdentity && current.natInstanceId !== observation.natInstanceId) {
             throw new Error("hyper-v-network-nat-identity-conflict");
         }
-        const identityReconciled = Boolean(current && (
+        const resourceIdentityReconciled = Boolean(current && (
             current.switchId.toLowerCase() !== observation.switchId.toLowerCase()
-            || current.marker !== observedMarker
-            || current.natName !== observation.natName
             || current.natInstanceId !== observation.natInstanceId
         ));
         const allocations = current?.allocations || [];
@@ -536,14 +542,14 @@ export async function ensureHyperVNetworkAllocation(
             prefix: observation.prefix,
             gateway: observation.gateway,
             outboundPolicy: "nat",
-            managedSwitch: (!identityReconciled && current?.managedSwitch === true)
+            managedSwitch: (!resourceIdentityReconciled && current?.managedSwitch === true)
                 || observation.createdSwitch
                 || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
-            managedGateway: (!identityReconciled && current?.managedGateway === true)
+            managedGateway: (!resourceIdentityReconciled && current?.managedGateway === true)
                 || observation.createdGateway === true
                 || observation.createdSwitch
                 || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
-            managedNat: (!identityReconciled && current?.managedNat === true)
+            managedNat: (!resourceIdentityReconciled && current?.managedNat === true)
                 || observation.createdNat
                 || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
             allocations: [
