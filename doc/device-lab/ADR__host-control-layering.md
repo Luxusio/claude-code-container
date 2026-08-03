@@ -72,10 +72,15 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   NAT name, Internal switch type, gateway, and prefix all match. Once state is
   committed, persisted switch and NAT IDs remain authoritative. Previously
   persisted token-fenced intents and states remain readable and keep their
-  dedicated cleanup behavior. Switch, gateway, and NAT ownership are recorded
-  separately, so repair or rollback removes only resources created by that
-  transaction. Destructive switch or gateway cleanup additionally requires the
-  persisted switch ID. Foreign or ambiguous host objects fail closed.
+  dedicated cleanup behavior. A stale broker state may reconcile to a different
+  valid CCC marker/NAT identity only while its allocation set is empty. That
+  reconciliation replaces the observed IDs and drops inherited cleanup
+  ownership; only resources created by the reconciling transaction remain
+  managed. Any identity mismatch with an active allocation fails closed.
+  Switch, gateway, and NAT ownership are recorded separately, so repair or
+  rollback removes only resources created by that transaction. Destructive
+  switch or gateway cleanup additionally requires the persisted switch ID.
+  Foreign or ambiguous host objects fail closed.
 
 ## Follow-Up Order
 

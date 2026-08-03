@@ -324,6 +324,7 @@ export async function ensureHyperVNetworkAllocation(
             detail: hyperVBoundedErrorCode(error, "hyper-v-network-allocation-failed"),
         };
     }
+    const canReconcileNetworkIdentity = !current || current.allocations.length === 0;
     const networkOptions = {
         executable: powershell,
         switchName: current?.switchName || intent!.switchName,
@@ -332,10 +333,10 @@ export async function ensureHyperVNetworkAllocation(
         prefix: HYPER_V_NETWORK_PREFIX,
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
-        allowExistingNat: Boolean(current?.natInstanceId),
-        allowCccOwnedNetworkAdoption: !current,
-        expectedSwitchId: current?.switchId,
-        expectedNatInstanceId: current?.natInstanceId,
+        allowExistingNat: Boolean(current?.natInstanceId) && !canReconcileNetworkIdentity,
+        allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity,
+        expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
+        expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
     const execution = await runWithElevation(
         runtime,
@@ -361,22 +362,31 @@ export async function ensureHyperVNetworkAllocation(
     }
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
     const observedMarker = observation?.marker || current?.marker || intent!.marker;
+    const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
         || (current
-            ? observation.natName !== current.natName || observedMarker !== current.marker
-            : !isHyperVCccNetworkIdentity(observedMarker, observation.natName))
+            ? (!canReconcileNetworkIdentity
+                && (observation.natName !== current.natName || observedMarker !== current.marker))
+                || (canReconcileNetworkIdentity && !observedIdentityIsCccOwned)
+            : !observedIdentityIsCccOwned)
         || observation.prefix !== HYPER_V_NETWORK_PREFIX
         || observation.gateway !== HYPER_V_NETWORK_GATEWAY) {
         return { ok: false, status: 502, error: "hyper-v-network-setup-invalid-result", preserveEvidence: true };
     }
     try {
-        if (current && current.switchId.toLowerCase() !== observation.switchId.toLowerCase()) {
+        if (current && !canReconcileNetworkIdentity && current.switchId.toLowerCase() !== observation.switchId.toLowerCase()) {
             throw new Error("hyper-v-network-switch-identity-conflict");
         }
-        if (current?.natInstanceId && current.natInstanceId !== observation.natInstanceId) {
+        if (current?.natInstanceId && !canReconcileNetworkIdentity && current.natInstanceId !== observation.natInstanceId) {
             throw new Error("hyper-v-network-nat-identity-conflict");
         }
+        const identityReconciled = Boolean(current && (
+            current.switchId.toLowerCase() !== observation.switchId.toLowerCase()
+            || current.marker !== observedMarker
+            || current.natName !== observation.natName
+            || current.natInstanceId !== observation.natInstanceId
+        ));
         const allocations = current?.allocations || [];
         const existing = allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
         if (existing) {
@@ -411,16 +421,16 @@ export async function ensureHyperVNetworkAllocation(
             prefix: observation.prefix,
             gateway: observation.gateway,
             outboundPolicy: "nat",
-            managedSwitch: current?.managedSwitch === true
-                || (!current && (observation.createdSwitch
-                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
-            managedGateway: current?.managedGateway === true
-                || (!current && (observation.createdGateway === true
-                    || observation.createdSwitch
-                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
-            managedNat: current?.managedNat === true
-                || (!current && (observation.createdNat
-                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
+            managedSwitch: (!identityReconciled && current?.managedSwitch === true)
+                || observation.createdSwitch
+                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
+            managedGateway: (!identityReconciled && current?.managedGateway === true)
+                || observation.createdGateway === true
+                || observation.createdSwitch
+                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
+            managedNat: (!identityReconciled && current?.managedNat === true)
+                || observation.createdNat
+                || (!current && intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName })),
             allocations: [
                 ...allocations,
                 { ownerId, deviceId, incarnationId, address, macAddress, allocatedAt: new Date().toISOString() },
@@ -440,11 +450,11 @@ export async function ensureHyperVNetworkAllocation(
         };
     } catch (error) {
         let cleanupFailure: string | null = null;
-        if (!current && (observation.createdSwitch || observation.createdGateway === true || observation.createdNat)) {
+        if (observation.createdSwitch || observation.createdGateway === true || observation.createdNat) {
             try {
                 const cleanupOptions = {
                     executable: powershell,
-                    switchName: intent!.switchName,
+                    switchName: observation.switchName,
                     natName: observation.natName,
                     marker: observedMarker,
                     prefix: HYPER_V_NETWORK_PREFIX,

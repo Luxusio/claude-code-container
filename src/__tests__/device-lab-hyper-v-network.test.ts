@@ -86,6 +86,30 @@ function writeTokenIntent(root: string, token: string): void {
     }));
 }
 
+function writeNetworkState(
+    root: string,
+    overrides: Record<string, unknown> = {},
+): void {
+    const networkRoot = join(root, "network");
+    mkdirSync(networkRoot, { recursive: true });
+    writeFileSync(join(networkRoot, "hyper-v.json"), JSON.stringify({
+        version: 1,
+        switchName: "CCC Device Lab",
+        switchId: SWITCH_ID,
+        marker: "ccc-device-lab:hyper-v-network:v1",
+        natName: "CCCDeviceLab",
+        natInstanceId: NAT_INSTANCE_ID,
+        prefix: "172.29.0.0/24",
+        gateway: "172.29.0.1",
+        outboundPolicy: "nat",
+        managedSwitch: false,
+        managedGateway: false,
+        managedNat: false,
+        allocations: [],
+        ...overrides,
+    }));
+}
+
 function scriptOf(command: { args: string[]; input?: string }): string {
     const encoded = command.args.at(-1);
     if (!encoded) throw new Error("missing encoded PowerShell script");
@@ -230,6 +254,121 @@ describe("Hyper-V network module", () => {
             marker: `ccc-device-lab:hyper-v-network:${token}`,
             natName: `CCCDeviceLab-${token}`,
             managedNat: true,
+        });
+    });
+
+    it("reconciles empty stale token state to the observed stable CCC network", async () => {
+        const root = privateRoot();
+        const token = "b".repeat(24);
+        const observedSwitchId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        writeNetworkState(root, {
+            switchId: "99999999-8888-7777-6666-555555555555",
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            natInstanceId: "stale-nat-instance",
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+        });
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $true");
+            expect(script).toContain("$ExpectedSwitchId = ''");
+            expect(script).toContain("$ExpectedNatInstanceId = ''");
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v",
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    switchName: "CCC Device Lab",
+                    switchId: observedSwitchId,
+                    marker: "ccc-device-lab:hyper-v-network:v1",
+                    natName: "CCCDeviceLab",
+                    natInstanceId: "stable-nat-instance",
+                    prefix: "172.29.0.0/24",
+                    gateway: "172.29.0.1",
+                    interfaceIndex: 42,
+                    createdSwitch: false,
+                    createdGateway: true,
+                    createdNat: false,
+                }),
+            };
+        });
+
+        expect((await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID)).ok).toBe(true);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            switchId: observedSwitchId,
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: "CCCDeviceLab",
+            natInstanceId: "stable-nat-instance",
+            managedSwitch: false,
+            managedGateway: true,
+            managedNat: false,
+        });
+    });
+
+    it("keeps committed network identity fenced while an allocation is active", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain(`$ExpectedSwitchId = '${SWITCH_ID.toLowerCase()}'`);
+            expect(script).toContain(`$ExpectedNatInstanceId = '${NAT_INSTANCE_ID}'`);
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v",
+                status: 1,
+                stderr: "hyper-v-network-switch-ownership-conflict",
+            };
+        });
+
+        expect(await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            status: 502,
+            error: "hyper-v-network-setup-failed",
+            detail: "hyper-v-network-switch-ownership-conflict",
+        });
+    });
+
+    it("rejects an observed marker and NAT pair that is not one CCC identity", async () => {
+        const root = privateRoot();
+        writeNetworkState(root);
+        const token = "c".repeat(24);
+        const run = vi.fn(async () => ({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 0,
+            stdout: JSON.stringify({
+                ok: true,
+                switchName: "CCC Device Lab",
+                switchId: SWITCH_ID,
+                marker: `ccc-device-lab:hyper-v-network:${token}`,
+                natName: "CCCDeviceLab",
+                natInstanceId: NAT_INSTANCE_ID,
+                prefix: "172.29.0.0/24",
+                gateway: "172.29.0.1",
+                interfaceIndex: 42,
+                createdSwitch: false,
+                createdGateway: false,
+                createdNat: false,
+            }),
+        }));
+
+        expect(await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            status: 502,
+            error: "hyper-v-network-setup-invalid-result",
         });
     });
 

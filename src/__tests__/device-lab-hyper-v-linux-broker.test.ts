@@ -1394,7 +1394,7 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
-    it("rejects a reused Hyper-V NAT whose observed instance identity changed", async () => {
+    it("rejects a reused Hyper-V NAT whose observed instance identity changed while allocated", async () => {
         const cwd = join(process.env.HOME!, "project-nat-identity");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -1434,7 +1434,14 @@ describe("device-lab Hyper-V broker", () => {
             gateway: "172.29.0.1",
             outboundPolicy: "nat",
             managedNat: true,
-            allocations: [],
+            allocations: [{
+                ownerId,
+                deviceId: "existing-network-user",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
         }));
         const commandRunner = vi.fn((command: { args?: string[]; input?: string }) => {
             const script = providerScript(command);
@@ -1463,7 +1470,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(body).toEqual(expect.objectContaining({ error: "hyper-v-network-allocation-failed", detail: "hyper-v-network-nat-identity-conflict" }));
             expect(JSON.parse(readFileSync(networkStatePath, "utf8"))).toEqual(expect.objectContaining({
                 natInstanceId: "ccc-nat-instance-original",
-                allocations: [],
+                allocations: [expect.objectContaining({ deviceId: "existing-network-user" })],
             }));
         } finally {
             await close(server);
