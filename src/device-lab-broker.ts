@@ -27,6 +27,7 @@ import {
 } from "./device-lab/broker/hyper-v/image-store.js";
 import {
     ensureHyperVNetworkAllocation as ensureHyperVNetworkAllocationWithRuntime,
+    hyperVNetworkAllocationReferenced,
     releaseHyperVNetworkAllocationAndCleanup as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
     validateHyperVLinuxSshHostIdentity as validateHyperVLinuxSshHostIdentityWithRuntime,
     type HyperVNetworkRuntime,
@@ -190,7 +191,7 @@ const DEVICE_BROKER_CAPABILITY_GUEST_HELPER_RECORDING_PROXY = "guest-helper-reco
 const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattached-wireless-routing-v1";
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v5";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v6";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
@@ -8882,6 +8883,7 @@ function hyperVNetworkRuntime(normalized: NormalizedBrokerOptions): HyperVNetwor
         resolveElevationExecutable: hyperVNetworkElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+        allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readOwnerDevices),
     };
 }
 

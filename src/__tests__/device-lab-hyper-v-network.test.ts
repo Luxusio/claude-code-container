@@ -7,6 +7,7 @@ import {
     ensureHyperVNetworkAllocation,
     hyperVDeterministicMacAddress,
     hyperVDeterministicNetworkAddresses,
+    hyperVNetworkAllocationReferenced,
     releaseHyperVNetworkAllocationAndCleanup,
     validateHyperVLinuxSshHostIdentity,
     type HyperVNetworkCommandResult,
@@ -71,6 +72,29 @@ function runtime(root: string, run?: HyperVNetworkRuntime["run"]): HyperVNetwork
     };
 }
 
+function allocationInspection(
+    present: boolean,
+    deviceId = "existing-device",
+    incarnationId = "b".repeat(32),
+): HyperVNetworkCommandResult {
+    return {
+        mode: "exec",
+        provider: "hyper-v",
+        status: 0,
+        stdout: JSON.stringify({
+            ok: true,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId,
+                incarnationId,
+                vmName: `ccc-${OWNER_ID}-${deviceId}-${incarnationId}`,
+                present,
+                ...(present ? { vmId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" } : {}),
+            }],
+        }),
+    };
+}
+
 function writeTokenIntent(root: string, token: string): void {
     const networkRoot = join(root, "network");
     mkdirSync(networkRoot, { recursive: true });
@@ -120,6 +144,29 @@ function scriptOf(command: { args: string[]; input?: string }): string {
 }
 
 describe("Hyper-V network module", () => {
+    it("checks exact owner-state incarnation across both Hyper-V backends", () => {
+        const allocation = {
+            ownerId: OWNER_ID,
+            deviceId: DEVICE_ID,
+            incarnationId: INCARNATION_ID,
+            address: "172.29.0.10",
+            macAddress: "02:11:22:33:44:55",
+            allocatedAt: new Date().toISOString(),
+        };
+
+        expect(hyperVNetworkAllocationReferenced(allocation, (_ownerId, backend) => backend === "linux-vm"
+            ? [{ id: DEVICE_ID, incarnationId: INCARNATION_ID }]
+            : [])).toBe(true);
+        expect(hyperVNetworkAllocationReferenced(allocation, () => [{ id: DEVICE_ID, incarnationId: "b".repeat(32) }]))
+            .toBe(false);
+        expect(() => hyperVNetworkAllocationReferenced(allocation, () => [{ id: DEVICE_ID }]))
+            .toThrow("hyper-v-network-owner-state-incarnation-unverifiable");
+        expect(() => hyperVNetworkAllocationReferenced(allocation, (_ownerId, backend) => [{
+            id: DEVICE_ID,
+            incarnationId: backend === "windows-vm" ? INCARNATION_ID : "b".repeat(32),
+        }])).toThrow("hyper-v-network-owner-state-incarnation-conflict");
+    });
+
     it("derives stable locally administered MAC and complete address candidates", () => {
         const addresses = hyperVDeterministicNetworkAddresses(OWNER_ID, DEVICE_ID);
 
@@ -339,6 +386,230 @@ describe("Hyper-V network module", () => {
             error: "hyper-v-network-setup-failed",
             detail: "hyper-v-network-switch-ownership-conflict",
         });
+    });
+
+    it("prunes an unreferenced allocation only after the exact VM is absent, then adopts the stable network", async () => {
+        const root = privateRoot();
+        const token = "c".repeat(24);
+        writeNetworkState(root, {
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn()
+            .mockResolvedValueOnce(allocationInspection(false))
+            .mockResolvedValueOnce({
+                ...setupObservation(root),
+                stdout: JSON.stringify({
+                    ok: true,
+                    switchName: "CCC Device Lab",
+                    switchId: SWITCH_ID,
+                    marker: "ccc-device-lab:hyper-v-network:v1",
+                    natName: "CCCDeviceLab",
+                    natInstanceId: NAT_INSTANCE_ID,
+                    prefix: "172.29.0.0/24",
+                    gateway: "172.29.0.1",
+                    interfaceIndex: 42,
+                    createdSwitch: false,
+                    createdGateway: false,
+                    createdNat: false,
+                }),
+            });
+        const network = {
+            ...runtime(root, run),
+            allocationReferenced: vi.fn(() => false),
+        };
+
+        expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({ ok: true });
+        expect(run).toHaveBeenCalledTimes(2);
+        expect(scriptOf(run.mock.calls[0][0])).toContain("hyper-v-network-allocation-vm-ownership-conflict");
+        expect(scriptOf(run.mock.calls[0][0])).toContain("$AllVms = @(Get-VM -ErrorAction Stop)");
+        expect(scriptOf(run.mock.calls[0][0])).not.toContain("Get-VM -Name");
+        expect(scriptOf(run.mock.calls[1][0])).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        const state = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
+        expect(state).toMatchObject({ marker: "ccc-device-lab:hyper-v-network:v1", natName: "CCCDeviceLab" });
+        expect(state.allocations).toEqual([expect.objectContaining({ deviceId: DEVICE_ID, incarnationId: INCARNATION_ID })]);
+    });
+
+    it("keeps an unreferenced allocation when its exact owner-fenced VM is present", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn()
+            .mockResolvedValueOnce(allocationInspection(true))
+            .mockResolvedValueOnce({ mode: "exec", provider: "hyper-v", status: 1, stderr: "hyper-v-network-switch-ownership-conflict" });
+        const network = { ...runtime(root, run), allocationReferenced: () => false };
+
+        expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-setup-failed",
+        });
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
+    });
+
+    it("keeps an allocation referenced by owner state without inspecting or pruning it", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async () => ({ mode: "exec" as const, provider: "hyper-v" as const, status: 1, stderr: "hyper-v-network-switch-ownership-conflict" }));
+        const network = { ...runtime(root, run), allocationReferenced: vi.fn(() => true) };
+
+        expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-setup-failed",
+        });
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(scriptOf(run.mock.calls[0][0])).toContain("$AllowCccOwnedNetworkAdoption = $false");
+    });
+
+    it("fails closed when VM ownership cannot be verified during orphan reconciliation", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async () => ({
+            mode: "exec" as const,
+            provider: "hyper-v" as const,
+            status: 1,
+            stderr: "hyper-v-network-allocation-vm-ownership-conflict",
+        }));
+        const network = { ...runtime(root, run), allocationReferenced: () => false };
+
+        expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: "hyper-v-network-allocation-vm-ownership-conflict",
+            preserveEvidence: true,
+        });
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
+    });
+
+    it("fails closed when Hyper-V inventory cannot be queried during orphan reconciliation", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const before = readFileSync(join(root, "network", "hyper-v.json"), "utf8");
+        const run = vi.fn(async (command) => {
+            expect(scriptOf(command)).toContain("$AllVms = @(Get-VM -ErrorAction Stop)");
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v" as const,
+                status: 1,
+                stderr: "Get-VM : Access is denied",
+            };
+        });
+
+        expect(await ensureHyperVNetworkAllocation(
+            { ...runtime(root, run), allocationReferenced: () => false },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).toMatchObject({
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: "hyper-v-network-allocation-inspection-failed",
+            preserveEvidence: true,
+        });
+        expect(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).toBe(before);
+    });
+
+    it("fails closed on malformed VM inspection output without changing allocation state", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async () => ({ mode: "exec" as const, provider: "hyper-v" as const, status: 0, stdout: "{}" }));
+
+        expect(await ensureHyperVNetworkAllocation(
+            { ...runtime(root, run), allocationReferenced: () => false },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: "hyper-v-network-allocation-inspection-invalid-result",
+            preserveEvidence: true,
+        });
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
+    });
+
+    it("fails closed when owner-state references cannot be read", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async () => setupObservation(root));
+
+        expect(await ensureHyperVNetworkAllocation(
+            {
+                ...runtime(root, run),
+                allocationReferenced: () => { throw new Error("owner-devices-state-read-failed"); },
+            },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            preserveEvidence: true,
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
     });
 
     it("rejects an observed marker and NAT pair that is not one CCC identity", async () => {

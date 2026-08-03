@@ -12,8 +12,11 @@ import {
     HYPER_V_NETWORK_SWITCH,
     hyperVCleanupNetworkCommand,
     hyperVEnsureNetworkCommand,
+    hyperVInspectNetworkAllocationsCommand,
+    hyperVVmName,
     isHyperVCccNetworkIdentity,
     parseHyperVNetworkCleanupObservation,
+    parseHyperVNetworkAllocationsObservation,
     parseHyperVNetworkObservation,
     type HyperVProviderCommand,
 } from "../../../host-control/hyper-v/index.js";
@@ -51,6 +54,7 @@ export interface HyperVNetworkRuntime extends HyperVNetworkStateRuntime {
         options: { timeoutMs: number; outputLimit: number },
     ): Promise<HyperVNetworkCommandResult>;
     commandOutputBytes: number;
+    allocationReferenced?(allocation: HyperVNetworkAllocation): boolean;
 }
 
 export type HyperVNetworkAllocation = {
@@ -61,6 +65,33 @@ export type HyperVNetworkAllocation = {
     macAddress: string;
     allocatedAt: string;
 };
+
+export type HyperVOwnerDevicesReader = (
+    ownerId: string,
+    backend: "windows-vm" | "linux-vm",
+) => unknown[];
+
+export function hyperVNetworkAllocationReferenced(
+    allocation: HyperVNetworkAllocation,
+    readDevices: HyperVOwnerDevicesReader,
+): boolean {
+    const matchingDevices = (["windows-vm", "linux-vm"] as const).flatMap((backend) =>
+        readDevices(allocation.ownerId, backend).filter((candidate) => candidate
+            && typeof candidate === "object"
+            && !Array.isArray(candidate)
+            && (candidate as Record<string, unknown>).id === allocation.deviceId));
+    const incarnations = matchingDevices.map((device) => {
+        const incarnationId = (device as Record<string, unknown>).incarnationId;
+        if (!validHyperVIncarnationId(incarnationId)) {
+            throw new Error("hyper-v-network-owner-state-incarnation-unverifiable");
+        }
+        return incarnationId;
+    });
+    if (new Set(incarnations).size > 1) {
+        throw new Error("hyper-v-network-owner-state-incarnation-conflict");
+    }
+    return incarnations[0] === allocation.incarnationId;
+}
 
 type HyperVNetworkState = {
     version: 1;
@@ -245,6 +276,58 @@ function commandSucceeded(result: HyperVNetworkCommandResult): boolean {
     return result.status === 0 && !result.error;
 }
 
+async function reconcileOrphanedAllocations(
+    runtime: HyperVNetworkRuntime,
+    current: HyperVNetworkState,
+    powershell: string,
+    deadlineAt: number,
+): Promise<HyperVNetworkState> {
+    if (!runtime.allocationReferenced || current.allocations.length === 0) return current;
+    const candidates = current.allocations.filter((allocation) => {
+        if (!allocation.incarnationId) return false;
+        return !runtime.allocationReferenced!(allocation);
+    });
+    if (candidates.length === 0) return current;
+    const execution = await runtime.run(hyperVInspectNetworkAllocationsCommand({
+        executable: powershell,
+        allocations: candidates.map(({ ownerId, deviceId, incarnationId }) => ({
+            ownerId,
+            deviceId,
+            incarnationId: incarnationId!,
+        })),
+    }), {
+        timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000),
+        outputLimit: runtime.commandOutputBytes,
+    });
+    if (!commandSucceeded(execution)) {
+        throw new Error(hyperVProviderDiagnosticCode(execution, "hyper-v-network-allocation-inspection-failed"));
+    }
+    const observation = parseHyperVNetworkAllocationsObservation(execution.stdout || "");
+    if (!observation || observation.allocations.length !== candidates.length) {
+        throw new Error("hyper-v-network-allocation-inspection-invalid-result");
+    }
+    const orphaned = new Set<string>();
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const observed = observation.allocations[index];
+        if (observed.ownerId !== candidate.ownerId
+            || observed.deviceId !== candidate.deviceId
+            || observed.incarnationId !== candidate.incarnationId
+            || observed.vmName !== hyperVVmName(candidate.ownerId, candidate.deviceId, candidate.incarnationId!)) {
+            throw new Error("hyper-v-network-allocation-inspection-identity-mismatch");
+        }
+        if (!observed.present) orphaned.add(`${candidate.ownerId}:${candidate.deviceId}:${candidate.incarnationId}`);
+    }
+    if (orphaned.size === 0) return current;
+    const allocations = current.allocations.filter(
+        (allocation) => !orphaned.has(`${allocation.ownerId}:${allocation.deviceId}:${allocation.incarnationId || ""}`),
+    );
+    ensureStateRoot(runtime);
+    const reconciled = { ...current, allocations };
+    writeJsonFileAtomically(stateFile(runtime), reconciled);
+    return reconciled;
+}
+
 function elevationRequired(result: HyperVNetworkCommandResult): boolean {
     const diagnostic = [result.error, result.stderr, result.stdout].map((value) => String(value || "")).join("\n");
     return diagnostic.includes("hyper-v-network-elevation-required")
@@ -322,6 +405,17 @@ export async function ensureHyperVNetworkAllocation(
             status: 409,
             error: "hyper-v-network-allocation-failed",
             detail: hyperVBoundedErrorCode(error, "hyper-v-network-allocation-failed"),
+        };
+    }
+    try {
+        if (current) current = await reconcileOrphanedAllocations(runtime, current, powershell, deadlineAt);
+    } catch (error) {
+        return {
+            ok: false,
+            status: 409,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: hyperVBoundedErrorCode(error, "hyper-v-network-allocation-reconciliation-failed"),
+            preserveEvidence: true,
         };
     }
     const canReconcileNetworkIdentity = !current || current.allocations.length === 0;

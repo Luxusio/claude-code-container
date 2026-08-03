@@ -20,6 +20,10 @@ export {
     type HyperVGuestReadyObservation,
     type HyperVGuestTransferObservation,
     type HyperVNetworkCleanupObservation,
+    type HyperVNetworkAllocationIdentity,
+    type HyperVNetworkAllocationObservation,
+    type HyperVNetworkAllocationsObservation,
+    type HyperVNetworkAllocationsOptions,
     type HyperVNetworkObservation,
     type HyperVNetworkOptions,
     type HyperVProviderCommand,
@@ -32,6 +36,7 @@ export {
 } from "./contracts.js";
 export { hyperVSnapshotName, hyperVVmName } from "./core.js";
 export { hyperVReadinessCommand, hyperVRebootCommand, hyperVSetupCommand, hyperVEnsureNetworkCommand, hyperVCleanupNetworkCommand } from "./host.js";
+export { hyperVInspectNetworkAllocationsCommand } from "./network-allocations.js";
 export { hyperVCreateCommand } from "./vm-create.js";
 export { hyperVLinuxSeedCommand, hyperVLinuxSshReadyCommand, hyperVBootstrapNetworkCommand, hyperVLinuxNetworkFinalizeCommand, hyperVBootstrapNetworkCleanupCommand, hyperVLinuxSshExecCommand, hyperVLinuxScpUploadCommand, hyperVLinuxScpDownloadCommand } from "./linux-guest.js";
 export { hyperVPrepareBaseImageCommand, hyperVAcquireBaseImageCommand } from "./images.js";

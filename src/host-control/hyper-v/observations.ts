@@ -14,6 +14,7 @@ import {
     type HyperVBaseImageObservation,
     type HyperVNetworkObservation,
     type HyperVNetworkCleanupObservation,
+    type HyperVNetworkAllocationsObservation,
     type HyperVRecoveryObservation,
     type HyperVBootstrapNetworkCleanupObservation,
     type HyperVBootstrapNetworkObservation,
@@ -158,6 +159,32 @@ export function parseHyperVNetworkCleanupObservation(stdout: string): HyperVNetw
         || typeof parsed.removedGateway !== "boolean"
         || typeof parsed.alreadyMissing !== "boolean") return null;
     return parsed as HyperVNetworkCleanupObservation;
+}
+
+export function parseHyperVNetworkAllocationsObservation(stdout: string): HyperVNetworkAllocationsObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed || parsed.ok !== true || !Array.isArray(parsed.allocations) || parsed.allocations.length > 1024) return null;
+    const allocations = parsed.allocations.map((candidate) => {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+        const item = candidate as Record<string, unknown>;
+        if (typeof item.ownerId !== "string" || !/^[a-f0-9]{16}$/.test(item.ownerId)
+            || typeof item.deviceId !== "string" || !/^(?!\.\.?$)[A-Za-z0-9._:-]{1,128}$/.test(item.deviceId)
+            || typeof item.incarnationId !== "string" || !/^[a-f0-9]{32}$/.test(item.incarnationId)
+            || typeof item.vmName !== "string" || !item.vmName
+            || typeof item.present !== "boolean"
+            || (item.present && (typeof item.vmId !== "string" || !VM_ID_PATTERN.test(item.vmId)))
+            || (!item.present && item.vmId !== undefined && item.vmId !== null)) return null;
+        return {
+            ownerId: item.ownerId,
+            deviceId: item.deviceId,
+            incarnationId: item.incarnationId,
+            vmName: item.vmName,
+            present: item.present,
+            ...(item.present ? { vmId: item.vmId as string } : {}),
+        };
+    });
+    if (allocations.some((candidate) => candidate === null)) return null;
+    return { ok: true, allocations: allocations as HyperVNetworkAllocationsObservation["allocations"] };
 }
 
 export function parseHyperVRecoveryObservation(stdout: string): HyperVRecoveryObservation | null {

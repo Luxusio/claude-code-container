@@ -81,6 +81,17 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   rollback removes only resources created by that transaction. Destructive
   switch or gateway cleanup additionally requires the persisted switch ID.
   Foreign or ambiguous host objects fail closed.
+- Broker network allocations are reconciled before singleton-network adoption.
+  An allocation is considered orphaned only when no `windows-vm` or `linux-vm`
+  owner-state record references the exact device and incarnation IDs and an
+  exact VM-name lookup finds no VM. The lookup derives both the VM name and
+  Notes marker from owner, device, and incarnation IDs. A present VM, duplicate
+  VM name, mismatched Notes marker, Hyper-V inventory query failure, malformed
+  observation, owner-state read failure, or legacy allocation without an
+  incarnation ID preserves the allocation and fails closed. Pruning
+  changes only the atomic broker allocation record; it never deletes a VM,
+  switch, gateway, or NAT. Once all allocations are proven orphaned, the broker
+  may adopt the exact stable CCC network created by setup.
 - Broker transport replay is not a general lifecycle policy. The sole automatic
   replay is one retry of a Hyper-V `device_create` request with an explicit
   `deviceId` after a non-timeout connection reset, refusal, broken pipe, or

@@ -1315,6 +1315,10 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("Get-Service -Name vmms")) {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 32768, freeMemoryMb: 16384, logicalProcessors: 8, missing: [] }), stderr: "" };
             }
+            if (script.includes("$Observations = @()")) {
+                const observedIncarnationId = "1".repeat(32);
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, allocations: [{ ownerId, deviceId: "existing-vm", incarnationId: observedIncarnationId, vmName: `ccc-${ownerId}-existing-vm-${observedIncarnationId}`, present: true, vmId }] }), stderr: "" };
+            }
             if (script.includes("New-NetNat -Name $NatName")) {
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command, { createdSwitch: false, createdNat: false })), stderr: "" };
             }
@@ -1447,6 +1451,10 @@ describe("device-lab Hyper-V broker", () => {
             const script = providerScript(command);
             if (script.includes("Get-Service -Name vmms")) {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 32768, freeMemoryMb: 16384, logicalProcessors: 8, missing: [] }), stderr: "" };
+            }
+            if (script.includes("$Observations = @()")) {
+                const observedIncarnationId = "b".repeat(32);
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, allocations: [{ ownerId, deviceId: "existing-network-user", incarnationId: observedIncarnationId, vmName: `ccc-${ownerId}-existing-network-user-${observedIncarnationId}`, present: true, vmId: "12345678-1234-1234-1234-123456789abc" }] }), stderr: "" };
             }
             if (script.includes("New-NetNat -Name $NatName")) {
                 expect(script).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-original'");

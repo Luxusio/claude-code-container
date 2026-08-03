@@ -180,6 +180,28 @@ export type HyperVNetworkCleanupObservation = {
     alreadyMissing: boolean;
 };
 
+export type HyperVNetworkAllocationIdentity = {
+    ownerId: string;
+    deviceId: string;
+    incarnationId: string;
+};
+
+export type HyperVNetworkAllocationObservation = HyperVNetworkAllocationIdentity & {
+    vmName: string;
+    present: boolean;
+    vmId?: string;
+};
+
+export type HyperVNetworkAllocationsObservation = {
+    ok: true;
+    allocations: HyperVNetworkAllocationObservation[];
+};
+
+export type HyperVNetworkAllocationsOptions = {
+    executable: string;
+    allocations: HyperVNetworkAllocationIdentity[];
+};
+
 export type HyperVRecoveryObservation = {
     ok: boolean;
     recoveredVm: boolean;
