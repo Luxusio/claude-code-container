@@ -162,7 +162,8 @@ describe("device-lab Hyper-V broker", () => {
                     timedOut: true,
                     input: "sensitive-network-input",
                 };
-                expect(script).toContain("$AllowExistingNat = $true");
+                expect(script).toContain("$AllowExistingNat = $false");
+                expect(script).toContain("$AllowExistingNat -or $ExistingSwitchOwned");
                 return { ...command, status: 0, stdout: JSON.stringify(hyperVNetworkObservation(command, { createdSwitch: false, createdNat: false })), stderr: "" };
             }
             const cleanup = hyperVNetworkCleanupResult(command);
@@ -224,7 +225,8 @@ describe("device-lab Hyper-V broker", () => {
             expect(networkScripts).toHaveLength(2);
             expect(powerShellString(networkScripts[1], "NatName")).toBe(powerShellString(networkScripts[0], "NatName"));
             expect(powerShellString(networkScripts[1], "Marker")).toBe(powerShellString(networkScripts[0], "Marker"));
-            expect(networkScripts[1]).toContain("$AllowExistingNat = $true");
+            expect(networkScripts[1]).toContain("$AllowExistingNat = $false");
+            expect(networkScripts[1]).toContain("$AllowExistingNat -or $ExistingSwitchOwned");
             expect(existsSync(intentPath)).toBe(false);
             const reconciledState = JSON.parse(readFileSync(
                 join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
