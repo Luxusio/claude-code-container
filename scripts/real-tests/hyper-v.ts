@@ -1,5 +1,5 @@
 import { join } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { repoRoot } from "./helpers.ts";
 import { withExclusiveRealProviderRun } from "./exclusive-real-provider-run.ts";
 import { runSupervisedProcess } from "./supervised-process.ts";
@@ -28,7 +28,8 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
     const brokerStatus = await ensureBroker(repoRoot, { env });
     if (brokerStatus !== 0) return brokerStatus;
     const runner = join(repoRoot, "scripts", "real-tests", "run.ts");
-    const result = await runProcess(process.execPath, [runner, "--compact", ...testFiles], {
+    const sourceLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+    const result = await runProcess(process.execPath, ["--import", sourceLoader, runner, "--compact", ...testFiles], {
         cwd: repoRoot,
         env,
     });

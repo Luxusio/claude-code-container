@@ -2,10 +2,11 @@
 import { spawnSync } from "child_process";
 import { existsSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { runSupervisedProcess } from "./real-tests/supervised-process.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const sourceLoader = pathToFileURL(join(root, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
 
 const LEVELS = {
     0: {
@@ -119,6 +120,8 @@ function commandFor(level, options = {}) {
         args: mode === "vitest"
             ? [vitest, "run", ...(level > 0 ? ["--reporter", "verbose"] : []), ...config.files]
             : [
+                "--import",
+                sourceLoader,
                 join(root, "scripts", "real-tests", "run.ts"),
                 ...(options.compact ? ["--compact"] : []),
                 ...(options.failOnSkip ? ["--fail-on-skip"] : []),

@@ -5,7 +5,7 @@ import { createHash } from "crypto";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 import { androidDiscovery, handleAndroidTool } from "../../device-lab-mcp/src/backends/android.mjs";
 import { handleAndroidRealTool } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
@@ -26,6 +26,7 @@ import {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "../..");
 const realTestRunner = join(repoRoot, "scripts", "real-tests", "run.ts");
+const sourceLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const PROCESS_SAMPLE_INTERVAL_MS = 50;
 const RESIDUE_INLINE_LIMIT = 4;
@@ -1053,7 +1054,7 @@ export function realProviderCycleCommand(target) {
     if (!definition) throw new Error(`unknown target: ${target}`);
     return {
         command: process.execPath,
-        args: [realTestRunner, "--compact", "--fail-on-skip", resolve(repoRoot, definition.module)],
+        args: ["--import", sourceLoader, realTestRunner, "--compact", "--fail-on-skip", resolve(repoRoot, definition.module)],
     };
 }
 

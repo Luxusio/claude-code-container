@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { basename } from "path";
+import { spawnSync } from "child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { basename, join } from "path";
+import { pathToFileURL } from "url";
 import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
+import { repoRoot } from "./helpers.ts";
 import {
     buildLevel3Artifacts,
     ensureHostBrokerReady,
@@ -58,6 +63,39 @@ describe("Hyper-V Level 3 launcher", () => {
         expect(hyperVTestFiles("linux").map((file) => basename(file))).toEqual(["level2-hyper-v-linux-vm.ts"]);
     });
 
+    it("loads split TypeScript host-control modules in the standalone real-test runner", () => {
+        const tempDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-source-loader-"));
+        const fixture = join(tempDir, "level2-hyper-v-linux-vm.ts");
+        const hostControlUrl = pathToFileURL(join(repoRoot, "src", "host-control", "hyper-v", "index.ts")).href;
+        writeFileSync(fixture, [
+            `import { HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT } from ${JSON.stringify(hostControlUrl)};`,
+            "export const name = 'host-control source loader';",
+            "export async function run() {",
+            "  return HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT",
+            "    ? { status: 'PASS' }",
+            "    : { status: 'FAIL', reason: 'missing Hyper-V contract' };",
+            "}",
+        ].join("\n"));
+        try {
+            const sourceLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+            const result = spawnSync(process.execPath, [
+                "--import",
+                sourceLoader,
+                join(repoRoot, "scripts", "real-tests", "run.ts"),
+                "--compact",
+                fixture,
+            ], {
+                cwd: tempDir,
+                encoding: "utf8",
+                timeout: 60_000,
+            });
+            expect(result.status, result.stderr || result.stdout).toBe(0);
+            expect(result.stdout).toContain("SUMMARY real-tests total=1 pass=1 skip=0 fail=0");
+        } finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+
     it("rejects unknown targets", () => {
         expect(() => hyperVTestFiles("macos")).toThrow(/all, windows, linux/);
     });
@@ -98,6 +136,7 @@ describe("Hyper-V Level 3 launcher", () => {
 
     it("builds artifacts and prepares the broker before running the selected provider", async () => {
         const calls: string[] = [];
+        let runnerArgs: string[] = [];
         const status = await runHyperVTests("windows", {
             env: { TEST_ENV: "1" },
             buildLevel3ArtifactsImpl: () => {
@@ -109,12 +148,18 @@ describe("Hyper-V Level 3 launcher", () => {
                 return 0;
             },
             runSupervisedProcessImpl: async (_command: string, args: string[]) => {
+                runnerArgs = args;
                 calls.push(`run:${basename(args.at(-1) || "")}`);
                 return { status: 0 };
             },
         });
         expect(status).toBe(0);
         expect(calls).toEqual(["build", "broker", "run:level2-hyper-v-windows-vm.ts"]);
+        expect(runnerArgs.slice(0, 3)).toEqual([
+            "--import",
+            pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href,
+            join(repoRoot, "scripts", "real-tests", "run.ts"),
+        ]);
     });
 
     it("does not prepare the broker or run providers when the build fails", async () => {

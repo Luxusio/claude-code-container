@@ -3,7 +3,8 @@ import { spawn } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import test from "node:test";
 import {
     androidAvdHome,
@@ -40,6 +41,8 @@ import {
     verifySuccessfulProcessTree,
     writeResidueDiagnostic,
 } from "./real-provider-cycles.mjs";
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
 test("resolves Android AVD storage using Android SDK environment precedence", () => {
     assert.equal(androidAvdHome({ home: "/home/test", env: { ANDROID_AVD_HOME: "/avds", ANDROID_USER_HOME: "/android-user" } }), "/avds");
@@ -288,6 +291,12 @@ test("parses a bounded real-provider cycle plan", () => {
 });
 
 test("maps targets to the exact existing real-test modules", () => {
+    const expectedLoader = pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href;
+    assert.deepEqual(realProviderCycleCommand("linux-vm").args.slice(0, 3), [
+        "--import",
+        expectedLoader,
+        join(repoRoot, "scripts", "real-tests", "run.ts"),
+    ]);
     assert.match(realProviderCycleCommand("android-emulator").args.at(-1), /level2-android-emulator-e2e\.ts$/);
     assert.match(realProviderCycleCommand("android-device").args.at(-1), /level2-android-device-e2e\.ts$/);
     assert.match(realProviderCycleCommand("windows-sandbox").args.at(-1), /level2-windows-sandbox\.ts$/);

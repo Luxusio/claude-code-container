@@ -60,6 +60,10 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   move.
 - Import migrations are atomic. Compatibility facades are not used for
   repository-private paths.
+- Standalone real-test runners register CCC's package-owned source resolver
+  before dynamically loading TypeScript provider modules. The resolver only
+  retries missing relative `.js` imports as `.ts`, preserving NodeNext source
+  specifiers without a runtime dependency or caller working-directory coupling.
 
 ## Follow-Up Order
 

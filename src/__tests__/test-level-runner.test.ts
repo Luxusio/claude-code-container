@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { pathToFileURL } from "url";
 import { parse } from "acorn";
 import { ModuleKind, ScriptTarget, transpileModule } from "typescript";
 import { describe, expect, it } from "vitest";
@@ -789,6 +790,11 @@ describe("test level runner", () => {
         const level2 = dryRunNode("2");
 
         expect(level2.mode).toBe("node-test");
+        expect(level2.args.slice(0, 3)).toEqual([
+            "--import",
+            pathToFileURL(join(repoRoot, "scripts", "real-tests", "typescript-source-loader.mjs")).href,
+            join(repoRoot, "scripts", "real-tests", "run.ts"),
+        ]);
         expect(level2.args.join("\n")).toContain("scripts/real-tests/run.ts");
         expect(level2.args.join("\n")).toContain("scripts/real-tests/level0-package-smoke.ts");
         expect(level2.args.join("\n")).toContain("scripts/real-tests/level1-real-provider-readiness.ts");

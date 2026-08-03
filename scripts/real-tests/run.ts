@@ -460,9 +460,10 @@ function uninstallProviderChildCleanup() {
 async function executeProviderModule(file: string) {
     const worker = resolve(dirname(fileURLToPath(import.meta.url)), "provider-worker.ts");
     const watchdogScript = resolve(dirname(fileURLToPath(import.meta.url)), "process-tree-watchdog.ts");
+    const sourceLoader = pathToFileURL(resolve(dirname(fileURLToPath(import.meta.url)), "typescript-source-loader.mjs")).href;
     try {
         const output = await new Promise<string>((resolvePromise, rejectPromise) => {
-            const child = spawn(process.execPath, [worker, file], {
+            const child = spawn(process.execPath, ["--import", sourceLoader, worker, file], {
                 cwd: process.cwd(),
                 env: process.env,
                 stdio: ["ignore", "inherit", "inherit", "pipe"],
