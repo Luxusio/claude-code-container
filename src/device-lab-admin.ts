@@ -38,6 +38,7 @@ import {
     HYPER_V_NETWORK_SWITCH,
     hyperVReadinessCommand,
     hyperVSetupCommand,
+    isHyperVCccNetworkIdentity,
     parseHyperVReadiness,
     parseHyperVSetupObservation,
 } from "./host-control/hyper-v/index.js";
@@ -140,6 +141,8 @@ type HyperVSetupNetworkState = {
     prefix: string;
     gateway: string;
     outboundPolicy: "nat";
+    managedSwitch: boolean;
+    managedGateway: boolean;
     managedNat: boolean;
     allocations: HyperVSetupNetworkAllocation[];
 };
@@ -161,9 +164,12 @@ function readHyperVSetupNetworkState(file: string): HyperVSetupNetworkState | nu
                 || current.natInstanceId.length > 256 || /[\u0000-\u001f]/.test(current.natInstanceId)
                 || typeof current.marker !== "string"
                 || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(current.marker)
+                || !isHyperVCccNetworkIdentity(current.marker, current.natName)
                 || current.prefix !== HYPER_V_NETWORK_PREFIX
                 || current.gateway !== HYPER_V_NETWORK_GATEWAY
                 || current.outboundPolicy !== "nat"
+                || (current.managedSwitch !== undefined && typeof current.managedSwitch !== "boolean")
+                || (current.managedGateway !== undefined && typeof current.managedGateway !== "boolean")
                 || typeof current.managedNat !== "boolean"
                 || !Array.isArray(current.allocations)) {
                 throw new Error("hyper-v-network-state-identity-conflict");
@@ -218,6 +224,8 @@ function readHyperVSetupNetworkState(file: string): HyperVSetupNetworkState | nu
                 prefix: current.prefix,
                 gateway: current.gateway,
                 outboundPolicy: "nat",
+                managedSwitch: current.managedSwitch === undefined ? current.managedNat : current.managedSwitch,
+                managedGateway: current.managedGateway === undefined ? current.managedNat : current.managedGateway,
                 managedNat: current.managedNat,
                 allocations,
             } as HyperVSetupNetworkState;
@@ -253,6 +261,8 @@ function persistHyperVSetupNetworkState(
         prefix: network.prefix,
         gateway: network.gateway,
         outboundPolicy: "nat",
+        managedSwitch: current?.managedSwitch === true,
+        managedGateway: current?.managedGateway === true,
         managedNat: current?.managedNat === true,
         allocations: current?.allocations || [],
     });

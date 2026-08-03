@@ -47,6 +47,13 @@ export const HYPER_V_NETWORK_GATEWAY = "172.29.0.1";
 export const HYPER_V_NETWORK_PREFIX_LENGTH = 24;
 export const HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT = "hyper-v-provider-image-finalization-v2";
 
+export function isHyperVCccNetworkIdentity(marker: unknown, natName: unknown): marker is string {
+    if (marker === HYPER_V_NETWORK_MARKER) return natName === HYPER_V_NETWORK_NAT;
+    if (typeof marker !== "string" || typeof natName !== "string") return false;
+    const token = /^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$/.exec(marker)?.[1];
+    return Boolean(token) && natName === `${HYPER_V_NETWORK_NAT}-${token}`;
+}
+
 export type HyperVVmObservation = {
     ok: boolean;
     vmId: string;
@@ -154,12 +161,14 @@ export type HyperVNetworkObservation = {
     ok: boolean;
     switchName: string;
     switchId: string;
+    marker?: string;
     natName: string;
     natInstanceId: string;
     prefix: string;
     gateway: string;
     interfaceIndex: number;
     createdSwitch: boolean;
+    createdGateway?: boolean;
     createdNat: boolean;
 };
 
@@ -330,6 +339,7 @@ export type HyperVNetworkOptions = {
     prefixLength: number;
     marker: string;
     allowExistingNat?: boolean;
+    allowCccOwnedNetworkAdoption?: boolean;
     expectedSwitchId?: string;
     expectedNatInstanceId?: string;
     elevated?: boolean;
@@ -338,4 +348,6 @@ export type HyperVNetworkOptions = {
 
 export type HyperVNetworkCleanupOptions = HyperVNetworkOptions & {
     removeNat?: boolean;
+    removeSwitch?: boolean;
+    removeGateway?: boolean;
 };

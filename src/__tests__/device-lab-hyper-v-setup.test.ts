@@ -197,6 +197,39 @@ describe("Hyper-V host setup CLI", () => {
         expect(readFileSync(stateFile, "utf8")).toBe(original);
     });
 
+    it("rejects setup state whose token marker and NAT name do not share an identity", () => {
+        const root = join(tmpdir(), `ccc-hyper-v-network-pair-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+        roots.push(root);
+        const networkRoot = join(root, "network");
+        const stateFile = join(networkRoot, "hyper-v.json");
+        mkdirSync(networkRoot, { recursive: true });
+        writeFileSync(stateFile, JSON.stringify({
+            version: 1,
+            switchName: setupNetwork.switchName,
+            switchId: setupNetwork.switchId,
+            marker: `ccc-device-lab:hyper-v-network:${"a".repeat(24)}`,
+            natName: `CCCDeviceLab-${"b".repeat(24)}`,
+            natInstanceId: setupNetwork.natInstanceId,
+            prefix: setupNetwork.prefix,
+            gateway: setupNetwork.gateway,
+            outboundPolicy: "nat",
+            managedNat: true,
+            allocations: [],
+        }));
+        const runner = vi.fn();
+
+        expect(setupHyperVHost(true, {
+            platform: "win32",
+            powershell: "powershell.exe",
+            stateRoot: root,
+            commandRunner: runner,
+        })).toEqual({
+            ok: false,
+            text: "CCC Hyper-V setup failed: hyper-v-network-state-identity-conflict",
+        });
+        expect(runner).not.toHaveBeenCalled();
+    });
+
     it("preserves valid existing network allocations while refreshing setup identity", () => {
         const root = join(tmpdir(), `ccc-hyper-v-network-preserve-${Date.now()}-${Math.random().toString(16).slice(2)}`);
         roots.push(root);

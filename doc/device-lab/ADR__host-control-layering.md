@@ -64,6 +64,18 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   before dynamically loading TypeScript provider modules. The resolver only
   retries missing relative `.js` imports as `.ts`, preserving NodeNext source
   specifiers without a runtime dependency or caller working-directory coupling.
+- Hyper-V networking is one host-wide CCC singleton. New broker intents use the
+  same stable marker and NAT name as `ccc devices setup hyper-v`; the random
+  intent token remains a transaction nonce rather than a second ownership
+  identity. A missing broker state file may adopt an existing network only
+  when the switch has an exact CCC stable or token marker and the corresponding
+  NAT name, Internal switch type, gateway, and prefix all match. Once state is
+  committed, persisted switch and NAT IDs remain authoritative. Previously
+  persisted token-fenced intents and states remain readable and keep their
+  dedicated cleanup behavior. Switch, gateway, and NAT ownership are recorded
+  separately, so repair or rollback removes only resources created by that
+  transaction. Destructive switch or gateway cleanup additionally requires the
+  persisted switch ID. Foreign or ambiguous host objects fail closed.
 
 ## Follow-Up Order
 

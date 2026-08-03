@@ -118,7 +118,7 @@ describe("device-lab Hyper-V broker", () => {
         }
     });
 
-    it("reconciles a token-fenced network intent after an indeterminate provider failure", async () => {
+    it("reconciles a stable singleton network intent after an indeterminate provider failure", async () => {
         const cwd = join(process.env.HOME!, "project-network-intent-retry");
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -210,8 +210,9 @@ describe("device-lab Hyper-V broker", () => {
             const intentPath = join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v-intent.json");
             const intent = JSON.parse(readFileSync(intentPath, "utf8"));
             expect(intent).toEqual(expect.objectContaining({
-                natName: expect.stringMatching(/^CCCDeviceLab-[a-f0-9]{24}$/),
-                marker: expect.stringMatching(/^ccc-device-lab:hyper-v-network:[a-f0-9]{24}$/),
+                natName: "CCCDeviceLab",
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                token: expect.stringMatching(/^[a-f0-9]{24}$/),
             }));
             const second = await invoke();
             expect(second.status).toBe(502);
@@ -225,7 +226,16 @@ describe("device-lab Hyper-V broker", () => {
             expect(powerShellString(networkScripts[1], "Marker")).toBe(powerShellString(networkScripts[0], "Marker"));
             expect(networkScripts[1]).toContain("$AllowExistingNat = $true");
             expect(existsSync(intentPath)).toBe(false);
-            expect(existsSync(join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"))).toBe(false);
+            const reconciledState = JSON.parse(readFileSync(
+                join(process.env.HOME!, ".ccc", "device-broker-private", "network", "hyper-v.json"),
+                "utf8",
+            ));
+            expect(reconciledState).toMatchObject({
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+                managedNat: false,
+                allocations: [],
+            });
         } finally {
             await close(server);
             cleanupOwner(ownerId);

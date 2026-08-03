@@ -141,7 +141,12 @@ export function parseHyperVNetworkObservation(stdout: string): HyperVNetworkObse
         || typeof parsed.prefix !== "string" || !/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(parsed.prefix)
         || typeof parsed.gateway !== "string" || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(parsed.gateway)
         || typeof parsed.interfaceIndex !== "number" || !Number.isSafeInteger(parsed.interfaceIndex) || parsed.interfaceIndex <= 0
-        || typeof parsed.createdSwitch !== "boolean" || typeof parsed.createdNat !== "boolean") return null;
+        || typeof parsed.createdSwitch !== "boolean"
+        || (parsed.createdGateway !== undefined && typeof parsed.createdGateway !== "boolean")
+        || typeof parsed.createdNat !== "boolean") return null;
+    if (parsed.marker !== undefined
+        && (typeof parsed.marker !== "string"
+            || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(parsed.marker))) return null;
     return parsed as HyperVNetworkObservation;
 }
 

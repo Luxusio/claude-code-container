@@ -9,6 +9,7 @@ import { repoRoot } from "./helpers.ts";
 import {
     buildLevel3Artifacts,
     ensureHostBrokerReady,
+    HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT,
     HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
     HYPER_V_LEVEL3_PROVIDER_CONTRACT,
     probeHostBrokerCapabilities,
@@ -28,6 +29,10 @@ function brokerStatusOutput(capabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABI
 }
 
 describe("Hyper-V Level 3 launcher", () => {
+    it("requires the current Hyper-V network ownership contract", () => {
+        expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT);
+    });
+
     it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {
         const reads = new Map([
             ["/repo/dist/host-control/hyper-v/contracts.js", "export const oldContract = true;"],

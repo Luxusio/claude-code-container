@@ -12,6 +12,7 @@ import {
     HYPER_V_NETWORK_SWITCH,
     hyperVCleanupNetworkCommand,
     hyperVEnsureNetworkCommand,
+    isHyperVCccNetworkIdentity,
     parseHyperVNetworkCleanupObservation,
     parseHyperVNetworkObservation,
     type HyperVProviderCommand,
@@ -71,6 +72,8 @@ type HyperVNetworkState = {
     prefix: string;
     gateway: string;
     outboundPolicy: "nat";
+    managedSwitch: boolean;
+    managedGateway: boolean;
     managedNat: boolean;
     allocations: HyperVNetworkAllocation[];
 };
@@ -91,6 +94,8 @@ export type HyperVNetworkRelease = {
     released: boolean;
     statePresent: boolean;
     remaining: number;
+    managedSwitch?: boolean;
+    managedGateway?: boolean;
     managedNat?: boolean;
     switchName?: string;
     switchId?: string;
@@ -118,6 +123,10 @@ function isGuid(value: unknown): value is string {
     return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
 
+function intentOwnsDedicatedNat(intent: HyperVNetworkIntent): boolean {
+    return intent.marker !== HYPER_V_NETWORK_MARKER && isHyperVCccNetworkIdentity(intent.marker, intent.natName);
+}
+
 function stateFile(runtime: HyperVNetworkStateRuntime): string {
     return join(runtime.privateRoot, "network", "hyper-v.json");
 }
@@ -143,11 +152,14 @@ function readState(runtime: HyperVNetworkStateRuntime): HyperVNetworkState | nul
             || typeof state.switchId !== "string" || !isGuid(state.switchId)
             || (state.natName !== HYPER_V_NETWORK_NAT && !/^CCCDeviceLab-[a-f0-9]{24}$/.test(String(state.natName || "")))
             || (state.marker !== undefined && (typeof state.marker !== "string" || !/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(state.marker)))
+            || (state.marker !== undefined && !isHyperVCccNetworkIdentity(state.marker, state.natName))
             || (state.natInstanceId !== undefined && (typeof state.natInstanceId !== "string" || !state.natInstanceId || state.natInstanceId.length > 256 || /[\u0000-\u001f]/.test(state.natInstanceId)))
             || (state.managedNat === true && (typeof state.natInstanceId !== "string" || !state.natInstanceId))
             || state.prefix !== HYPER_V_NETWORK_PREFIX
             || state.gateway !== HYPER_V_NETWORK_GATEWAY
             || (state.outboundPolicy !== undefined && state.outboundPolicy !== "nat")
+            || (state.managedSwitch !== undefined && typeof state.managedSwitch !== "boolean")
+            || (state.managedGateway !== undefined && typeof state.managedGateway !== "boolean")
             || (state.managedNat !== undefined && typeof state.managedNat !== "boolean")
             || !Array.isArray(state.allocations)) throw new Error("hyper-v-network-state-invalid");
         const identities = new Set<string>();
@@ -175,9 +187,11 @@ function readState(runtime: HyperVNetworkStateRuntime): HyperVNetworkState | nul
             return { ...allocation, macAddress } as HyperVNetworkAllocation;
         });
         return {
-            ...(state as Omit<HyperVNetworkState, "allocations" | "outboundPolicy" | "managedNat" | "marker">),
+            ...(state as Omit<HyperVNetworkState, "allocations" | "outboundPolicy" | "managedSwitch" | "managedGateway" | "managedNat" | "marker">),
             marker: typeof state.marker === "string" ? state.marker : HYPER_V_NETWORK_MARKER,
             outboundPolicy: "nat",
+            managedSwitch: state.managedSwitch === undefined ? state.managedNat === true : state.managedSwitch === true,
+            managedGateway: state.managedGateway === undefined ? state.managedNat === true : state.managedGateway === true,
             managedNat: state.managedNat === true,
             allocations,
         } as HyperVNetworkState;
@@ -191,8 +205,10 @@ function readIntent(runtime: HyperVNetworkStateRuntime): HyperVNetworkIntent | n
         if (intent.version !== 1
             || typeof intent.token !== "string" || !/^[a-f0-9]{24}$/.test(intent.token)
             || intent.switchName !== HYPER_V_NETWORK_SWITCH
-            || intent.natName !== `${HYPER_V_NETWORK_NAT}-${intent.token}`
-            || intent.marker !== `ccc-device-lab:hyper-v-network:${intent.token}`
+            || !isHyperVCccNetworkIdentity(intent.marker, intent.natName)
+            || (intent.marker !== HYPER_V_NETWORK_MARKER
+                && (intent.natName !== `${HYPER_V_NETWORK_NAT}-${intent.token}`
+                    || intent.marker !== `ccc-device-lab:hyper-v-network:${intent.token}`))
             || intent.prefix !== HYPER_V_NETWORK_PREFIX
             || intent.gateway !== HYPER_V_NETWORK_GATEWAY
             || typeof intent.createdAt !== "string") throw new Error("hyper-v-network-intent-invalid");
@@ -206,8 +222,8 @@ function createIntent(runtime: HyperVNetworkStateRuntime): HyperVNetworkIntent {
         version: 1,
         token,
         switchName: HYPER_V_NETWORK_SWITCH,
-        natName: `${HYPER_V_NETWORK_NAT}-${token}`,
-        marker: `ccc-device-lab:hyper-v-network:${token}`,
+        natName: HYPER_V_NETWORK_NAT,
+        marker: HYPER_V_NETWORK_MARKER,
         prefix: HYPER_V_NETWORK_PREFIX,
         gateway: HYPER_V_NETWORK_GATEWAY,
         createdAt: new Date().toISOString(),
@@ -316,7 +332,8 @@ export async function ensureHyperVNetworkAllocation(
         prefix: HYPER_V_NETWORK_PREFIX,
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
-        allowExistingNat: Boolean(current?.natInstanceId) || Boolean(intent),
+        allowExistingNat: Boolean(current?.natInstanceId),
+        allowCccOwnedNetworkAdoption: !current,
         expectedSwitchId: current?.switchId,
         expectedNatInstanceId: current?.natInstanceId,
     };
@@ -343,9 +360,12 @@ export async function ensureHyperVNetworkAllocation(
         };
     }
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
+    const observedMarker = observation?.marker || current?.marker || intent!.marker;
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
-        || observation.natName !== (current?.natName || intent!.natName)
+        || (current
+            ? observation.natName !== current.natName || observedMarker !== current.marker
+            : !isHyperVCccNetworkIdentity(observedMarker, observation.natName))
         || observation.prefix !== HYPER_V_NETWORK_PREFIX
         || observation.gateway !== HYPER_V_NETWORK_GATEWAY) {
         return { ok: false, status: 502, error: "hyper-v-network-setup-invalid-result", preserveEvidence: true };
@@ -385,13 +405,22 @@ export async function ensureHyperVNetworkAllocation(
             version: 1,
             switchName: observation.switchName,
             switchId: observation.switchId.toLowerCase(),
-            marker: current?.marker || intent!.marker,
+            marker: observedMarker,
             natName: observation.natName,
             natInstanceId: observation.natInstanceId,
             prefix: observation.prefix,
             gateway: observation.gateway,
             outboundPolicy: "nat",
-            managedNat: current?.managedNat === true || Boolean(intent),
+            managedSwitch: current?.managedSwitch === true
+                || (!current && (observation.createdSwitch
+                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
+            managedGateway: current?.managedGateway === true
+                || (!current && (observation.createdGateway === true
+                    || observation.createdSwitch
+                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
+            managedNat: current?.managedNat === true
+                || (!current && (observation.createdNat
+                    || intentOwnsDedicatedNat({ ...intent!, marker: observedMarker, natName: observation.natName }))),
             allocations: [
                 ...allocations,
                 { ownerId, deviceId, incarnationId, address, macAddress, allocatedAt: new Date().toISOString() },
@@ -411,17 +440,19 @@ export async function ensureHyperVNetworkAllocation(
         };
     } catch (error) {
         let cleanupFailure: string | null = null;
-        if (!current && (observation.createdSwitch || observation.createdNat)) {
+        if (!current && (observation.createdSwitch || observation.createdGateway === true || observation.createdNat)) {
             try {
                 const cleanupOptions = {
                     executable: powershell,
                     switchName: intent!.switchName,
-                    natName: intent!.natName,
-                    marker: intent!.marker,
+                    natName: observation.natName,
+                    marker: observedMarker,
                     prefix: HYPER_V_NETWORK_PREFIX,
                     gateway: HYPER_V_NETWORK_GATEWAY,
                     prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
                     removeNat: observation.createdNat,
+                    removeSwitch: observation.createdSwitch,
+                    removeGateway: observation.createdGateway === true || observation.createdSwitch,
                     expectedSwitchId: observation.switchId,
                     expectedNatInstanceId: observation.createdNat ? observation.natInstanceId : undefined,
                 };
@@ -468,6 +499,8 @@ export function releaseHyperVNetworkAllocation(
         if (!current) return { ok: true, released: false, statePresent: false, remaining: 0 };
         const matched = current.allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
         const identity = {
+            managedSwitch: current.managedSwitch,
+            managedGateway: current.managedGateway,
             managedNat: current.managedNat,
             switchName: current.switchName,
             switchId: current.switchId,
@@ -489,7 +522,7 @@ export function releaseHyperVNetworkAllocation(
         if (allocations.length === current.allocations.length) {
             return { ok: true, released: false, statePresent: true, remaining: allocations.length, ...identity };
         }
-        if (allocations.length === 0 && current.managedNat) {
+        if (allocations.length === 0 && (current.managedSwitch || current.managedGateway || current.managedNat)) {
             return { ok: true, released: true, statePresent: true, remaining: 0, ...identity };
         }
         ensureStateRoot(runtime);
@@ -517,8 +550,8 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
     if (!release.ok || !release.statePresent || !release.released || release.remaining !== 0) {
         return { ...release, networkCleanup: null };
     }
-    if (release.managedNat !== true) {
-        return { ...release, networkCleanup: { skipped: true, reason: "hyper-v-network-nat-ownership-unproven" } };
+    if (release.managedSwitch !== true && release.managedGateway !== true && release.managedNat !== true) {
+        return { ...release, networkCleanup: { skipped: true, reason: "hyper-v-network-ownership-unproven" } };
     }
     if (!release.switchId) {
         return { ...release, ok: false, error: "hyper-v-network-switch-identity-unproven", networkCleanup: null };
@@ -526,7 +559,7 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
     if (!release.switchName || !release.natName || !release.marker) {
         return { ...release, ok: false, error: "hyper-v-network-identity-unproven", networkCleanup: null };
     }
-    if (!release.natInstanceId) {
+    if (release.managedNat === true && !release.natInstanceId) {
         return { ...release, ok: false, error: "hyper-v-network-nat-identity-unproven", networkCleanup: null };
     }
     const powershell = runtime.resolveExecutable("powershell.exe")
@@ -541,7 +574,9 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
         prefix: HYPER_V_NETWORK_PREFIX,
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
-        removeNat: true,
+        removeNat: release.managedNat === true,
+        removeSwitch: release.managedSwitch === true,
+        removeGateway: release.managedGateway === true,
         expectedSwitchId: release.switchId,
         expectedNatInstanceId: release.natInstanceId,
     };

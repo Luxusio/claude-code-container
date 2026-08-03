@@ -6,6 +6,7 @@ export {
     HYPER_V_NETWORK_PREFIX_LENGTH,
     HYPER_V_NETWORK_SWITCH,
     HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT,
+    isHyperVCccNetworkIdentity,
     type HyperVAcquireBaseImageOptions,
     type HyperVAutomaticBaseImageProfile,
     type HyperVBaseImageObservation,

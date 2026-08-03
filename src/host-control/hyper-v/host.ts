@@ -236,6 +236,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
     if (!/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(marker)) throw new Error("hyper-v-network-marker-invalid");
     const prefixLength = boundedInteger(options.prefixLength, 16, 30, "network-prefix-length");
     const allowExistingNat = options.allowExistingNat === true;
+    const allowCccOwnedNetworkAdoption = options.allowCccOwnedNetworkAdoption === true;
     const expectedSwitchId = String(options.expectedSwitchId || "").toLowerCase();
     const expectedNatInstanceId = String(options.expectedNatInstanceId || "");
     if (expectedSwitchId && !VM_ID_PATTERN.test(expectedSwitchId)) throw new Error("hyper-v-network-switch-id-invalid");
@@ -247,6 +248,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         `$Gateway = ${psQuote(gateway)}`,
         `$PrefixLength = ${prefixLength}`,
         `$AllowExistingNat = ${allowExistingNat ? "$true" : "$false"}`,
+        `$AllowCccOwnedNetworkAdoption = ${allowCccOwnedNetworkAdoption ? "$true" : "$false"}`,
         `$ExpectedSwitchId = ${psQuote(expectedSwitchId)}`,
         `$ExpectedNatInstanceId = ${psQuote(expectedNatInstanceId)}`,
         `$Marker = ${psQuote(marker)}`,
@@ -256,10 +258,24 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "$CreatedGateway = $false",
         "$CreatedNat = $false",
         "$CreatedNatInstanceId = ''",
+        "$ExistingSwitchOwned = $false",
         "$Switches = @(Get-VMSwitch -Name $SwitchName -ErrorAction SilentlyContinue)",
         "if ($Switches.Count -gt 1) { throw 'hyper-v-network-switch-ambiguous' }",
         "$SwitchById = if ($ExpectedSwitchId) { Get-VMSwitch -Id ([Guid]$ExpectedSwitchId) -ErrorAction SilentlyContinue } else { $null }",
         "if ($ExpectedSwitchId -and ($Switches.Count -ne 1 -or -not $SwitchById -or $SwitchById.Name -ne $SwitchName -or $Switches[0].Id.ToString().ToLowerInvariant() -cne $ExpectedSwitchId)) { throw 'hyper-v-network-switch-identity-conflict' }",
+        "if ($Switches.Count -eq 1) {",
+        "  if ([string]$Switches[0].SwitchType -ne 'Internal') { throw 'hyper-v-network-switch-type-conflict' }",
+        "  if ([string]$Switches[0].Notes -cne $Marker) {",
+        "    $ObservedMarker = [string]$Switches[0].Notes",
+        "    $TokenMatch = [regex]::Match($ObservedMarker, '^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$')",
+        "    if (-not $AllowCccOwnedNetworkAdoption) { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "    if ($ObservedMarker -ceq 'ccc-device-lab:hyper-v-network:v1') { $NatName = 'CCCDeviceLab' }",
+        "    elseif ($TokenMatch.Success) { $NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value }",
+        "    else { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "    $Marker = $ObservedMarker",
+        "  }",
+        "  $ExistingSwitchOwned = $true",
+        "}",
         "$ExistingAdapterIndex = $null",
         "if ($Switches.Count -eq 1) { $ExistingAdapter = Get-NetAdapter -Name ('vEthernet (' + $SwitchName + ')') -ErrorAction SilentlyContinue; if ($ExistingAdapter) { $ExistingAdapterIndex = [int]$ExistingAdapter.ifIndex } }",
         "$PrefixParts = $Prefix.Split('/')",
@@ -270,7 +286,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "$Nats = @(Get-NetNat -Name $NatName -ErrorAction SilentlyContinue)",
         "if ($Nats.Count -gt 1) { throw 'hyper-v-network-nat-ambiguous' }",
         "if ($Nats.Count -eq 1 -and [string]$Nats[0].InternalIPInterfaceAddressPrefix -ne $Prefix) { throw 'hyper-v-network-nat-prefix-conflict' }",
-        "if ($Nats.Count -eq 1 -and -not $AllowExistingNat) { throw 'hyper-v-network-nat-ownership-conflict' }",
+        "if ($Nats.Count -eq 1 -and -not ($AllowExistingNat -or $ExistingSwitchOwned)) { throw 'hyper-v-network-nat-ownership-conflict' }",
         "if ($Nats.Count -eq 1 -and $ExpectedNatInstanceId -and ([string]$Nats[0].InstanceID -cne $ExpectedNatInstanceId)) { throw 'hyper-v-network-nat-identity-conflict' }",
         "$IsAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
         "$GatewayExists = if ($ExistingAdapterIndex) { [bool]@(Get-NetIPAddress -InterfaceIndex $ExistingAdapterIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $Gateway -and $_.PrefixLength -eq $PrefixLength }).Count } else { $false }",
@@ -279,7 +295,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "try {",
         "  if ($Switches.Count -eq 0) { $Switch = New-VMSwitch -Name $SwitchName -SwitchType Internal -Notes $Marker -ErrorAction Stop; $CreatedSwitch = $true; $Switch = Get-VMSwitch -Id $Switch.Id -ErrorAction Stop } else { $Switch = $Switches[0] }",
         "  if ([string]$Switch.SwitchType -ne 'Internal') { throw 'hyper-v-network-switch-type-conflict' }",
-        "  if ([string]$Switch.Notes -ne $Marker) { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "  if ([string]$Switch.Notes -cne $Marker) { throw 'hyper-v-network-switch-ownership-conflict' }",
         "  $Adapter = Get-NetAdapter -Name ('vEthernet (' + $SwitchName + ')') -ErrorAction Stop",
         "  $GatewayMatches = @(Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $Gateway -and $_.PrefixLength -eq $PrefixLength })",
         "  if ($GatewayMatches.Count -eq 0) {",
@@ -291,7 +307,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "  if ([string]$Nat.InternalIPInterfaceAddressPrefix -ne $Prefix) { throw 'hyper-v-network-nat-prefix-conflict' }",
         "  $NatInstanceId = [string]$Nat.InstanceID",
         "  if (-not $NatInstanceId) { throw 'hyper-v-network-nat-identity-unavailable' }",
-        "  $Result = [ordered]@{ ok = $true; switchName = $Switch.Name; switchId = [string]$Switch.Id; natName = $Nat.Name; natInstanceId = $NatInstanceId; prefix = [string]$Nat.InternalIPInterfaceAddressPrefix; gateway = $Gateway; interfaceIndex = [int]$Adapter.ifIndex; createdSwitch = $CreatedSwitch; createdNat = $CreatedNat }",
+        "  $Result = [ordered]@{ ok = $true; switchName = $Switch.Name; switchId = [string]$Switch.Id; marker = $Marker; natName = $Nat.Name; natInstanceId = $NatInstanceId; prefix = [string]$Nat.InternalIPInterfaceAddressPrefix; gateway = $Gateway; interfaceIndex = [int]$Adapter.ifIndex; createdSwitch = $CreatedSwitch; createdGateway = $CreatedGateway; createdNat = $CreatedNat }",
         "  $Result | ConvertTo-Json -Compress -Depth 5",
         "} catch {",
         "  if ($CreatedNat) { $RollbackNats = @(Get-NetNat -Name $NatName -ErrorAction SilentlyContinue); if ($RollbackNats.Count -ne 1 -or [string]$RollbackNats[0].InstanceID -cne $CreatedNatInstanceId) { throw 'hyper-v-network-nat-rollback-identity-conflict' }; Remove-NetNat -InputObject $RollbackNats[0] -Confirm:$false -ErrorAction Stop }",
@@ -322,8 +338,11 @@ export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions
     if (!/^ccc-device-lab:hyper-v-network:(?:v1|[a-f0-9]{24})$/.test(marker)) throw new Error("hyper-v-network-marker-invalid");
     const prefixLength = boundedInteger(options.prefixLength, 16, 30, "network-prefix-length");
     const removeNat = options.removeNat === true;
+    const removeSwitch = options.removeSwitch !== false;
+    const removeGateway = removeSwitch || options.removeGateway === true;
     const expectedSwitchId = String(options.expectedSwitchId || "").toLowerCase();
     const expectedNatInstanceId = String(options.expectedNatInstanceId || "");
+    if ((removeSwitch || removeGateway) && !expectedSwitchId) throw new Error("hyper-v-network-switch-id-invalid");
     if (expectedSwitchId && !VM_ID_PATTERN.test(expectedSwitchId)) throw new Error("hyper-v-network-switch-id-invalid");
     if (removeNat && (!expectedNatInstanceId || expectedNatInstanceId.length > 256 || /[\u0000-\u001f]/.test(expectedNatInstanceId))) throw new Error("hyper-v-network-nat-instance-id-invalid");
     const script = jsonScript([
@@ -333,6 +352,8 @@ export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions
         `$Gateway = ${psQuote(gateway)}`,
         `$PrefixLength = ${prefixLength}`,
         `$RemoveNat = ${removeNat ? "$true" : "$false"}`,
+        `$RemoveSwitch = ${removeSwitch ? "$true" : "$false"}`,
+        `$RemoveGateway = ${removeGateway ? "$true" : "$false"}`,
         `$ExpectedSwitchId = ${psQuote(expectedSwitchId)}`,
         `$ExpectedNatInstanceId = ${psQuote(expectedNatInstanceId)}`,
         `$Marker = ${psQuote(marker)}`,
@@ -347,17 +368,18 @@ export function hyperVCleanupNetworkCommand(options: HyperVNetworkCleanupOptions
         "if ($Nats.Count -gt 1) { throw 'hyper-v-network-nat-ambiguous' }",
         "if ($Switches.Count -eq 1) {",
         "  $Switch = $Switches[0]",
-        "  if ([string]$Switch.SwitchType -ne 'Internal' -or [string]$Switch.Notes -ne $Marker) { throw 'hyper-v-network-switch-ownership-conflict' }",
-        "  $Attached = @(Get-VMNetworkAdapter -All -ErrorAction SilentlyContinue | Where-Object { $_.SwitchName -eq $SwitchName })",
-        "  if ($Attached.Count -gt 0) { throw 'hyper-v-network-switch-in-use' }",
+        "  if ([string]$Switch.SwitchType -ne 'Internal' -or [string]$Switch.Notes -cne $Marker) { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "  if ($RemoveSwitch) { $Attached = @(Get-VMNetworkAdapter -All -ErrorAction SilentlyContinue | Where-Object { $_.SwitchName -eq $SwitchName }); if ($Attached.Count -gt 0) { throw 'hyper-v-network-switch-in-use' } }",
         "}",
         "$IsAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-        "$RequiresMutation = ($Switches.Count -eq 1) -or ($Nats.Count -eq 1 -and $RemoveNat)",
+        "$RequiresMutation = ($Switches.Count -eq 1 -and ($RemoveSwitch -or $RemoveGateway)) -or ($Nats.Count -eq 1 -and $RemoveNat)",
         "if ($RequiresMutation -and -not $IsAdministrator) { throw 'hyper-v-network-elevation-required' }",
         "if ($Nats.Count -eq 1 -and $RemoveNat) { if ([string]$Nats[0].InternalIPInterfaceAddressPrefix -ne $Prefix) { throw 'hyper-v-network-nat-prefix-conflict' }; if ([string]$Nats[0].InstanceID -cne $ExpectedNatInstanceId) { throw 'hyper-v-network-nat-identity-conflict' }; Remove-NetNat -InputObject $Nats[0] -Confirm:$false -ErrorAction Stop; $RemovedNat = $true }",
-        "if ($Switches.Count -eq 1) {",
+        "if ($Switches.Count -eq 1 -and $RemoveGateway) {",
         "  $Adapter = Get-NetAdapter -Name ('vEthernet (' + $SwitchName + ')') -ErrorAction SilentlyContinue",
         "  if ($Adapter) { $GatewayMatches = @(Get-NetIPAddress -InterfaceIndex $Adapter.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq $Gateway -and $_.PrefixLength -eq $PrefixLength }); foreach ($Match in $GatewayMatches) { Remove-NetIPAddress -InputObject $Match -Confirm:$false -ErrorAction Stop; $RemovedGateway = $true } }",
+        "}",
+        "if ($Switches.Count -eq 1 -and $RemoveSwitch) {",
         "  Remove-VMSwitch -VMSwitch $Switches[0] -Force -Confirm:$false -ErrorAction Stop",
         "  $RemovedSwitch = $true",
         "}",

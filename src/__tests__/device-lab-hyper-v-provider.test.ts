@@ -1158,6 +1158,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-network-nat-prefix-conflict");
         expect(script).toContain("hyper-v-network-nat-ownership-conflict");
         expect(script).toContain("$AllowExistingNat = $true");
+        expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
         expect(script).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(script).toContain("Get-VMSwitch -Id ([Guid]$ExpectedSwitchId)");
         expect(script).toContain("hyper-v-network-switch-identity-conflict");
@@ -1190,6 +1191,36 @@ describe("Hyper-V provider adapter", () => {
         })}`)).toMatchObject({ switchName: "CCC Device Lab", interfaceIndex: 42 });
         expect(parseHyperVNetworkObservation('{"ok":true,"switchName":"CCC Device Lab"}')).toBeNull();
 
+        const adoptionScript = scriptOf(hyperVEnsureNetworkCommand({
+            executable: "powershell.exe",
+            switchName: "CCC Device Lab",
+            natName: "CCCDeviceLab",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            allowExistingNat: true,
+            allowCccOwnedNetworkAdoption: true,
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            prefixLength: 24,
+        }));
+        expect(adoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(adoptionScript).toContain("^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$");
+        expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value");
+        expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
+        expect(adoptionScript).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
+        expect(parseHyperVNetworkObservation(JSON.stringify({
+            ok: true,
+            switchName: "CCC Device Lab",
+            switchId: vmId,
+            marker: "foreign-marker",
+            natName: "CCCDeviceLab",
+            natInstanceId: "ccc-nat-instance-1",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            interfaceIndex: 42,
+            createdSwitch: false,
+            createdNat: false,
+        }))).toBeNull();
+
         const cleanup = hyperVCleanupNetworkCommand({
             executable: "powershell.exe",
             switchName: "CCC Device Lab",
@@ -1204,14 +1235,27 @@ describe("Hyper-V provider adapter", () => {
         });
         const cleanupScript = scriptOf(cleanup);
         expect(cleanupScript).toContain("$RemoveNat = $true");
+        expect(cleanupScript).toContain("$RemoveSwitch = $true");
+        expect(cleanupScript).toContain("$RemoveGateway = $true");
         expect(cleanupScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(cleanupScript).toContain("hyper-v-network-nat-identity-conflict");
         expect(cleanupScript).toContain("hyper-v-network-switch-ownership-conflict");
         expect(cleanupScript).toContain("hyper-v-network-switch-in-use");
         expect(cleanupScript).toContain("Remove-NetNat");
         expect(cleanupScript).toContain("Remove-VMSwitch");
-        expect(cleanupScript).toContain("$RequiresMutation = ($Switches.Count -eq 1) -or ($Nats.Count -eq 1 -and $RemoveNat)");
+        expect(cleanupScript).toContain("$RequiresMutation = ($Switches.Count -eq 1 -and ($RemoveSwitch -or $RemoveGateway)) -or ($Nats.Count -eq 1 -and $RemoveNat)");
+        expect(cleanupScript).toContain("[string]$Switch.Notes -cne $Marker");
         expect(cleanupScript).toContain("hyper-v-network-elevation-required");
+        expect(() => hyperVCleanupNetworkCommand({
+            executable: "powershell.exe",
+            switchName: "CCC Device Lab",
+            natName: "CCCDeviceLab",
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            prefix: "172.29.0.0/24",
+            gateway: "172.29.0.1",
+            prefixLength: 24,
+            removeSwitch: true,
+        })).toThrow("hyper-v-network-switch-id-invalid");
         expect(parseHyperVNetworkCleanupObservation(JSON.stringify({ ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }))).toEqual(expect.objectContaining({ removedSwitch: true }));
         expect(parseHyperVNetworkCleanupObservation('{"ok":true,"removedSwitch":true}')).toBeNull();
 
@@ -1223,6 +1267,7 @@ describe("Hyper-V provider adapter", () => {
             prefix: "172.29.0.0/24",
             gateway: "172.29.0.1",
             prefixLength: 24,
+            expectedSwitchId: vmId,
         }));
         expect(preserveForeignNat).toContain("$RemoveNat = $false");
         expect(preserveForeignNat).toContain("$Nats.Count -eq 1 -and $RemoveNat");
