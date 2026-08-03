@@ -1160,6 +1160,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-network-nat-ownership-conflict");
         expect(script).toContain("$AllowExistingNat = $true");
         expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+        expect(script).toContain("$AllowLegacyTokenToStableMigration = $false");
         expect(script).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(script).toContain("Get-VMSwitch -Id ([Guid]$ExpectedSwitchId)");
         expect(script).toContain("hyper-v-network-switch-identity-conflict");
@@ -1204,6 +1205,7 @@ describe("Hyper-V provider adapter", () => {
             prefixLength: 24,
         }));
         expect(adoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(adoptionScript).toContain("$AllowLegacyTokenToStableMigration = $false");
         expect(adoptionScript).toContain("^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$");
         expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
@@ -1212,20 +1214,21 @@ describe("Hyper-V provider adapter", () => {
         const persistedIdentityAdoptionScript = scriptOf(hyperVEnsureNetworkCommand({
             executable: "powershell.exe",
             switchName: "CCC Device Lab",
-            natName: "CCCDeviceLab",
-            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: `CCCDeviceLab-${"a".repeat(24)}`,
+            marker: `ccc-device-lab:hyper-v-network:${"a".repeat(24)}`,
             allowExistingNat: true,
-            allowCccOwnedNetworkAdoption: true,
+            allowLegacyTokenToStableMigration: true,
             expectedSwitchId: vmId,
             expectedNatInstanceId: "ccc-nat-instance-1",
             prefix: "172.29.0.0/24",
             gateway: "172.29.0.1",
             prefixLength: 24,
         }));
-        expect(persistedIdentityAdoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(persistedIdentityAdoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $false");
+        expect(persistedIdentityAdoptionScript).toContain("$AllowLegacyTokenToStableMigration = $true");
         expect(persistedIdentityAdoptionScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(persistedIdentityAdoptionScript).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-1'");
-        expect(persistedIdentityAdoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
+        expect(persistedIdentityAdoptionScript).toContain("$ObservedMarker -cne 'ccc-device-lab:hyper-v-network:v1'");
         expect(parseHyperVNetworkObservation(JSON.stringify({
             ok: true,
             switchName: "CCC Device Lab",

@@ -330,6 +330,7 @@ describe("Hyper-V network module", () => {
         const run = vi.fn(async (command) => {
             const script = scriptOf(command);
             expect(script).toContain("$AllowCccOwnedNetworkAdoption = $true");
+            expect(script).toContain("$AllowLegacyTokenToStableMigration = $false");
             expect(script).toContain("$ExpectedSwitchId = ''");
             expect(script).toContain("$ExpectedNatInstanceId = ''");
             return {
@@ -365,6 +366,109 @@ describe("Hyper-V network module", () => {
         });
     });
 
+    it("persists one-way CCC marker migration on an idempotent allocation retry", async () => {
+        const root = privateRoot();
+        const token = "e".repeat(24);
+        writeNetworkState(root, {
+            marker: `ccc-device-lab:hyper-v-network:${token}`,
+            natName: `CCCDeviceLab-${token}`,
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: DEVICE_ID,
+                incarnationId: INCARNATION_ID,
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain("$AllowLegacyTokenToStableMigration = $true");
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v" as const,
+                status: 0,
+                stdout: JSON.stringify({
+                ok: true,
+                switchName: "CCC Device Lab",
+                switchId: SWITCH_ID,
+                marker: "ccc-device-lab:hyper-v-network:v1",
+                natName: "CCCDeviceLab",
+                natInstanceId: NAT_INSTANCE_ID,
+                prefix: "172.29.0.0/24",
+                gateway: "172.29.0.1",
+                interfaceIndex: 42,
+                createdSwitch: false,
+                createdGateway: false,
+                createdNat: false,
+                }),
+            };
+        });
+
+        expect((await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID)).ok).toBe(true);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            marker: "ccc-device-lab:hyper-v-network:v1",
+            natName: "CCCDeviceLab",
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [{ deviceId: DEVICE_ID, incarnationId: INCARNATION_ID }],
+        });
+    });
+
+    it.each([
+        ["stable-to-token", "ccc-device-lab:hyper-v-network:v1", "CCCDeviceLab", `ccc-device-lab:hyper-v-network:${"f".repeat(24)}`, `CCCDeviceLab-${"f".repeat(24)}`],
+        ["cross-token", `ccc-device-lab:hyper-v-network:${"1".repeat(24)}`, `CCCDeviceLab-${"1".repeat(24)}`, `ccc-device-lab:hyper-v-network:${"2".repeat(24)}`, `CCCDeviceLab-${"2".repeat(24)}`],
+    ])("rejects %s marker migration with active allocations", async (_label, currentMarker, currentNatName, observedMarker, observedNatName) => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            marker: currentMarker,
+            natName: currentNatName,
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain(`$AllowLegacyTokenToStableMigration = ${currentMarker === "ccc-device-lab:hyper-v-network:v1" ? "$false" : "$true"}`);
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v" as const,
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    switchName: "CCC Device Lab",
+                    switchId: SWITCH_ID,
+                    marker: observedMarker,
+                    natName: observedNatName,
+                    natInstanceId: NAT_INSTANCE_ID,
+                    prefix: "172.29.0.0/24",
+                    gateway: "172.29.0.1",
+                    interfaceIndex: 42,
+                    createdSwitch: false,
+                    createdGateway: false,
+                    createdNat: false,
+                }),
+            };
+        });
+
+        expect(await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-setup-invalid-result",
+            preserveEvidence: true,
+        });
+    });
+
     it("keeps committed network identity fenced while an allocation is active", async () => {
         const root = privateRoot();
         writeNetworkState(root, {
@@ -379,7 +483,8 @@ describe("Hyper-V network module", () => {
         });
         const run = vi.fn(async (command) => {
             const script = scriptOf(command);
-            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $true");
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain("$AllowLegacyTokenToStableMigration = $false");
             expect(script).toContain(`$ExpectedSwitchId = '${SWITCH_ID.toLowerCase()}'`);
             expect(script).toContain(`$ExpectedNatInstanceId = '${NAT_INSTANCE_ID}'`);
             return {
@@ -418,7 +523,8 @@ describe("Hyper-V network module", () => {
         });
         const run = vi.fn(async (command) => {
             const script = scriptOf(command);
-            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $true");
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain("$AllowLegacyTokenToStableMigration = $true");
             expect(script).toContain(`$ExpectedSwitchId = '${SWITCH_ID.toLowerCase()}'`);
             expect(script).toContain(`$ExpectedNatInstanceId = '${NAT_INSTANCE_ID}'`);
             return {
@@ -549,7 +655,7 @@ describe("Hyper-V network module", () => {
             error: "hyper-v-network-setup-failed",
         });
         expect(run).toHaveBeenCalledTimes(1);
-        expect(scriptOf(run.mock.calls[0][0])).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(scriptOf(run.mock.calls[0][0])).toContain("$AllowCccOwnedNetworkAdoption = $false");
         expect(scriptOf(run.mock.calls[0][0])).toContain(`$ExpectedSwitchId = '${SWITCH_ID.toLowerCase()}'`);
         expect(scriptOf(run.mock.calls[0][0])).toContain(`$ExpectedNatInstanceId = '${NAT_INSTANCE_ID}'`);
     });

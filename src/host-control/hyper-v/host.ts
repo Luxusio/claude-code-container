@@ -237,6 +237,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
     const prefixLength = boundedInteger(options.prefixLength, 16, 30, "network-prefix-length");
     const allowExistingNat = options.allowExistingNat === true;
     const allowCccOwnedNetworkAdoption = options.allowCccOwnedNetworkAdoption === true;
+    const allowLegacyTokenToStableMigration = options.allowLegacyTokenToStableMigration === true;
     const expectedSwitchId = String(options.expectedSwitchId || "").toLowerCase();
     const expectedNatInstanceId = String(options.expectedNatInstanceId || "");
     if (expectedSwitchId && !VM_ID_PATTERN.test(expectedSwitchId)) throw new Error("hyper-v-network-switch-id-invalid");
@@ -249,6 +250,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         `$PrefixLength = ${prefixLength}`,
         `$AllowExistingNat = ${allowExistingNat ? "$true" : "$false"}`,
         `$AllowCccOwnedNetworkAdoption = ${allowCccOwnedNetworkAdoption ? "$true" : "$false"}`,
+        `$AllowLegacyTokenToStableMigration = ${allowLegacyTokenToStableMigration ? "$true" : "$false"}`,
         `$ExpectedSwitchId = ${psQuote(expectedSwitchId)}`,
         `$ExpectedNatInstanceId = ${psQuote(expectedNatInstanceId)}`,
         `$Marker = ${psQuote(marker)}`,
@@ -268,10 +270,15 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "  if ([string]$Switches[0].Notes -cne $Marker) {",
         "    $ObservedMarker = [string]$Switches[0].Notes",
         "    $TokenMatch = [regex]::Match($ObservedMarker, '^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$')",
-        "    if (-not $AllowCccOwnedNetworkAdoption) { throw 'hyper-v-network-switch-ownership-conflict' }",
-        "    if ($ObservedMarker -ceq 'ccc-device-lab:hyper-v-network:v1') { $NatName = 'CCCDeviceLab' }",
-        "    elseif ($TokenMatch.Success) { $NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value }",
-        "    else { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "    $ExpectedTokenMatch = [regex]::Match($Marker, '^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$')",
+        "    if ($AllowLegacyTokenToStableMigration) {",
+        "      if (-not $ExpectedTokenMatch.Success -or $NatName -cne ('CCCDeviceLab-' + $ExpectedTokenMatch.Groups[1].Value) -or $ObservedMarker -cne 'ccc-device-lab:hyper-v-network:v1') { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "      $NatName = 'CCCDeviceLab'",
+        "    } elseif ($AllowCccOwnedNetworkAdoption) {",
+        "      if ($ObservedMarker -ceq 'ccc-device-lab:hyper-v-network:v1') { $NatName = 'CCCDeviceLab' }",
+        "      elseif ($TokenMatch.Success) { $NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value }",
+        "      else { throw 'hyper-v-network-switch-ownership-conflict' }",
+        "    } else { throw 'hyper-v-network-switch-ownership-conflict' }",
         "    $Marker = $ObservedMarker",
         "  }",
         "  $ExistingSwitchOwned = $true",

@@ -440,7 +440,13 @@ export async function ensureHyperVNetworkAllocation(
         };
     }
     const canReconcileNetworkIdentity = !current || current.allocations.length === 0;
-    const canAdoptPersistedCccMarker = Boolean(current?.switchId && current?.natInstanceId);
+    const currentUsesLegacyTokenIdentity = Boolean(current
+        && current.marker !== HYPER_V_NETWORK_MARKER
+        && isHyperVCccNetworkIdentity(current.marker, current.natName));
+    const canAdoptPersistedCccMarker = Boolean(!canReconcileNetworkIdentity
+        && currentUsesLegacyTokenIdentity
+        && current?.switchId
+        && current.natInstanceId);
     const networkOptions = {
         executable: powershell,
         switchName: current?.switchName || intent!.switchName,
@@ -450,7 +456,8 @@ export async function ensureHyperVNetworkAllocation(
         gateway: HYPER_V_NETWORK_GATEWAY,
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
         allowExistingNat: Boolean(current?.natInstanceId) && !canReconcileNetworkIdentity,
-        allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity || canAdoptPersistedCccMarker,
+        allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity,
+        allowLegacyTokenToStableMigration: canAdoptPersistedCccMarker,
         expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
@@ -479,12 +486,14 @@ export async function ensureHyperVNetworkAllocation(
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
     const observedMarker = observation?.marker || current?.marker || intent!.marker;
     const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
-    const observedPersistedIdentityMatches = Boolean(current
-        && !canReconcileNetworkIdentity
+    const observedPersistedIdentityMatches = Boolean(canAdoptPersistedCccMarker
+        && current
         && observation
         && current.switchId.toLowerCase() === observation.switchId.toLowerCase()
         && current.natInstanceId
-        && current.natInstanceId === observation.natInstanceId);
+        && current.natInstanceId === observation.natInstanceId
+        && observedMarker === HYPER_V_NETWORK_MARKER
+        && observation.natName === HYPER_V_NETWORK_NAT);
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
         || (current
@@ -512,6 +521,16 @@ export async function ensureHyperVNetworkAllocation(
         const existing = allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
         if (existing) {
             if (existing.incarnationId !== incarnationId) throw new Error("hyper-v-network-allocation-incarnation-conflict");
+            if (current && (current.marker !== observedMarker || current.natName !== observation.natName)) {
+                ensureStateRoot(runtime);
+                writeJsonFileAtomically(stateFile(runtime), {
+                    ...current,
+                    switchId: observation.switchId.toLowerCase(),
+                    marker: observedMarker,
+                    natName: observation.natName,
+                    natInstanceId: observation.natInstanceId,
+                });
+            }
             return {
                 ok: true,
                 switchName: observation.switchName,
