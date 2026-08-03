@@ -26,6 +26,7 @@ import {
     type HyperVImageProfile,
 } from "./device-lab/broker/hyper-v/image-store.js";
 import {
+    cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation as ensureHyperVNetworkAllocationWithRuntime,
     hyperVNetworkAllocationReferenced,
     releaseHyperVNetworkAllocationAndCleanup as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
@@ -8877,13 +8878,14 @@ function hyperVNetworkStateRuntime(): HyperVNetworkStateRuntime {
 }
 
 function hyperVNetworkRuntime(normalized: NormalizedBrokerOptions): HyperVNetworkRuntime {
+    const readDevices = cachedHyperVOwnerDevicesReader(readOwnerDevices);
     return {
         ...hyperVNetworkStateRuntime(),
         resolveExecutable: (name) => providerExecutable(name, normalized),
         resolveElevationExecutable: hyperVNetworkElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-        allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readOwnerDevices),
+        allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readDevices),
     };
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+    cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation,
     hyperVDeterministicMacAddress,
     hyperVDeterministicNetworkAddresses,
@@ -165,6 +166,15 @@ describe("Hyper-V network module", () => {
             id: DEVICE_ID,
             incarnationId: backend === "windows-vm" ? INCARNATION_ID : "b".repeat(32),
         }])).toThrow("hyper-v-network-owner-state-incarnation-conflict");
+    });
+
+    it("caches owner-state reads by owner and backend for one reconciliation runtime", () => {
+        const readDevices = vi.fn(() => [{ id: DEVICE_ID, incarnationId: INCARNATION_ID }]);
+        const cached = cachedHyperVOwnerDevicesReader(readDevices);
+
+        expect(cached(OWNER_ID, "windows-vm")).toEqual(cached(OWNER_ID, "windows-vm"));
+        expect(cached(OWNER_ID, "linux-vm")).toEqual(cached(OWNER_ID, "linux-vm"));
+        expect(readDevices).toHaveBeenCalledTimes(2);
     });
 
     it("derives stable locally administered MAC and complete address candidates", () => {
@@ -579,6 +589,70 @@ describe("Hyper-V network module", () => {
             preserveEvidence: true,
         });
         expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
+    });
+
+    it("fails closed on a legacy allocation without incarnation evidence", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "legacy-device",
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const before = readFileSync(join(root, "network", "hyper-v.json"), "utf8");
+        const run = vi.fn(async () => setupObservation(root));
+
+        expect(await ensureHyperVNetworkAllocation(
+            { ...runtime(root, run), allocationReferenced: () => false },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: "hyper-v-network-allocation-incarnation-unverifiable",
+            preserveEvidence: true,
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).toBe(before);
+    });
+
+    it("does not commit orphan reconciliation when inspection completes after the deadline", async () => {
+        const root = privateRoot();
+        writeNetworkState(root, {
+            allocations: [{
+                ownerId: OWNER_ID,
+                deviceId: "existing-device",
+                incarnationId: "b".repeat(32),
+                address: "172.29.0.10",
+                macAddress: "02:11:22:33:44:55",
+                allocatedAt: new Date().toISOString(),
+            }],
+        });
+        const before = readFileSync(join(root, "network", "hyper-v.json"), "utf8");
+        const startedAt = 1_000_000;
+        const now = vi.spyOn(Date, "now").mockReturnValue(startedAt);
+        const run = vi.fn(async () => {
+            now.mockReturnValue(startedAt + 1_001);
+            return allocationInspection(false);
+        });
+
+        expect(await ensureHyperVNetworkAllocation(
+            { ...runtime(root, run), allocationReferenced: () => false },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+            startedAt + 1_000,
+        )).toMatchObject({
+            ok: false,
+            error: "hyper-v-network-allocation-reconciliation-failed",
+            detail: "hyper-v-operation-deadline-exceeded",
+            preserveEvidence: true,
+        });
+        expect(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).toBe(before);
     });
 
     it("inspects large orphan sets in bounded batches before committing reconciliation", async () => {

@@ -72,6 +72,18 @@ export type HyperVOwnerDevicesReader = (
     backend: "windows-vm" | "linux-vm",
 ) => unknown[];
 
+export function cachedHyperVOwnerDevicesReader(readDevices: HyperVOwnerDevicesReader): HyperVOwnerDevicesReader {
+    const cache = new Map<string, unknown[]>();
+    return (ownerId, backend) => {
+        const key = `${ownerId}:${backend}`;
+        const cached = cache.get(key);
+        if (cached) return cached;
+        const devices = readDevices(ownerId, backend);
+        cache.set(key, devices);
+        return devices;
+    };
+}
+
 export function hyperVNetworkAllocationReferenced(
     allocation: HyperVNetworkAllocation,
     readDevices: HyperVOwnerDevicesReader,
@@ -284,10 +296,12 @@ async function reconcileOrphanedAllocations(
     deadlineAt: number,
 ): Promise<HyperVNetworkState> {
     if (!runtime.allocationReferenced || current.allocations.length === 0) return current;
-    const candidates = current.allocations.filter((allocation) => {
-        if (!allocation.incarnationId) return false;
-        return !runtime.allocationReferenced!(allocation);
-    });
+    const candidates: HyperVNetworkAllocation[] = [];
+    for (const allocation of current.allocations) {
+        assertHyperVOperationDeadline(deadlineAt);
+        if (!allocation.incarnationId) throw new Error("hyper-v-network-allocation-incarnation-unverifiable");
+        if (!runtime.allocationReferenced(allocation)) candidates.push(allocation);
+    }
     if (candidates.length === 0) return current;
     const orphaned = new Set<string>();
     for (let offset = 0; offset < candidates.length; offset += HYPER_V_NETWORK_INSPECTION_BATCH_SIZE) {
@@ -303,6 +317,7 @@ async function reconcileOrphanedAllocations(
             timeoutMs: hyperVRemainingTimeout(deadlineAt, 120000),
             outputLimit: runtime.commandOutputBytes,
         });
+        assertHyperVOperationDeadline(deadlineAt);
         if (!commandSucceeded(execution)) {
             throw new Error(hyperVProviderDiagnosticCode(execution, "hyper-v-network-allocation-inspection-failed"));
         }
@@ -311,6 +326,7 @@ async function reconcileOrphanedAllocations(
             throw new Error("hyper-v-network-allocation-inspection-invalid-result");
         }
         for (let index = 0; index < batch.length; index += 1) {
+            assertHyperVOperationDeadline(deadlineAt);
             const candidate = batch[index];
             const observed = observation.allocations[index];
             if (observed.ownerId !== candidate.ownerId
@@ -326,6 +342,7 @@ async function reconcileOrphanedAllocations(
     const allocations = current.allocations.filter(
         (allocation) => !orphaned.has(`${allocation.ownerId}:${allocation.deviceId}:${allocation.incarnationId || ""}`),
     );
+    assertHyperVOperationDeadline(deadlineAt);
     ensureStateRoot(runtime);
     const reconciled = { ...current, allocations };
     writeJsonFileAtomically(stateFile(runtime), reconciled);
