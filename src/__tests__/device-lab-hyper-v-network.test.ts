@@ -581,6 +581,50 @@ describe("Hyper-V network module", () => {
         expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations).toHaveLength(1);
     });
 
+    it("inspects large orphan sets in bounded batches before committing reconciliation", async () => {
+        const root = privateRoot();
+        const allocations = Array.from({ length: 65 }, (_, index) => ({
+            ownerId: OWNER_ID,
+            deviceId: `existing-device-${index}`,
+            incarnationId: createHash("sha256").update(`incarnation-${index}`).digest("hex").slice(0, 32),
+            address: `172.29.0.${10 + index}`,
+            macAddress: `02:11:22:33:${Math.floor(index / 256).toString(16).padStart(2, "0")}:${(index % 256).toString(16).padStart(2, "0")}`,
+            allocatedAt: new Date().toISOString(),
+        }));
+        writeNetworkState(root, { allocations });
+        const inspectedBatchSizes: number[] = [];
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            if (!script.includes("hyper-v-network-allocation-vm-ownership-conflict")) return setupObservation(root);
+            const input = JSON.parse(command.input || "[]") as Array<{
+                ownerId: string;
+                deviceId: string;
+                incarnationId: string;
+                vmName: string;
+            }>;
+            inspectedBatchSizes.push(input.length);
+            return {
+                mode: "exec" as const,
+                provider: "hyper-v" as const,
+                status: 0,
+                stdout: JSON.stringify({
+                    ok: true,
+                    allocations: input.map((item) => ({ ...item, present: false })),
+                }),
+            };
+        });
+
+        expect(await ensureHyperVNetworkAllocation(
+            { ...runtime(root, run), allocationReferenced: () => false },
+            OWNER_ID,
+            DEVICE_ID,
+            INCARNATION_ID,
+        )).toMatchObject({ ok: true });
+        expect(inspectedBatchSizes).toEqual([32, 32, 1]);
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8")).allocations)
+            .toEqual([expect.objectContaining({ deviceId: DEVICE_ID, incarnationId: INCARNATION_ID })]);
+    });
+
     it("fails closed when owner-state references cannot be read", async () => {
         const root = privateRoot();
         writeNetworkState(root, {
