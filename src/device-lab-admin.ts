@@ -40,7 +40,7 @@ import {
     hyperVSetupCommand,
     parseHyperVReadiness,
     parseHyperVSetupObservation,
-} from "./device-lab/providers/hyper-v.js";
+} from "./host-control/hyper-v/index.js";
 
 export const DEVICE_BACKENDS = [
     { stateKey: "android", name: "android-emulator", tools: ["adb", "emulator", "avdmanager"] },

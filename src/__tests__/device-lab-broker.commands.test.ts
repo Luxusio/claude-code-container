@@ -10,7 +10,7 @@ import { createDeviceBrokerServer, hiddenChildProcessOptions, hiddenProviderComm
 import { deviceLabOwnerId, deviceLabProjectMountPath } from "../device-lab-owner.js";
 import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "../device-lab-shared-state.js";
-import { hyperVVmName } from "../device-lab/providers/hyper-v.js";
+import { hyperVVmName } from "../host-control/hyper-v/index.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 
 function providerScript(command: { args: string[]; input?: string }): string {

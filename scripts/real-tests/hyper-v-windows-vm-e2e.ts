@@ -4,7 +4,7 @@ import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 import { windowsVmBackend } from "../../device-lab-mcp/src/backends/windows-vm.mjs";
 import { ownerId } from "../../device-lab-mcp/src/context.mjs";
-import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/device-lab/providers/hyper-v.ts";
+import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/host-control/hyper-v/index.ts";
 import { isHyperVWindowsEvaluationReceipt } from "../../src/device-lab/hyper-v-image-contracts.ts";
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
 import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";

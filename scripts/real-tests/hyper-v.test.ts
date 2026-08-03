@@ -25,7 +25,7 @@ function brokerStatusOutput(capabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABI
 describe("Hyper-V Level 3 launcher", () => {
     it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {
         const reads = new Map([
-            ["/repo/dist/device-lab/providers/hyper-v.js", "export const oldContract = true;"],
+            ["/repo/dist/host-control/hyper-v/contracts.js", "export const oldContract = true;"],
         ]);
         let diagnostic = "";
         const originalWrite = process.stderr.write;

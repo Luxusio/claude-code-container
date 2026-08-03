@@ -13,7 +13,7 @@ import {
     writeHyperVSnapshotJournal,
     type HyperVJournalPersistenceRuntime,
 } from "../device-lab/broker/hyper-v/operation-journal.js";
-import { hyperVSnapshotName, hyperVVmName } from "../device-lab/providers/hyper-v.js";
+import { hyperVSnapshotName, hyperVVmName } from "../host-control/hyper-v/index.js";
 
 const OWNER_ID = "0123456789abcdef";
 const DEVICE_ID = "journal-test";

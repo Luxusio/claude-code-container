@@ -22,7 +22,7 @@ import {
     hyperVPrepareBaseImageCommand,
     parseHyperVBaseImageObservation,
     type HyperVProviderCommand,
-} from "../../providers/hyper-v.js";
+} from "../../../host-control/hyper-v/index.js";
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;

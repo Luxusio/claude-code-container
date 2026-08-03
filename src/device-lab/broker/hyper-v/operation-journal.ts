@@ -3,7 +3,7 @@ import { mkdirSync, rmSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { assertDeviceLabPathWithinRoot, readDeviceLabStateFile } from "../../../device-lab-state-file.js";
 import { writeJsonFileAtomically } from "../../../device-lab-shared-state.js";
-import { hyperVSnapshotName, hyperVVmName } from "../../providers/hyper-v.js";
+import { hyperVSnapshotName, hyperVVmName } from "../../../host-control/hyper-v/index.js";
 import { hyperVBoundedErrorCode } from "./public-response.js";
 import { validHyperVIncarnationId } from "./state.js";
 

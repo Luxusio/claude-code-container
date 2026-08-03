@@ -15,7 +15,7 @@ import {
     parseHyperVNetworkCleanupObservation,
     parseHyperVNetworkObservation,
     type HyperVProviderCommand,
-} from "../../providers/hyper-v.js";
+} from "../../../host-control/hyper-v/index.js";
 import { assertHyperVOperationDeadline, hyperVRemainingTimeout } from "./deadline.js";
 import {
     hyperVBoundedErrorCode,

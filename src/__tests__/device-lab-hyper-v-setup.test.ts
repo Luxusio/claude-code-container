@@ -3,7 +3,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { devicesCliAsync, setupHyperVHost, spawnableWindowsExecutablePath } from "../device-lab-admin.js";
-import { hyperVSetupCommand } from "../device-lab/providers/hyper-v.js";
+import { hyperVSetupCommand } from "../host-control/hyper-v/index.js";
 import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
     HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,

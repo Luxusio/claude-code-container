@@ -1,7 +1,7 @@
 import assert from "assert";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
-import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/device-lab/providers/hyper-v.ts";
+import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/host-control/hyper-v/index.ts";
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
 import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";

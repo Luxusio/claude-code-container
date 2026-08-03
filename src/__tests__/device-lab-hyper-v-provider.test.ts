@@ -54,7 +54,7 @@ import {
     parseHyperVSnapshotDeleteObservation,
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
-} from "../device-lab/providers/hyper-v.js";
+} from "../host-control/hyper-v/index.js";
 import { hyperVProviderDiagnosticCode } from "../device-lab/broker/hyper-v/public-response.js";
 
 const ownerId = "0123456789abcdef";

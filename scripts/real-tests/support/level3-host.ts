@@ -28,7 +28,7 @@ export function buildLevel3Artifacts(repoRoot, options: any = {}) {
         process.stderr.write(compiled.stderr || compiled.stdout || "CCC host broker build failed\n");
         return compiled.status ?? 1;
     }
-    const builtHyperVProvider = join(repoRoot, "dist", "device-lab", "providers", "hyper-v.js");
+    const builtHyperVProvider = join(repoRoot, "dist", "host-control", "hyper-v", "contracts.js");
     const providerArtifact = readFile(builtHyperVProvider, "utf-8");
     if (!providerArtifact.includes(HYPER_V_LEVEL3_PROVIDER_CONTRACT)) {
         process.stderr.write(`Hyper-V provider build attestation failed; missing ${HYPER_V_LEVEL3_PROVIDER_CONTRACT} in ${builtHyperVProvider}\n`);
