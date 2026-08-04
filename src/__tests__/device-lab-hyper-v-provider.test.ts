@@ -1181,7 +1181,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("if ($CreatedSwitch -and $Switch)");
         expect(script).toContain("hyper-v-network-subnet-conflict:nat");
         expect(script).toContain("hyper-v-network-subnet-conflict:interface");
-        expect(script).toContain("$RequiresMutation = ($Switches.Count -eq 0) -or (-not $GatewayExists) -or ($Nats.Count -eq 0)");
+        expect(script).toContain("$RequiresMutation = ($Switches.Count -eq 0) -or (-not $GatewayExists) -or ($Nats.Count -eq 0) -or $RepairPersistedSwitchMarker");
         expect(script).toContain("hyper-v-network-elevation-required");
         expect(script).toContain("[uint32]([uint32]::MaxValue - [uint32]([Math]::Pow(2, 32 - $Length) - 1))");
         expect(script).not.toContain("[uint64]0xffffffff");
@@ -1218,7 +1218,7 @@ describe("Hyper-V provider adapter", () => {
         expect(adoptionScript).toContain("$ObservedTokenValue.ToCharArray()");
         expect(adoptionScript).toContain("$ObservedCode -ge 97 -and $ObservedCode -le 102");
         expect(adoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-switch-ownership-conflict'");
-        expect(adoptionScript).toContain("if (-not $ObservedStable -and -not $ObservedToken) { throw 'hyper-v-network-switch-ownership-conflict' }");
+        expect(adoptionScript).toContain("if (-not $ObservedMarkerRecognized -and -not $CanRepairPersistedMarker) { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $ObservedTokenValue");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
@@ -1251,6 +1251,22 @@ describe("Hyper-V provider adapter", () => {
         expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-marker-classification-failed'");
         expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-identity-evidence-inspection-failed'");
         expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-identity-adoption-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("$CanRepairPersistedMarker = $AllowPersistedCccIdentityRepair -and $ExpectedSwitchId -and $ExpectedNatInstanceId");
+        expect(persistedIdentityAdoptionScript).toContain("$RepairPersistedSwitchMarker = $true");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-persisted-marker-repair-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker -ErrorAction Stop");
+        expect(persistedIdentityAdoptionScript).toContain("Get-VMSwitch -Id ([Guid]$ExpectedSwitchId) -ErrorAction Stop");
+        expect(persistedIdentityAdoptionScript).toContain("$RepairedSwitches[0].Id.ToString().ToLowerInvariant() -cne $ExpectedSwitchId");
+        expect(persistedIdentityAdoptionScript).toContain("[string]$RepairedSwitches[0].Notes -cne $Marker");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-persisted-marker-rollback-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("hyper-v-network-persisted-marker-rollback-conflict");
+        expect(persistedIdentityAdoptionScript).toContain("Set-VMSwitch -VMSwitch $RollbackSwitches[0] -Notes $OriginalSwitchMarker -ErrorAction Stop");
+        expect(persistedIdentityAdoptionScript.indexOf("if ($ExpectedNatInstanceId -and $Nats.Count -ne 1)"))
+            .toBeLessThan(persistedIdentityAdoptionScript.indexOf("Set-VMSwitch -VMSwitch $Switch -Notes $Marker"));
+        expect(persistedIdentityAdoptionScript.indexOf("[string]$Nats[0].InstanceID -cne $ExpectedNatInstanceId"))
+            .toBeLessThan(persistedIdentityAdoptionScript.indexOf("Set-VMSwitch -VMSwitch $Switch -Notes $Marker"));
+        expect(persistedIdentityAdoptionScript.indexOf("[string]$Nats[0].InternalIPInterfaceAddressPrefix -ne $Prefix"))
+            .toBeLessThan(persistedIdentityAdoptionScript.indexOf("Set-VMSwitch -VMSwitch $Switch -Notes $Marker"));
         expect(persistedIdentityAdoptionScript).not.toContain("[regex]::Match");
         expect(persistedIdentityAdoptionScript).not.toContain(".Groups[1].Value");
 

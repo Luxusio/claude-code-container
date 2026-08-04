@@ -3214,8 +3214,11 @@ remain unchanged where they are the behavior under test.
 64. Hyper-V network marker classification treats a missing switch `Notes`
     value as an empty marker and validates legacy 24-character ownership tokens
     with ordinal ASCII character bounds rather than PowerShell regex state.
-    Classification itself therefore remains total under Windows PowerShell 5.1;
-    an empty, malformed, or foreign marker still fails closed as a switch
-    ownership conflict. Brokers advertise and Level 3 requires
-    `hyper-v-network-failure-diagnostics-v8`, replacing a same-version broker
-    that still carries the exception-prone v6 classifier.
+    Classification itself therefore remains total under Windows PowerShell 5.1.
+    An empty, malformed, or foreign marker fails closed unless persisted state
+    proves the exact switch ID, NAT InstanceID, and subnet prefix. With that
+    complete evidence, CCC repairs only the switch marker under elevation,
+    verifies the write, and restores the original marker if a later step fails.
+    Brokers advertise and Level 3 requires `hyper-v-setup-network-v9` and
+    `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
+    the exact-identity marker repair contract.

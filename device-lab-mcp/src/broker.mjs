@@ -81,7 +81,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "physical-unattached-wireless-routing-v1",
     "android-recording-signal-fallback-v1",
     "hyper-v-vm-managed-auto-images-v20",
-    "hyper-v-setup-network-v8",
+    "hyper-v-setup-network-v9",
     "hyper-v-guest-readiness-diagnostics-v1",
     "hyper-v-azure-ovf-seed-v1",
     "hyper-v-azure-ovf-seed-v2",
@@ -97,7 +97,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
     "hyper-v-provider-image-finalization-v2",
-    "hyper-v-network-failure-diagnostics-v8",
+    "hyper-v-network-failure-diagnostics-v9",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 const MAX_RPC_TIMEOUT_MS = 21615000;

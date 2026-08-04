@@ -12,6 +12,9 @@ describe("Hyper-V public response projection", () => {
         "hyper-v-network-marker-classification-failed",
         "hyper-v-network-identity-evidence-inspection-failed",
         "hyper-v-network-identity-adoption-failed",
+        "hyper-v-network-persisted-marker-repair-failed",
+        "hyper-v-network-persisted-marker-rollback-conflict",
+        "hyper-v-network-persisted-marker-rollback-failed",
     ])("preserves the bounded network migration diagnostic %s", (diagnosticCode) => {
         expect(hyperVProviderDiagnosticCode({
             error: "hyper-v-powershell-execution-failed",
