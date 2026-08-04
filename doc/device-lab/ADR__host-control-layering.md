@@ -85,6 +85,11 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   rollback removes only resources created by that transaction. Destructive
   switch or gateway cleanup additionally requires the persisted switch ID.
   Foreign or ambiguous host objects fail closed.
+- Hyper-V singleton-network execution records a bounded stage code before each
+  switch, adapter, subnet, gateway, NAT, and persisted-identity operation.
+  Unknown localized PowerShell exceptions are reduced to that allowlisted stage
+  in both direct and elevated execution, preserving actionable diagnostics
+  without returning host paths, command text, or raw provider output.
 - Broker network allocations are reconciled before singleton-network adoption.
   An allocation is considered orphaned only when no `windows-vm` or `linux-vm`
   owner-state record references the exact device and incarnation IDs and an

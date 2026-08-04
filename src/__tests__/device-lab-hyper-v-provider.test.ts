@@ -1149,6 +1149,8 @@ describe("Hyper-V provider adapter", () => {
             prefixLength: 24,
         });
         const script = scriptOf(command);
+        expect(script).toContain("$env:CCC_HYPER_V_STAGE = 'hyper-v-network-switch-inspection-failed'");
+        expect(script).toContain("CCC_HYPER_V_STAGE:hyper-v-network-switch-inspection-failed");
         expect(script).toContain("New-VMSwitch -Name $SwitchName -SwitchType Internal -Notes $Marker");
         expect(script).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
         expect(script).toContain("hyper-v-network-switch-ownership-conflict");
@@ -1345,6 +1347,8 @@ describe("Hyper-V provider adapter", () => {
         const elevatedInner = Buffer.from(elevatedInnerEncoded!, "base64").toString("utf16le");
         expect(elevatedInner).toContain("$TrustedModuleRoot = Join-Path $PSHOME 'Modules'");
         expect(elevatedInner).toContain("$env:PSModulePath = $TrustedModuleRoot");
+        expect(elevatedInner).toContain("$Stage = [string]$env:CCC_HYPER_V_STAGE");
+        expect(elevatedInner).toContain("elseif ($Stage -match '^hyper-v-[a-z0-9-]{3,128}$') { $Stage }");
         expect(elevatedInner).toContain("[IO.Pipes.PipeDirection]::InOut");
         expect(elevatedInner).toContain("$ProgramEncoded = $Reader.ReadLine()");
         expect(elevatedInner).toContain("hyper-v-network-program-invalid");

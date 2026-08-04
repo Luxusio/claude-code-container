@@ -64,7 +64,10 @@ export function jsonScript(lines: string[], initialStage?: string, deferHyperVIm
         "$ErrorActionPreference = 'Stop'",
         "$ProgressPreference = 'SilentlyContinue'",
         ...(initialStage
-            ? [`[Console]::Out.WriteLine(${psQuote(`CCC_HYPER_V_STAGE:${initialStage}`)})`]
+            ? [
+                `$env:CCC_HYPER_V_STAGE = ${psQuote(initialStage)}`,
+                `[Console]::Out.WriteLine(${psQuote(`CCC_HYPER_V_STAGE:${initialStage}`)})`,
+            ]
             : []),
         "$TrustedModuleRoot = Join-Path $PSHOME 'Modules'",
         "$env:PSModulePath = $TrustedModuleRoot",
@@ -317,7 +320,8 @@ export function elevatedNetworkCommand(executable: string, networkScript: string
         "  $Envelope = [ordered]@{ ok = $true; output = $OutputText }",
         "} catch {",
         "  $Candidate = [string]$_.Exception.Message",
-        "  $ErrorCode = if ($Candidate -match '^hyper-v-[a-z0-9:-]+$') { $Candidate } else { 'hyper-v-network-elevated-operation-failed' }",
+        "  $Stage = [string]$env:CCC_HYPER_V_STAGE",
+        "  $ErrorCode = if ($Candidate -match '^hyper-v-[a-z0-9:-]+$') { $Candidate } elseif ($Stage -match '^hyper-v-[a-z0-9-]{3,128}$') { $Stage } else { 'hyper-v-network-elevated-operation-failed' }",
         "  $Envelope = [ordered]@{ ok = $false; error = $ErrorCode }",
         "} finally {",
         "  try { $Writer.Write(($Envelope | ConvertTo-Json -Compress -Depth 5)); $Writer.Flush() } catch {}",
