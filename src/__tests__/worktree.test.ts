@@ -4529,6 +4529,104 @@ describe("getWorktreeGitMounts", () => {
         ))).toBe(true);
     });
 
+    it("projects source Gitlinks added after an ignored workspace was created", () => {
+        const sourcePath = join(tmpDir, "PAY");
+        initRepo(sourcePath);
+        const repositoryNames = ["pay-api", "pay-webapp"];
+        for (const name of repositoryNames) {
+            initRepo(join(sourcePath, name));
+        }
+        writeFileSync(
+            join(sourcePath, ".gitignore"),
+            `${repositoryNames.map((name) => `${name}/`).join("\n")}\n`,
+        );
+        expect(spawnSync(
+            "git",
+            ["add", ".gitignore"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "ignore nested repositories"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+
+        const result = createWorkspace(sourcePath, "DEV-208-1");
+        writeFileSync(join(sourcePath, ".gitignore"), "");
+        expect(spawnSync(
+            "git",
+            ["add", ".gitignore"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        for (const name of repositoryNames) {
+            const repository = join(sourcePath, name);
+            const head = spawnSync(
+                "git",
+                ["rev-parse", "HEAD"],
+                { cwd: repository, encoding: "utf-8", stdio: "pipe" },
+            ).stdout.trim();
+            const tracked = spawnSync(
+                "git",
+                ["update-index", "--add", "--cacheinfo", `160000,${head},${name}`],
+                { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(tracked.status, tracked.stderr).toBe(0);
+        }
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "register nested repositories"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+
+        const repaired = repairWorkspace(
+            sourcePath,
+            result.workspacePath,
+            "DEV-208-1",
+        );
+        expect(repaired.map(({ name }) => name).sort()).toEqual(repositoryNames);
+        for (const name of repositoryNames) {
+            expect(spawnSync(
+                "git",
+                ["check-ignore", "-q", name],
+                { cwd: result.workspacePath, stdio: "pipe" },
+            ).status).toBe(0);
+            expect(spawnSync(
+                "git",
+                ["ls-files", "--stage", "--", name],
+                { cwd: result.workspacePath, encoding: "utf-8", stdio: "pipe" },
+            ).stdout).toBe("");
+            expect(isValidWorktree(
+                join(result.workspacePath, name),
+                join(sourcePath, name),
+            )).toBe(true);
+        }
+
+        const containerWorkspace = "/project/PAY--DEV-208-1";
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            containerWorkspace,
+        );
+        for (const name of repositoryNames) {
+            const sourceCommonDirectory = resolve(
+                join(sourcePath, name),
+                spawnSync(
+                    "git",
+                    ["rev-parse", "--git-common-dir"],
+                    {
+                        cwd: join(sourcePath, name),
+                        encoding: "utf-8",
+                        stdio: "pipe",
+                    },
+                ).stdout.trim(),
+            );
+            expect(mounts).toContainEqual(expect.objectContaining({
+                hostPath: sourceCommonDirectory,
+                containerPath: `/project/PAY/${name}/.git`,
+            }));
+        }
+    });
+
     it("projects old-form embedded tracked submodule worktree metadata", () => {
         const sourcePath = join(tmpDir, "old-form-source");
         const origin = join(tmpDir, "old-form-origin");

@@ -4203,6 +4203,7 @@ function trackedWorktreeGitFiles(
 function workspaceWorktreeGitFiles(
     worktreePath: string,
     required: boolean,
+    sourceRepositoryPath: string | null = null,
 ): string[] {
     const resolved = resolve(worktreePath);
     const gitFiles: string[] = [];
@@ -4238,6 +4239,44 @@ function workspaceWorktreeGitFiles(
             for (const trackedGit of trackedWorktreeGitFiles(entry.path, required)) {
                 if (!gitFiles.includes(trackedGit)) gitFiles.push(trackedGit);
             }
+        }
+    }
+
+    // A long-lived workspace can retain an older index and .gitignore after
+    // the source checkout starts tracking a nested repository as a Gitlink.
+    // Repair creates the nested worktree from the current source inventory,
+    // so include that owner-verified worktree even when workspace-local Git
+    // discovery still classifies its path as ignored.
+    if (unifiedWorkspace && sourceRepositoryPath) {
+        const sourceRepositories = scanUnifiedNestedRepositories(
+            sourceRepositoryPath,
+            { strict: required, allowRegisteredWorktrees: true },
+        );
+        for (const entry of sourceRepositories) {
+            if (!entry.isGitRepo) continue;
+            const workspaceRepository = join(resolved, entry.name);
+            const nestedGit = join(workspaceRepository, ".git");
+            let metadata: ReturnType<typeof lstatSync>;
+            try {
+                metadata = lstatSync(nestedGit);
+            } catch (error) {
+                if (!required && ["ENOENT", "ENOTDIR"].includes(
+                    (error as NodeJS.ErrnoException).code ?? "",
+                )) continue;
+                throw new Error(
+                    `Required managed nested worktree metadata is missing: ${nestedGit}`,
+                    { cause: error },
+                );
+            }
+            if (metadata.isSymbolicLink()
+                || !metadata.isFile()
+                || !isValidWorktree(workspaceRepository, entry.path)) {
+                if (!required) continue;
+                throw new Error(
+                    `Managed nested worktree ownership could not be verified: ${nestedGit}`,
+                );
+            }
+            if (!gitFiles.includes(nestedGit)) gitFiles.push(nestedGit);
         }
     }
     if (required && gitFiles.length === 0) {
@@ -4421,9 +4460,8 @@ export function getWorktreeGitMounts(
     }
 
     const rootGit = join(resolved, ".git");
-    const gitFiles = workspaceWorktreeGitFiles(resolved, required);
     let unifiedSourceRoot: string | null = null;
-    if (gitFiles.includes(rootGit)) {
+    if (pathExistsStrict(rootGit) && lstatSync(rootGit).isFile()) {
         try {
             unifiedSourceRoot = primarySourceRepositoryForWorktree(resolved);
             if (required && !unifiedSourceRoot) {
@@ -4437,6 +4475,11 @@ export function getWorktreeGitMounts(
             }
         }
     }
+    const gitFiles = workspaceWorktreeGitFiles(
+        resolved,
+        required,
+        unifiedSourceRoot,
+    );
     for (const gitFile of gitFiles) {
         let snapshot: StableGitLinkSnapshot;
         try {
