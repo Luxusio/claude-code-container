@@ -138,6 +138,77 @@ function withGitMetadataMutation<T>(
     }
 }
 
+function withGitIndexSwap<T>(
+    targetIndex: string,
+    replacementIndex: string,
+    operation: () => T,
+): T {
+    const realGit = spawnSync(
+        "sh",
+        ["-c", "command -v git"],
+        { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    ).stdout.trim();
+    const wrapperDirectory = join(tmpdir(), `ccc-git-index-wrapper-${randomUUID()}`);
+    const wrapper = join(wrapperDirectory, "git");
+    const marker = join(wrapperDirectory, "mutated");
+    mkdirSync(wrapperDirectory);
+    writeFileSync(
+        wrapper,
+        [
+            "#!/bin/sh",
+            "if [ \"$1 $2 $3\" = \"ls-files --stage -z\" ]"
+            + " && [ ! -e \"$CCC_TEST_GIT_MUTATION_MARKER\" ]; then",
+            "  cp \"$CCC_TEST_GIT_INDEX_TARGET\" \"$CCC_TEST_GIT_INDEX_BACKUP\"",
+            "  cp \"$CCC_TEST_GIT_INDEX_REPLACEMENT\" \"$CCC_TEST_GIT_INDEX_TARGET\"",
+            "  : > \"$CCC_TEST_GIT_MUTATION_MARKER\"",
+            "  \"$CCC_TEST_REAL_GIT\" \"$@\" > \"$CCC_TEST_GIT_STDOUT\" 2> \"$CCC_TEST_GIT_STDERR\"",
+            "  status=$?",
+            "  mv \"$CCC_TEST_GIT_INDEX_BACKUP\" \"$CCC_TEST_GIT_INDEX_TARGET\"",
+            "  cat \"$CCC_TEST_GIT_STDOUT\"",
+            "  cat \"$CCC_TEST_GIT_STDERR\" >&2",
+            "  exit $status",
+            "fi",
+            "exec \"$CCC_TEST_REAL_GIT\" \"$@\"",
+            "",
+        ].join("\n"),
+    );
+    chmodSync(wrapper, 0o755);
+    const environment = {
+        PATH: process.env.PATH,
+        CCC_TEST_REAL_GIT: process.env.CCC_TEST_REAL_GIT,
+        CCC_TEST_GIT_INDEX_TARGET: process.env.CCC_TEST_GIT_INDEX_TARGET,
+        CCC_TEST_GIT_INDEX_REPLACEMENT: process.env.CCC_TEST_GIT_INDEX_REPLACEMENT,
+        CCC_TEST_GIT_INDEX_BACKUP: process.env.CCC_TEST_GIT_INDEX_BACKUP,
+        CCC_TEST_GIT_STDOUT: process.env.CCC_TEST_GIT_STDOUT,
+        CCC_TEST_GIT_STDERR: process.env.CCC_TEST_GIT_STDERR,
+        CCC_TEST_GIT_MUTATION_MARKER: process.env.CCC_TEST_GIT_MUTATION_MARKER,
+    };
+    process.env.PATH = `${wrapperDirectory}:${environment.PATH ?? ""}`;
+    process.env.CCC_TEST_REAL_GIT = realGit;
+    process.env.CCC_TEST_GIT_INDEX_TARGET = targetIndex;
+    process.env.CCC_TEST_GIT_INDEX_REPLACEMENT = replacementIndex;
+    process.env.CCC_TEST_GIT_INDEX_BACKUP = join(wrapperDirectory, "index.backup");
+    process.env.CCC_TEST_GIT_STDOUT = join(wrapperDirectory, "stdout");
+    process.env.CCC_TEST_GIT_STDERR = join(wrapperDirectory, "stderr");
+    process.env.CCC_TEST_GIT_MUTATION_MARKER = marker;
+    try {
+        try {
+            const result = operation();
+            expect(existsSync(marker)).toBe(true);
+            return result;
+        } catch (error) {
+            expect(existsSync(marker)).toBe(true);
+            throw error;
+        }
+    } finally {
+        for (const [name, value] of Object.entries(environment)) {
+            if (value === undefined) delete process.env[name];
+            else process.env[name] = value;
+        }
+        rmSync(wrapperDirectory, { recursive: true, force: true });
+    }
+}
+
 // === Pure Function Tests (no I/O) ===
 
 describe("validateBranchName", () => {
@@ -4671,6 +4742,64 @@ describe("getWorktreeGitMounts", () => {
         expect(mounts.some(({ hostPath }) => (
             hostPath === nestedCommonDirectory
         ))).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("rejects a Gitlink index swapped during source inventory", () => {
+        const sourcePath = join(tmpDir, "inventory-race-source");
+        const replacementPath = join(tmpDir, "inventory-race-replacement");
+        const nestedName = "pay-api";
+        initRepo(sourcePath);
+        initRepo(join(sourcePath, nestedName));
+        writeFileSync(join(sourcePath, ".gitignore"), `${nestedName}/\n`);
+        spawnSync("git", ["add", ".gitignore"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        spawnSync("git", ["commit", "-m", "ignore nested repository"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        const result = createWorkspace(sourcePath, "inventory-race");
+
+        initRepo(replacementPath);
+        initRepo(join(replacementPath, nestedName));
+        const replacementHead = spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            {
+                cwd: join(replacementPath, nestedName),
+                encoding: "utf-8",
+                stdio: "pipe",
+            },
+        ).stdout.trim();
+        expect(spawnSync(
+            "git",
+            [
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                `160000,${replacementHead},${nestedName}`,
+            ],
+            { cwd: replacementPath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+
+        let observed: unknown;
+        try {
+            withGitIndexSwap(
+                join(sourcePath, ".git", "index"),
+                join(replacementPath, ".git", "index"),
+                () => getWorktreeGitMounts(
+                    result.workspacePath,
+                    true,
+                    "/project/inventory-race-source--inventory-race",
+                ),
+            );
+        } catch (error) {
+            observed = error;
+        }
+        expect(observed).toBeInstanceOf(Error);
+        expect((observed as Error & { cause?: Error }).cause?.message)
+            .toContain("Tracked Git link inventory changed during inspection");
     });
 
     it("projects old-form embedded tracked submodule worktree metadata", () => {

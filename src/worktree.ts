@@ -895,16 +895,23 @@ function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
 function trackedGitlinkPaths(
     repositoryPath: string,
     strict: boolean,
+    identity: NestedRepositoryIdentity | null = null,
 ): string[] {
-    const tracked = spawnSync(
+    const inspect = () => spawnSync(
         "git",
         ["ls-files", "--stage", "-z"],
         {
-            cwd: repositoryPath,
+            cwd: identity ? dirname(identity.directory.realpath) : repositoryPath,
+            env: identity
+                ? pinnedNestedRepositoryEnvironment(identity)
+                : process.env,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
         },
     );
+    if (identity) assertNestedRepositoryIdentity(repositoryPath, identity);
+    const tracked = inspect();
+    if (identity) assertNestedRepositoryIdentity(repositoryPath, identity);
     if (tracked.error || tracked.status !== 0) {
         if (!strict) return [];
         const detail = (tracked.stderr ?? "").trim()
@@ -913,6 +920,19 @@ function trackedGitlinkPaths(
         throw new Error(
             `Unable to inspect tracked Git links in '${repositoryPath}': ${detail}`,
         );
+    }
+
+    if (identity) {
+        const confirmed = inspect();
+        assertNestedRepositoryIdentity(repositoryPath, identity);
+        if (confirmed.error
+            || confirmed.status !== 0
+            || confirmed.stdout !== tracked.stdout) {
+            if (!strict) return [];
+            throw new Error(
+                `Tracked Git link inventory changed during inspection in '${repositoryPath}'.`,
+            );
+        }
     }
 
     const paths: string[] = [];
@@ -4226,7 +4246,11 @@ function trackedNestedRepositories(
         if (visited.has(visitKey)) return;
         visited.add(visitKey);
 
-        for (const name of trackedGitlinkPaths(currentRepository, strict)) {
+        for (const name of trackedGitlinkPaths(
+            currentRepository,
+            strict,
+            currentIdentity,
+        )) {
             const candidatePath = join(currentRepository, ...name.split("/"));
             try {
                 const candidateIdentity = captureNestedRepositoryIdentity(candidatePath);
@@ -4405,6 +4429,98 @@ function normalizeOwnerVerifiedWorktreeGitLink(
     );
 }
 
+function sameDirectoryIdentity(
+    left: DirectoryIdentity,
+    right: DirectoryIdentity,
+): boolean {
+    return left.realpath === right.realpath
+        && left.dev === right.dev
+        && left.ino === right.ino;
+}
+
+function isValidWorktreeForNestedIdentity(
+    worktreePath: string,
+    sourceIdentity: NestedRepositoryIdentity,
+): boolean {
+    try {
+        assertNestedRepositoryIdentity(
+            sourceIdentity.directory.realpath,
+            sourceIdentity,
+        );
+        const worktreeIdentity = captureDirectoryIdentity(worktreePath);
+        const gitFile = join(worktreePath, ".git");
+        const snapshot = stableGitLinkSnapshot(gitFile);
+        if (snapshot.kind !== "worktree") return false;
+        const commonDirectory = captureDirectoryIdentity(resolve(
+            snapshot.resolvedGitDirectory,
+            "..",
+            "..",
+        ));
+        if (!sameDirectoryIdentity(
+            commonDirectory,
+            sourceIdentity.commonDirectory,
+        )) return false;
+
+        const managementRoot = captureDirectoryIdentity(join(
+            sourceIdentity.commonDirectory.realpath,
+            "worktrees",
+        ));
+        const managementEntry = captureDirectoryIdentity(
+            snapshot.resolvedGitDirectory,
+        );
+        if (dirname(managementEntry.realpath) !== managementRoot.realpath) {
+            return false;
+        }
+        const registrationFile = join(
+            snapshot.resolvedGitDirectory,
+            "gitdir",
+        );
+        const registrationIdentity = captureFileIdentity(registrationFile);
+        const registrationContent = readFileSync(registrationFile, "utf-8");
+        assertFileIdentity(registrationFile, registrationIdentity);
+        const registeredGitFile = registrationContent.trim();
+        if (!registeredGitFile
+            || realpathSync(registeredGitFile) !== realpathSync(gitFile)) {
+            return false;
+        }
+
+        const listed = spawnSync(
+            "git",
+            ["worktree", "list", "--porcelain"],
+            {
+                cwd: dirname(worktreeIdentity.realpath),
+                env: pinnedNestedRepositoryEnvironment(sourceIdentity),
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+            },
+        );
+        if (listed.error || listed.status !== 0) return false;
+        const registered = (listed.stdout ?? "")
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("worktree "))
+            .some((line) => {
+                try {
+                    return realpathSync(line.slice("worktree ".length).trim())
+                        === worktreeIdentity.realpath;
+                } catch {
+                    return false;
+                }
+            });
+        if (!registered) return false;
+
+        assertNestedRepositoryIdentity(
+            sourceIdentity.directory.realpath,
+            sourceIdentity,
+        );
+        assertDirectoryIdentity(worktreePath, worktreeIdentity);
+        assertStableGitLinkSnapshot(gitFile, snapshot);
+        assertFileIdentity(registrationFile, registrationIdentity);
+        return readFileSync(registrationFile, "utf-8") === registrationContent;
+    } catch {
+        return false;
+    }
+}
+
 export function containerGitSourceMountPath(
     containerGitFileDirectory: string,
     rawGitDirectory: string,
@@ -4581,8 +4697,22 @@ export function getWorktreeGitMounts(
         );
         if (trackedSource) {
             assertNestedRepositoryIdentity(trackedSource.path, trackedSource.identity);
+            if (!sameDirectoryIdentity(
+                sourceIdentity,
+                trackedSource.identity.commonDirectory,
+            )) {
+                throw new Error(
+                    `Tracked worktree common directory changed before mount: ${gitFile}`,
+                );
+            }
         }
-        if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
+        const validWorktree = trackedSource
+            ? isValidWorktreeForNestedIdentity(
+                dirname(gitFile),
+                trackedSource.identity,
+            )
+            : isValidWorktree(dirname(gitFile), sourceRepoDir);
+        if (!validWorktree) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
         assertStableGitLinkSnapshot(gitFile, snapshot);
