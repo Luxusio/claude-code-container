@@ -4392,6 +4392,68 @@ describe("getWorktreeGitMounts", () => {
         expect(listed.stdout).not.toContain("prunable");
     });
 
+    it("projects every sibling tracked submodule common directory at its gitdir target", () => {
+        const sourcePath = join(tmpDir, "PAY");
+        initRepo(sourcePath);
+        const repositoryNames = [
+            "ctms-api",
+            "ctms-webapp",
+            "pay-api",
+            "pay-webapp",
+        ];
+        for (const name of repositoryNames) {
+            const repository = join(sourcePath, name);
+            initRepo(repository);
+            const head = spawnSync(
+                "git",
+                ["rev-parse", "HEAD"],
+                { cwd: repository, encoding: "utf-8", stdio: "pipe" },
+            ).stdout.trim();
+            const tracked = spawnSync(
+                "git",
+                ["update-index", "--add", "--cacheinfo", `160000,${head},${name}`],
+                { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+            );
+            expect(tracked.status, tracked.stderr).toBe(0);
+        }
+        spawnSync("git", ["commit", "-m", "add sibling Gitlinks"], {
+            cwd: sourcePath,
+            stdio: "pipe",
+        });
+        expect(existsSync(join(sourcePath, ".gitmodules"))).toBe(false);
+        const result = createWorkspace(sourcePath, "DEV-208-1");
+        const containerWorkspace = "/project/PAY--DEV-208-1";
+
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            containerWorkspace,
+        );
+
+        for (const name of repositoryNames) {
+            const workspaceRepository = join(result.workspacePath, name);
+            const pointer = readFileSync(join(workspaceRepository, ".git"), "utf-8")
+                .trim()
+                .replace(/^gitdir:\s*/, "")
+                .replace(/\\/g, "/");
+            const containerGitFileDirectory = posix.join(containerWorkspace, name);
+            const expectedCommonDirectory = containerGitSourceMountPath(
+                containerGitFileDirectory,
+                pointer,
+            );
+            const sourceCommonDirectory = resolve(
+                workspaceRepository,
+                pointer,
+                "..",
+                "..",
+            );
+            expect(mounts).toContainEqual(expect.objectContaining({
+                hostPath: sourceCommonDirectory,
+                containerPath: expectedCommonDirectory,
+            }));
+        }
+    });
+
     it("projects tracked submodules from the target worktree index when its checkout metadata is stale", () => {
         const sourcePath = join(tmpDir, "source-inventory-root");
         const origin = join(tmpDir, "source-inventory-origin");

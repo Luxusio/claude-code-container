@@ -4139,6 +4139,67 @@ export interface WorktreeGitMount {
     identity: DirectoryIdentity;
 }
 
+function trackedWorktreeGitFiles(
+    repositoryPath: string,
+    strict: boolean,
+): string[] {
+    const gitFiles: string[] = [];
+    const visited = new Set<string>();
+
+    const collect = (currentRepository: string): void => {
+        let currentRealpath: string;
+        try {
+            currentRealpath = realpathSync(currentRepository);
+        } catch (error) {
+            if (!strict) return;
+            throw new Error(
+                `Unable to inspect tracked Git link root '${currentRepository}'.`,
+                { cause: error },
+            );
+        }
+        const visitKey = process.platform === "win32"
+            ? currentRealpath.toLowerCase()
+            : currentRealpath;
+        if (visited.has(visitKey)) return;
+        visited.add(visitKey);
+
+        for (const name of trackedGitlinkPaths(currentRepository, strict)) {
+            const candidatePath = join(currentRepository, ...name.split("/"));
+            const gitMetadata = join(candidatePath, ".git");
+            try {
+                const candidate = lstatSync(candidatePath);
+                if (!candidate.isDirectory() || candidate.isSymbolicLink()) {
+                    throw new Error("tracked Git link is not a real directory");
+                }
+                const candidateRealpath = realpathSync(candidatePath);
+                const relativeCandidate = relative(currentRealpath, candidateRealpath);
+                if (relativePathEscapesRoot(relativeCandidate)) {
+                    throw new Error("tracked Git link escapes its repository");
+                }
+                const metadata = lstatSync(gitMetadata);
+                if (metadata.isSymbolicLink()
+                    || (!metadata.isFile() && !metadata.isDirectory())) {
+                    throw new Error("tracked Git link metadata is invalid");
+                }
+                if (metadata.isFile()) gitFiles.push(gitMetadata);
+                collect(candidatePath);
+            } catch (error) {
+                if (!strict && ["ENOENT", "ENOTDIR"].includes(
+                    (error as NodeJS.ErrnoException).code ?? "",
+                )) continue;
+                if (!strict) continue;
+                throw new Error(
+                    `Unable to inspect tracked Git link worktree '${candidatePath}'.`,
+                    { cause: error },
+                );
+            }
+        }
+    };
+
+    collect(resolve(repositoryPath));
+    return gitFiles;
+}
+
 function workspaceWorktreeGitFiles(
     worktreePath: string,
     required: boolean,
@@ -4152,6 +4213,10 @@ function workspaceWorktreeGitFiles(
         } else if (required) {
             throw new Error(`Required worktree metadata is invalid: ${rootGit}`);
         }
+    }
+
+    for (const trackedGit of trackedWorktreeGitFiles(resolved, required)) {
+        if (!gitFiles.includes(trackedGit)) gitFiles.push(trackedGit);
     }
 
     const nestedRepositories = hasGitMetadata(resolved)
