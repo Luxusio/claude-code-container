@@ -4200,10 +4200,73 @@ function trackedWorktreeGitFiles(
     return gitFiles;
 }
 
+type TrackedNestedRepository = {
+    name: string;
+    path: string;
+    identity: NestedRepositoryIdentity;
+};
+
+function trackedNestedRepositories(
+    repositoryPath: string,
+    strict: boolean,
+): TrackedNestedRepository[] {
+    const root = resolve(repositoryPath);
+    const rootIdentity = captureDirectoryIdentity(root);
+    const repositories: TrackedNestedRepository[] = [];
+    const visited = new Set<string>();
+
+    const collect = (
+        currentRepository: string,
+        relativePrefix: string,
+    ): void => {
+        const currentIdentity = captureNestedRepositoryIdentity(currentRepository);
+        const visitKey = process.platform === "win32"
+            ? currentIdentity.directory.realpath.toLowerCase()
+            : currentIdentity.directory.realpath;
+        if (visited.has(visitKey)) return;
+        visited.add(visitKey);
+
+        for (const name of trackedGitlinkPaths(currentRepository, strict)) {
+            const candidatePath = join(currentRepository, ...name.split("/"));
+            try {
+                const candidateIdentity = captureNestedRepositoryIdentity(candidatePath);
+                const relativeCandidate = relative(
+                    rootIdentity.realpath,
+                    candidateIdentity.directory.realpath,
+                );
+                if (relativePathEscapesRoot(relativeCandidate)) {
+                    throw new Error("tracked Git link escapes its repository");
+                }
+                const repositoryName = relativePrefix
+                    ? `${relativePrefix}/${name}`
+                    : name;
+                repositories.push({
+                    name: repositoryName,
+                    path: candidatePath,
+                    identity: candidateIdentity,
+                });
+                collect(candidatePath, repositoryName);
+                assertNestedRepositoryIdentity(candidatePath, candidateIdentity);
+            } catch (error) {
+                if (!strict) continue;
+                throw new Error(
+                    `Unable to inspect tracked nested repository '${candidatePath}'.`,
+                    { cause: error },
+                );
+            }
+        }
+        assertNestedRepositoryIdentity(currentRepository, currentIdentity);
+    };
+
+    collect(root, "");
+    assertDirectoryIdentity(root, rootIdentity);
+    return repositories.sort((left, right) => left.name.localeCompare(right.name));
+}
+
 function workspaceWorktreeGitFiles(
     worktreePath: string,
     required: boolean,
-    sourceRepositoryPath: string | null = null,
+    trackedSourceRepositories: TrackedNestedRepository[] = [],
 ): string[] {
     const resolved = resolve(worktreePath);
     const gitFiles: string[] = [];
@@ -4247,13 +4310,8 @@ function workspaceWorktreeGitFiles(
     // Repair creates the nested worktree from the current source inventory,
     // so include that owner-verified worktree even when workspace-local Git
     // discovery still classifies its path as ignored.
-    if (unifiedWorkspace && sourceRepositoryPath) {
-        const sourceRepositories = scanUnifiedNestedRepositories(
-            sourceRepositoryPath,
-            { strict: required, allowRegisteredWorktrees: true },
-        );
-        for (const entry of sourceRepositories) {
-            if (!entry.isGitRepo) continue;
+    if (unifiedWorkspace) {
+        for (const entry of trackedSourceRepositories) {
             const workspaceRepository = join(resolved, entry.name);
             const nestedGit = join(workspaceRepository, ".git");
             let metadata: ReturnType<typeof lstatSync>;
@@ -4276,6 +4334,7 @@ function workspaceWorktreeGitFiles(
                     `Managed nested worktree ownership could not be verified: ${nestedGit}`,
                 );
             }
+            assertNestedRepositoryIdentity(entry.path, entry.identity);
             if (!gitFiles.includes(nestedGit)) gitFiles.push(nestedGit);
         }
     }
@@ -4461,11 +4520,18 @@ export function getWorktreeGitMounts(
 
     const rootGit = join(resolved, ".git");
     let unifiedSourceRoot: string | null = null;
+    let trackedSourceRepositories: TrackedNestedRepository[] = [];
     if (pathExistsStrict(rootGit) && lstatSync(rootGit).isFile()) {
         try {
             unifiedSourceRoot = primarySourceRepositoryForWorktree(resolved);
             if (required && !unifiedSourceRoot) {
                 throw new Error("worktree source ownership could not be established");
+            }
+            if (unifiedSourceRoot) {
+                trackedSourceRepositories = trackedNestedRepositories(
+                    unifiedSourceRoot,
+                    required,
+                );
             }
         } catch (error) {
             if (required) {
@@ -4478,7 +4544,10 @@ export function getWorktreeGitMounts(
     const gitFiles = workspaceWorktreeGitFiles(
         resolved,
         required,
-        unifiedSourceRoot,
+        trackedSourceRepositories,
+    );
+    const trackedSourceRepositoryByName = new Map(
+        trackedSourceRepositories.map((entry) => [entry.name, entry]),
     );
     for (const gitFile of gitFiles) {
         let snapshot: StableGitLinkSnapshot;
@@ -4507,6 +4576,12 @@ export function getWorktreeGitMounts(
                 ...repositoryRelativePath.split("/").filter(Boolean),
             )
             : dirname(sourceGitDir);
+        const trackedSource = trackedSourceRepositoryByName.get(
+            repositoryRelativePath,
+        );
+        if (trackedSource) {
+            assertNestedRepositoryIdentity(trackedSource.path, trackedSource.identity);
+        }
         if (!isValidWorktree(dirname(gitFile), sourceRepoDir)) {
             throw new Error(`Worktree mount ownership could not be verified: ${gitFile}`);
         }
@@ -4584,6 +4659,9 @@ export function getWorktreeGitMounts(
                 posix.join(containerManagementDirectory, "gitdir"),
                 compatibility.identity,
             );
+        }
+        if (trackedSource) {
+            assertNestedRepositoryIdentity(trackedSource.path, trackedSource.identity);
         }
     }
 

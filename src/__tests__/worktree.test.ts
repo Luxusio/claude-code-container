@@ -4627,6 +4627,52 @@ describe("getWorktreeGitMounts", () => {
         }
     });
 
+    it("does not project a formerly ignored repository without a source Gitlink", () => {
+        const sourcePath = join(tmpDir, "untracked-source");
+        const nestedName = "pay-api";
+        initRepo(sourcePath);
+        initRepo(join(sourcePath, nestedName));
+        writeFileSync(join(sourcePath, ".gitignore"), `${nestedName}/\n`);
+        expect(spawnSync(
+            "git",
+            ["add", ".gitignore"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "ignore nested repository"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+
+        const result = createWorkspace(sourcePath, "stale-ignore");
+        writeFileSync(join(sourcePath, ".gitignore"), "");
+        expect(spawnSync(
+            "git",
+            ["add", ".gitignore"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(spawnSync(
+            "git",
+            ["commit", "-m", "stop ignoring nested repository"],
+            { cwd: sourcePath, encoding: "utf-8", stdio: "pipe" },
+        ).status).toBe(0);
+        expect(repairWorkspace(
+            sourcePath,
+            result.workspacePath,
+            "stale-ignore",
+        ).map(({ name }) => name)).toContain(nestedName);
+
+        const nestedCommonDirectory = join(sourcePath, nestedName, ".git");
+        const mounts = getWorktreeGitMounts(
+            result.workspacePath,
+            true,
+            "/project/untracked-source--stale-ignore",
+        );
+        expect(mounts.some(({ hostPath }) => (
+            hostPath === nestedCommonDirectory
+        ))).toBe(false);
+    });
+
     it("projects old-form embedded tracked submodule worktree metadata", () => {
         const sourcePath = join(tmpDir, "old-form-source");
         const origin = join(tmpDir, "old-form-origin");
