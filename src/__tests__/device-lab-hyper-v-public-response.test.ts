@@ -1,11 +1,25 @@
 import { describe, expect, it } from "vitest";
 import {
+    hyperVProviderDiagnosticCode,
     publicHyperVCreateConfiguration,
     redactHyperVDeviceSecrets,
     redactHyperVResultSecrets,
 } from "../device-lab/broker/hyper-v/public-response.js";
 
 describe("Hyper-V public response projection", () => {
+    it.each([
+        "hyper-v-network-marker-inspection-failed",
+        "hyper-v-network-marker-classification-failed",
+        "hyper-v-network-identity-evidence-inspection-failed",
+        "hyper-v-network-identity-adoption-failed",
+    ])("preserves the bounded network migration diagnostic %s", (diagnosticCode) => {
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-powershell-execution-failed",
+            stdout: `CCC_HYPER_V_STAGE:${diagnosticCode}`,
+            stderr: "",
+        })).toBe(diagnosticCode);
+    });
+
     it("uses an allowlist for persisted device records", () => {
         const result = redactHyperVDeviceSecrets({
             id: "windows-vm-1",

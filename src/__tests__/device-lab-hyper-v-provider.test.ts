@@ -1213,8 +1213,8 @@ describe("Hyper-V provider adapter", () => {
         }));
         expect(adoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
         expect(adoptionScript).toContain("$AllowPersistedCccIdentityRepair = $false");
-        expect(adoptionScript).toContain("^ccc-device-lab:hyper-v-network:([a-f0-9]{24})$");
-        expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value");
+        expect(adoptionScript).toContain("^ccc-device-lab:hyper-v-network:[a-f0-9]{24}$");
+        expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $ObservedTokenValue");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
 
@@ -1235,8 +1235,14 @@ describe("Hyper-V provider adapter", () => {
         expect(persistedIdentityAdoptionScript).toContain("$AllowPersistedCccIdentityRepair = $true");
         expect(persistedIdentityAdoptionScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(persistedIdentityAdoptionScript).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-1'");
-        expect(persistedIdentityAdoptionScript).toContain("$TokenToStable");
-        expect(persistedIdentityAdoptionScript).toContain("$StableToToken");
+        expect(persistedIdentityAdoptionScript).toContain("$ObservedMarker.Substring($MarkerPrefix.Length)");
+        expect(persistedIdentityAdoptionScript).toContain("$Marker.Substring($MarkerPrefix.Length)");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-marker-inspection-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-marker-classification-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-identity-evidence-inspection-failed'");
+        expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-identity-adoption-failed'");
+        expect(persistedIdentityAdoptionScript).not.toContain("[regex]::Match");
+        expect(persistedIdentityAdoptionScript).not.toContain(".Groups[1].Value");
 
         const stableToLegacyRepairScript = scriptOf(hyperVEnsureNetworkCommand({
             executable: "powershell.exe",
@@ -1251,10 +1257,10 @@ describe("Hyper-V provider adapter", () => {
             gateway: "172.29.0.1",
             prefixLength: 24,
         }));
-        expect(stableToLegacyRepairScript).toContain("$ExpectedStable = $Marker -ceq 'ccc-device-lab:hyper-v-network:v1' -and $NatName -ceq 'CCCDeviceLab'");
-        expect(stableToLegacyRepairScript).toContain("$StableToToken = $ExpectedStable -and $TokenMatch.Success");
+        expect(stableToLegacyRepairScript).toContain("$ExpectedStable = $Marker -ceq ($MarkerPrefix + 'v1') -and $NatName -ceq 'CCCDeviceLab'");
+        expect(stableToLegacyRepairScript).toContain("$StableToToken = $ExpectedStable -and $ObservedToken");
         expect(stableToLegacyRepairScript).toContain("-not $ExpectedSwitchId -or -not $ExpectedNatInstanceId");
-        expect(stableToLegacyRepairScript).toContain("if ($ObservedStable) { $NatName = 'CCCDeviceLab' } else { $NatName = 'CCCDeviceLab-' + $TokenMatch.Groups[1].Value }");
+        expect(stableToLegacyRepairScript).toContain("if ($ObservedStable) { $NatName = 'CCCDeviceLab' } else { $NatName = 'CCCDeviceLab-' + $ObservedTokenValue }");
         expect(parseHyperVNetworkObservation(JSON.stringify({
             ok: true,
             switchName: "CCC Device Lab",
