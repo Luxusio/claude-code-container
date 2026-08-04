@@ -3217,5 +3217,5 @@ remain unchanged where they are the behavior under test.
     Classification itself therefore remains total under Windows PowerShell 5.1;
     an empty, malformed, or foreign marker still fails closed as a switch
     ownership conflict. Brokers advertise and Level 3 requires
-    `hyper-v-network-failure-diagnostics-v7`, replacing a same-version broker
+    `hyper-v-network-failure-diagnostics-v8`, replacing a same-version broker
     that still carries the exception-prone v6 classifier.

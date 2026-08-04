@@ -294,6 +294,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "      $ObservedToken = $ObservedPrefix -ceq $MarkerPrefix",
         "      if ($ObservedToken) { foreach ($ObservedCharacter in $ObservedTokenValue.ToCharArray()) { $ObservedCode = [int][char]$ObservedCharacter; if (-not (($ObservedCode -ge 48 -and $ObservedCode -le 57) -or ($ObservedCode -ge 97 -and $ObservedCode -le 102))) { $ObservedToken = $false; break } } }",
         "    }",
+        "    Set-CccHyperVNetworkStage 'hyper-v-network-switch-ownership-conflict'",
         "    if (-not $ObservedStable -and -not $ObservedToken) { throw 'hyper-v-network-switch-ownership-conflict' }",
         "    if ($AllowPersistedCccIdentityRepair) {",
         "      Set-CccHyperVNetworkStage 'hyper-v-network-identity-evidence-inspection-failed'",

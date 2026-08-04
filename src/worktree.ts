@@ -4215,11 +4215,14 @@ function workspaceWorktreeGitFiles(
         }
     }
 
-    for (const trackedGit of trackedWorktreeGitFiles(resolved, required)) {
-        if (!gitFiles.includes(trackedGit)) gitFiles.push(trackedGit);
+    const unifiedWorkspace = hasGitMetadata(resolved);
+    if (unifiedWorkspace) {
+        for (const trackedGit of trackedWorktreeGitFiles(resolved, required)) {
+            if (!gitFiles.includes(trackedGit)) gitFiles.push(trackedGit);
+        }
     }
 
-    const nestedRepositories = hasGitMetadata(resolved)
+    const nestedRepositories = unifiedWorkspace
         ? scanUnifiedNestedRepositories(
             resolved,
             { strict: required, allowRegisteredWorktrees: true },
@@ -4230,6 +4233,11 @@ function workspaceWorktreeGitFiles(
         const nestedGit = join(entry.path, ".git");
         if (lstatSync(nestedGit).isFile() && !gitFiles.includes(nestedGit)) {
             gitFiles.push(nestedGit);
+        }
+        if (!unifiedWorkspace) {
+            for (const trackedGit of trackedWorktreeGitFiles(entry.path, required)) {
+                if (!gitFiles.includes(trackedGit)) gitFiles.push(trackedGit);
+            }
         }
     }
     if (required && gitFiles.length === 0) {

@@ -1217,6 +1217,7 @@ describe("Hyper-V provider adapter", () => {
         expect(adoptionScript).toContain("-not [string]::IsNullOrEmpty($ObservedMarker)");
         expect(adoptionScript).toContain("$ObservedTokenValue.ToCharArray()");
         expect(adoptionScript).toContain("$ObservedCode -ge 97 -and $ObservedCode -le 102");
+        expect(adoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-switch-ownership-conflict'");
         expect(adoptionScript).toContain("if (-not $ObservedStable -and -not $ObservedToken) { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $ObservedTokenValue");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
