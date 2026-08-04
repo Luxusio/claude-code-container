@@ -255,7 +255,7 @@ describe("Hyper-V provider adapter", () => {
                 .toBeLessThan(acquireScript.indexOf(acquireStages[index]));
         }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(acquireScript).toContain("ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
+        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -263,7 +263,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-loader-probe",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
         const run = (input: string) => spawnSync(acquire.executable, acquire.args, {
             input,
@@ -639,12 +639,12 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
         const script = scriptOf(command);
         expect(script).toContain("$SourceArchivePath =");
         expect(script).toContain("source.vhdx.zip");
-        expect(script).toContain("$ArchiveDownloadPath = Join-Path $WorkPath 'source.download.zip'");
+        expect(script).toContain("$ArchiveDownloadPath = Join-Path $WorkPath 'source.download.tar.gz'");
         expect(script).toContain("Test-Path -LiteralPath $ArchivePath -PathType Container");
         expect(script).toContain("Test-Path -LiteralPath $ArchivePath -PathType Leaf");
         expect(script).toContain("$ArchiveReady = $CachedHash -eq $UbuntuArchiveSha256");
@@ -668,11 +668,12 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("--no-same-permissions");
         expect(script).toContain("hyper-v-base-image-archive-path-invalid");
         expect(script).toContain("hyper-v-base-image-archive-entry-type-invalid");
-        expect(script).toContain("https://partner-images.canonical.com/hyper-v/desktop/noble/20260724/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip");
-        expect(script).toContain("545865cc2bd0ad6a2d16843c914289b601a7d07a6ec4f88c1d202acb180ecf1e");
+        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
+        expect(script).not.toContain("ubuntu-desktop-hyperv");
+        expect(script).toContain("198e71366f7e54008f8c0ff3235cbf9fb0a86c8ea32bcfd534075e5e912ec78e");
         expect(script).not.toContain("SHA256SUMS");
-        expect(script).toContain("$UbuntuMaxBytes = [long]6GB");
-        expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'partner-images.canonical.com'");
+        expect(script).toContain("$UbuntuMaxBytes = [long]2GB");
+        expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com'");
         expect(script).toContain("Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256");
         expect(script).toContain("hyper-v-base-image-checksum-mismatch");
         expect(script).toContain("hyper-v-base-image-hash-failed");
@@ -692,7 +693,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$MaximumArchiveEntries = 64");
         expect(script).toContain("$MaximumRegularFiles = 8");
         expect(script).toContain("$MaximumExtractedBytes = [long]64GB");
-        expect(script).toContain("$RequiredExtractionBytes = [long]($ExpectedVhdxBytes * 2) + [long]2GB");
+        expect(script).toContain("$RequiredExtractionBytes = [long]$TotalExtractedBytes + [long]$ExpectedVhdBytes + [long]2GB");
         expect(script).toContain("if ([long]$ProfileDrive.AvailableFreeSpace -lt $RequiredExtractionBytes)");
         expect(script).toContain("hyper-v-base-image-archive-size-rejected");
         expect(script).toContain("hyper-v-base-image-archive-size-mismatch");
@@ -702,14 +703,21 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("[IO.FileAttributes]::ReparsePoint");
         expect(script).toContain("if ($SourceVhds.Count -ne 1)");
         expect(script).toContain("[IO.FileAttributes]::SparseFile");
-        expect(script).toContain("normalized-source.vhdx");
+        expect(script).toContain("normalized-source.vhd");
         expect(script).toContain("$OutputStream.Write($Buffer, 0, $Read)");
         expect(script).toContain("hyper-v-base-image-normalize-attributes-failed");
-        expect(script).toContain("Move-Item -LiteralPath $SourcePath -Destination $PartialPath");
-        expect(script).not.toContain("Convert-VHD -Path $SourcePath");
-        expect(script).toContain("hyper-v-base-image-archive-vhdx-count-invalid");
-        expect(script).toContain("$ExpectedGeneration = 2");
-        expect(script).toContain("$Generation = if ($Profile -eq 'ubuntu-lts') { $ExpectedGeneration } else { Get-CccVhdGeneration $PartialPath }");
+        expect(script).not.toContain("Move-Item -LiteralPath $SourcePath -Destination $PartialPath");
+        expect(script).toContain("Convert-VHD -Path $SourcePath -DestinationPath $PartialPath -VHDType Dynamic");
+        expect(script).toContain("$SourceGuard = [IO.File]::Open($SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
+        expect(script).toContain("$Generation = Get-CccVhdGeneration $ImagePath");
+        expect(script).toContain("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath");
+        expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("if ($ExpectedHash -and $Hash -ne $ExpectedHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
+        expect(script).toContain("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash");
+        expect(script).toContain("hyper-v-base-image-archive-vhd-count-invalid");
+        expect(script).toContain("$ExpectedGeneration = 1");
+        expect(script).toContain("$Generation = Get-CccVhdGeneration $PartialPath");
         expect(script).toContain("hyper-v-base-image-generation-mismatch");
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false");
         expect(script).not.toContain("Mount-VHD -Path $ImagePath");

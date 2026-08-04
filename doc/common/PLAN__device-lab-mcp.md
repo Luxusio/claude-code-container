@@ -3222,3 +3222,11 @@ remain unchanged where they are the behavior under test.
     Brokers advertise and Level 3 requires `hyper-v-setup-network-v9` and
     `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
     the exact-identity marker repair contract.
+65. Unattended Hyper-V Linux guests use a pinned Ubuntu Server Azure cloud VHD,
+    not Canonical's interactive Hyper-V Quick Create desktop image. The provider
+    verifies the archive checksum, normalizes unsupported Windows file
+    attributes, converts the source VHD to a dynamic managed VHDX, and derives
+    the VM generation from the converted disk before accepting it. The catalog
+    currently requires Generation 1 and brokers advertise
+    `hyper-v-provider-image-finalization-v3`, preventing an older desktop-image
+    broker from being reused by Level 3.
