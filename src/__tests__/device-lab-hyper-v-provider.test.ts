@@ -1213,7 +1213,11 @@ describe("Hyper-V provider adapter", () => {
         }));
         expect(adoptionScript).toContain("$AllowCccOwnedNetworkAdoption = $true");
         expect(adoptionScript).toContain("$AllowPersistedCccIdentityRepair = $false");
-        expect(adoptionScript).toContain("$ObservedTokenValue -cmatch '^[a-f0-9]{24}$'");
+        expect(adoptionScript).toContain("[Convert]::ToString($ObservedNotes, [Globalization.CultureInfo]::InvariantCulture)");
+        expect(adoptionScript).toContain("-not [string]::IsNullOrEmpty($ObservedMarker)");
+        expect(adoptionScript).toContain("$ObservedTokenValue.ToCharArray()");
+        expect(adoptionScript).toContain("$ObservedCode -ge 97 -and $ObservedCode -le 102");
+        expect(adoptionScript).toContain("if (-not $ObservedStable -and -not $ObservedToken) { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).toContain("$NatName = 'CCCDeviceLab-' + $ObservedTokenValue");
         expect(adoptionScript).toContain("else { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(adoptionScript).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");

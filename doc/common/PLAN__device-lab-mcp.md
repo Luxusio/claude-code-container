@@ -3211,3 +3211,11 @@ remain unchanged where they are the behavior under test.
     build output, package surface, and legacy `lab_*` tools are retired. The
     `ccc labs` CLI remains only as a non-starting KVM/QEMU readiness diagnostic
     for the `device-lab` Linux VM backend.
+64. Hyper-V network marker classification treats a missing switch `Notes`
+    value as an empty marker and validates legacy 24-character ownership tokens
+    with ordinal ASCII character bounds rather than PowerShell regex state.
+    Classification itself therefore remains total under Windows PowerShell 5.1;
+    an empty, malformed, or foreign marker still fails closed as a switch
+    ownership conflict. Brokers advertise and Level 3 requires
+    `hyper-v-network-failure-diagnostics-v7`, replacing a same-version broker
+    that still carries the exception-prone v6 classifier.
