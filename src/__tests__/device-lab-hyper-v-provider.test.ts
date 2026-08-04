@@ -1267,6 +1267,10 @@ describe("Hyper-V provider adapter", () => {
         expect(stableToLegacyRepairScript).toContain("$ExpectedTokenValue = ''");
         expect(stableToLegacyRepairScript).toContain("$StableToToken = $ExpectedStable -and $NatName -ceq 'CCCDeviceLab' -and $ObservedToken");
         expect(stableToLegacyRepairScript).toContain("-not $ExpectedSwitchId -or -not $ExpectedNatInstanceId");
+        const requiredNatIdentityCheck = "if ($ExpectedNatInstanceId -and $Nats.Count -ne 1) { throw 'hyper-v-network-nat-identity-conflict' }";
+        expect(stableToLegacyRepairScript).toContain(requiredNatIdentityCheck);
+        expect(stableToLegacyRepairScript.indexOf(requiredNatIdentityCheck))
+            .toBeLessThan(stableToLegacyRepairScript.indexOf("if ($Nats.Count -eq 0) { $Nat = New-NetNat"));
         expect(stableToLegacyRepairScript).toContain("if ($ObservedStable) { $NatName = 'CCCDeviceLab' } else { $NatName = 'CCCDeviceLab-' + $ObservedTokenValue }");
         expect(parseHyperVNetworkObservation(JSON.stringify({
             ok: true,

@@ -319,6 +319,7 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "foreach ($ForeignAddress in $ForeignAddresses) { if (Test-IPv4PrefixOverlap $PrefixParts[0] $PrefixLength ([string]$ForeignAddress.IPAddress) ([int]$ForeignAddress.PrefixLength)) { throw 'hyper-v-network-subnet-conflict:interface' } }",
         "Set-CccHyperVNetworkStage 'hyper-v-network-nat-inspection-failed'",
         "$Nats = @(Get-NetNat -Name $NatName -ErrorAction SilentlyContinue)",
+        "if ($ExpectedNatInstanceId -and $Nats.Count -ne 1) { throw 'hyper-v-network-nat-identity-conflict' }",
         "if ($Nats.Count -gt 1) { throw 'hyper-v-network-nat-ambiguous' }",
         "if ($Nats.Count -eq 1 -and [string]$Nats[0].InternalIPInterfaceAddressPrefix -ne $Prefix) { throw 'hyper-v-network-nat-prefix-conflict' }",
         "if ($Nats.Count -eq 1 -and -not ($AllowExistingNat -or $ExistingSwitchOwned)) { throw 'hyper-v-network-nat-ownership-conflict' }",

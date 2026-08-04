@@ -96,7 +96,9 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   TypeScript and emits scalar literals. PowerShell classifies only the observed
   marker with initialized variables, guarded length checks, and substring
   extraction, avoiding expression-valued conditionals and regex match objects
-  on Windows PowerShell 5.1.
+  on Windows PowerShell 5.1. Persisted identity migration requires the expected
+  NAT to exist exactly once and match its recorded instance ID before any host
+  network mutation.
 - Broker network allocations are reconciled before singleton-network adoption.
   An allocation is considered orphaned only when no `windows-vm` or `linux-vm`
   owner-state record references the exact device and incarnation IDs and an
