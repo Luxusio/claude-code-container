@@ -383,6 +383,8 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
             "    $RollbackSwitches = @(Get-VMSwitch -Id ([Guid]$ExpectedSwitchId) -ErrorAction Stop)",
             "    if ($RollbackSwitches.Count -ne 1 -or $RollbackSwitches[0].Id.ToString().ToLowerInvariant() -cne $ExpectedSwitchId -or [string]$RollbackSwitches[0].Notes -cne $Marker) { throw 'hyper-v-network-persisted-marker-rollback-conflict' }",
             "    Set-VMSwitch -VMSwitch $RollbackSwitches[0] -Notes $OriginalSwitchMarker -ErrorAction Stop",
+            "    $RestoredSwitches = @(Get-VMSwitch -Id ([Guid]$ExpectedSwitchId) -ErrorAction Stop)",
+            "    if ($RestoredSwitches.Count -ne 1 -or $RestoredSwitches[0].Id.ToString().ToLowerInvariant() -cne $ExpectedSwitchId -or [string]$RestoredSwitches[0].Notes -cne $OriginalSwitchMarker) { throw 'hyper-v-network-persisted-marker-rollback-failed' }",
             "  }",
         ] : []),
         "  if ($CreatedNat) { $RollbackNats = @(Get-NetNat -Name $NatName -ErrorAction SilentlyContinue); if ($RollbackNats.Count -ne 1 -or [string]$RollbackNats[0].InstanceID -cne $CreatedNatInstanceId) { throw 'hyper-v-network-nat-rollback-identity-conflict' }; Remove-NetNat -InputObject $RollbackNats[0] -Confirm:$false -ErrorAction Stop }",

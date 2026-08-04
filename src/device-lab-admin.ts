@@ -881,6 +881,10 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
                 gateway: HYPER_V_NETWORK_GATEWAY,
                 prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
                 allowExistingNat: current !== null,
+                allowPersistedCccIdentityRepair: Boolean(current
+                    && isHyperVCccNetworkIdentity(current.marker, current.natName)
+                    && current.switchId
+                    && current.natInstanceId),
                 expectedSwitchId: current?.switchId,
                 expectedNatInstanceId: current?.natInstanceId,
             });

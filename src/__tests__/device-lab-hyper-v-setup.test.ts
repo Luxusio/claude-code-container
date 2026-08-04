@@ -264,6 +264,7 @@ describe("Hyper-V host setup CLI", () => {
             expect(networkProgramEncoded).toBeTruthy();
             const networkProgram = Buffer.from(networkProgramEncoded!, "base64").toString("utf8");
             expect(networkProgram).toContain("$AllowExistingNat = $true");
+            expect(networkProgram).toContain("$AllowPersistedCccIdentityRepair = $true");
             expect(networkProgram).toContain(`$ExpectedSwitchId = '${setupNetwork.switchId}'`);
             expect(networkProgram).toContain(`$ExpectedNatInstanceId = '${setupNetwork.natInstanceId}'`);
             return {

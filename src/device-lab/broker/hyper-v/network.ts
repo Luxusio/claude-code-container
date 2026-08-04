@@ -439,15 +439,15 @@ export async function ensureHyperVNetworkAllocation(
             preserveEvidence: true,
         };
     }
-    const canReconcileNetworkIdentity = !current || current.allocations.length === 0;
     const currentUsesLegacyTokenIdentity = Boolean(current
         && current.marker !== HYPER_V_NETWORK_MARKER
         && isHyperVCccNetworkIdentity(current.marker, current.natName));
-    const canRepairPersistedCccIdentity = Boolean(!canReconcileNetworkIdentity
-        && current
+    const canRepairPersistedCccIdentity = Boolean(current
         && isHyperVCccNetworkIdentity(current.marker, current.natName)
-        && current?.switchId
+        && current.switchId
         && current.natInstanceId);
+    let canReconcileNetworkIdentity = !current
+        || (current.allocations.length === 0 && !canRepairPersistedCccIdentity);
     const networkOptions = {
         executable: powershell,
         switchName: current?.switchName || intent!.switchName,
@@ -462,7 +462,7 @@ export async function ensureHyperVNetworkAllocation(
         expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
-    const execution = await runWithElevation(
+    let execution = await runWithElevation(
         runtime,
         hyperVEnsureNetworkCommand(networkOptions),
         (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({
@@ -473,13 +473,46 @@ export async function ensureHyperVNetworkAllocation(
         }),
         deadlineAt,
     );
+    let executionDiagnostic = commandSucceeded(execution)
+        ? undefined
+        : hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed");
+    const canDiscardStalePersistedIdentity = Boolean(current
+        && current.allocations.length === 0
+        && canRepairPersistedCccIdentity
+        && (executionDiagnostic === "hyper-v-network-switch-identity-conflict"
+            || executionDiagnostic === "hyper-v-network-nat-identity-conflict"));
+    if (canDiscardStalePersistedIdentity) {
+        canReconcileNetworkIdentity = true;
+        const adoptionOptions = {
+            ...networkOptions,
+            allowExistingNat: false,
+            allowCccOwnedNetworkAdoption: true,
+            allowPersistedCccIdentityRepair: false,
+            expectedSwitchId: undefined,
+            expectedNatInstanceId: undefined,
+        };
+        execution = await runWithElevation(
+            runtime,
+            hyperVEnsureNetworkCommand(adoptionOptions),
+            (elevatedDeadlineUnixMs) => hyperVEnsureNetworkCommand({
+                ...adoptionOptions,
+                executable: runtime.resolveElevationExecutable(powershell),
+                elevated: true,
+                elevatedDeadlineUnixMs,
+            }),
+            deadlineAt,
+        );
+        executionDiagnostic = commandSucceeded(execution)
+            ? undefined
+            : hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed");
+    }
     assertHyperVOperationDeadline(deadlineAt);
     if (!commandSucceeded(execution)) {
         return {
             ok: false,
             status: 502,
             error: "hyper-v-network-setup-failed",
-            detail: hyperVProviderDiagnosticCode(execution, "hyper-v-network-setup-failed"),
+            detail: executionDiagnostic,
             execution: redactProviderCommandInput(execution, true, "hyper-v-network-setup-failed"),
             preserveEvidence: true,
         };

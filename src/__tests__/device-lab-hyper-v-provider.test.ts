@@ -1261,6 +1261,8 @@ describe("Hyper-V provider adapter", () => {
         expect(persistedIdentityAdoptionScript).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-persisted-marker-rollback-failed'");
         expect(persistedIdentityAdoptionScript).toContain("hyper-v-network-persisted-marker-rollback-conflict");
         expect(persistedIdentityAdoptionScript).toContain("Set-VMSwitch -VMSwitch $RollbackSwitches[0] -Notes $OriginalSwitchMarker -ErrorAction Stop");
+        expect(persistedIdentityAdoptionScript).toContain("$RestoredSwitches = @(Get-VMSwitch -Id ([Guid]$ExpectedSwitchId) -ErrorAction Stop)");
+        expect(persistedIdentityAdoptionScript).toContain("[string]$RestoredSwitches[0].Notes -cne $OriginalSwitchMarker");
         expect(persistedIdentityAdoptionScript.indexOf("if ($ExpectedNatInstanceId -and $Nats.Count -ne 1)"))
             .toBeLessThan(persistedIdentityAdoptionScript.indexOf("Set-VMSwitch -VMSwitch $Switch -Notes $Marker"));
         expect(persistedIdentityAdoptionScript.indexOf("[string]$Nats[0].InstanceID -cne $ExpectedNatInstanceId"))

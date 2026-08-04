@@ -327,7 +327,21 @@ describe("Hyper-V network module", () => {
             managedGateway: true,
             managedNat: true,
         });
-        const run = vi.fn(async (command) => {
+        const run = vi.fn()
+            .mockImplementationOnce(async (command) => {
+                const script = scriptOf(command);
+                expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+                expect(script).toContain("$AllowPersistedCccIdentityRepair = $true");
+                expect(script).toContain(`$ExpectedSwitchId = '${"99999999-8888-7777-6666-555555555555"}'`);
+                expect(script).toContain("$ExpectedNatInstanceId = 'stale-nat-instance'");
+                return {
+                    mode: "exec" as const,
+                    provider: "hyper-v" as const,
+                    status: 1,
+                    stderr: "hyper-v-network-switch-identity-conflict",
+                };
+            })
+            .mockImplementationOnce(async (command) => {
             const script = scriptOf(command);
             expect(script).toContain("$AllowCccOwnedNetworkAdoption = $true");
             expect(script).toContain("$AllowPersistedCccIdentityRepair = $false");
@@ -364,6 +378,26 @@ describe("Hyper-V network module", () => {
             managedGateway: true,
             managedNat: false,
         });
+        expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    it("repairs a damaged marker against exact persisted identity even with no allocations", async () => {
+        const root = privateRoot();
+        writeNetworkState(root);
+        const run = vi.fn(async (command) => {
+            const script = scriptOf(command);
+            expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
+            expect(script).toContain("$AllowPersistedCccIdentityRepair = $true");
+            expect(script).toContain(`$ExpectedSwitchId = '${SWITCH_ID}'`);
+            expect(script).toContain(`$ExpectedNatInstanceId = '${NAT_INSTANCE_ID}'`);
+            expect(script).toContain("$RepairPersistedSwitchMarker = $true");
+            expect(script).toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker -ErrorAction Stop");
+            return setupObservation(root);
+        });
+
+        expect(await ensureHyperVNetworkAllocation(runtime(root, run), OWNER_ID, DEVICE_ID, INCARNATION_ID))
+            .toMatchObject({ ok: true });
+        expect(run).toHaveBeenCalledTimes(1);
     });
 
     it("persists exact-ID token-to-stable CCC identity repair on an idempotent allocation retry", async () => {
@@ -636,6 +670,12 @@ describe("Hyper-V network module", () => {
         const run = vi.fn()
             .mockResolvedValueOnce(allocationInspection(false))
             .mockResolvedValueOnce({
+                mode: "exec",
+                provider: "hyper-v",
+                status: 1,
+                stderr: "hyper-v-network-switch-identity-conflict",
+            })
+            .mockResolvedValueOnce({
                 ...setupObservation(root),
                 stdout: JSON.stringify({
                     ok: true,
@@ -658,11 +698,12 @@ describe("Hyper-V network module", () => {
         };
 
         expect(await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID)).toMatchObject({ ok: true });
-        expect(run).toHaveBeenCalledTimes(2);
+        expect(run).toHaveBeenCalledTimes(3);
         expect(scriptOf(run.mock.calls[0][0])).toContain("hyper-v-network-allocation-vm-ownership-conflict");
         expect(scriptOf(run.mock.calls[0][0])).toContain("$AllVms = @(Get-VM -ErrorAction Stop)");
         expect(scriptOf(run.mock.calls[0][0])).not.toContain("Get-VM -Name");
-        expect(scriptOf(run.mock.calls[1][0])).toContain("$AllowCccOwnedNetworkAdoption = $true");
+        expect(scriptOf(run.mock.calls[1][0])).toContain("$AllowPersistedCccIdentityRepair = $true");
+        expect(scriptOf(run.mock.calls[2][0])).toContain("$AllowCccOwnedNetworkAdoption = $true");
         const state = JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"));
         expect(state).toMatchObject({ marker: "ccc-device-lab:hyper-v-network:v1", natName: "CCCDeviceLab" });
         expect(state.allocations).toEqual([expect.objectContaining({ deviceId: DEVICE_ID, incarnationId: INCARNATION_ID })]);
