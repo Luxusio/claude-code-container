@@ -1149,8 +1149,13 @@ describe("Hyper-V provider adapter", () => {
             prefixLength: 24,
         });
         const script = scriptOf(command);
-        expect(script).toContain("$env:CCC_HYPER_V_STAGE = 'hyper-v-network-switch-inspection-failed'");
-        expect(script).toContain("CCC_HYPER_V_STAGE:hyper-v-network-switch-inspection-failed");
+        expect(script).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-module-import-failed'");
+        expect(script).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-switch-name-inspection-failed'");
+        expect(script).toContain("Set-CccHyperVNetworkStage 'hyper-v-network-switch-identity-inspection-failed'");
+        expect(script.indexOf("Set-CccHyperVNetworkStage 'hyper-v-network-switch-name-inspection-failed'"))
+            .toBeLessThan(script.indexOf("Get-VMSwitch -Name $SwitchName"));
+        expect(script.indexOf("Set-CccHyperVNetworkStage 'hyper-v-network-switch-identity-inspection-failed'"))
+            .toBeGreaterThan(script.indexOf("Get-VMSwitch -Name $SwitchName"));
         expect(script).toContain("New-VMSwitch -Name $SwitchName -SwitchType Internal -Notes $Marker");
         expect(script).not.toContain("Set-VMSwitch -VMSwitch $Switch -Notes $Marker");
         expect(script).toContain("hyper-v-network-switch-ownership-conflict");
@@ -1164,7 +1169,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$AllowCccOwnedNetworkAdoption = $false");
         expect(script).toContain("$AllowPersistedCccIdentityRepair = $false");
         expect(script).toContain(`$ExpectedSwitchId = '${vmId}'`);
-        expect(script).toContain("Get-VMSwitch -Id ([Guid]$ExpectedSwitchId)");
+        expect(script).not.toContain("Get-VMSwitch -Id ([Guid]$ExpectedSwitchId)");
         expect(script).toContain("hyper-v-network-switch-identity-conflict");
         expect(script).toContain("$ExpectedNatInstanceId = 'ccc-nat-instance-1'");
         expect(script).toContain("if ($CreatedNat)");

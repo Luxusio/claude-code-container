@@ -90,6 +90,9 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   Unknown localized PowerShell exceptions are reduced to that allowlisted stage
   in both direct and elevated execution, preserving actionable diagnostics
   without returning host paths, command text, or raw provider output.
+  Direct execution emits every bounded stage transition, and singleton switch
+  identity is verified from the exact name lookup result without a redundant
+  second GUID lookup.
 - Broker network allocations are reconciled before singleton-network adoption.
   An allocation is considered orphaned only when no `windows-vm` or `linux-vm`
   owner-state record references the exact device and incarnation IDs and an

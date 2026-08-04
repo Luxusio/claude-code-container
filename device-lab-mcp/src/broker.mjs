@@ -97,7 +97,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
     "hyper-v-provider-image-finalization-v2",
-    "hyper-v-network-failure-diagnostics-v2",
+    "hyper-v-network-failure-diagnostics-v3",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 const MAX_RPC_TIMEOUT_MS = 21615000;
