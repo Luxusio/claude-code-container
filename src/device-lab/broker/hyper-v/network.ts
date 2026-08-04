@@ -443,8 +443,9 @@ export async function ensureHyperVNetworkAllocation(
     const currentUsesLegacyTokenIdentity = Boolean(current
         && current.marker !== HYPER_V_NETWORK_MARKER
         && isHyperVCccNetworkIdentity(current.marker, current.natName));
-    const canAdoptPersistedCccMarker = Boolean(!canReconcileNetworkIdentity
-        && currentUsesLegacyTokenIdentity
+    const canRepairPersistedCccIdentity = Boolean(!canReconcileNetworkIdentity
+        && current
+        && isHyperVCccNetworkIdentity(current.marker, current.natName)
         && current?.switchId
         && current.natInstanceId);
     const networkOptions = {
@@ -457,7 +458,7 @@ export async function ensureHyperVNetworkAllocation(
         prefixLength: HYPER_V_NETWORK_PREFIX_LENGTH,
         allowExistingNat: Boolean(current?.natInstanceId) && !canReconcileNetworkIdentity,
         allowCccOwnedNetworkAdoption: canReconcileNetworkIdentity,
-        allowLegacyTokenToStableMigration: canAdoptPersistedCccMarker,
+        allowPersistedCccIdentityRepair: canRepairPersistedCccIdentity,
         expectedSwitchId: canReconcileNetworkIdentity ? undefined : current?.switchId,
         expectedNatInstanceId: canReconcileNetworkIdentity ? undefined : current?.natInstanceId,
     };
@@ -486,14 +487,23 @@ export async function ensureHyperVNetworkAllocation(
     const observation = parseHyperVNetworkObservation(execution.stdout || "");
     const observedMarker = observation?.marker || current?.marker || intent!.marker;
     const observedIdentityIsCccOwned = isHyperVCccNetworkIdentity(observedMarker, observation?.natName);
-    const observedPersistedIdentityMatches = Boolean(canAdoptPersistedCccMarker
+    const observedUsesLegacyTokenIdentity = Boolean(observation
+        && observedMarker !== HYPER_V_NETWORK_MARKER
+        && isHyperVCccNetworkIdentity(observedMarker, observation.natName));
+    const persistedIdentityTransitionIsAllowed = Boolean(current && observation
+        && ((currentUsesLegacyTokenIdentity
+            && observedMarker === HYPER_V_NETWORK_MARKER
+            && observation.natName === HYPER_V_NETWORK_NAT)
+        || (current.marker === HYPER_V_NETWORK_MARKER
+            && current.natName === HYPER_V_NETWORK_NAT
+            && observedUsesLegacyTokenIdentity)));
+    const observedPersistedIdentityMatches = Boolean(canRepairPersistedCccIdentity
         && current
         && observation
         && current.switchId.toLowerCase() === observation.switchId.toLowerCase()
         && current.natInstanceId
         && current.natInstanceId === observation.natInstanceId
-        && observedMarker === HYPER_V_NETWORK_MARKER
-        && observation.natName === HYPER_V_NETWORK_NAT);
+        && persistedIdentityTransitionIsAllowed);
     if (!observation
         || observation.switchName !== (current?.switchName || intent!.switchName)
         || (current

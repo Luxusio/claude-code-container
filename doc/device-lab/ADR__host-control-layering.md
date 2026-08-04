@@ -73,14 +73,14 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   committed, persisted switch and NAT IDs remain authoritative. Previously
   persisted token-fenced intents and states remain readable and keep their
   dedicated cleanup behavior. A stale broker state may reconcile to a different
-  valid CCC marker/NAT identity while its allocation set is empty, or while
-  a persisted legacy token identity is moving one-way to the stable identity
-  and its switch GUID and NAT InstanceID both exactly match the observed
-  resources. Empty-state reconciliation replaces the observed IDs and drops
-  inherited cleanup ownership; exact-ID token-to-stable migration preserves
-  ownership because the underlying resources did not change. Stable-to-token,
-  cross-token, foreign-marker, and switch or NAT ID mismatches with an active
-  allocation all fail closed.
+  valid CCC marker/NAT identity while its allocation set is empty. With active
+  allocations, a stable/token identity mismatch is repairable only when the
+  persisted switch GUID and NAT InstanceID both exactly match the observed
+  resources. This covers both token-to-stable migration and stable state left
+  in front of legacy token resources by an interrupted older-broker upgrade.
+  Exact-ID repair preserves cleanup ownership because the underlying resources
+  did not change. Cross-token, foreign-marker, and switch or NAT ID mismatches
+  with an active allocation all fail closed.
   Switch, gateway, and NAT ownership are recorded separately, so repair or
   rollback removes only resources created by that transaction. Destructive
   switch or gateway cleanup additionally requires the persisted switch ID.

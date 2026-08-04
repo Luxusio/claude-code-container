@@ -362,7 +362,7 @@ export type HyperVNetworkOptions = {
     marker: string;
     allowExistingNat?: boolean;
     allowCccOwnedNetworkAdoption?: boolean;
-    allowLegacyTokenToStableMigration?: boolean;
+    allowPersistedCccIdentityRepair?: boolean;
     expectedSwitchId?: string;
     expectedNatInstanceId?: string;
     elevated?: boolean;
