@@ -92,9 +92,11 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   without returning host paths, command text, or raw provider output.
   Direct execution emits every bounded stage transition, and singleton switch
   identity is verified from the exact name lookup result without a redundant
-  second GUID lookup. Marker migration uses validated fixed-prefix strings and
-  substring extraction rather than runtime regex match objects so Windows
-  PowerShell 5.1 follows the same token/stable classification path.
+  second GUID lookup. Marker migration classifies the expected marker in
+  TypeScript and emits scalar literals. PowerShell classifies only the observed
+  marker with initialized variables, guarded length checks, and substring
+  extraction, avoiding expression-valued conditionals and regex match objects
+  on Windows PowerShell 5.1.
 - Broker network allocations are reconciled before singleton-network adoption.
   An allocation is considered orphaned only when no `windows-vm` or `linux-vm`
   owner-state record references the exact device and incarnation IDs and an

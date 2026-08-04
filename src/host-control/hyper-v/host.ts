@@ -242,6 +242,10 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
     const expectedNatInstanceId = String(options.expectedNatInstanceId || "");
     if (expectedSwitchId && !VM_ID_PATTERN.test(expectedSwitchId)) throw new Error("hyper-v-network-switch-id-invalid");
     if (expectedNatInstanceId && (expectedNatInstanceId.length > 256 || /[\u0000-\u001f]/.test(expectedNatInstanceId))) throw new Error("hyper-v-network-nat-instance-id-invalid");
+    const markerPrefix = "ccc-device-lab:hyper-v-network:";
+    const stableMarker = `${markerPrefix}v1`;
+    const expectedStableMarker = marker === stableMarker;
+    const expectedTokenValue = expectedStableMarker ? "" : marker.slice(markerPrefix.length);
     return jsonScript([
         "function Set-CccHyperVNetworkStage([string]$Stage) { if ($Stage -notmatch '^hyper-v-network-[a-z0-9-]{3,128}$') { throw 'hyper-v-network-stage-invalid' }; $env:CCC_HYPER_V_STAGE = $Stage; [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $Stage)) }",
         "Set-CccHyperVNetworkStage 'hyper-v-network-module-import-failed'",
@@ -257,6 +261,11 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         `$ExpectedSwitchId = ${psQuote(expectedSwitchId)}`,
         `$ExpectedNatInstanceId = ${psQuote(expectedNatInstanceId)}`,
         `$Marker = ${psQuote(marker)}`,
+        `$MarkerPrefix = ${psQuote(markerPrefix)}`,
+        `$StableMarker = ${psQuote(stableMarker)}`,
+        `$ExpectedStable = ${expectedStableMarker ? "$true" : "$false"}`,
+        `$ExpectedToken = ${expectedStableMarker ? "$false" : "$true"}`,
+        `$ExpectedTokenValue = ${psQuote(expectedTokenValue)}`,
         "function Convert-IPv4ToUInt32([string]$Address) { $Bytes = [Net.IPAddress]::Parse($Address).GetAddressBytes(); [Array]::Reverse($Bytes); return [BitConverter]::ToUInt32($Bytes, 0) }",
         "function Test-IPv4PrefixOverlap([string]$LeftAddress, [int]$LeftLength, [string]$RightAddress, [int]$RightLength) { $Length = [Math]::Min($LeftLength, $RightLength); $Mask = if ($Length -eq 0) { [uint32]0 } else { [uint32]([uint32]::MaxValue - [uint32]([Math]::Pow(2, 32 - $Length) - 1)) }; return ((Convert-IPv4ToUInt32 $LeftAddress) -band $Mask) -eq ((Convert-IPv4ToUInt32 $RightAddress) -band $Mask) }",
         "$CreatedSwitch = $false",
@@ -274,23 +283,24 @@ function hyperVEnsureNetworkScript(options: HyperVNetworkOptions): string {
         "  if ([string]$Switches[0].Notes -cne $Marker) {",
         "    Set-CccHyperVNetworkStage 'hyper-v-network-marker-inspection-failed'",
         "    $ObservedMarker = [string]$Switches[0].Notes",
-        "    $MarkerPrefix = 'ccc-device-lab:hyper-v-network:'",
         "    Set-CccHyperVNetworkStage 'hyper-v-network-marker-classification-failed'",
-        "    $ObservedStable = $ObservedMarker -ceq ($MarkerPrefix + 'v1')",
-        "    $ObservedToken = $ObservedMarker -cmatch '^ccc-device-lab:hyper-v-network:[a-f0-9]{24}$'",
-        "    $ObservedTokenValue = if ($ObservedToken) { $ObservedMarker.Substring($MarkerPrefix.Length) } else { '' }",
-        "    $ExpectedStable = $Marker -ceq ($MarkerPrefix + 'v1') -and $NatName -ceq 'CCCDeviceLab'",
-        "    $ExpectedToken = $Marker -cmatch '^ccc-device-lab:hyper-v-network:[a-f0-9]{24}$'",
-        "    $ExpectedTokenValue = if ($ExpectedToken) { $Marker.Substring($MarkerPrefix.Length) } else { '' }",
+        "    $ObservedStable = $ObservedMarker -ceq $StableMarker",
+        "    $ObservedToken = $false",
+        "    $ObservedTokenValue = ''",
+        "    if (-not $ObservedStable -and $ObservedMarker.Length -eq ($MarkerPrefix.Length + 24)) {",
+        "      $ObservedPrefix = $ObservedMarker.Substring(0, $MarkerPrefix.Length)",
+        "      $ObservedTokenValue = $ObservedMarker.Substring($MarkerPrefix.Length)",
+        "      $ObservedToken = $ObservedPrefix -ceq $MarkerPrefix -and $ObservedTokenValue -cmatch '^[a-f0-9]{24}$'",
+        "    }",
         "    if ($AllowPersistedCccIdentityRepair) {",
         "      Set-CccHyperVNetworkStage 'hyper-v-network-identity-evidence-inspection-failed'",
         "      $TokenToStable = $ExpectedToken -and $NatName -ceq ('CCCDeviceLab-' + $ExpectedTokenValue) -and $ObservedStable",
-        "      $StableToToken = $ExpectedStable -and $ObservedToken",
+        "      $StableToToken = $ExpectedStable -and $NatName -ceq 'CCCDeviceLab' -and $ObservedToken",
         "      if (-not $ExpectedSwitchId -or -not $ExpectedNatInstanceId -or -not ($TokenToStable -or $StableToToken)) { throw 'hyper-v-network-switch-ownership-conflict' }",
         "      Set-CccHyperVNetworkStage 'hyper-v-network-identity-adoption-failed'",
         "      if ($ObservedStable) { $NatName = 'CCCDeviceLab' } else { $NatName = 'CCCDeviceLab-' + $ObservedTokenValue }",
         "    } elseif ($AllowCccOwnedNetworkAdoption) {",
-        "      if ($ObservedMarker -ceq 'ccc-device-lab:hyper-v-network:v1') { $NatName = 'CCCDeviceLab' }",
+        "      if ($ObservedStable) { $NatName = 'CCCDeviceLab' }",
         "      elseif ($ObservedToken) { $NatName = 'CCCDeviceLab-' + $ObservedTokenValue }",
         "      else { throw 'hyper-v-network-switch-ownership-conflict' }",
         "    } else { throw 'hyper-v-network-switch-ownership-conflict' }",
