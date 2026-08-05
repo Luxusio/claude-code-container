@@ -758,6 +758,13 @@ describe("Hyper-V provider adapter", () => {
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         expect(script.indexOf("$Generation = Get-CccVhdGeneration $PartialPath"))
             .toBeLessThan(script.indexOf("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath"));
+        const partialGuardDispose = script.indexOf("} finally { $PartialGuard.Dispose(); $PartialGuard = $null }");
+        const partialGeneration = script.indexOf("$Generation = Get-CccVhdGeneration $PartialPath");
+        const reopenedPartialGuard = script.indexOf("$PartialGuard = [IO.File]::Open($PartialPath", partialGeneration);
+        expect(partialGuardDispose).toBeGreaterThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
+        expect(partialGuardDispose).toBeLessThan(partialGeneration);
+        expect(reopenedPartialGuard).toBeGreaterThan(partialGeneration);
+        expect(reopenedPartialGuard).toBeLessThan(script.indexOf("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath"));
         expect(script).toContain("if ($ExpectedHash -and $Hash -ne $ExpectedHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
         expect(script).toContain("if ($FinalHashBefore -ne $ValidatedPartialHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
         expect(script.indexOf("$FinalHashBefore = (Get-FileHash -LiteralPath $ImagePath"))

@@ -22,6 +22,9 @@ export async function createFakeAndroidMcpContext(): Promise<FakeAndroidMcpConte
         homeDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-home-"));
         binDir = mkdtempSync(join(tmpdir(), "ccc-device-lab-android-bin-"));
         logPath = join(homeDir, "fake-android.log");
+        for (const serial of ["R5CREAL123", "192.168.1.50:5555", "192.168.1.60:5555", "R5LEASED999"]) {
+            writeFileSync(join(homeDir, `fake-adb-active-${serial}`), "1");
+        }
 
         const writeScript = (name: string, body: string) => {
             const path = join(binDir, name);

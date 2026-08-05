@@ -1890,8 +1890,9 @@ describe("createWorkspace (unified mode)", () => {
                 stdio: "pipe",
             },
         ).stdout.trim();
-        expect(mounts.some(({ hostPath }) => (
+        expect(mounts.some(({ hostPath, presence }) => (
             hostPath === resolve(sourceSubmodule, submoduleCommonGitDirectory)
+            && presence === "core"
         ))).toBe(true);
 
         const removed = removeWorkspace(tmpDir, "feature");
@@ -4259,6 +4260,7 @@ describe("getWorktreeGitMounts", () => {
         expect(mounts.some((mount) => (
             mount.hostPath === join(repoPath, ".git")
             && mount.containerPath === "/project/portable-source/.git"
+            && mount.presence === "core"
         ))).toBe(true);
         const managementDirectory = resolve(
             wtPath,
@@ -4269,6 +4271,7 @@ describe("getWorktreeGitMounts", () => {
             === "/project/portable-source/.git/worktrees/portable-source--feat/gitdir"
         ));
         expect(compatibilityMount).toBeDefined();
+        expect(compatibilityMount!.presence).toBe("additive");
         expect(readFileSync(compatibilityMount!.hostPath, "utf-8")).toBe(
             "/project/portable-source--feat-id/.git\n",
         );

@@ -4157,6 +4157,7 @@ export interface WorktreeGitMount {
     hostPath: string;
     containerPath: string;
     identity: DirectoryIdentity;
+    presence: "core" | "additive";
 }
 
 function trackedWorktreeGitFiles(
@@ -4618,6 +4619,7 @@ export function getWorktreeGitMounts(
         hostPath: string,
         containerPath: string,
         identity = captureDirectoryIdentity(hostPath),
+        presence: WorktreeGitMount["presence"] = "core",
     ): void {
         const existingSource = destinationSources.get(containerPath);
         if (existingSource && !sameObservedPath(existingSource, hostPath)) {
@@ -4630,7 +4632,7 @@ export function getWorktreeGitMounts(
         const key = `${hostPath}:${containerPath}`;
         if (!seen.has(key)) {
             seen.add(key);
-            mounts.push({ hostPath, containerPath, identity });
+            mounts.push({ hostPath, containerPath, identity, presence });
         }
     }
 
@@ -4788,6 +4790,7 @@ export function getWorktreeGitMounts(
                 compatibility.path,
                 posix.join(containerManagementDirectory, "gitdir"),
                 compatibility.identity,
+                "additive",
             );
         }
         if (trackedSource) {

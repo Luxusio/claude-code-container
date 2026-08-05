@@ -2928,6 +2928,34 @@ describe("docker.ts module exports", () => {
             expectNoContainerReplacement();
         });
 
+        it("refuses to join when a required worktree common Git directory mount is missing", () => {
+            const inspected = JSON.parse(fullCredentialMountsJson());
+            const commonGitMount = {
+                hostPath: "/host/repo/.git",
+                containerPath: "/project/repo/.git",
+                presence: "core" as const,
+            };
+            spawnSyncMock.mockImplementation((_command: unknown, argsValue: unknown) => {
+                const args = argsValue as string[];
+                if (args[0] === "images") return makeResult(0, "sha256:abc\n");
+                if (args[0] === "image" && args[1] === "inspect") return makeResult(0, "<no value>\n");
+                if (args[0] === "inspect") return makeResult(0, JSON.stringify(inspected));
+                if (args[0] === "ps") return makeResult(0, "abc123\n");
+                return makeResult(0);
+            });
+
+            expect(() => startProjectContainer(
+                projectPath,
+                ensureDirs,
+                [commonGitMount],
+                undefined,
+                undefined,
+                undefined,
+                () => false,
+            )).toThrow("contract failed safety validation");
+            expectNoContainerReplacement();
+        });
+
         it.each([
             ["Windows Docker Desktop", "C:\\ProgramData\\Docker\\volumes\\ccc-mise-cache\\_data"],
             ["Linux Docker Engine", "/var/lib/docker/volumes/ccc-mise-cache/_data"],
@@ -4823,7 +4851,11 @@ describe("docker.ts module exports", () => {
             expect(gitConfigInstall?.[1]).toEqual(expect.arrayContaining([
                 "exec", "--user", "root", TEST_CREATED_CONTAINER_ID,
             ]));
-            expect((gitConfigInstall?.[1] as string[]).at(-1)).toContain("chown ccc:ccc /home/ccc/.gitconfig");
+            const installScript = (gitConfigInstall?.[1] as string[])[6];
+            expect(installScript).toContain("chown ccc:ccc /home/ccc/.gitconfig");
+            expect(installScript).toContain("git config --file \"$config_path\" --get-all user.signingkey");
+            expect(gitConfigInstall?.[1]).toContain("/home/ccc/.gitconfig");
+            expect(gitConfigInstall?.[1]).toContain("/tmp/.ssh-copy");
         });
 
         it("fixes SSH key permissions after creating container when ssh dir exists", () => {
@@ -4849,6 +4881,18 @@ describe("docker.ts module exports", () => {
             );
             expect(execCall).toBeDefined();
             expect((execCall![1] as string[])).toContain("sh");
+
+            const sshCopyIndex = spawnSyncMock.mock.calls.findIndex(
+                (c: unknown[]) => c[0] === "docker"
+                    && (c[1] as string[]).some((arg) => arg.includes("copy_stage=$copy_parent")),
+            );
+            const gitConfigInstallIndex = spawnSyncMock.mock.calls.findIndex(
+                (c: unknown[]) => c[0] === "docker"
+                    && (c[1] as string[]).some((arg) => arg.includes("/tmp/ccc-host-gitconfig"))
+                    && (c[1] as string[])[0] === "exec",
+            );
+            expect(sshCopyIndex).toBeGreaterThan(-1);
+            expect(gitConfigInstallIndex).toBeGreaterThan(sshCopyIndex);
         });
 
         it("releases the physical project lock when container creation fails", () => {

@@ -660,6 +660,7 @@ export interface DockerRunArgsOptions {
         hostPath: string;
         containerPath: string;
         identity?: BindMountSourceIdentity;
+        presence?: RequiredContainerMount["presence"];
     }>;
     projectMountIdentity?: string;
     clipboardPortFile?: string;
@@ -1971,6 +1972,7 @@ function syncHostGitConfig(containerName: string): void {
 
     const cli = runtimeCli();
     const stagedPath = "/tmp/ccc-host-gitconfig";
+    const hostSshRoot = join(homedir(), ".ssh").replace(/\\/g, "/").replace(/\/+$/, "");
     const copied = spawnSync(cli, ["cp", hostGitConfig, `${containerName}:${stagedPath}`], { stdio: "ignore" });
     if (copied.status !== 0) {
         console.error("[ccc] WARNING: failed to copy host .gitconfig into container");
@@ -1986,13 +1988,90 @@ function syncHostGitConfig(containerName: string): void {
             containerName,
             "sh",
             "-c",
-            `cp ${stagedPath} /home/ccc/.gitconfig && git config --file /home/ccc/.gitconfig --add safe.directory '*' && chown ccc:ccc /home/ccc/.gitconfig && rm -f ${stagedPath}`,
+            `set -e; cp ${stagedPath} /home/ccc/.gitconfig; `
+            + "git config --file /home/ccc/.gitconfig --add safe.directory '*'; "
+            + gitSigningKeyRewriteShell()
+            + "; "
+            + `chown ccc:ccc /home/ccc/.gitconfig; rm -f ${stagedPath}`,
+            "ccc-signing-key-rewrite",
+            "/home/ccc/.gitconfig",
+            hostSshRoot,
+            "/tmp/.ssh-copy",
         ],
         { stdio: "ignore" },
     );
     if (installed.status !== 0) {
         console.error("[ccc] WARNING: failed to install host .gitconfig inside container");
     }
+}
+
+export function gitSigningKeyRewriteShell(): string {
+    return [
+        "config_path=$1",
+        "host_ssh_root=$2",
+        "copied_ssh_root=$3",
+        "signing_keys=$(git config --file \"$config_path\" --get-all user.signingkey 2>/dev/null || true)",
+        "signing_key_count=$(printf '%s\\n' \"$signing_keys\" | sed '/^$/d' | wc -l | tr -d ' ')",
+        "if [ \"$signing_key_count\" = 1 ]; then",
+        "  normalized_signing_key=$(printf '%s' \"$signing_keys\" | tr '\\\\' '/')",
+        "  key_name=${normalized_signing_key##*/}",
+        "  case \"$key_name\" in",
+        "    id_rsa|id_ed25519|id_ecdsa|id_dsa|id_ed25519_sk|id_ecdsa_sk)",
+        "      expected_signing_key=$host_ssh_root/$key_name",
+        "      copied_signing_key=$copied_ssh_root/$key_name",
+        "      if [ -f \"$copied_ssh_root/.ccc-copy-complete\" ] && [ ! -L \"$copied_ssh_root/.ccc-copy-complete\" ] && [ \"$normalized_signing_key\" = \"$expected_signing_key\" ] && [ -f \"$copied_signing_key\" ] && [ ! -L \"$copied_signing_key\" ]; then",
+        "        git config --file \"$config_path\" --replace-all user.signingkey \"$copied_signing_key\"",
+        "      fi",
+        "      ;;",
+        "  esac",
+        "fi",
+    ].join("\n");
+}
+
+export function sshCredentialCopyShell(): string {
+    return [
+        "source_ssh_root=$1",
+        "copied_ssh_root=$2",
+        "copy_parent=${copied_ssh_root%/*}",
+        "copy_name=${copied_ssh_root##*/}",
+        "copy_stage=$copy_parent/.${copy_name}.next.$$",
+        "copy_previous=$copy_parent/.${copy_name}.previous.$$",
+        "rm -rf -- \"$copy_stage\" \"$copy_previous\"",
+        "if [ ! -d \"$source_ssh_root\" ] || [ -L \"$source_ssh_root\" ]; then",
+        "  rm -rf -- \"$copied_ssh_root\"",
+        "  exit 0",
+        "fi",
+        "umask 077",
+        "if ! mkdir \"$copy_stage\" || ! cp -R \"$source_ssh_root\"/. \"$copy_stage\"/; then",
+        "  rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "  exit 1",
+        "fi",
+        "if ! find \"$copy_stage\" -type d -exec chmod 700 {} + || ! find \"$copy_stage\" -type f -exec chmod 600 {} + || ! find \"$copy_stage\" -type f -name '*.pub' -exec chmod 644 {} +; then",
+        "  rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "  exit 1",
+        "fi",
+        "if [ -f \"$copy_stage/known_hosts\" ] && [ ! -L \"$copy_stage/known_hosts\" ] && ! chmod 644 \"$copy_stage/known_hosts\"; then",
+        "  rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "  exit 1",
+        "fi",
+        "if ! printf '%s\\n' complete > \"$copy_stage/.ccc-copy-complete\" || ! chmod 600 \"$copy_stage/.ccc-copy-complete\"; then",
+        "  rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "  exit 1",
+        "fi",
+        "if [ -e \"$copied_ssh_root\" ] || [ -L \"$copied_ssh_root\" ]; then",
+        "  if ! mv \"$copied_ssh_root\" \"$copy_previous\"; then",
+        "    rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "    exit 1",
+        "  fi",
+        "fi",
+        "if mv \"$copy_stage\" \"$copied_ssh_root\"; then",
+        "  rm -rf -- \"$copy_previous\"",
+        "  exit 0",
+        "fi",
+        "rm -rf -- \"$copy_stage\" \"$copied_ssh_root\"",
+        "if [ -e \"$copy_previous\" ] || [ -L \"$copy_previous\" ]; then mv \"$copy_previous\" \"$copied_ssh_root\" || true; fi",
+        "exit 1",
+    ].join("\n");
 }
 
 function fixSshPermissions(containerName: string): void {
@@ -2005,23 +2084,22 @@ function fixSshPermissions(containerName: string): void {
         { stdio: "ignore" },
     );
 
-    if (existsSync(hostSshDir)) {
-        spawnSync(
-            cli,
-            [
-                "exec",
-                containerName,
-                "sh",
-                "-c",
-                "cp -r /home/ccc/.ssh /tmp/.ssh-copy && " +
-                    "chmod 700 /tmp/.ssh-copy && " +
-                    "chmod 600 /tmp/.ssh-copy/* 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/*.pub 2>/dev/null; " +
-                    "chmod 644 /tmp/.ssh-copy/known_hosts 2>/dev/null; " +
-                    "true",
-            ],
-            { stdio: "ignore" },
-        );
+    const copied = spawnSync(
+        cli,
+        [
+            "exec",
+            containerName,
+            "sh",
+            "-c",
+            sshCredentialCopyShell(),
+            "ccc-ssh-copy",
+            "/home/ccc/.ssh",
+            "/tmp/.ssh-copy",
+        ],
+        { stdio: "ignore" },
+    );
+    if (copied.status !== 0 && existsSync(hostSshDir)) {
+        console.error("[ccc] WARNING: failed to refresh copied SSH credentials inside container");
     }
 }
 
@@ -2188,6 +2266,7 @@ export function startProjectContainer(
         hostPath: string;
         containerPath: string;
         identity?: BindMountSourceIdentity;
+        presence?: RequiredContainerMount["presence"];
     }>,
     clipboardPortFile?: string,
     profile?: string,
@@ -2276,7 +2355,13 @@ export function startProjectContainer(
         ...credentialMounts.map((mount) => filesystemBind(mount.hostPath, mount.containerPath, false)),
         ...gitIdentityMounts.map((mount) => filesystemBind(mount.hostPath, mount.containerPath, true)),
         ...preparedExtraMounts.map((mount) => (
-            filesystemBind(mount.hostPath, mount.containerPath, false, "additive", mount.identity)
+            filesystemBind(
+                mount.hostPath,
+                mount.containerPath,
+                false,
+                mount.presence ?? "additive",
+                mount.identity,
+            )
         )),
         filesystemBind(deviceLabStateHostDir, "/home/ccc/.ccc/devices", true),
         {
@@ -2490,6 +2575,7 @@ export function startProjectContainer(
                 }
             } else {
                 syncManagedMcpBundles(lifecycleContainerId);
+                fixSshPermissions(lifecycleContainerId);
                 syncHostGitConfig(lifecycleContainerId);
                 if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return finish(lifecycleContainerId);
                 if (recreateRunningContainer) {
@@ -2560,39 +2646,17 @@ export function startProjectContainer(
                 ? canExecContainerAfterBriefRetry(lifecycleContainerId)
                 : canExecContainer(lifecycleContainerId);
             if (!execReady) {
-                const recreated = recreateContainerWithSessionGuard(
-                    containerName,
-                    "container exec failed after restart",
-                    markRecreated,
-                    recreateRunningContainer,
-                    {
-                        expectedContainerId: lifecycleContainerId,
-                        managedProjectPath: fullPath,
-                        initiallyRunningContainerId,
-                    },
+                throw new Error(
+                    "Restarted container is unavailable; preserving it without automatic replacement.",
                 );
-                if (!recreated) {
-                    throw new Error("Restarted container is unavailable; automatic replacement was refused.");
-                }
             } else {
                 syncManagedMcpBundles(lifecycleContainerId);
-                syncHostGitConfig(lifecycleContainerId);
                 fixSshPermissions(lifecycleContainerId);
+                syncHostGitConfig(lifecycleContainerId);
                 if (preparedDeviceLabMountSourcesMatch(preparedDeviceLabSources)) return finish(lifecycleContainerId);
-                const recreated = recreateContainerWithSessionGuard(
-                    containerName,
-                    "device-lab mount source identity changed",
-                    markRecreated,
-                    recreateRunningContainer,
-                    {
-                        expectedContainerId: lifecycleContainerId,
-                        managedProjectPath: fullPath,
-                        initiallyRunningContainerId,
-                    },
+                throw new Error(
+                    "Device-lab mount source changed during restart; preserving the restarted container without replacement.",
                 );
-                if (!recreated) {
-                    throw new Error("Device-lab mount source changed during restart; automatic replacement was refused.");
-                }
             }
         }
     }
@@ -2710,8 +2774,8 @@ export function startProjectContainer(
             throw new Error("Container runtime did not return the created container ID; refusing an unpinned session.");
         }
         syncManagedMcpBundles(createdContainerId);
-        syncHostGitConfig(createdContainerId);
         fixSshPermissions(createdContainerId);
+        syncHostGitConfig(createdContainerId);
 
         return finish(createdContainerId);
     });

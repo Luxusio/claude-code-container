@@ -3228,7 +3228,7 @@ remain unchanged where they are the behavior under test.
     attributes, converts the source VHD to a dynamic managed VHDX, and derives
     the VM generation from the converted disk before accepting it. The catalog
     currently requires Generation 1 and brokers advertise
-    `hyper-v-provider-image-finalization-v5`, preventing an older desktop-image
+    `hyper-v-provider-image-finalization-v6`, preventing an older desktop-image
     broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
@@ -3255,9 +3255,33 @@ remain unchanged where they are the behavior under test.
     boundary. The published image must match the validated partial
     hash both before and after final inspection, and the broker hashes it once
     more before writing the manifest. A mismatch fails closed; processes under
-    the current CCC user SID remain part of the trusted host principal. Brokers
-    advertise and Level 3 requires `hyper-v-provider-image-finalization-v5`
+    the current CCC user SID remain part of the trusted host principal.
+    Generation inspection is the exception: CCC releases its partial-image
+    guard before read-only `Mount-VHD`, because the Virtual Disk attach path
+    can reject an otherwise share-compatible open file handle. The profile
+    lock and exact DACL continue to fence concurrent untrusted mutation, and
+    CCC reopens the file after dismount and rejects any SHA-256 change before
+    publication. Brokers advertise and Level 3 requires
+    `hyper-v-provider-image-finalization-v6`
     for this guard contract. Acquisition reports distinct bounded stages for
     source open/hash/inspection, conversion, and partial
     open/hash/inspection/generation so host-only failures do not collapse into
     a generic image-inspection diagnostic.
+68. Worktree common Git-directory mounts are part of the core container
+    contract, not an additive compatibility update. A running container that
+    lacks a root or tracked-submodule common directory must be replaced when
+    session ownership permits; otherwise CCC preserves the live container but
+    refuses the new join instead of exposing a workspace whose `.git` forward
+    pointer resolves to missing management metadata. Per-worktree container
+    backpointer overlays remain additive because their absence does not remove
+    the common object, ref, index, or worktree registration storage.
+69. Host Git configuration copied into a CCC container must not retain a host
+    absolute `user.signingkey` path for a standard private key beneath `.ssh`.
+    Provisioning reads the setting through `git config`, normalizes Windows
+    separators for classification, requires an exact match beneath the current
+    host home, and verifies that a staged replacement copy has a completion
+    marker plus a regular non-symlink key before rewriting a recognized name to
+    `/tmp/.ssh-copy/<name>`. Inline keys, relative paths, multiple values, and
+    paths outside the exact host `.ssh` directory remain unchanged. This keeps
+    `commit.gpgsign=true` usable without interpreting or broadly rewriting
+    unrelated host configuration values.
