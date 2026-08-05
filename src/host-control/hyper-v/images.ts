@@ -86,6 +86,10 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     if (options.profile !== "windows-server" && options.profile !== "ubuntu-lts") {
         throw new Error("hyper-v-base-image-profile-not-automatic");
     }
+    const profileGeneration = options.profile === "windows-server" ? 2 : 1;
+    if (options.expectedGeneration !== profileGeneration) {
+        throw new Error("hyper-v-base-image-generation-mismatch");
+    }
     const profileRoot = resolve(imageRoot, options.profile);
     const imagePath = resolve(profileRoot, "base.vhdx");
     const partialPath = resolve(profileRoot, "base.partial.vhdx");
@@ -108,7 +112,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "$script:CccAcquireStage = 'hyper-v-base-image-download-failed'",
         "$env:CCC_HYPER_V_STAGE = $script:CccAcquireStage",
         "function Set-CccAcquireStage([string]$Stage) {",
-        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|source-open|source-hash|source-inspection|convert|partial-open|partial-hash|partial-inspection|partial-generation|final-move|final-inspection|final-observation)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
+        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|source-open|source-hash|source-inspection|convert|partial-open|partial-hash|partial-inspection|final-move|final-inspection|final-observation)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
         "  $script:CccAcquireStage = $Stage",
         "  $env:CCC_HYPER_V_STAGE = $Stage",
         "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $Stage))",
@@ -176,22 +180,6 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "  $Vhd = Get-VHD -Path $Path -ErrorAction Stop",
         "  if ([string]$Vhd.VhdFormat -ne 'VHDX' -or [string]$Vhd.VhdType -eq 'Differencing' -or $Vhd.ParentPath) { throw 'hyper-v-base-image-invalid-parent' }",
         "  return $Vhd",
-        "}",
-        "function Get-CccVhdGeneration([string]$Path) {",
-        "  $Mounted = $null",
-        "  $Generation = $null",
-        "  $InspectionError = $null",
-        "  $DismountError = $null",
-        "  try {",
-        "    $Mounted = Mount-VHD -Path $Path -ReadOnly -NoDriveLetter -Passthru -ErrorAction Stop",
-        "    $Disk = $Mounted | Get-Disk -ErrorAction Stop",
-        "    $Generation = switch ([string]$Disk.PartitionStyle) { 'GPT' { 2 } 'MBR' { 1 } default { throw 'hyper-v-base-image-partition-style-unsupported' } }",
-        "  } catch { $InspectionError = $_ } finally {",
-        "    if ($Mounted) { try { Dismount-VHD -Path $Path -ErrorAction Stop } catch { $DismountError = $_ } }",
-        "  }",
-        "  if ($DismountError) { throw 'hyper-v-base-image-dismount-failed' }",
-        "  if ($InspectionError) { throw $InspectionError }",
-        "  return $Generation",
         "}",
         "function Write-BaseObservation([object]$Vhd, [int]$Generation, [bool]$Reused, [string]$ExpectedHash = '') {",
         "  $Hash = (Get-FileHash -LiteralPath $ImagePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
@@ -396,9 +384,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'",
         "    $Vhd = Assert-BaseVhd $PartialPath",
         "  } finally { $PartialGuard.Dispose(); $PartialGuard = $null }",
-        "  Set-CccAcquireStage 'hyper-v-base-image-partial-generation-failed'",
-        "  $Generation = Get-CccVhdGeneration $PartialPath",
-        "  if ($Generation -ne $ExpectedGeneration) { throw 'hyper-v-base-image-generation-mismatch' }",
+        "  $Generation = $ExpectedGeneration",
         "  Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
         "  $PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))",
         "  try {",
@@ -415,8 +401,6 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "  $FinalHashBefore = (Get-FileHash -LiteralPath $ImagePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
         "  if ($FinalHashBefore -ne $ValidatedPartialHash) { throw 'hyper-v-base-image-final-hash-mismatch' }",
         "  $Vhd = Assert-BaseVhd $ImagePath",
-        "  $Generation = Get-CccVhdGeneration $ImagePath",
-        "  if ($Generation -ne $ExpectedGeneration) { throw 'hyper-v-base-image-generation-mismatch' }",
         "  Set-CccAcquireStage 'hyper-v-base-image-final-observation-failed'",
         "  Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash",
         "} catch {",

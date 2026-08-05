@@ -219,7 +219,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/cache",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
 
         expect(acquire.args).toContain("-EncodedCommand");
@@ -252,7 +252,6 @@ describe("Hyper-V provider adapter", () => {
             "Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-hash-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'",
-            "Set-CccAcquireStage 'hyper-v-base-image-partial-generation-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-move-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-inspection-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-observation-failed'",
@@ -741,7 +740,10 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$SourceHashAfter = (Get-FileHash -LiteralPath $SourcePath");
         expect(script).toContain("if ($SourceHashAfter -ne $SourceHashBefore) { throw 'hyper-v-base-image-source-mutated' }");
         expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
-        expect(script).toContain("$Generation = Get-CccVhdGeneration $ImagePath");
+        expect(script).toContain("$Generation = $ExpectedGeneration");
+        expect(script).not.toContain("function Get-CccVhdGeneration");
+        expect(script).not.toContain("Mount-VHD -Path $Path");
+        expect(script).not.toContain("Get-Disk -ErrorAction Stop");
         expect(script).toContain("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath");
         expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
         expect(script).toContain("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath");
@@ -756,14 +758,12 @@ describe("Hyper-V provider adapter", () => {
             .toBeLessThan(script.indexOf("Protect-CccImageDirectory $ProfileRoot", script.indexOf("$SourceHashAfter = (Get-FileHash -LiteralPath $SourcePath")));
         expect(script.indexOf("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
-        expect(script.indexOf("$Generation = Get-CccVhdGeneration $PartialPath"))
-            .toBeLessThan(script.indexOf("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath"));
         const partialGuardDispose = script.indexOf("} finally { $PartialGuard.Dispose(); $PartialGuard = $null }");
-        const partialGeneration = script.indexOf("$Generation = Get-CccVhdGeneration $PartialPath");
-        const reopenedPartialGuard = script.indexOf("$PartialGuard = [IO.File]::Open($PartialPath", partialGeneration);
+        const catalogGeneration = script.indexOf("$Generation = $ExpectedGeneration");
+        const reopenedPartialGuard = script.indexOf("$PartialGuard = [IO.File]::Open($PartialPath", catalogGeneration);
         expect(partialGuardDispose).toBeGreaterThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
-        expect(partialGuardDispose).toBeLessThan(partialGeneration);
-        expect(reopenedPartialGuard).toBeGreaterThan(partialGeneration);
+        expect(partialGuardDispose).toBeLessThan(catalogGeneration);
+        expect(reopenedPartialGuard).toBeGreaterThan(catalogGeneration);
         expect(reopenedPartialGuard).toBeLessThan(script.indexOf("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath"));
         expect(script).toContain("if ($ExpectedHash -and $Hash -ne $ExpectedHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
         expect(script).toContain("if ($FinalHashBefore -ne $ValidatedPartialHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
@@ -774,8 +774,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash");
         expect(script).toContain("hyper-v-base-image-archive-vhd-count-invalid");
         expect(script).toContain("$ExpectedGeneration = 1");
-        expect(script).toContain("$Generation = Get-CccVhdGeneration $PartialPath");
-        expect(script).toContain("hyper-v-base-image-generation-mismatch");
+        expect(script).toContain("$Generation = $ExpectedGeneration");
+        expect(script).not.toContain("hyper-v-base-image-generation-mismatch");
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false");
         expect(script).not.toContain("Mount-VHD -Path $ImagePath");
         expect(script).toContain("if (Test-Path -LiteralPath $WorkPath) { throw 'hyper-v-base-image-work-path-not-clean' }");
@@ -804,6 +804,18 @@ describe("Hyper-V provider adapter", () => {
             imageRoot: "/state/images/hyper-v",
             expectedGeneration: 3 as 2,
         })).toThrow("hyper-v-base-image-generation-invalid");
+        expect(() => hyperVAcquireBaseImageCommand({
+            executable: "powershell.exe",
+            profile: "ubuntu-lts",
+            imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 2,
+        })).toThrow("hyper-v-base-image-generation-mismatch");
+        expect(() => hyperVAcquireBaseImageCommand({
+            executable: "powershell.exe",
+            profile: "windows-server",
+            imageRoot: "/state/images/hyper-v",
+            expectedGeneration: 1,
+        })).toThrow("hyper-v-base-image-generation-mismatch");
     });
 
     it("creates an owner-scoped VM matching the boot disk generation with rollback and secure defaults", () => {
