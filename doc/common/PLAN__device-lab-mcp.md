@@ -3225,10 +3225,10 @@ remain unchanged where they are the behavior under test.
 65. Unattended Hyper-V Linux guests use a pinned Ubuntu Server Azure cloud VHD,
     not Canonical's interactive Hyper-V Quick Create desktop image. The provider
     verifies the archive checksum, normalizes unsupported Windows file
-    attributes, converts the source VHD to a dynamic managed VHDX, and derives
-    the VM generation from the converted disk before accepting it. The catalog
-    currently requires Generation 1 and brokers advertise
-    `hyper-v-provider-image-finalization-v6`, preventing an older desktop-image
+    attributes, converts the source VHD to a dynamic managed VHDX, and binds
+    the result to the catalog's fixed VM generation before accepting it. The
+    catalog currently requires Generation 1 and brokers advertise
+    `hyper-v-provider-image-finalization-v7`, preventing an older desktop-image
     broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
@@ -3247,8 +3247,8 @@ remain unchanged where they are the behavior under test.
     the Windows Virtual Disk API requires all three modes when reopening a VHD.
     ACL isolation and the profile lock, rather than share denial, fence
     non-trusted replacement and concurrent CCC mutation while permitting
-    `Get-VHD`, `Convert-VHD`, and read-only `Mount-VHD` to reopen the disk
-    through the Windows Virtual Disk API. Because write sharing permits
+    `Get-VHD` and `Convert-VHD` to reopen the disk through the Windows Virtual
+    Disk API. Because write sharing permits
     in-place changes,
     the source and partial disks are SHA-256 checked before and after their
     Hyper-V operations to detect persistent corruption inside the trusted SID
@@ -3256,17 +3256,12 @@ remain unchanged where they are the behavior under test.
     hash both before and after final inspection, and the broker hashes it once
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
-    Generation inspection is the exception: CCC releases its partial-image
-    guard before read-only `Mount-VHD`, because the Virtual Disk attach path
-    can reject an otherwise share-compatible open file handle. The profile
-    lock and exact DACL continue to fence concurrent untrusted mutation, and
-    CCC reopens the file after dismount and rejects any SHA-256 change before
-    publication. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v6`
+    Brokers advertise and Level 3 requires
+    `hyper-v-provider-image-finalization-v7`
     for this guard contract. Acquisition reports distinct bounded stages for
     source open/hash/inspection, conversion, and partial
-    open/hash/inspection/generation so host-only failures do not collapse into
-    a generic image-inspection diagnostic.
+    open/hash/inspection so host-only failures do not collapse into a generic
+    image-inspection diagnostic.
 68. Worktree common Git-directory mounts are part of the core container
     contract, not an additive compatibility update. A running container that
     lacks a root or tracked-submodule common directory must be replaced when
@@ -3285,3 +3280,20 @@ remain unchanged where they are the behavior under test.
     paths outside the exact host `.ssh` directory remain unchanged. This keeps
     `commit.gpgsign=true` usable without interpreting or broadly rewriting
     unrelated host configuration values.
+70. Automatic Hyper-V image profiles no longer mount the converted VHDX merely
+    to rediscover the catalog's VM generation. `Mount-VHD | Get-Disk` requires
+    Storage-management privileges that are not implied by membership in
+    Hyper-V Administrators and made otherwise valid automatic acquisition fail
+    before VM creation. CCC still validates the source and converted VHD with
+    `Get-VHD`, rejects differencing parents, fences and re-hashes every
+    publication transition, and records the profile's fixed generation. The
+    destructive Level 3 boot and guest-readiness checks remain the authoritative
+    compatibility proof. Brokers advertise and Level 3 requires
+    `hyper-v-provider-image-finalization-v7` for this contract.
+71. Worktree discovery does not recursively enumerate untracked `.git` paths.
+    Managed nested repositories come from tracked Gitlinks, while direct child
+    repositories remain available through the bounded one-directory scan.
+    This removes the Windows `git ls-files --others ... **/.git/**` startup
+    process that could fail with `0x800700e8` or stall on large dependency and
+    build trees. Ignored and deeper untracked repositories remain unmanaged;
+    projects that require nested worktree handling register them as submodules.

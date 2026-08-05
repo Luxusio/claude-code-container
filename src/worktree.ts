@@ -2219,9 +2219,10 @@ function nestedRepositoryCandidateIsSafe(
 /**
  * Find managed repositories nested below a unified Git root. Tracked Gitlinks
  * are read directly from the index; .gitmodules only supplies optional
- * absorbed-storage names. Non-ignored untracked repositories are reported by
- * Git without an unrestricted filesystem walk. Ignored paths are deliberately
- * outside CCC worktree management.
+ * absorbed-storage names. Direct child repositories are detected by the
+ * bounded directory scan. CCC deliberately does not recursively enumerate
+ * untracked paths: large dependency and build trees must not delay startup.
+ * Ignored paths are outside CCC worktree management.
  */
 function scanUnifiedNestedRepositories(
     repositoryPath: string,
@@ -2293,46 +2294,6 @@ function scanUnifiedNestedRepositories(
                 path: candidatePath,
                 isGitRepo: true,
             });
-        }
-
-        const candidateCommands = [[
-            "ls-files",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            ":(glob)**/.git",
-            ":(glob)**/.git/**",
-        ]];
-        for (const args of candidateCommands) {
-            const listed = spawnSync(
-                "git",
-                args,
-                {
-                    cwd: currentRepository,
-                    encoding: "utf-8",
-                    stdio: ["pipe", "pipe", "pipe"],
-                },
-            );
-            if (listed.error || listed.status !== 0) {
-                if (!options.strict) continue;
-                const detail = (listed.stderr ?? "").trim()
-                    || listed.error?.message
-                    || `git exited with status ${String(listed.status)}`;
-                throw new Error(
-                    `Unable to inspect nested Git repositories in '${currentRepository}': ${detail}`,
-                );
-            }
-            for (const rawName of (listed.stdout ?? "").split("\0")) {
-                const name = normalizeNestedRepositoryName(rawName);
-                if (!name || candidates.has(name)) continue;
-                const candidatePath = join(currentRepository, ...name.split("/"));
-                candidates.set(name, {
-                    name,
-                    path: candidatePath,
-                    isGitRepo: true,
-                });
-            }
         }
 
         for (const candidate of [...candidates.values()]

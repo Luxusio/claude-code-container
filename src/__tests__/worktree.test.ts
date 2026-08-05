@@ -2632,6 +2632,21 @@ describe("createWorkspace (unified mode)", () => {
         expect(existsSync(deepestWorktree)).toBe(false);
         expect(branchExistsInRepo(repository, "deep-chain")).toBe("none");
     });
+
+    it("does not recursively enumerate untracked repositories below ordinary directories", () => {
+        initRepo(tmpDir);
+        const nestedRepo = join(tmpDir, "packages", "service");
+        initRepo(nestedRepo);
+
+        const result = createWorkspace(tmpDir, "bounded-nested-scan");
+
+        expect(result.created.map(({ name }) => name))
+            .not.toContain("packages/service");
+        expect(existsSync(join(result.workspacePath, "packages", "service")))
+            .toBe(false);
+        expect(branchExistsInRepo(nestedRepo, "bounded-nested-scan"))
+            .toBe("none");
+    });
 });
 
 describe("repairWorkspace", () => {
