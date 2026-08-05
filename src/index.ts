@@ -1081,12 +1081,7 @@ async function prepareWorktreeUnlocked(
         }
         // Check for branch collision (C2 fix): different branch names can map
         // to the same workspace path (e.g., feature/login → feature-login)
-        const gitResult = spawnSync(
-            "git",
-            ["rev-parse", "--abbrev-ref", "HEAD"],
-            { cwd: wsPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-        );
-        const actualBranch = (gitResult.stdout ?? "").trim();
+        const actualBranch = detectWorktreeWorkspaceBranch(wsPath) ?? "";
         if (actualBranch && actualBranch !== branch) {
             console.error(
                 `Error: Workspace exists for branch '${actualBranch}', not '${branch}'.`,
