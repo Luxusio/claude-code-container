@@ -1380,6 +1380,407 @@ export function assertWorkspaceRootOwnership(
     }
 }
 
+function sourceCommonGitDirectory(sourcePath: string): string | null {
+    const sourceGitPath = join(sourcePath, ".git");
+    const sourceGitObserved = lstatSync(sourceGitPath);
+    if (sourceGitObserved.isDirectory() && !sourceGitObserved.isSymbolicLink()) {
+        return realpathSync(sourceGitPath);
+    }
+    if (!sourceGitObserved.isFile() || sourceGitObserved.isSymbolicLink()) {
+        return null;
+    }
+    const sourceContent = readFileSync(sourceGitPath, "utf-8").trim();
+    const sourceMatch = sourceContent.match(/^gitdir:\s*(.+)$/);
+    if (!sourceMatch || gitLinkKind(sourceGitPath) !== "worktree") return null;
+    return realpathSync(resolve(
+        dirname(sourceGitPath),
+        sourceMatch[1].trim(),
+        "..",
+        "..",
+    ));
+}
+
+function hasNestedWorkspaceOwnershipEvidence(
+    workspacePath: string,
+    sourcePath: string,
+): boolean {
+    const sourceRepositories = scanUnifiedNestedRepositories(
+        sourcePath,
+        { strict: true },
+    ).filter((entry) => entry.isGitRepo);
+    return sourceRepositories.some((source) => {
+        const destination = join(workspacePath, source.name);
+        return pathExistsStrict(join(destination, ".git"))
+            && isValidWorktree(destination, source.path);
+    });
+}
+
+function removeTemporaryWorktreeManagementDirectory(
+    managementDirectory: string,
+    expectedIdentity: DirectoryIdentity,
+    managementRoot: string,
+): void {
+    const allowedRootFiles = new Set(["HEAD", "commondir", "gitdir"]);
+    const rootEntries = readdirSync(managementDirectory, { withFileTypes: true });
+    const rootFiles = rootEntries.filter((entry) => entry.isFile());
+    const rootDirectories = rootEntries.filter((entry) => entry.isDirectory());
+    if (rootEntries.some((entry) => entry.isSymbolicLink())
+        || rootFiles.some((entry) => !allowedRootFiles.has(entry.name))
+        || rootDirectories.some((entry) => entry.name !== "logs")
+        || rootDirectories.length > 1) {
+        throw new Error("temporary worktree registration contains unexpected metadata");
+    }
+
+    const files = rootFiles.map((entry) => {
+        const path = join(managementDirectory, entry.name);
+        return { path, identity: captureFileIdentity(path) };
+    });
+    const logsDirectory = join(managementDirectory, "logs");
+    let logsIdentity: DirectoryIdentity | null = null;
+    if (rootDirectories.length === 1) {
+        logsIdentity = captureDirectoryIdentity(logsDirectory);
+        const logEntries = readdirSync(logsDirectory, { withFileTypes: true });
+        if (logEntries.some((entry) => !entry.isFile() || entry.name !== "HEAD")) {
+            throw new Error("temporary worktree registration contains unexpected logs");
+        }
+        for (const entry of logEntries) {
+            const path = join(logsDirectory, entry.name);
+            files.push({ path, identity: captureFileIdentity(path) });
+        }
+    }
+
+    const parentIdentity = captureDirectoryIdentity(dirname(managementDirectory));
+    assertDirectoryIdentity(managementDirectory, expectedIdentity);
+    assertDirectoryIdentity(dirname(managementDirectory), parentIdentity);
+    const quarantine = createPrivateQuarantine(managementDirectory, managementRoot);
+    let removalStarted = false;
+    try {
+        renameSync(managementDirectory, quarantine.path);
+        assertQuarantinedIdentity(quarantine.path, expectedIdentity, "directory");
+        for (const file of files) {
+            assertFileIdentity(
+                join(quarantine.path, relative(managementDirectory, file.path)),
+                file.identity,
+            );
+        }
+        removalStarted = true;
+        for (const file of files) {
+            unlinkSync(join(
+                quarantine.path,
+                relative(managementDirectory, file.path),
+            ));
+        }
+        if (logsIdentity) {
+            assertDirectoryIdentity(join(quarantine.path, "logs"), {
+                ...logsIdentity,
+                realpath: join(quarantine.path, "logs"),
+            });
+            rmdirSync(join(quarantine.path, "logs"));
+        }
+        rmdirSync(quarantine.path);
+        removePrivateQuarantine(quarantine);
+    } catch (error) {
+        if (!removalStarted) {
+            rollbackQuarantinedPath(
+                managementDirectory,
+                quarantine,
+                expectedIdentity,
+                parentIdentity,
+                "directory",
+            );
+        }
+        throw error;
+    }
+}
+
+function recreateMissingWorkspaceRootRegistration(
+    workspacePath: string,
+    sourcePath: string,
+    expectedBranch: string,
+    commonGitDirectory: string,
+    staleGitDirectory: string,
+    workspaceIdentity: DirectoryIdentity,
+    gitFileIdentity: DirectoryIdentity,
+    gitFileContent: string,
+): boolean {
+    const managementRoot = resolve(commonGitDirectory, "worktrees");
+    if (!sameObservedPath(dirname(staleGitDirectory), managementRoot)
+        || basename(staleGitDirectory) !== basename(workspacePath)
+        || pathExistsStrict(staleGitDirectory)
+        || !hasNestedWorkspaceOwnershipEvidence(workspacePath, sourcePath)) {
+        return false;
+    }
+
+    const expectedRef = `refs/heads/${expectedBranch}`;
+    const branchHead = spawnSync(
+        "git",
+        ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
+        { cwd: sourcePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const expectedOid = (branchHead.stdout ?? "").trim();
+    if (branchHead.error || branchHead.status !== 0 || !expectedOid) return false;
+
+    const temporaryPath = join(
+        dirname(workspacePath),
+        `.${basename(workspacePath)}.ccc-register-${randomBytes(16).toString("hex")}`,
+    );
+    mkdirSync(temporaryPath);
+    const temporaryIdentity = captureDirectoryIdentity(temporaryPath);
+    let temporaryRegistered = false;
+    let workspaceRewritten = false;
+    let registrationRewritten = false;
+    let managementGitdir = "";
+    let managementGitdirOriginal = "";
+    let createdManagementIdentity: DirectoryIdentity | null = null;
+    let workspaceInstalledIdentity: DirectoryIdentity | null = null;
+    let registrationInstalledIdentity: DirectoryIdentity | null = null;
+    try {
+        const registered = spawnSync(
+            "git",
+            ["worktree", "add", "--force", "--no-checkout", temporaryPath, expectedBranch],
+            { cwd: sourcePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (registered.error || registered.status !== 0) return false;
+        temporaryRegistered = true;
+
+        const temporaryGitFile = join(temporaryPath, ".git");
+        const temporaryContent = readFileSync(temporaryGitFile, "utf-8");
+        const temporaryMatch = temporaryContent.trim().match(/^gitdir:\s*(.+)$/);
+        if (!temporaryMatch) return false;
+        const managementDirectory = resolve(
+            dirname(temporaryGitFile),
+            temporaryMatch[1].trim(),
+        );
+        const managementIdentity = captureDirectoryIdentity(managementDirectory);
+        createdManagementIdentity = managementIdentity;
+        if (dirname(managementIdentity.realpath) !== realpathSync(managementRoot)
+            || readFileSync(join(managementDirectory, "HEAD"), "utf-8").trim()
+                !== `ref: ${expectedRef}`) return false;
+        const registeredHead = spawnSync(
+            "git",
+            ["rev-parse", "HEAD"],
+            { cwd: temporaryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const currentBranchHead = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
+            { cwd: sourcePath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (registeredHead.error || registeredHead.status !== 0
+            || currentBranchHead.error || currentBranchHead.status !== 0
+            || (registeredHead.stdout ?? "").trim() !== expectedOid
+            || (currentBranchHead.stdout ?? "").trim() !== expectedOid) {
+            return false;
+        }
+
+        managementGitdir = join(managementDirectory, "gitdir");
+        managementGitdirOriginal = readFileSync(managementGitdir, "utf-8");
+        const portableGitDirectory = portableWorktreeGitDirectory(
+            dirname(join(workspacePath, ".git")),
+            managementDirectory,
+        );
+        assertDirectoryIdentity(workspacePath, workspaceIdentity);
+        normalizeWorktreeMetadataFile(
+            join(workspacePath, ".git"),
+            `gitdir: ${portableGitDirectory}\n`,
+            gitFileIdentity,
+            gitFileContent,
+        );
+        workspaceRewritten = true;
+        workspaceInstalledIdentity = capturePathIdentity(join(workspacePath, ".git"));
+        normalizeWorktreeMetadataFile(
+            managementGitdir,
+            `${join(workspacePath, ".git")}\n`,
+            capturePathIdentity(managementGitdir),
+            managementGitdirOriginal,
+        );
+        registrationRewritten = true;
+        registrationInstalledIdentity = capturePathIdentity(managementGitdir);
+
+        if (!isValidWorktree(workspacePath, sourcePath)) return false;
+        assertDirectoryIdentity(temporaryPath, temporaryIdentity);
+        if (readdirSync(temporaryPath).some((entry) => entry !== ".git")) {
+            return false;
+        }
+        unlinkSync(temporaryGitFile);
+        rmdirSync(temporaryPath);
+        temporaryRegistered = false;
+        return true;
+    } finally {
+        if (temporaryRegistered) {
+            try {
+                if (registrationRewritten && managementGitdir) {
+                    if (!registrationInstalledIdentity) {
+                        throw new Error("missing installed registration identity");
+                    }
+                    normalizeWorktreeMetadataFile(
+                        managementGitdir,
+                        managementGitdirOriginal,
+                        registrationInstalledIdentity,
+                    );
+                }
+                if (workspaceRewritten) {
+                    if (!workspaceInstalledIdentity) {
+                        throw new Error("missing installed workspace identity");
+                    }
+                    normalizeWorktreeMetadataFile(
+                        join(workspacePath, ".git"),
+                        gitFileContent,
+                        workspaceInstalledIdentity,
+                    );
+                }
+                assertDirectoryIdentity(temporaryPath, temporaryIdentity);
+                if (readdirSync(temporaryPath).some((entry) => entry !== ".git")) {
+                    throw new Error("temporary registration directory contains unexpected content");
+                }
+                unlinkSync(join(temporaryPath, ".git"));
+                rmdirSync(temporaryPath);
+                if (!createdManagementIdentity) {
+                    throw new Error("missing temporary management identity");
+                }
+                removeTemporaryWorktreeManagementDirectory(
+                    createdManagementIdentity.realpath,
+                    createdManagementIdentity,
+                    managementRoot,
+                );
+            } catch {
+                // Preserve all workspace content when rollback cannot be proven.
+            }
+        }
+        if (pathExistsStrict(temporaryPath)) {
+            try {
+                assertDirectoryIdentity(temporaryPath, temporaryIdentity);
+                if (readdirSync(temporaryPath).length === 0) {
+                    rmdirSync(temporaryPath);
+                }
+            } catch {
+                // Preserve unexpected temporary content for explicit recovery.
+            }
+        }
+    }
+}
+
+/**
+ * Repair a stale Git worktree backpointer without weakening ownership checks.
+ *
+ * Git records both a forward pointer in <worktree>/.git and a backpointer in
+ * <common-git-dir>/worktrees/<entry>/gitdir. Moving a workspace can leave only
+ * the backpointer stale. Before asking Git to repair it, prove that the
+ * management entry belongs to the source repository and expected branch.
+ */
+export function repairWorkspaceRootOwnership(
+    workspacePath: string,
+    sourcePath: string,
+    expectedBranch: string,
+): boolean {
+    if (isValidWorktree(workspacePath, sourcePath)) return false;
+
+    const resolvedWorkspace = resolve(workspacePath);
+    const resolvedSource = resolve(sourcePath);
+    if (!sameObservedPath(
+        resolvedWorkspace,
+        getWorkspacePath(resolvedSource, expectedBranch),
+    )) return false;
+
+    try {
+        const workspaceIdentity = captureDirectoryIdentity(resolvedWorkspace);
+        const gitFile = join(resolvedWorkspace, ".git");
+        const gitFileIdentity = capturePathIdentity(gitFile);
+        const gitFileContent = readFileSync(gitFile, "utf-8");
+        assertPathIdentity(gitFile, gitFileIdentity);
+        const gitFileMatch = gitFileContent.trim().match(/^gitdir:\s*(.+)$/);
+        if (!gitFileMatch) return false;
+        const resolvedGitDirectory = resolve(
+            dirname(gitFile),
+            gitFileMatch[1].trim(),
+        );
+
+        const commonGitDirectory = sourceCommonGitDirectory(resolvedSource);
+        if (!commonGitDirectory) return false;
+
+        if (!pathExistsStrict(resolvedGitDirectory)) {
+            return recreateMissingWorkspaceRootRegistration(
+                resolvedWorkspace,
+                resolvedSource,
+                expectedBranch,
+                commonGitDirectory,
+                resolvedGitDirectory,
+                workspaceIdentity,
+                gitFileIdentity,
+                gitFileContent,
+            );
+        }
+
+        const managementEntry = captureDirectoryIdentity(
+            resolvedGitDirectory,
+        );
+        const managementRoot = captureDirectoryIdentity(join(
+            commonGitDirectory,
+            "worktrees",
+        ));
+        if (dirname(managementEntry.realpath) !== managementRoot.realpath) {
+            return false;
+        }
+        const commonDirectory = captureDirectoryIdentity(resolve(
+            managementEntry.realpath,
+            readFileSync(join(managementEntry.realpath, "commondir"), "utf-8").trim(),
+        ));
+        if (commonDirectory.realpath !== commonGitDirectory) return false;
+
+        const expectedRef = `refs/heads/${expectedBranch}`;
+        const commonDirFile = join(managementEntry.realpath, "commondir");
+        const headFile = join(managementEntry.realpath, "HEAD");
+        const commonDirIdentity = captureFileIdentity(commonDirFile);
+        const headIdentity = captureFileIdentity(headFile);
+        const commonDirContent = readFileSync(commonDirFile, "utf-8");
+        const headContent = readFileSync(headFile, "utf-8");
+        if (headContent.trim() !== `ref: ${expectedRef}`) return false;
+        const branchHead = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
+            { cwd: resolvedSource, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const expectedOid = (branchHead.stdout ?? "").trim();
+        if (branchHead.error || branchHead.status !== 0 || !expectedOid) {
+            return false;
+        }
+
+        assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
+        assertPathIdentity(gitFile, gitFileIdentity);
+        if (readFileSync(gitFile, "utf-8") !== gitFileContent) return false;
+        assertDirectoryIdentity(managementEntry.realpath, managementEntry);
+        assertDirectoryIdentity(managementRoot.realpath, managementRoot);
+        assertFileIdentity(commonDirFile, commonDirIdentity);
+        assertFileIdentity(headFile, headIdentity);
+        if (readFileSync(commonDirFile, "utf-8") !== commonDirContent
+            || readFileSync(headFile, "utf-8") !== headContent) return false;
+        const repaired = spawnSync(
+            "git",
+            ["worktree", "repair", resolvedWorkspace],
+            { cwd: resolvedSource, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        assertDirectoryIdentity(resolvedWorkspace, workspaceIdentity);
+        if (repaired.error || repaired.status !== 0
+            || !isValidWorktree(resolvedWorkspace, resolvedSource)) return false;
+        assertFileIdentity(commonDirFile, commonDirIdentity);
+        assertFileIdentity(headFile, headIdentity);
+        if (readFileSync(commonDirFile, "utf-8") !== commonDirContent
+            || readFileSync(headFile, "utf-8") !== headContent) return false;
+        const currentBranchHead = spawnSync(
+            "git",
+            ["rev-parse", "--verify", "--quiet", `${expectedRef}^{commit}`],
+            { cwd: resolvedSource, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+        );
+        if (currentBranchHead.error || currentBranchHead.status !== 0
+            || (currentBranchHead.stdout ?? "").trim() !== expectedOid) {
+            return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export function detectWorktreeWorkspaceBranch(
     workspacePath: string,
     runner: typeof spawnSync = spawnSync,

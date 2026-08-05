@@ -12,7 +12,7 @@ import {
     statSync,
     chmodSync,
 } from "fs";
-import { join, dirname, basename, posix, resolve } from "path";
+import { join, dirname, basename, posix, relative, resolve } from "path";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
 import { spawnSync } from "child_process";
@@ -35,6 +35,8 @@ import {
     containerGitSourceMountPath,
     portableWorktreeGitDirectory,
     assertWorkspaceBranch,
+    assertWorkspaceRootOwnership,
+    repairWorkspaceRootOwnership,
     detectWorktreeWorkspaceBranch,
     needsSubmoduleSetup,
     initWithSubmodules,
@@ -3237,6 +3239,180 @@ describe("isValidWorktree", () => {
             join(wsResult.workspacePath, "frontend"),
             join(tmpDir, "frontend"),
         )).toBe(true);
+    });
+
+    it("repairs a stale backpointer for an owned existing workspace", () => {
+        initRepo(tmpDir);
+        const branch = "repair-root-owner";
+        const result = createWorkspace(tmpDir, branch);
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        writeFileSync(
+            join(managementDirectory, "gitdir"),
+            `${join(dirname(result.workspacePath), "moved-workspace", ".git")}\n`,
+        );
+
+        expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(false);
+        expect(repairWorkspaceRootOwnership(
+            result.workspacePath,
+            tmpDir,
+            branch,
+        )).toBe(true);
+        expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(true);
+        expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
+            .not.toThrow();
+    });
+
+    it("recreates missing root management metadata without changing workspace files", () => {
+        initRepo(tmpDir);
+        const nestedSource = join(tmpDir, "nested");
+        initRepo(nestedSource);
+        expect(spawnSync("git", ["add", "nested"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        expect(spawnSync("git", ["commit", "-m", "track nested repository"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const branch = "recreate-root-owner";
+        const result = createWorkspace(tmpDir, branch);
+        const marker = join(result.workspacePath, "uncommitted-marker.txt");
+        writeFileSync(marker, "preserve me\n");
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        rmSync(managementDirectory, { recursive: true });
+
+        expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(false);
+        expect(repairWorkspaceRootOwnership(
+            result.workspacePath,
+            tmpDir,
+            branch,
+        )).toBe(true);
+        expect(readFileSync(marker, "utf-8")).toBe("preserve me\n");
+        expect(isValidWorktree(result.workspacePath, tmpDir)).toBe(true);
+        const repairedGitLink = readFileSync(gitFile, "utf-8").trim();
+        expect(repairedGitLink).toMatch(/^gitdir: \.\./);
+        expect(repairedGitLink).not.toMatch(/[A-Za-z]:[\\/]|^gitdir: \//);
+        const status = spawnSync("git", ["status", "--short"], {
+            cwd: result.workspacePath,
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(status.status, status.stderr).toBe(0);
+        expect(status.stdout).toContain("uncommitted-marker.txt");
+        const worktrees = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+            stdio: "pipe",
+        });
+        expect(worktrees.status, worktrees.stderr).toBe(0);
+        expect(worktrees.stdout).toContain(`worktree ${result.workspacePath}`);
+        expect(worktrees.stdout).not.toContain("prunable");
+    });
+
+    it("does not recreate missing root metadata without source-owned nested evidence", () => {
+        initRepo(tmpDir);
+        const branch = "forged-missing-owner";
+        expect(spawnSync("git", ["branch", branch], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const workspace = getWorkspacePath(tmpDir, branch);
+        mkdirSync(workspace);
+        writeFileSync(join(workspace, "preserve.txt"), "foreign\n");
+        writeFileSync(
+            join(workspace, ".git"),
+            `gitdir: ${relative(
+                workspace,
+                join(tmpDir, ".git", "worktrees", basename(workspace)),
+            )}\n`,
+        );
+
+        expect(repairWorkspaceRootOwnership(workspace, tmpDir, branch)).toBe(false);
+        expect(readFileSync(join(workspace, "preserve.txt"), "utf-8"))
+            .toBe("foreign\n");
+        expect(() => assertWorkspaceRootOwnership(workspace, tmpDir))
+            .toThrow("is not owned by source repository");
+    });
+
+    it.skipIf(process.platform === "win32")("removes temporary registration when root metadata rewrite fails", () => {
+        initRepo(tmpDir);
+        const nestedSource = join(tmpDir, "nested");
+        initRepo(nestedSource);
+        expect(spawnSync("git", ["add", "nested"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        expect(spawnSync("git", ["commit", "-m", "track nested repository"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const branch = "rollback-root-owner";
+        const result = createWorkspace(tmpDir, branch);
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        rmSync(managementDirectory, { recursive: true });
+        const before = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+            stdio: "pipe",
+        }).stdout;
+        chmodSync(result.workspacePath, 0o555);
+        try {
+            expect(repairWorkspaceRootOwnership(
+                result.workspacePath,
+                tmpDir,
+                branch,
+            )).toBe(false);
+        } finally {
+            chmodSync(result.workspacePath, 0o755);
+        }
+        const after = spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: tmpDir,
+            encoding: "utf-8",
+            stdio: "pipe",
+        }).stdout;
+        expect(after).toBe(before);
+        expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
+            entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+        ))).toBe(false);
+    });
+
+    it("does not repair a workspace whose management entry belongs to another repository", () => {
+        const sourceRepo = join(tmpDir, "source");
+        const foreignRepo = join(tmpDir, "foreign");
+        initRepo(sourceRepo);
+        initRepo(foreignRepo);
+        const branch = "foreign-root-owner";
+        const expectedWorkspace = getWorkspacePath(sourceRepo, branch);
+        const foreignWorkspace = getWorkspacePath(foreignRepo, branch);
+        const foreign = createWorkspace(foreignRepo, branch);
+        renameSync(foreignWorkspace, expectedWorkspace);
+
+        expect(repairWorkspaceRootOwnership(
+            expectedWorkspace,
+            sourceRepo,
+            branch,
+        )).toBe(false);
+        expect(isValidWorktree(expectedWorkspace, sourceRepo)).toBe(false);
+        expect(() => assertWorkspaceRootOwnership(expectedWorkspace, sourceRepo))
+            .toThrow("is not owned by source repository");
+
+        renameSync(expectedWorkspace, foreign.workspacePath);
+        spawnSync("git", ["worktree", "repair", foreign.workspacePath], {
+            cwd: foreignRepo,
+            stdio: "pipe",
+        });
     });
 
     it("returns false for directory without .git", () => {

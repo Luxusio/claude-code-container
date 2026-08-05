@@ -51,6 +51,7 @@ import {
     getWorktreeGitMounts,
     assertWorkspaceBranch,
     assertWorkspaceRootOwnership,
+    repairWorkspaceRootOwnership,
     hasGitMetadata,
     detectWorktreeWorkspaceBranch,
     workspaceExists,
@@ -1073,6 +1074,7 @@ async function prepareWorktreeUnlocked(
 
     if (workspaceExists(cwd, branch)) {
         if (hasGitMetadata(cwd)) {
+            repairWorkspaceRootOwnership(wsPath, cwd, branch);
             assertWorkspaceRootOwnership(wsPath, cwd);
         } else {
             assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
