@@ -178,6 +178,8 @@ export type HyperVNetworkCleanupObservation = {
     removedNat: boolean;
     removedGateway: boolean;
     alreadyMissing: boolean;
+    deferred?: boolean;
+    reason?: "hyper-v-network-switch-in-use";
 };
 
 export type HyperVNetworkAllocationIdentity = {

@@ -653,7 +653,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let snapshotExists = false;
         let orphanRecoveryCalls = 0;
         let preparedSourcePath = "";
-        let networkCleanupFailure: false | "nonzero" | "invalid" = false;
+        let networkCleanupFailure: false | "nonzero" | "invalid" | "in-use" = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         const commandRunner = vi.fn((command) => {
@@ -685,6 +685,14 @@ describe("device-lab host broker lifecycle commands", () => {
                     status: 0,
                     stdout: "malformed network cleanup output",
                     stderr: "host path C:\\network-cleanup-invalid-secret",
+                };
+            }
+            if (networkCleanup && networkCleanupFailure === "in-use") {
+                return {
+                    ...command,
+                    status: 0,
+                    stdout: JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "hyper-v-network-switch-in-use" }),
+                    stderr: "",
                 };
             }
             const orphanRecovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
@@ -964,12 +972,14 @@ describe("device-lab host broker lifecycle commands", () => {
                 .not.toContain("network-cleanup-invalid-secret");
             expect(existsSync(networkStatePath)).toBe(true);
             writeFileSync(networkStatePath, validNetworkState);
-            networkCleanupFailure = false;
+            networkCleanupFailure = "in-use";
             const deleted = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
             expect(deleted.status).toBe(200);
             expect(existsSync(privateRoot)).toBe(false);
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: unknown[] }).devices).toEqual([]);
+            expect(JSON.parse(readFileSync(networkStatePath, "utf8"))).toMatchObject({ allocations: [] });
 
+            networkCleanupFailure = false;
             const recreated = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E cached", profile: "windows-11", memoryMb: 4096, cpus: 2 });
             expect(recreated.status).toBe(200);
             const recreatedIncarnationId = (await recreated.clone().json()).result.device.incarnationId as string;

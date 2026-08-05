@@ -3219,7 +3219,7 @@ remain unchanged where they are the behavior under test.
     proves the exact switch ID, NAT InstanceID, and subnet prefix. With that
     complete evidence, CCC repairs only the switch marker under elevation,
     verifies the write, and restores the original marker if a later step fails.
-    Brokers advertise and Level 3 requires `hyper-v-setup-network-v9` and
+    Brokers advertise and Level 3 requires `hyper-v-setup-network-v10` and
     `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
     the exact-identity marker repair contract.
 65. Unattended Hyper-V Linux guests use a pinned Ubuntu Server Azure cloud VHD,
@@ -3230,3 +3230,10 @@ remain unchanged where they are the behavior under test.
     currently requires Generation 1 and brokers advertise
     `hyper-v-provider-image-finalization-v3`, preventing an older desktop-image
     broker from being reused by Level 3.
+66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
+    shared-infrastructure cleanup after the target VM deletion is confirmed.
+    The deleted device's allocation is atomically removed, its owner artifacts
+    and operation journal may be finalized, and the owned switch/NAT state is
+    retained for attached CCC guests. Other cleanup failures remain fail-closed
+    and preserve the allocation for diagnosis and retry. Brokers advertise and
+    Level 3 requires `hyper-v-setup-network-v10` for this cleanup contract.

@@ -1097,6 +1097,86 @@ describe("Hyper-V network module", () => {
         expect(cleanupScript).toContain("$RemoveGateway = $true");
     });
 
+    it("commits the device allocation release when a shared switch is still in use", async () => {
+        const root = privateRoot();
+        const run = vi.fn()
+            .mockImplementationOnce(async () => setupObservation(root))
+            .mockResolvedValueOnce({
+                mode: "exec",
+                provider: "hyper-v",
+                status: 0,
+                stdout: JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "hyper-v-network-switch-in-use" }),
+                stderr: "",
+            });
+        const network = runtime(root, run);
+        await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        const released = await releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        expect(released).toMatchObject({
+            ok: true,
+            released: true,
+            remaining: 0,
+            networkCleanup: { deferred: true, reason: "hyper-v-network-switch-in-use" },
+        });
+        expect(JSON.parse(readFileSync(join(root, "network", "hyper-v.json"), "utf8"))).toMatchObject({
+            managedSwitch: true,
+            managedGateway: true,
+            managedNat: true,
+            allocations: [],
+        });
+    });
+
+    it("refuses a deferred release when the persisted allocation has no incarnation", async () => {
+        const root = privateRoot();
+        const run = vi.fn()
+            .mockImplementationOnce(async () => setupObservation(root))
+            .mockResolvedValueOnce({
+                mode: "exec",
+                provider: "hyper-v",
+                status: 0,
+                stdout: JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "hyper-v-network-switch-in-use" }),
+                stderr: "",
+            });
+        const network = runtime(root, run);
+        await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        const statePath = join(root, "network", "hyper-v.json");
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        delete state.allocations[0].incarnationId;
+        writeFileSync(statePath, JSON.stringify(state));
+
+        const released = await releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        expect(released).toMatchObject({ ok: false, error: "hyper-v-network-allocation-incarnation-conflict" });
+        expect(JSON.parse(readFileSync(statePath, "utf8")).allocations).toHaveLength(1);
+    });
+
+    it("refuses a deferred release when network state changes during host cleanup", async () => {
+        const root = privateRoot();
+        const statePath = join(root, "network", "hyper-v.json");
+        const run = vi.fn()
+            .mockImplementationOnce(async () => setupObservation(root))
+            .mockImplementationOnce(async () => {
+                const state = JSON.parse(readFileSync(statePath, "utf8"));
+                state.allocations[0].allocatedAt = "2099-01-01T00:00:00.000Z";
+                writeFileSync(statePath, JSON.stringify(state));
+                return {
+                    mode: "exec",
+                    provider: "hyper-v",
+                    status: 0,
+                    stdout: JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "hyper-v-network-switch-in-use" }),
+                    stderr: "",
+                };
+            });
+        const network = runtime(root, run);
+        await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        const released = await releaseHyperVNetworkAllocationAndCleanup(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+
+        expect(released).toMatchObject({ ok: false, error: "hyper-v-network-state-revision-conflict" });
+        expect(JSON.parse(readFileSync(statePath, "utf8")).allocations).toHaveLength(1);
+    });
+
     it("rolls back only the NAT when state commit fails after mixed ownership setup", async () => {
         const root = privateRoot();
         let safePathChecks = 0;

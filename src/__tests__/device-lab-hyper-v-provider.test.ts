@@ -1336,7 +1336,13 @@ describe("Hyper-V provider adapter", () => {
         expect(cleanupScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(cleanupScript).toContain("hyper-v-network-nat-identity-conflict");
         expect(cleanupScript).toContain("hyper-v-network-switch-ownership-conflict");
-        expect(cleanupScript).toContain("hyper-v-network-switch-in-use");
+        expect(cleanupScript).toContain("$DeferredReason = 'hyper-v-network-switch-in-use'");
+        expect(cleanupScript).toContain("deferred = $true; reason = $DeferredReason");
+        expect(cleanupScript).toContain("Get-VMNetworkAdapter -All -ErrorAction Stop");
+        expect(cleanupScript).toContain("hyper-v-network-switch-attachment-inspection-failed");
+        expect(cleanupScript.match(/Get-VMNetworkAdapter -All -ErrorAction Stop/g)).toHaveLength(2);
+        expect(cleanupScript.indexOf("hyper-v-network-nat-identity-conflict"))
+            .toBeLessThan(cleanupScript.indexOf("Remove-VMSwitch -VMSwitch"));
         expect(cleanupScript).toContain("Remove-NetNat");
         expect(cleanupScript).toContain("Remove-VMSwitch");
         expect(cleanupScript).toContain("$RequiresMutation = ($Switches.Count -eq 1 -and ($RemoveSwitch -or $RemoveGateway)) -or ($Nats.Count -eq 1 -and $RemoveNat)");
@@ -1353,6 +1359,8 @@ describe("Hyper-V provider adapter", () => {
             removeSwitch: true,
         })).toThrow("hyper-v-network-switch-id-invalid");
         expect(parseHyperVNetworkCleanupObservation(JSON.stringify({ ok: true, removedSwitch: true, removedNat: true, removedGateway: true, alreadyMissing: false }))).toEqual(expect.objectContaining({ removedSwitch: true }));
+        expect(parseHyperVNetworkCleanupObservation(JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "hyper-v-network-switch-in-use" }))).toEqual(expect.objectContaining({ deferred: true, reason: "hyper-v-network-switch-in-use" }));
+        expect(parseHyperVNetworkCleanupObservation(JSON.stringify({ ok: true, removedSwitch: false, removedNat: false, removedGateway: false, alreadyMissing: false, deferred: true, reason: "other-error" }))).toBeNull();
         expect(parseHyperVNetworkCleanupObservation('{"ok":true,"removedSwitch":true}')).toBeNull();
 
         const preserveForeignNat = scriptOf(hyperVCleanupNetworkCommand({

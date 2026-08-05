@@ -86,6 +86,7 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-network-subnet-conflict",
     "hyper-v-network-subnet-inspection-failed",
     "hyper-v-network-switch-ambiguous",
+    "hyper-v-network-switch-attachment-inspection-failed",
     "hyper-v-network-switch-id-invalid",
     "hyper-v-network-switch-create-failed",
     "hyper-v-network-switch-identity-inspection-failed",

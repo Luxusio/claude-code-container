@@ -146,8 +146,13 @@ export type HyperVNetworkRelease = {
     natName?: string;
     marker?: string;
     natInstanceId?: string;
+    stateRevision?: string;
     error?: string;
 };
+
+function hyperVNetworkStateRevision(state: HyperVNetworkState): string {
+    return createHash("sha256").update(JSON.stringify(state)).digest("hex");
+}
 
 export function hyperVDeterministicMacAddress(ownerId: string, deviceId: string, salt = 0): string {
     const digest = createHash("sha256").update(`${ownerId}\0${deviceId}\0${salt}`).digest();
@@ -667,6 +672,7 @@ export function releaseHyperVNetworkAllocation(
             natName: current.natName,
             marker: current.marker,
             natInstanceId: current.natInstanceId,
+            stateRevision: hyperVNetworkStateRevision(current),
         };
         if (matched?.incarnationId && matched.incarnationId !== incarnationId) {
             return {
@@ -696,6 +702,33 @@ export function releaseHyperVNetworkAllocation(
             remaining: -1,
             error: hyperVBoundedErrorCode(error, "hyper-v-network-state-update-failed"),
         };
+    }
+}
+
+function commitDeferredHyperVNetworkRelease(
+    runtime: HyperVNetworkStateRuntime,
+    ownerId: string,
+    deviceId: string,
+    incarnationId: string | null | undefined,
+    expectedStateRevision: string | undefined,
+): { ok: true; remaining: number } | { ok: false; error: string } {
+    try {
+        const current = readState(runtime);
+        if (!current) return { ok: false, error: "hyper-v-network-state-missing" };
+        if (!expectedStateRevision || hyperVNetworkStateRevision(current) !== expectedStateRevision) {
+            return { ok: false, error: "hyper-v-network-state-revision-conflict" };
+        }
+        const matched = current.allocations.find((allocation) => allocation.ownerId === ownerId && allocation.deviceId === deviceId);
+        if (!matched) return { ok: false, error: "hyper-v-network-allocation-missing" };
+        if (!validHyperVIncarnationId(incarnationId) || matched.incarnationId !== incarnationId) {
+            return { ok: false, error: "hyper-v-network-allocation-incarnation-conflict" };
+        }
+        const allocations = current.allocations.filter((allocation) => allocation !== matched);
+        ensureStateRoot(runtime);
+        writeJsonFileAtomically(stateFile(runtime), { ...current, allocations });
+        return { ok: true, remaining: allocations.length };
+    } catch (error) {
+        return { ok: false, error: hyperVBoundedErrorCode(error, "hyper-v-network-state-update-failed") };
     }
 }
 
@@ -768,6 +801,13 @@ export async function releaseHyperVNetworkAllocationAndCleanup(
             error: "hyper-v-network-cleanup-invalid-result",
             networkCleanup: redactProviderCommandInput(execution, true, "hyper-v-network-cleanup-invalid-result"),
         };
+    }
+    if (observation.deferred === true) {
+        const committed = commitDeferredHyperVNetworkRelease(runtime, ownerId, deviceId, incarnationId, release.stateRevision);
+        if (!committed.ok) {
+            return { ...release, ok: false, error: committed.error, networkCleanup: null };
+        }
+        return { ...release, ok: true, remaining: committed.remaining, networkCleanup: observation };
     }
     rmSync(stateFile(runtime), { force: true });
     return { ...release, ok: true, networkCleanup: observation };

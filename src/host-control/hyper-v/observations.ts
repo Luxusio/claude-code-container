@@ -157,7 +157,13 @@ export function parseHyperVNetworkCleanupObservation(stdout: string): HyperVNetw
         || typeof parsed.removedSwitch !== "boolean"
         || typeof parsed.removedNat !== "boolean"
         || typeof parsed.removedGateway !== "boolean"
-        || typeof parsed.alreadyMissing !== "boolean") return null;
+        || typeof parsed.alreadyMissing !== "boolean"
+        || (parsed.deferred !== undefined && typeof parsed.deferred !== "boolean")
+        || (parsed.reason !== undefined && parsed.reason !== "hyper-v-network-switch-in-use")) return null;
+    if (parsed.deferred === true
+        && (parsed.reason !== "hyper-v-network-switch-in-use"
+            || parsed.removedSwitch || parsed.removedNat || parsed.removedGateway || parsed.alreadyMissing)) return null;
+    if (parsed.deferred !== true && parsed.reason !== undefined) return null;
     return parsed as HyperVNetworkCleanupObservation;
 }
 
