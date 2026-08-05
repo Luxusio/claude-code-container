@@ -3228,7 +3228,7 @@ remain unchanged where they are the behavior under test.
     attributes, converts the source VHD to a dynamic managed VHDX, and derives
     the VM generation from the converted disk before accepting it. The catalog
     currently requires Generation 1 and brokers advertise
-    `hyper-v-provider-image-finalization-v3`, preventing an older desktop-image
+    `hyper-v-provider-image-finalization-v4`, preventing an older desktop-image
     broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
@@ -3237,3 +3237,22 @@ remain unchanged where they are the behavior under test.
     retained for attached CCC guests. Other cleanup failures remain fail-closed
     and preserve the allocation for diagnosis and retry. Brokers advertise and
     Level 3 requires `hyper-v-setup-network-v10` for this cleanup contract.
+67. Automatic Hyper-V image acquisition holds source and partial VHD file
+    artifacts in a non-inheriting Windows DACL restricted to the current CCC
+    user SID, SYSTEM, and Administrators. Setup recursively rejects reparse
+    points, replaces each existing file and directory owner/DACL, and verifies
+    the exact SID, rights, and inheritance tuple before use. CCC acquisition
+    remains serialized by the profile `prepare.lock`. Within that boundary,
+    source and partial VHD file
+    handles use read/write sharing while denying delete sharing. This keeps
+    path replacement fenced during validation but permits `Get-VHD`,
+    `Convert-VHD`, and read-only `Mount-VHD` to reopen the disk through the
+    Windows Virtual Disk API. Because write sharing permits in-place changes,
+    the source and partial disks are SHA-256 checked before and after their
+    Hyper-V operations to detect persistent corruption inside the trusted SID
+    boundary. The published image must match the validated partial
+    hash both before and after final inspection, and the broker hashes it once
+    more before writing the manifest. A mismatch fails closed; processes under
+    the current CCC user SID remain part of the trusted host principal. Brokers
+    advertise and Level 3 requires `hyper-v-provider-image-finalization-v4`
+    for this guard contract.

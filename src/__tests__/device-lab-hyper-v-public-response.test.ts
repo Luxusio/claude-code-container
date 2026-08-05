@@ -8,6 +8,19 @@ import {
 
 describe("Hyper-V public response projection", () => {
     it.each([
+        "hyper-v-base-image-acl-failed",
+        "hyper-v-base-image-final-hash-mismatch",
+        "hyper-v-base-image-source-mutated",
+        "hyper-v-base-image-partial-mutated",
+    ])("preserves the bounded image mutation diagnostic %s", (diagnosticCode) => {
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-powershell-execution-failed",
+            stdout: "",
+            stderr: diagnosticCode,
+        })).toBe(diagnosticCode);
+    });
+
+    it.each([
         "hyper-v-network-marker-inspection-failed",
         "hyper-v-network-marker-classification-failed",
         "hyper-v-network-identity-evidence-inspection-failed",

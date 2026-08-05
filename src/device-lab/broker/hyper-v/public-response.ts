@@ -14,11 +14,13 @@ type ProviderExecution = {
 };
 
 const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
+    "hyper-v-base-image-acl-failed",
     "hyper-v-base-image-archive-check-failed",
     "hyper-v-base-image-checksum-mismatch",
     "hyper-v-base-image-download-failed",
     "hyper-v-base-image-extract-failed",
     "hyper-v-base-image-final-inspection-failed",
+    "hyper-v-base-image-final-hash-mismatch",
     "hyper-v-base-image-final-move-failed",
     "hyper-v-base-image-final-observation-failed",
     "hyper-v-base-image-finalize-failed",
@@ -29,7 +31,9 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-base-image-not-found",
     "hyper-v-base-image-normalize-failed",
     "hyper-v-base-image-parent-invalid",
+    "hyper-v-base-image-partial-mutated",
     "hyper-v-base-image-partition-style-unsupported",
+    "hyper-v-base-image-source-mutated",
     "hyper-v-bootstrap-dhcp-switch-unavailable",
     "hyper-v-bootstrap-network-adapter-unavailable",
     "hyper-v-bootstrap-network-switch-conflict",
