@@ -10,6 +10,14 @@ describe("Hyper-V public response projection", () => {
     it.each([
         "hyper-v-base-image-acl-failed",
         "hyper-v-base-image-final-hash-mismatch",
+        "hyper-v-base-image-convert-failed",
+        "hyper-v-base-image-partial-generation-failed",
+        "hyper-v-base-image-partial-hash-failed",
+        "hyper-v-base-image-partial-inspection-failed",
+        "hyper-v-base-image-partial-open-failed",
+        "hyper-v-base-image-source-hash-failed",
+        "hyper-v-base-image-source-inspection-failed",
+        "hyper-v-base-image-source-open-failed",
         "hyper-v-base-image-source-mutated",
         "hyper-v-base-image-partial-mutated",
     ])("preserves the bounded image mutation diagnostic %s", (diagnosticCode) => {

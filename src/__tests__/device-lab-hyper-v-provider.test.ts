@@ -245,7 +245,14 @@ describe("Hyper-V provider adapter", () => {
             "Set-CccAcquireStage 'hyper-v-base-image-archive-check-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-extract-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-normalize-failed'",
-            "Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-source-open-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-source-hash-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-source-inspection-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-convert-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-partial-hash-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-partial-generation-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-move-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-inspection-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-final-observation-failed'",
@@ -620,8 +627,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toMatch(/\$ValidateMicrosoftVhdx[^\n]+aka\.ms/);
         expect(script).toContain("AbsolutePath.EndsWith('.vhdx'");
         expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-download-failed'"))
-            .toBeLessThan(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'"));
-        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-inspection-failed'"))
+            .toBeLessThan(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'"));
+        expect(script.indexOf("Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'"))
             .toBeLessThan(script.indexOf("Assert-BaseVhd $PartialPath"));
         expect(script.indexOf("Save-BoundedDownload $WindowsUrl $PartialPath"))
             .toBeLessThan(script.indexOf("Protect-CccImageDirectory $ProfileRoot", script.indexOf("Save-BoundedDownload $WindowsUrl $PartialPath")));
@@ -705,7 +712,9 @@ describe("Hyper-V provider adapter", () => {
             .toBeLessThan(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"));
         expect(script.indexOf("& tar.exe -xf $ArchivePath -C $ExtractPath"))
             .toBeLessThan(script.indexOf("if ($LASTEXITCODE -ne 0) { throw 'hyper-v-base-image-extract-failed' }"));
-        expect(script).toContain("hyper-v-base-image-inspection-failed");
+        expect(script).toContain("hyper-v-base-image-source-inspection-failed");
+        expect(script).toContain("hyper-v-base-image-convert-failed");
+        expect(script).toContain("hyper-v-base-image-partial-inspection-failed");
         expect(script).toContain("hyper-v-base-image-final-move-failed");
         expect(script).toContain("hyper-v-base-image-final-inspection-failed");
         expect(script).toContain("hyper-v-base-image-final-observation-failed");
@@ -727,14 +736,14 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-base-image-normalize-attributes-failed");
         expect(script).not.toContain("Move-Item -LiteralPath $SourcePath -Destination $PartialPath");
         expect(script).toContain("Convert-VHD -Path $SourcePath -DestinationPath $PartialPath -VHDType Dynamic");
-        expect(script).toContain("$SourceGuard = [IO.File]::Open($SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)");
+        expect(script).toContain("$SourceGuard = [IO.File]::Open($SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
         expect(script).toContain("$SourceHashBefore = (Get-FileHash -LiteralPath $SourcePath");
         expect(script).toContain("$SourceHashAfter = (Get-FileHash -LiteralPath $SourcePath");
         expect(script).toContain("if ($SourceHashAfter -ne $SourceHashBefore) { throw 'hyper-v-base-image-source-mutated' }");
         expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
         expect(script).toContain("$Generation = Get-CccVhdGeneration $ImagePath");
         expect(script).toContain("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath");
-        expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)");
+        expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
         expect(script).toContain("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath");
         expect(script).toContain("if ($ValidatedPartialHash -ne $PartialHashBefore) { throw 'hyper-v-base-image-partial-mutated' }");
         expect(script).not.toContain("$SourceGuard = [IO.File]::Open($SourcePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
