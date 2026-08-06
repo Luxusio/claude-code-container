@@ -1,5 +1,5 @@
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
@@ -64,6 +64,12 @@ const vmId = "12345678-1234-1234-1234-123456789abc";
 const baseImageSha256 = "a".repeat(64);
 
 function scriptOf(command: { args: string[]; input?: string }): string {
+    const fileIndex = command.args.indexOf("-File");
+    if (fileIndex >= 0) {
+        const file = command.args[fileIndex + 1];
+        if (!file) throw new Error("missing PowerShell file path");
+        return readFileSync(file, "utf8");
+    }
     const encoded = command.args.at(-1);
     if (!encoded) throw new Error("missing encoded PowerShell script");
     const decoded = Buffer.from(encoded, "base64").toString("utf16le");
@@ -1143,11 +1149,14 @@ describe("Hyper-V provider adapter", () => {
             vmName,
             vmId,
         });
-        expect(scriptOf(bootstrapNetwork)).toContain("$BootstrapAdapters[0].IPAddresses");
-        expect(scriptOf(bootstrapNetwork)).toContain("[string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch'");
-        expect(scriptOf(bootstrapNetwork)).toContain("Get-VMNetworkAdapter -ManagementOS -SwitchName 'Default Switch'");
-        expect(scriptOf(bootstrapNetwork)).toContain("Get-NetIPAddress -AddressFamily IPv4");
-        expect(scriptOf(bootstrapNetwork)).toContain("Test-CccSamePrefix $Candidate");
+        expect(bootstrapNetwork.args).toContain("-File");
+        expect(JSON.parse(bootstrapNetwork.input || "{}")).toEqual({
+            schemaVersion: 1,
+            vmId,
+            vmName,
+            ownershipMarker: `ccc-device-lab:${ownerId}:${linuxDeviceId}:${incarnationId}`,
+        });
+        expect(scriptOf(bootstrapNetwork)).toContain("Get-CccLinuxBootstrapNetworkResult $Vm");
         expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":["172.20.1.8"]}')).toEqual({
             ok: true,
             addresses: ["172.20.1.8"],
@@ -1786,19 +1795,14 @@ describe("Hyper-V provider adapter", () => {
             diskPath: "/state/root.vhdx",
         });
         const script = scriptOf(command);
-        expect(script).toContain("Get-VMIntegrationService -VM $Vm");
-        expect(script).toContain("84eaae65-2f2e-45f5-9bb5-0e857dc8eb47");
-        expect(script).toContain("([string]$_.Id).Trim('{}').ToLowerInvariant()");
-        expect(script).not.toContain("$_.Name -eq 'Heartbeat'");
-        expect(script).toContain("Get-VMFirmware -VM $Vm");
-        expect(script).toContain("Get-VMBios -VM $Vm");
-        expect(script).toContain("integrationServices = $IntegrationServiceSummary");
-        expect(script).toContain("hardDiskControllers = @($HardDisks");
-        expect(script).toContain("$BootType = [string]$_.BootType");
-        expect(script).toContain("$_.Device.GetType().Name");
-        expect(script).not.toContain("$TypeName = $_.GetType().Name");
-        expect(script).toContain("bootDeviceTypes = $BootDeviceTypes");
-        expect(script).not.toContain("PrimaryStatusDescription");
+        expect(command.args).toContain("-File");
+        expect(JSON.parse(command.input || "{}")).toEqual({
+            schemaVersion: 1,
+            vmId,
+            vmName,
+            ownershipMarker: `ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}`,
+        });
+        expect(script).toContain("Get-CccGuestBootDiagnosticResult $Vm");
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
             ok: true,
             vmId: vmId.toUpperCase(),

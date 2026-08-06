@@ -10,6 +10,11 @@ import { backendRoot, cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHea
 
 function providerScript(command: { args?: string[]; input?: string }): string {
     if (command.args?.at(-1) === "-" && typeof command.input === "string") return command.input;
+    const fileIndex = command.args?.indexOf("-File") ?? -1;
+    if (fileIndex >= 0) {
+        const file = command.args?.[fileIndex + 1];
+        return file ? readFileSync(file, "utf8") : "";
+    }
     const encodedCommand = Buffer.from(command.args?.at(-1) || "", "base64").toString("utf16le");
     if (
         typeof command.input === "string"
@@ -1632,7 +1637,7 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 0, stdout: "", stderr: "" };
             }
             const script = providerScript(command);
-            if (script.includes("$BootstrapAdapters[0].IPAddresses")) {
+            if (script.includes("Get-CccLinuxBootstrapNetworkResult $Vm")) {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, addresses: bootstrapAddressAvailable ? ["172.20.1.8"] : [] }), stderr: "" };
             }
             if (script.includes("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]")) {
@@ -1668,7 +1673,7 @@ describe("device-lab Hyper-V broker", () => {
             }
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const seed = script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'");
-            const bootDiagnostic = script.includes("bootDeviceTypes = $BootDeviceTypes");
+            const bootDiagnostic = script.includes("Get-CccGuestBootDiagnosticResult $Vm");
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");

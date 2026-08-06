@@ -1,0 +1,137 @@
+$Root = Split-Path -Parent $PSScriptRoot
+Import-Module (Join-Path $Root 'Ccc.HyperV.Core.psm1') -Force
+Import-Module (Join-Path $Root 'Ccc.HyperV.Linux.psm1') -Force
+Import-Module (Join-Path $Root 'Ccc.HyperV.Diagnostics.psm1') -Force
+
+Describe 'CCC Hyper-V JSON contracts' {
+    It 'accepts the exact owned VM contract' {
+        $Contract = [pscustomobject]@{
+            schemaVersion = 1
+            vmId = '12345678-1234-1234-1234-123456789abc'
+            vmName = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            ownershipMarker = 'ccc-device-lab:0123456789abcdef:linux-ci-01:11111111111111111111111111111111'
+        }
+        { Assert-CccOwnedVmContract $Contract } | Should -Not -Throw
+    }
+
+    It 'rejects missing and additional fields' {
+        $Missing = [pscustomobject]@{ schemaVersion = 1; vmId = '12345678-1234-1234-1234-123456789abc' }
+        $Additional = [pscustomobject]@{
+            schemaVersion = 1
+            vmId = '12345678-1234-1234-1234-123456789abc'
+            vmName = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            ownershipMarker = 'ccc-device-lab:0123456789abcdef:linux-ci-01:11111111111111111111111111111111'
+            command = 'Get-Process'
+        }
+        { Assert-CccOwnedVmContract $Missing } | Should -Throw
+        { Assert-CccOwnedVmContract $Additional } | Should -Throw
+    }
+}
+
+Describe 'CCC Hyper-V VM ownership fencing' {
+    InModuleScope Ccc.HyperV.Core {
+        BeforeEach {
+            $Contract = [pscustomobject]@{
+                schemaVersion = 1
+                vmId = '12345678-1234-1234-1234-123456789abc'
+                vmName = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+                ownershipMarker = 'ccc-device-lab:0123456789abcdef:linux-ci-01:11111111111111111111111111111111'
+            }
+        }
+
+        It 'rejects a missing VM' {
+            Mock Get-CccVmById { @() }
+            { Get-CccOwnedVm $Contract } | Should -Throw 'hyper-v-vm-not-found'
+        }
+
+        It 'rejects ambiguous VM identity' {
+            Mock Get-CccVmById { @([pscustomobject]@{}, [pscustomobject]@{}) }
+            { Get-CccOwnedVm $Contract } | Should -Throw 'hyper-v-vm-identity-ambiguous'
+        }
+
+        It 'rejects a name or marker mismatch' {
+            Mock Get-CccVmById {
+                @([pscustomobject]@{
+                    Id = [Guid]$Contract.vmId
+                    Name = $Contract.vmName
+                    Notes = 'foreign-owner'
+                })
+            }
+            { Get-CccOwnedVm $Contract } | Should -Throw 'hyper-v-vm-ownership-mismatch'
+        }
+
+        It 'returns the exact owned VM' {
+            Mock Get-CccVmById {
+                @([pscustomobject]@{
+                    Id = [Guid]$Contract.vmId
+                    Name = $Contract.vmName
+                    Notes = $Contract.ownershipMarker
+                })
+            }
+            (Get-CccOwnedVm $Contract).Name | Should -Be $Contract.vmName
+        }
+    }
+}
+
+Describe 'CCC Hyper-V Linux bootstrap address selection' {
+    It 'keeps only same-prefix routable addresses' {
+        $Prefixes = @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20 })
+        $Selected = @(Select-CccBootstrapIpv4Address @('169.254.1.2', '172.20.1.8', '10.0.0.2') $Prefixes)
+        $Selected.Count | Should -Be 1
+        $Selected[0] | Should -Be '172.20.1.8'
+    }
+
+    It 'bounds the result to eight unique addresses' {
+        $Prefixes = @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 16 })
+        $Candidates = 2..12 | ForEach-Object { '172.20.0.' + $_ }
+        $Selected = @(Select-CccBootstrapIpv4Address $Candidates $Prefixes)
+        $Selected.Count | Should -Be 8
+    }
+}
+
+Describe 'CCC Hyper-V Linux bootstrap operation' {
+    It 'reads the default switch and returns a bounded result contract' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; IPAddresses = @('172.20.1.8', '169.254.1.2') }) } `
+            -ManagementAdapterReader { @([pscustomobject]@{ IPAddresses = @('172.20.0.1') }) } `
+            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20 }) }
+        $Result.ok | Should -BeTrue
+        @($Result.addresses).Count | Should -Be 1
+        $Result.addresses[0] | Should -Be '172.20.1.8'
+    }
+
+    It 'rejects a bootstrap adapter on a foreign switch' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        {
+            Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+                -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Foreign'; IPAddresses = @() }) }
+        } | Should -Throw 'hyper-v-bootstrap-network-adapter-identity-mismatch'
+    }
+}
+
+Describe 'CCC Hyper-V guest boot diagnostic operation' {
+    It 'returns Generation 1 heartbeat, disk, media, and boot-order evidence' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            State = 'Running'
+            Uptime = [TimeSpan]::FromSeconds(30)
+            Generation = 1
+        }
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader { param($TargetVm) @([pscustomobject]@{ Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'; Name = 'Heartbeat'; Enabled = $true; PrimaryStatus = 2; SecondaryStatus = 0 }) } `
+            -BiosReader { param($TargetVm) [pscustomobject]@{ StartupOrder = @('IDE', 'CD') } } `
+            -HardDiskReader { param($TargetVm) @([pscustomobject]@{ ControllerType = 'IDE' }) } `
+            -DvdReader { param($TargetVm) @([pscustomobject]@{}, [pscustomobject]@{}) }
+        $Result.ok | Should -BeTrue
+        $Result.heartbeatEnabled | Should -BeTrue
+        $Result.heartbeatPrimaryStatus | Should -Be 2
+        $Result.hardDiskCount | Should -Be 1
+        $Result.dvdCount | Should -Be 2
+        $Result.hardDiskControllers[0] | Should -Be 'ide'
+        @($Result.bootDeviceTypes).Count | Should -Be 2
+        $Result.bootDeviceTypes[0] | Should -Be 'hard-disk'
+        $Result.bootDeviceTypes[1] | Should -Be 'dvd'
+    }
+}

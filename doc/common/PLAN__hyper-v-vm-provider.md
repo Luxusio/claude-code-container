@@ -4,6 +4,12 @@ Status: Implementation complete; real Windows-host proof pending
 
 Implemented in the current slice:
 
+- package-owned PowerShell command assets with a versioned JSON stdin contract,
+  native PowerShell parser validation, pinned Windows PSScriptAnalyzer/Pester
+  CI, and npm package inclusion
+- migrated Linux bootstrap address discovery and guest boot diagnostics, with
+  TypeScript retaining owner identity validation and PowerShell rejecting
+  missing or additional contract fields
 - `windows-vm` backend discovery and Hyper-V readiness
 - owner-scoped Generation 2 differencing-disk creation
 - start, stop, status, and delete through the authenticated host broker

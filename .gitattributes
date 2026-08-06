@@ -9,4 +9,6 @@ scripts/*.js text eol=lf
 *.mjs text eol=lf
 *.mts text eol=lf
 *.json text eol=lf
+*.ps1 text eol=lf
+*.psm1 text eol=lf
 package-lock.json whitespace=cr-at-eol

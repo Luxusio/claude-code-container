@@ -36,6 +36,23 @@ Hyper-V is exposed through `src/host-control/hyper-v/index.ts`. The old
 compatibility facade. Internal callers must import the new boundary directly,
 so obsolete dependency direction cannot survive unnoticed.
 
+Hyper-V host programs are migrated from TypeScript-generated PowerShell to
+package-owned `.ps1` and `.psm1` assets under
+`scripts/host-control/hyper-v/`. TypeScript owns typed request construction,
+identity and path validation, operation selection, and bounded JSON
+serialization. PowerShell reads a versioned JSON request from stdin, rejects
+missing or additional fields, and returns the existing bounded JSON response.
+User-controlled values are data and are never interpolated into executable
+PowerShell source.
+
+Every migrated asset is listed in the typed `powershell-manifest.ts`. Cross-platform
+contract checks run during every build. When PowerShell is available, the
+native `System.Management.Automation` parser validates every script and module;
+the Windows CI lane additionally runs pinned PSScriptAnalyzer and Pester
+versions against PowerShell 5.1. Hyper-V permissions, VM boot, DHCP, and guest
+transport remain real-host E2E concerns, but syntax, contract shape, and pure
+selection logic must fail before Level 3 execution.
+
 The Hyper-V layer is split into:
 
 - `contracts.ts`: transport-independent types and constants
@@ -56,8 +73,12 @@ until it can depend on explicit runtime, state, clock, and lock ports.
   broker, test, or CLI import paths.
 - Broker policy can depend on host control, but host control cannot import the
   broker or its transport.
-- Runtime command strings and public MCP behavior remain unchanged during the
+- Public MCP behavior and observation contracts remain unchanged during the
   move.
+- Migrated commands use `-File` plus bounded JSON stdin instead of generated
+  `EncodedCommand` source. The initial vertical slice covers Linux bootstrap
+  address discovery and guest boot diagnostics; ISO provisioning follows only
+  after its shared media writer is extracted as a separately tested module.
 - Import migrations are atomic. Compatibility facades are not used for
   repository-private paths.
 - Standalone real-test runners register CCC's package-owned source resolver

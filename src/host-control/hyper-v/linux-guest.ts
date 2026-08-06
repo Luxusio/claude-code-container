@@ -24,6 +24,8 @@ import {
     assertIpv4,
     sshBaseArgs,
 } from "./core.js";
+import { hyperVPowerShellFileCommand } from "./powershell-assets.js";
+import { hyperVOwnedVmContractV1 } from "./powershell-contracts.js";
 
 export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVProviderCommand {
     assertIdentity(options);
@@ -186,36 +188,11 @@ export function hyperVLinuxSshReadyCommand(options: HyperVLinuxSshOptions): Hype
 }
 
 export function hyperVBootstrapNetworkCommand(options: HyperVBootstrapNetworkOptions): HyperVProviderCommand {
-    return command(options.executable, jsonScript([
-        ...ownedVmPrelude(options),
-        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' })",
-        "if ($BootstrapAdapters.Count -gt 1) { throw 'hyper-v-bootstrap-network-adapter-ambiguous' }",
-        "$Addresses = @()",
-        "if ($BootstrapAdapters.Count -eq 1) {",
-        "  if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') { throw 'hyper-v-bootstrap-network-adapter-identity-mismatch' }",
-        "  $ManagementAddresses = @(Get-VMNetworkAdapter -ManagementOS -SwitchName 'Default Switch' -ErrorAction Stop | ForEach-Object { $_.IPAddresses } | Where-Object { $_ -match '^\\d{1,3}(?:\\.\\d{1,3}){3}$' })",
-        "  $HostPrefixes = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object { $ManagementAddresses -contains $_.IPAddress -and $_.PrefixLength -ge 8 -and $_.PrefixLength -le 30 })",
-        "  function Test-CccSamePrefix([string]$Left, [string]$Right, [int]$PrefixLength) {",
-        "    $LeftBytes = [Net.IPAddress]::Parse($Left).GetAddressBytes()",
-        "    $RightBytes = [Net.IPAddress]::Parse($Right).GetAddressBytes()",
-        "    $WholeBytes = [int][Math]::Floor($PrefixLength / 8)",
-        "    for ($Index = 0; $Index -lt $WholeBytes; $Index++) { if ($LeftBytes[$Index] -ne $RightBytes[$Index]) { return $false } }",
-        "    $RemainingBits = $PrefixLength % 8",
-        "    if ($RemainingBits -eq 0) { return $true }",
-        "    $Mask = [byte](256 - [Math]::Pow(2, 8 - $RemainingBits))",
-        "    return (($LeftBytes[$WholeBytes] -band $Mask) -eq ($RightBytes[$WholeBytes] -band $Mask))",
-        "  }",
-        "  foreach ($Candidate in @($BootstrapAdapters[0].IPAddresses | Sort-Object -Unique)) {",
-        "    if ($Candidate -notmatch '^\\d{1,3}(?:\\.\\d{1,3}){3}$' -or $Candidate -match '^(?:0\\.|127\\.|169\\.254\\.)') { continue }",
-        "    foreach ($HostPrefix in $HostPrefixes) {",
-        "      if ($Candidate -ne [string]$HostPrefix.IPAddress -and (Test-CccSamePrefix $Candidate ([string]$HostPrefix.IPAddress) ([int]$HostPrefix.PrefixLength))) { $Addresses += $Candidate; break }",
-        "    }",
-        "    if ($Addresses.Count -ge 8) { break }",
-        "  }",
-        "}",
-        "$Result = [ordered]@{ ok = $true; addresses = $Addresses }",
-        "$Result | ConvertTo-Json -Compress -Depth 4",
-    ]));
+    return hyperVPowerShellFileCommand(
+        options.executable,
+        "linux-bootstrap-network",
+        hyperVOwnedVmContractV1(options),
+    );
 }
 
 export function hyperVLinuxNetworkFinalizeCommand(options: HyperVLinuxNetworkFinalizeOptions): HyperVProviderCommand {

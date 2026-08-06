@@ -7,6 +7,36 @@ on:
     branches: [master]
 
 jobs:
+  hyper-v-powershell-static:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pinned PowerShell test modules
+        shell: powershell
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          $Gallery = Get-PSRepository PSGallery
+          if ($Gallery.SourceLocation.TrimEnd('/') -ne 'https://www.powershellgallery.com/api/v2') { throw 'Unexpected PSGallery source' }
+          Install-Module Pester -RequiredVersion 5.7.1 -Repository PSGallery -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Repository PSGallery -Scope CurrentUser -Force
+
+      - name: Parse and analyze Hyper-V PowerShell
+        run: npm run test:hyper-v:pester
+
+      - name: Build
+        run: npm run build
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -23,6 +53,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify packaged Hyper-V assets
+        run: npm run test:hyper-v:package
 
       - name: Lint
         run: npm run lint
