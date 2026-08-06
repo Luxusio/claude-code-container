@@ -34,12 +34,12 @@ export const HYPER_V_IMAGE_CATALOG = {
         generation: 2,
     },
     "ubuntu-lts": {
-        catalogId: "canonical-ubuntu-24.04-lts-release-azure-vhd-20260801",
-        sourceUrl: "https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz",
-        sourceFormat: "vhd-tar-gz",
+        catalogId: "canonical-ubuntu-24.04-lts-hyper-v-desktop-20260731",
+        sourceUrl: "https://partner-images.canonical.com/hyper-v/desktop/noble/20260731/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip",
+        sourceFormat: "vhdx-zip",
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
-        generation: 1,
+        generation: 2,
     },
 } as const;
 

@@ -549,12 +549,16 @@ Real-provider tests:
   device types. They never expose VM names, disk paths, credentials, raw
   PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
   the observed VM state instead of assuming a started VM remained running.
-- The automatic Ubuntu profile uses Canonical's Azure VHD, so its provisioning
-  media includes an Azure-compatible UDF `ovf-env.xml` with base64 cloud-config
-  in addition to the generic NoCloud files. Its first NIC uses Hyper-V's
-  `Default Switch` only for the Azure datasource's mandatory bootstrap DHCP
-  discovery. A second NIC uses the CCC NAT switch, and cloud-init matches that
-  NIC by its owner-assigned static MAC before applying the deterministic CCC IP.
+- The automatic Ubuntu profile uses Canonical's pinned Hyper-V VHDX archive,
+  never the similarly named Azure VHD. Canonical documents its Azure VHD as
+  unsuitable for on-premises Hyper-V; accepting it caused a Generation 1 VM to
+  remain `Running` without ever booting a guest. The catalog therefore fences
+  the Hyper-V-specific source URL, archive SHA-256, VHDX format, and Generation
+  2 boot contract. The provisioning media retains both generic NoCloud files
+  and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
+  `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
+  switch, and cloud-init matches that NIC by its owner-assigned static MAC before
+  applying the deterministic CCC IP.
   The managed NIC uses the unique guest name `ccc0`, avoiding a first-boot
   collision with the bootstrap adapter that initially owns `eth0`.
   After SSH succeeds through that address, the broker removes the named
@@ -565,6 +569,8 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
+  `hyper-v-provider-image-finalization-v8` additionally prevents reuse of a
+  broker that still acquires the unsupported Azure-only VHD.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the
@@ -596,3 +602,5 @@ Real-provider tests:
   https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/integration-services
 - Hyper-V checkpoints:
   https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/checkpoints
+- Canonical public image artifact compatibility:
+  https://documentation.ubuntu.com/public-images/public-images-reference/artifacts/

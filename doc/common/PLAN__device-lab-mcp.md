@@ -3222,14 +3222,14 @@ remain unchanged where they are the behavior under test.
     Brokers advertise and Level 3 requires `hyper-v-setup-network-v10` and
     `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
     the exact-identity marker repair contract.
-65. Unattended Hyper-V Linux guests use a pinned Ubuntu Server Azure cloud VHD,
-    not Canonical's interactive Hyper-V Quick Create desktop image. The provider
-    verifies the archive checksum, normalizes unsupported Windows file
-    attributes, converts the source VHD to a dynamic managed VHDX, and binds
-    the result to the catalog's fixed VM generation before accepting it. The
-    catalog currently requires Generation 1 and brokers advertise
-    `hyper-v-provider-image-finalization-v7`, preventing an older desktop-image
-    broker from being reused by Level 3.
+65. Unattended Hyper-V Linux guests use Canonical's pinned Hyper-V VHDX archive,
+    never its Azure-only VHD. Canonical documents that Azure artifact as
+    incompatible with on-premises Hyper-V. The provider verifies the archive
+    checksum, normalizes unsupported Windows file attributes, copies the native
+    VHDX into the managed cache, and binds it to the catalog's fixed Generation
+    2 contract before accepting it. Brokers advertise
+    `hyper-v-provider-image-finalization-v8`, preventing an Azure-image broker
+    from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
     The deleted device's allocation is atomically removed, its owner artifacts
@@ -3237,7 +3237,7 @@ remain unchanged where they are the behavior under test.
     retained for attached CCC guests. Other cleanup failures remain fail-closed
     and preserve the allocation for diagnosis and retry. Brokers advertise and
     Level 3 requires `hyper-v-setup-network-v10` for this cleanup contract.
-67. Automatic Hyper-V image acquisition holds source and partial VHD file
+67. Automatic Hyper-V image acquisition holds source and partial VHDX file
     artifacts in a non-inheriting Windows DACL restricted to the current CCC
     user SID, SYSTEM, and Administrators. Setup recursively rejects reparse
     points, replaces each existing file and directory owner/DACL, and verifies
@@ -3247,7 +3247,7 @@ remain unchanged where they are the behavior under test.
     the Windows Virtual Disk API requires all three modes when reopening a VHD.
     ACL isolation and the profile lock, rather than share denial, fence
     non-trusted replacement and concurrent CCC mutation while permitting
-    `Get-VHD` and `Convert-VHD` to reopen the disk through the Windows Virtual
+    `Get-VHD` to reopen the disk through the Windows Virtual
     Disk API. Because write sharing permits
     in-place changes,
     the source and partial disks are SHA-256 checked before and after their
@@ -3257,9 +3257,9 @@ remain unchanged where they are the behavior under test.
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v7`
+    `hyper-v-provider-image-finalization-v8`
     for this guard contract. Acquisition reports distinct bounded stages for
-    source open/hash/inspection, conversion, and partial
+    source open/hash/inspection, copy, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
     image-inspection diagnostic.
 68. Worktree common Git-directory mounts are part of the core container
@@ -3280,16 +3280,16 @@ remain unchanged where they are the behavior under test.
     paths outside the exact host `.ssh` directory remain unchanged. This keeps
     `commit.gpgsign=true` usable without interpreting or broadly rewriting
     unrelated host configuration values.
-70. Automatic Hyper-V image profiles no longer mount the converted VHDX merely
+70. Automatic Hyper-V image profiles no longer mount the prepared VHDX merely
     to rediscover the catalog's VM generation. `Mount-VHD | Get-Disk` requires
     Storage-management privileges that are not implied by membership in
     Hyper-V Administrators and made otherwise valid automatic acquisition fail
-    before VM creation. CCC still validates the source and converted VHD with
+    before VM creation. CCC still validates the source and prepared VHDX with
     `Get-VHD`, rejects differencing parents, fences and re-hashes every
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v7` for this contract.
+    `hyper-v-provider-image-finalization-v8` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.

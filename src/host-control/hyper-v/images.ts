@@ -86,7 +86,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     if (options.profile !== "windows-server" && options.profile !== "ubuntu-lts") {
         throw new Error("hyper-v-base-image-profile-not-automatic");
     }
-    const profileGeneration = options.profile === "windows-server" ? 2 : 1;
+    const profileGeneration = 2;
     if (options.expectedGeneration !== profileGeneration) {
         throw new Error("hyper-v-base-image-generation-mismatch");
     }
@@ -105,14 +105,14 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         `$SourceArchivePath = ${psQuote(sourceArchivePath)}`,
         `$ExpectedGeneration = ${options.expectedGeneration}`,
         "$WindowsUrl = 'https://go.microsoft.com/fwlink/?clcid=0x409&country=us&culture=en-us&linkid=2345826'",
-        "$UbuntuArchiveUrl = 'https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz'",
-        "$UbuntuArchiveSha256 = '198e71366f7e54008f8c0ff3235cbf9fb0a86c8ea32bcfd534075e5e912ec78e'",
+        "$UbuntuArchiveUrl = 'https://partner-images.canonical.com/hyper-v/desktop/noble/20260731/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip'",
+        "$UbuntuArchiveSha256 = 'fdf191eb93b0f3eff4526c203be1fc2232aaef51ab2eaf9c5714eb1bce7ec48f'",
         "$WindowsMaxBytes = [long]16GB",
-        "$UbuntuMaxBytes = [long]2GB",
+        "$UbuntuMaxBytes = [long]5GB",
         "$script:CccAcquireStage = 'hyper-v-base-image-download-failed'",
         "$env:CCC_HYPER_V_STAGE = $script:CccAcquireStage",
         "function Set-CccAcquireStage([string]$Stage) {",
-        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|source-open|source-hash|source-inspection|convert|partial-open|partial-hash|partial-inspection|final-move|final-inspection|final-observation)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
+        "  if ($Stage -notmatch '^hyper-v-base-image-(download|hash|archive-check|extract|normalize|source-open|source-hash|source-inspection|copy|convert|partial-open|partial-hash|partial-inspection|final-move|final-inspection|final-observation)-failed$') { throw 'hyper-v-diagnostic-stage-invalid' }",
         "  $script:CccAcquireStage = $Stage",
         "  $env:CCC_HYPER_V_STAGE = $Stage",
         "  [Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:' + $Stage))",
@@ -246,10 +246,10 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    Save-BoundedDownload $WindowsUrl $PartialPath $WindowsMaxBytes $ValidateMicrosoftHop $ValidateMicrosoftVhdx",
         "  } else {",
         "    New-Item -ItemType Directory -Path $WorkPath -Force | Out-Null",
-        "    $ArchiveDownloadPath = Join-Path $WorkPath 'source.download.tar.gz'",
+        "    $ArchiveDownloadPath = Join-Path $WorkPath 'source.download.vhdx.zip'",
         "    $ArchivePath = $SourceArchivePath",
         "    $ExtractPath = Join-Path $WorkPath 'extract'",
-        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com') }",
+        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'partner-images.canonical.com' -and $FinalUri.AbsolutePath.EndsWith('.vhdx.zip', [StringComparison]::OrdinalIgnoreCase)) }",
         "    $ArchiveReady = $false",
         "    if (Test-Path -LiteralPath $ArchivePath -PathType Container) { throw 'hyper-v-base-image-hash-failed' }",
         "    if (Test-Path -LiteralPath $ArchivePath -PathType Leaf) {",
@@ -305,7 +305,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "        $EntryBytes = [long]::Parse($SizeText, [Globalization.CultureInfo]::InvariantCulture)",
         "        if ($EntryBytes -lt 0 -or $EntryBytes -gt $MaximumExtractedBytes -or $TotalExtractedBytes -gt ($MaximumExtractedBytes - $EntryBytes)) { throw 'hyper-v-base-image-archive-size-rejected' }",
         "        $TotalExtractedBytes += $EntryBytes",
-        "        if ($NormalizedEntry.EndsWith('.vhd', [StringComparison]::OrdinalIgnoreCase)) {",
+        "        if ($NormalizedEntry.EndsWith('.vhdx', [StringComparison]::OrdinalIgnoreCase)) {",
         "          if ($ExpectedVhdBytes -ge 0) { throw 'hyper-v-base-image-archive-vhd-count-invalid' }",
         "          $ExpectedVhdBytes = $EntryBytes",
         "        }",
@@ -329,7 +329,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "      $ActualExtractedBytes += $ExtractedBytes",
         "    }",
         "    if ($ActualExtractedBytes -ne $TotalExtractedBytes) { throw 'hyper-v-base-image-archive-total-size-mismatch' }",
-        "    $SourceVhds = @($ExtractedFiles | Where-Object { $_.Extension -eq '.vhd' })",
+        "    $SourceVhds = @($ExtractedFiles | Where-Object { $_.Extension -eq '.vhdx' })",
         "    if ($SourceVhds.Count -ne 1) { throw 'hyper-v-base-image-archive-vhd-count-invalid' }",
         "    if ([long]$SourceVhds[0].Length -ne $ExpectedVhdBytes -or [long]$SourceVhds[0].Length -gt $MaximumExtractedBytes) { throw 'hyper-v-base-image-archive-size-mismatch' }",
         "    $SourcePath = $SourceVhds[0].FullName",
@@ -337,7 +337,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    $SourceAttributes = [IO.File]::GetAttributes($SourcePath)",
         "    if (($SourceAttributes -band $UnsupportedVhdAttributes) -ne 0) {",
         "      Set-CccAcquireStage 'hyper-v-base-image-normalize-failed'",
-        "      $NormalizedSourcePath = Join-Path $WorkPath 'normalized-source.vhd'",
+        "      $NormalizedSourcePath = Join-Path $WorkPath 'normalized-source.vhdx'",
         "      Assert-NoReparsePath $NormalizedSourcePath",
         "      $InputStream = $null",
         "      $OutputStream = $null",
@@ -368,8 +368,8 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "      Set-CccAcquireStage 'hyper-v-base-image-source-inspection-failed'",
         "      $SourceVhd = Get-VHD -Path $SourcePath -ErrorAction Stop",
         "      if ([string]$SourceVhd.VhdType -eq 'Differencing' -or $SourceVhd.ParentPath) { throw 'hyper-v-base-image-invalid-parent' }",
-        "      Set-CccAcquireStage 'hyper-v-base-image-convert-failed'",
-        "      Convert-VHD -Path $SourcePath -DestinationPath $PartialPath -VHDType Dynamic -ErrorAction Stop",
+        "      Set-CccAcquireStage 'hyper-v-base-image-copy-failed'",
+        "      Copy-Item -LiteralPath $SourcePath -Destination $PartialPath -ErrorAction Stop",
         "      Set-CccAcquireStage 'hyper-v-base-image-source-hash-failed'",
         "      $SourceHashAfter = (Get-FileHash -LiteralPath $SourcePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()",
         "      if ($SourceHashAfter -ne $SourceHashBefore) { throw 'hyper-v-base-image-source-mutated' }",

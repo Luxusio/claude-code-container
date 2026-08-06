@@ -15,6 +15,16 @@ import {
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 
 describe("Hyper-V image store module", () => {
+    it("uses a native Hyper-V VHDX instead of Canonical's Azure-only VHD", () => {
+        const ubuntu = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
+
+        expect(ubuntu.sourceUrl).toContain("partner-images.canonical.com/hyper-v/");
+        expect(ubuntu.sourceUrl).toMatch(/\.vhdx\.zip$/);
+        expect(ubuntu.sourceUrl).not.toContain("azure.vhd");
+        expect(ubuntu.sourceFormat).toBe("vhdx-zip");
+        expect(ubuntu.generation).toBe(2);
+    });
+
     it("keeps image cache paths below the injected private root", () => {
         const privateRoot = "/private/device-broker";
 
@@ -174,7 +184,7 @@ describe("Hyper-V image store module", () => {
             sourceUrl: catalog.sourceUrl,
             sourceFormat: catalog.sourceFormat,
             licenseId: catalog.licenseId,
-            generation: 2,
+            generation: 1,
             secureBootTemplate: catalog.secureBootTemplate,
             preparationVersion: 1,
             imagePath,
@@ -224,7 +234,7 @@ describe("Hyper-V image store module", () => {
                                 sizeBytes: image.length,
                                 virtualSizeBytes: 32 * 1024 * 1024 * 1024,
                                 vhdType: "Dynamic",
-                                generation: 2,
+                                generation: 1,
                                 reused: false,
                             }),
                             stderr: "",
