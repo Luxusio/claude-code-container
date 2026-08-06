@@ -901,6 +901,15 @@ function isTrackedGitlink(repositoryPath: string, entryName: string): boolean {
     return matches.length === 1;
 }
 
+function isUntrackedNestedRepository(repositoryPath: string, entryName: string): boolean {
+    const result = spawnSync(
+        "git",
+        ["ls-files", "-z", "--", `:(literal)${entryName}`],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    return !result.error && result.status === 0 && (result.stdout ?? "") === "";
+}
+
 function trackedGitlinkPaths(
     repositoryPath: string,
     strict: boolean,
@@ -1277,6 +1286,9 @@ function branchRepositories(
                     `Workspace tracked submodule '${entry.name}' is not a linked worktree.`,
                 );
             }
+            if (kind === "directory"
+                && !sourceRepositories?.has(entry.name)
+                && isUntrackedNestedRepository(workspacePath, entry.name)) continue;
             throw new Error(`Workspace contains unmanaged Git repository '${entry.name}'.`);
         }
         return repositories;
@@ -1340,6 +1352,8 @@ function assertWorkspaceOwnership(
         for (const destination of destinationRepositories) {
             const source = sourceRepositories.get(destination.name);
             if (!source) {
+                if (gitLinkKind(join(destination.path, ".git")) === "directory"
+                    && isUntrackedNestedRepository(workspacePath, destination.name)) continue;
                 throw new Error(`Workspace contains unowned Git repository '${destination.name}'.`);
             }
             const kind = gitLinkKind(join(destination.path, ".git"));

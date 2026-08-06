@@ -1362,6 +1362,27 @@ describe("assertWorkspaceBranch", () => {
         )).toThrow("is not owned by its source repository");
     });
 
+    it("rejects a managed nested worktree replaced by an independent repository", () => {
+        const nestedSource = join(repoPath, "nested-regular-replacement");
+        initRepo(nestedSource);
+        const result = createWorkspace(repoPath, "nested-regular-check");
+        const nestedWorkspace = join(result.workspacePath, "nested-regular-replacement");
+        spawnSync("git", ["worktree", "remove", "--force", nestedWorkspace], {
+            cwd: nestedSource,
+            stdio: "pipe",
+        });
+        initRepo(nestedWorkspace);
+
+        expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
+            .toThrow("contains unmanaged Git repository 'nested-regular-replacement'");
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-regular-check",
+            spawnSync,
+            repoPath,
+        )).toThrow("is not owned by its source repository");
+    });
+
     it("rejects a unified workspace when registered nested metadata disappears", () => {
         const nestedSource = join(repoPath, "nested");
         initRepo(nestedSource);
@@ -1378,13 +1399,37 @@ describe("assertWorkspaceBranch", () => {
         )).toThrow("is not owned by its source repository");
     });
 
-    it("rejects an unmanaged nested repository during direct worktree detection", () => {
+    it("ignores an unmanaged nested repository during direct worktree detection", () => {
         const result = createWorkspace(repoPath, "nested-foreign");
         const foreign = join(result.workspacePath, "foreign");
         initRepo(foreign);
 
+        expect(detectWorktreeWorkspaceBranch(result.workspacePath)).toBe("nested-foreign");
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-foreign",
+            spawnSync,
+            repoPath,
+        )).not.toThrow();
+    });
+
+    it("rejects a nested repository injected into a root-tracked directory", () => {
+        const tracked = join(repoPath, "tracked");
+        mkdirSync(tracked);
+        writeFileSync(join(tracked, "owned.txt"), "owned");
+        spawnSync("git", ["add", "tracked/owned.txt"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["commit", "-m", "track directory"], { cwd: repoPath, stdio: "pipe" });
+        const result = createWorkspace(repoPath, "nested-shadow");
+        initRepo(join(result.workspacePath, "tracked"));
+
         expect(() => detectWorktreeWorkspaceBranch(result.workspacePath))
-            .toThrow("contains unmanaged Git repository 'foreign'");
+            .toThrow("contains unmanaged Git repository 'tracked'");
+        expect(() => assertWorkspaceBranch(
+            result.workspacePath,
+            "nested-shadow",
+            spawnSync,
+            repoPath,
+        )).toThrow("contains unowned Git repository 'tracked'");
     });
 
     it("rejects worktree metadata whose registration does not point back to the workspace", () => {
