@@ -3481,6 +3481,249 @@ describe("isValidWorktree", () => {
         expect(worktrees.stdout).not.toContain("prunable");
     });
 
+    it("refuses to recover missing root metadata when the branch is live in the source worktree", () => {
+        initRepo(tmpDir);
+        const nestedSource = join(tmpDir, "nested");
+        initRepo(nestedSource);
+        expect(spawnSync("git", ["add", "nested"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        expect(spawnSync("git", ["commit", "-m", "track nested repository"], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const branch = "source-branch-conflict";
+        const result = createWorkspace(tmpDir, branch);
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        rmSync(managementDirectory, { recursive: true });
+        expect(spawnSync("git", ["switch", branch], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+
+        expect(() => repairWorkspaceRootOwnership(
+            result.workspacePath,
+            tmpDir,
+            branch,
+        )).toThrow("refusing unsafe shared-branch worktree");
+        expect(readFileSync(gitFile, "utf-8")).toContain("gitdir:");
+        expect(readdirSync(dirname(result.workspacePath)).some((entry) => (
+            entry.startsWith(`.${basename(result.workspacePath)}.ccc-register-`)
+        ))).toBe(false);
+    });
+
+    it("rejects an existing root worktree that force-shares a live branch", () => {
+        initRepo(tmpDir);
+        const branch = "duplicate-live-branch";
+        expect(spawnSync("git", ["switch", "-c", branch], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const workspace = getWorkspacePath(tmpDir, branch);
+        expect(spawnSync("git", [
+            "worktree",
+            "add",
+            "--force",
+            "--no-checkout",
+            workspace,
+            branch,
+        ], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+
+        expect(isValidWorktree(workspace, tmpDir)).toBe(true);
+        expect(() => assertWorkspaceRootOwnership(workspace, tmpDir))
+            .toThrow("refusing unsafe shared-branch worktree");
+    });
+
+    it.each([
+        "competing\nworktree",
+        "competing-worktree\n",
+        "competing-worktree ",
+    ])("rejects a shared branch whose live competing worktree path is %j", (directoryName) => {
+        initRepo(tmpDir);
+        const branch = "newline-live-branch";
+        expect(spawnSync("git", ["branch", branch], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const competing = join(tmpDir, directoryName);
+        expect(spawnSync("git", [
+            "worktree",
+            "add",
+            "--no-checkout",
+            competing,
+            branch,
+        ], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const workspace = getWorkspacePath(tmpDir, branch);
+        expect(spawnSync("git", [
+            "worktree",
+            "add",
+            "--force",
+            "--no-checkout",
+            workspace,
+            branch,
+        ], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+
+        expect(() => assertWorkspaceRootOwnership(workspace, tmpDir))
+            .toThrow("refusing unsafe shared-branch worktree");
+    });
+
+    it.skipIf(process.platform === "win32")("ignores inherited Git execution overrides during shared-branch validation", () => {
+        initRepo(tmpDir);
+        const branch = "isolated-live-branch";
+        expect(spawnSync("git", ["switch", "-c", branch], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const workspace = getWorkspacePath(tmpDir, branch);
+        expect(spawnSync("git", [
+            "worktree",
+            "add",
+            "--force",
+            "--no-checkout",
+            workspace,
+            branch,
+        ], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const fakeExecPath = join(tmpDir, "fake-git-exec");
+        mkdirSync(fakeExecPath);
+        const fakeWorktree = join(fakeExecPath, "git-worktree");
+        writeFileSync(fakeWorktree, "#!/bin/sh\nexit 0\n");
+        chmodSync(fakeWorktree, 0o755);
+        const previousGitExecPath = process.env.GIT_EXEC_PATH;
+        process.env.GIT_EXEC_PATH = fakeExecPath;
+        try {
+            expect(() => assertWorkspaceRootOwnership(workspace, tmpDir))
+                .toThrow("refusing unsafe shared-branch worktree");
+        } finally {
+            if (previousGitExecPath === undefined) delete process.env.GIT_EXEC_PATH;
+            else process.env.GIT_EXEC_PATH = previousGitExecPath;
+        }
+    });
+
+    it.skipIf(process.platform === "win32")("fails closed when the workspace branch changes during registry inspection", () => {
+        initRepo(tmpDir);
+        const branch = "registry-race-branch";
+        const replacement = "registry-race-replacement";
+        const result = createWorkspace(tmpDir, branch);
+        expect(spawnSync("git", ["branch", replacement], {
+            cwd: tmpDir,
+            stdio: "pipe",
+        }).status).toBe(0);
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        const managementHead = join(managementDirectory, "HEAD");
+        const originalHead = readFileSync(managementHead, "utf-8");
+        const wrapperDirectory = join(tmpDir, "registry-race-wrapper");
+        mkdirSync(wrapperDirectory);
+        const wrapper = join(wrapperDirectory, "git");
+        const realGit = spawnSync("sh", ["-c", "command -v git"], {
+            encoding: "utf-8",
+            stdio: "pipe",
+        }).stdout.trim();
+        writeFileSync(wrapper, [
+            "#!/bin/sh",
+            "if [ \"$1\" = worktree ] && [ \"$2\" = list ] && [ \"$4\" = -z ]; then",
+            "  printf 'ref: refs/heads/%s\\n' \"$CCC_TEST_REPLACEMENT\" > \"$CCC_TEST_HEAD\"",
+            "fi",
+            "exec \"$CCC_TEST_REAL_GIT\" \"$@\"",
+            "",
+        ].join("\n"));
+        chmodSync(wrapper, 0o755);
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${wrapperDirectory}:${previousPath ?? ""}`;
+        process.env.CCC_TEST_REAL_GIT = realGit;
+        process.env.CCC_TEST_HEAD = managementHead;
+        process.env.CCC_TEST_REPLACEMENT = replacement;
+        try {
+            expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
+                .toThrow("Workspace branch changed during ownership validation");
+        } finally {
+            writeFileSync(managementHead, originalHead);
+            if (previousPath === undefined) delete process.env.PATH;
+            else process.env.PATH = previousPath;
+            delete process.env.CCC_TEST_REAL_GIT;
+            delete process.env.CCC_TEST_HEAD;
+            delete process.env.CCC_TEST_REPLACEMENT;
+        }
+    });
+
+    it.skipIf(process.platform === "win32")("fails closed when detached HEAD becomes a branch during validation", () => {
+        initRepo(tmpDir);
+        const branch = "detached-race-branch";
+        const result = createWorkspace(tmpDir, branch);
+        const gitFile = join(result.workspacePath, ".git");
+        const managementDirectory = resolve(
+            result.workspacePath,
+            readFileSync(gitFile, "utf-8").trim().replace(/^gitdir:\s*/, ""),
+        );
+        const managementHead = join(managementDirectory, "HEAD");
+        const originalHead = readFileSync(managementHead, "utf-8");
+        const oid = spawnSync("git", ["rev-parse", "HEAD"], {
+            cwd: result.workspacePath,
+            encoding: "utf-8",
+            stdio: "pipe",
+        }).stdout.trim();
+        writeFileSync(managementHead, `${oid}\n`);
+        const wrapperDirectory = join(tmpDir, "detached-race-wrapper");
+        mkdirSync(wrapperDirectory);
+        const wrapper = join(wrapperDirectory, "git");
+        const marker = join(wrapperDirectory, "mutated");
+        const realGit = spawnSync("sh", ["-c", "command -v git"], {
+            encoding: "utf-8",
+            stdio: "pipe",
+        }).stdout.trim();
+        writeFileSync(wrapper, [
+            "#!/bin/sh",
+            "if [ \"$1\" = symbolic-ref ] && [ ! -e \"$CCC_TEST_MARKER\" ]; then",
+            "  \"$CCC_TEST_REAL_GIT\" \"$@\"",
+            "  status=$?",
+            "  printf 'ref: refs/heads/%s\\n' \"$CCC_TEST_BRANCH\" > \"$CCC_TEST_HEAD\"",
+            "  : > \"$CCC_TEST_MARKER\"",
+            "  exit $status",
+            "fi",
+            "exec \"$CCC_TEST_REAL_GIT\" \"$@\"",
+            "",
+        ].join("\n"));
+        chmodSync(wrapper, 0o755);
+        const previousPath = process.env.PATH;
+        process.env.PATH = `${wrapperDirectory}:${previousPath ?? ""}`;
+        process.env.CCC_TEST_REAL_GIT = realGit;
+        process.env.CCC_TEST_HEAD = managementHead;
+        process.env.CCC_TEST_MARKER = marker;
+        process.env.CCC_TEST_BRANCH = branch;
+        try {
+            expect(() => assertWorkspaceRootOwnership(result.workspacePath, tmpDir))
+                .toThrow("Workspace branch changed during ownership validation");
+        } finally {
+            writeFileSync(managementHead, originalHead);
+            if (previousPath === undefined) delete process.env.PATH;
+            else process.env.PATH = previousPath;
+            delete process.env.CCC_TEST_REAL_GIT;
+            delete process.env.CCC_TEST_HEAD;
+            delete process.env.CCC_TEST_MARKER;
+            delete process.env.CCC_TEST_BRANCH;
+        }
+    });
+
     it("recreates missing root metadata when Git assigned a numeric management suffix", () => {
         initRepo(tmpDir);
         const nestedSource = join(tmpDir, "nested");

@@ -1401,6 +1401,7 @@ export function assertWorkspaceRootOwnership(
     if (!isValidWorktree(workspacePath, resolvedSource)) {
         throw new Error(`Workspace is not owned by source repository '${resolvedSource}'.`);
     }
+    assertWorkspaceBranchIsExclusive(workspacePath, resolvedSource);
 }
 
 type WorkspaceOwnershipEvidence = {
@@ -1493,6 +1494,125 @@ function assertWorkspaceOwnershipEvidence(
 
 class WorkspaceRootRecoveryRollbackError extends Error {}
 
+class WorkspaceBranchConflictError extends Error {}
+
+function liveWorktreeBranchConflicts(
+    sourcePath: string,
+    sourceIdentity: NestedRepositoryIdentity,
+    workspacePath: string,
+    expectedRef: string,
+): string[] {
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain", "-z"],
+        {
+            cwd: sourceIdentity.directory.realpath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            env: isolatedPinnedRepositoryEnvironment(sourceIdentity),
+        },
+    );
+    assertNestedRepositoryIdentity(sourcePath, sourceIdentity);
+    if (listed.error || listed.status !== 0) {
+        throw new Error(`Unable to inspect Git worktree registry '${sourcePath}'.`);
+    }
+    return (listed.stdout ?? "")
+        .split("\0\0")
+        .map((record) => record.split("\0"))
+        .filter((lines) => lines.includes(`branch ${expectedRef}`))
+        .map((lines) => lines.find((line) => line.startsWith("worktree ")))
+        .filter((line): line is string => Boolean(line))
+        .map((line) => line.slice("worktree ".length))
+        .filter((candidate) => candidate
+            && !sameObservedPath(candidate, workspacePath)
+            && pathExistsStrict(candidate));
+}
+
+function throwOnLiveWorkspaceBranchConflict(
+    sourcePath: string,
+    sourceIdentity: NestedRepositoryIdentity,
+    workspacePath: string,
+    expectedRef: string,
+): void {
+    const conflicts = liveWorktreeBranchConflicts(
+        sourcePath,
+        sourceIdentity,
+        workspacePath,
+        expectedRef,
+    );
+    if (conflicts.length > 0) {
+        throw new WorkspaceBranchConflictError(
+            `Workspace branch '${expectedRef.slice("refs/heads/".length)}' is also checked out at '${conflicts[0]}'; refusing unsafe shared-branch worktree.`,
+        );
+    }
+}
+
+function readWorkspaceSymbolicRef(
+    identity: NestedRepositoryIdentity,
+): string | null {
+    const symbolicRef = spawnSync(
+        "git",
+        ["symbolic-ref", "--quiet", "HEAD"],
+        {
+            cwd: identity.directory.realpath,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            env: isolatedPinnedRepositoryEnvironment(identity),
+        },
+    );
+    if (!symbolicRef.error && symbolicRef.status === 1) return null;
+    const branchRef = (symbolicRef.stdout ?? "").trim();
+    if (symbolicRef.error || symbolicRef.status !== 0 || !branchRef) {
+        throw new Error(`Unable to inspect workspace branch '${identity.directory.realpath}'.`);
+    }
+    return branchRef;
+}
+
+function assertWorkspaceBranchIsExclusive(
+    workspacePath: string,
+    sourcePath: string,
+    expectedBranch?: string,
+): void {
+    const sourceIdentity = captureNestedRepositoryIdentity(sourcePath);
+    const workspaceIdentity = captureNestedRepositoryIdentity(workspacePath);
+    if (sourceIdentity.commonDirectory.realpath
+        !== workspaceIdentity.commonDirectory.realpath) {
+        throw new Error(`Workspace is not owned by source repository '${resolve(sourcePath)}'.`);
+    }
+
+    const branchRef = readWorkspaceSymbolicRef(workspaceIdentity);
+    assertNestedRepositoryIdentity(sourcePath, sourceIdentity);
+    assertNestedRepositoryIdentity(workspacePath, workspaceIdentity);
+    if (branchRef === null) {
+        if (readWorkspaceSymbolicRef(workspaceIdentity) !== null) {
+            throw new Error("Workspace branch changed during ownership validation.");
+        }
+        assertNestedRepositoryIdentity(sourcePath, sourceIdentity);
+        assertNestedRepositoryIdentity(workspacePath, workspaceIdentity);
+        return;
+    }
+    const expectedRef = expectedBranch ? `refs/heads/${expectedBranch}` : branchRef;
+    if (branchRef !== expectedRef) {
+        throw new Error(
+            `Workspace branch changed during ownership validation: expected '${expectedRef}', found '${branchRef}'.`,
+        );
+    }
+
+    throwOnLiveWorkspaceBranchConflict(
+        sourcePath,
+        sourceIdentity,
+        workspacePath,
+        expectedRef,
+    );
+    assertNestedRepositoryIdentity(sourcePath, sourceIdentity);
+    assertNestedRepositoryIdentity(workspacePath, workspaceIdentity);
+    if (readWorkspaceSymbolicRef(workspaceIdentity) !== branchRef) {
+        throw new Error("Workspace branch changed during ownership validation.");
+    }
+    assertNestedRepositoryIdentity(sourcePath, sourceIdentity);
+    assertNestedRepositoryIdentity(workspacePath, workspaceIdentity);
+}
+
 function recreateMissingWorkspaceRootRegistration(
     workspacePath: string,
     sourcePath: string,
@@ -1535,6 +1655,12 @@ function recreateMissingWorkspaceRootRegistration(
     );
     const expectedOid = (branchHead.stdout ?? "").trim();
     if (branchHead.error || branchHead.status !== 0 || !expectedOid) return false;
+    throwOnLiveWorkspaceBranchConflict(
+        sourcePath,
+        sourceIdentity,
+        workspacePath,
+        expectedRef,
+    );
 
     const temporaryPath = join(
         dirname(workspacePath),
@@ -1562,7 +1688,7 @@ function recreateMissingWorkspaceRootRegistration(
         assertWorkspaceOwnershipEvidence(ownershipEvidence);
         const registered = spawnSync(
             "git",
-            ["worktree", "add", "--force", "--no-checkout", temporaryPath, expectedBranch],
+            ["worktree", "add", "--no-checkout", temporaryPath, expectedBranch],
             {
                 cwd: sourceIdentity.directory.realpath,
                 encoding: "utf-8",
@@ -2010,7 +2136,8 @@ export function repairWorkspaceRootOwnership(
             }
         }
     } catch (error) {
-        if (error instanceof WorkspaceRootRecoveryRollbackError) throw error;
+        if (error instanceof WorkspaceRootRecoveryRollbackError
+            || error instanceof WorkspaceBranchConflictError) throw error;
         return false;
     }
 }
@@ -2492,6 +2619,20 @@ function pinnedNestedRepositoryEnvironment(
     identity: NestedRepositoryIdentity,
 ): NodeJS.ProcessEnv {
     return pinnedRepositoryEnvironment(identity);
+}
+
+function isolatedPinnedRepositoryEnvironment(
+    identity: NestedRepositoryIdentity,
+): NodeJS.ProcessEnv {
+    const pinned = pinnedRepositoryEnvironment(identity);
+    const environment = { ...pinned };
+    for (const key of Object.keys(environment)) {
+        if (key.toUpperCase().startsWith("GIT_")) delete environment[key];
+    }
+    environment.GIT_DIR = pinned.GIT_DIR;
+    environment.GIT_WORK_TREE = pinned.GIT_WORK_TREE;
+    environment.GIT_INDEX_FILE = pinned.GIT_INDEX_FILE;
+    return environment;
 }
 
 function isNestedTrackedGitlink(
