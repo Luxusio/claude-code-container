@@ -43,4 +43,5 @@ export { hyperVPrepareBaseImageCommand, hyperVAcquireBaseImageCommand } from "./
 export { hyperVStatusCommand, hyperVStartCommand, hyperVGuestReadyCommand, hyperVGuestBootDiagnosticCommand, hyperVStopCommand, hyperVDeleteCommand, hyperVRecoverOrphanCommand } from "./lifecycle.js";
 export { hyperVSnapshotCreateCommand, hyperVSnapshotRestoreCommand, hyperVSnapshotDeleteCommand } from "./snapshots.js";
 export { hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestUploadCommand, hyperVGuestDownloadCommand } from "./windows-guest.js";
+export { HYPER_V_UBUNTU_IMAGE_CATALOG_ID, HYPER_V_UBUNTU_IMAGE_SHA256, HYPER_V_UBUNTU_IMAGE_URL, HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES } from "./ubuntu-image.js";
 export * from "./observations.js";

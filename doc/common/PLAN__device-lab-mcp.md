@@ -3222,14 +3222,15 @@ remain unchanged where they are the behavior under test.
     Brokers advertise and Level 3 requires `hyper-v-setup-network-v10` and
     `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
     the exact-identity marker repair contract.
-65. Unattended Hyper-V Linux guests use Canonical's pinned Hyper-V VHDX archive,
-    never its Azure-only VHD. Canonical documents that Azure artifact as
-    incompatible with on-premises Hyper-V. The provider verifies the archive
-    checksum, normalizes unsupported Windows file attributes, copies the native
-    VHDX into the managed cache, and binds it to the catalog's fixed Generation
-    2 contract before accepting it. Brokers advertise
-    `hyper-v-provider-image-finalization-v8`, preventing an Azure-image broker
-    from being reused by Level 3.
+65. Unattended Hyper-V Linux guests use Canonical's dated Ubuntu Server cloud
+    image, not the interactive Hyper-V desktop image or the Azure-specific VHD.
+    The provider verifies the pinned QCOW2 checksum, resolves `qemu-img.exe`
+    only from the current user's default Android SDK path, verifies its Google
+    Authenticode signature and identity, converts the UEFI/GPT source to a
+    pre-created dynamic 32 GiB VHDX, and binds it to the catalog's fixed
+    Generation 2 contract.
+    Brokers advertise `hyper-v-provider-image-finalization-v15`, preventing a
+    desktop-image broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
     The deleted device's allocation is atomically removed, its owner artifacts
@@ -3243,23 +3244,23 @@ remain unchanged where they are the behavior under test.
     points, replaces each existing file and directory owner/DACL, and verifies
     the exact SID, rights, and inheritance tuple before use. CCC acquisition
     remains serialized by the profile `prepare.lock`. Within that boundary,
-    source and partial VHD file handles use read/write/delete sharing because
-    the Windows Virtual Disk API requires all three modes when reopening a VHD.
+    partial VHD file handles use read/write/delete sharing because the Windows
+    Virtual Disk API requires all three modes when reopening a VHD.
     ACL isolation and the profile lock, rather than share denial, fence
     non-trusted replacement and concurrent CCC mutation while permitting
     `Get-VHD` to reopen the disk through the Windows Virtual
     Disk API. Because write sharing permits
     in-place changes,
-    the source and partial disks are SHA-256 checked before and after their
-    Hyper-V operations to detect persistent corruption inside the trusted SID
-    boundary. The published image must match the validated partial
+    the source QCOW2 is SHA-256 checked before and after conversion and the
+    partial VHDX is checked before and after its Hyper-V inspection. The
+    published image must match the validated partial
     hash both before and after final inspection, and the broker hashes it once
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v8`
+    `hyper-v-provider-image-finalization-v15`
     for this guard contract. Acquisition reports distinct bounded stages for
-    source open/hash/inspection, copy, and partial
+    source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
     image-inspection diagnostic.
 68. Worktree common Git-directory mounts are part of the core container
@@ -3289,7 +3290,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v8` for this contract.
+    `hyper-v-provider-image-finalization-v15` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3297,3 +3298,19 @@ remain unchanged where they are the behavior under test.
     process that could fail with `0x800700e8` or stall on large dependency and
     build trees. Ignored and deeper untracked repositories remain unmanaged;
     projects that require nested worktree handling register them as submodules.
+72. Hyper-V VM creation does not use a QEMU-produced VHDX as a differencing
+    parent. After verifying the prepared base hash and VHD metadata, CCC copies
+    it sequentially into an owner-scoped independent VHDX, forces the output to
+    disk, hashes the output while its handle remains exclusive, closes both
+    handles independently, and checks file length, VHDX format, virtual size,
+    and absence of a parent. CCC then re-hashes the base before attaching the
+    clone. Before disk creation, CCC replaces the owner-scoped device directory
+    ACL with an inheritance-protected allowlist containing only the current host
+    user, SYSTEM, and Administrators, then verifies owner, SID, rights,
+    inheritance, and rule count. Those principals and the per-device operation
+    lock are the explicit trust boundary between handle closure and Hyper-V
+    attach. This removes the remaining
+    `New-VHD -Differencing` compatibility boundary while preserving immutable
+    shared-image verification. Brokers
+    advertise and Level 3 requires
+    `hyper-v-provider-image-finalization-v15` for this contract.

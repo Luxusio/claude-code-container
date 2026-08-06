@@ -11,7 +11,7 @@ Implemented in the current slice:
   TypeScript retaining owner identity validation and PowerShell rejecting
   missing or additional contract fields
 - `windows-vm` backend discovery and Hyper-V readiness
-- owner-scoped Generation 2 differencing-disk creation
+- owner-scoped Generation 2 independent-disk creation
 - start, stop, status, and delete through the authenticated host broker
 - production checkpoint create, restore, and delete through the authenticated host broker
 - VM ID, name, owner marker, and disk-path fencing
@@ -119,11 +119,11 @@ code through the redacted broker response. Host capacity, image integrity,
 disk construction, VM identity, and network selection failures therefore
 remain actionable without exposing raw PowerShell output, command input, or
 private host paths.
-Version 18 removes the redundant per-VM read-only mount of a newly created
-differencing disk. Image preparation still derives generation from the base
-VHD partition style, while each create validates manifest provenance, file
-identity, SHA-256, VHD type, and differencing parent before using the recorded
-generation. This keeps VM creation within ordinary Hyper-V management
+Version 18 removes the redundant per-VM read-only mount of a newly created VM
+disk. Image preparation still derives generation from the base VHD partition
+style, while each create validates manifest provenance, file identity,
+SHA-256, VHD type, and parent state before using the recorded generation. This
+keeps VM creation within ordinary Hyper-V management
 permissions on Windows hosts where `Mount-VHD` requires separate disk
 management privileges.
 Version 19 writes `Autounattend.xml` at the root of an owner-scoped ISO and
@@ -165,7 +165,7 @@ Hyper-V integration services before first boot. Provisioning fails immediately
 when the firmware or host-side integration-service postcondition is not met
 instead of waiting 20 minutes on a VM with a known-invalid boot contract. The
 provider retains the owner-scoped unattend ISO and does not mount or modify the
-per-device differencing VHD from the host.
+per-device VHD from the host.
 Version 15 builds provisioning media from a fenced temporary file
 tree in the broker-private device root through IMAPI `AddTree`, removing the
 nonstandard in-memory COM source stream path. Each source tree has a random
@@ -218,9 +218,11 @@ explicitly an HTTPS/TOFU trust boundary rather than a pinned image; CCC records
 the resulting SHA256 in the cache
 manifest and verifies it again before first use and every reuse. Host-side image
 and VM disk operations reject symbolic-link or Windows reparse-point ancestors
-before mutation. VM creation keeps the verified base VHDX open through
-`New-VHD`, recomputes its expected SHA256 from that locked handle, and verifies
-that the resulting differencing disk names the same base image as its parent.
+before mutation. VM creation verifies the base VHDX, sequentially copies it to
+an owner-scoped independent VHDX, flushes and closes both handles, validates
+the clone's file length, VHDX format, virtual size, and absence of a parent,
+then re-hashes the base before attaching the clone to a VM. This avoids using a
+QEMU-created VHDX as a Hyper-V differencing parent.
 
 ## Initial Scope
 
@@ -335,7 +337,7 @@ paths use the same broker contract.
 - Give automatic acquisition a four-hour transfer budget and reserve a separate
   thirty-minute outer RPC window for hashing, VM creation, and guest
   provisioning after the transfer completes.
-- Create an owner-scoped differencing VHDX for each disposable VM.
+- Create an owner-scoped independent VHDX clone for each disposable VM.
 - Use Generation 2 VMs by default.
 - Use the Microsoft Windows Secure Boot template for Windows guests.
 - Use the Microsoft UEFI Certificate Authority template for supported Linux
@@ -549,12 +551,16 @@ Real-provider tests:
   device types. They never expose VM names, disk paths, credentials, raw
   PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
   the observed VM state instead of assuming a started VM remained running.
-- The automatic Ubuntu profile uses Canonical's pinned Hyper-V VHDX archive,
-  never the similarly named Azure VHD. Canonical documents its Azure VHD as
-  unsuitable for on-premises Hyper-V; accepting it caused a Generation 1 VM to
-  remain `Running` without ever booting a guest. The catalog therefore fences
-  the Hyper-V-specific source URL, archive SHA-256, VHDX format, and Generation
-  2 boot contract. The provisioning media retains both generic NoCloud files
+- The automatic Ubuntu profile uses Canonical's pinned Ubuntu Server cloud
+  image, not the interactive Hyper-V desktop image or the Azure-specific VHD.
+  CCC verifies the dated release SHA-256 and converts the QCOW2 UEFI/GPT image
+  into a pre-created dynamic 32 GiB VHDX with `qemu-img.exe` at the current user's default
+  Android SDK path. CCC requires a valid Google Authenticode signature, rejects
+  reparse paths, holds the source image and converter identities open across
+  inspection/conversion, and binds the source URL and checksum into the cache
+  manifest. The catalog also fences the QCOW2
+  format and Generation 2 boot contract. The provisioning media retains both
+  generic NoCloud files
   and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
   `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
   switch, and cloud-init matches that NIC by its owner-assigned static MAC before
@@ -569,8 +575,20 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v8` additionally prevents reuse of a
-  broker that still acquires the unsupported Azure-only VHD.
+  `hyper-v-provider-image-finalization-v15` additionally prevents reuse of a
+  broker that still acquires an interactive desktop VHDX or reports every
+  unexpected VM creation preflight failure as the initial generic stage. VM
+  creation must update both its public stage marker and loader-visible stage
+  state before host capacity, storage, path, VM identity, network, disk, and VM
+  configuration operations. Parent-image integrity is checked immediately
+  before and after creating the owner-scoped disk. The VM disk is a sequential,
+  flushed clone of the verified base rather than a Hyper-V differencing disk;
+  CCC closes all copy handles before `Get-VHD` or `New-VM`, then requires the
+  clone to have the expected SHA-256, matching file length and virtual size,
+  VHDX format, and no parent.
+  QEMU's intermediate VHDX is normalized into a newly created ordinary base
+  file and CCC rejects Sparse, Compressed, or Encrypted filesystem attributes
+  before finalizing that image.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

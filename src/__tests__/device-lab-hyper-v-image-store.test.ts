@@ -15,13 +15,16 @@ import {
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 
 describe("Hyper-V image store module", () => {
-    it("uses a native Hyper-V VHDX instead of Canonical's Azure-only VHD", () => {
+    it("uses Canonical's generic UEFI cloud image instead of an interactive desktop image", () => {
         const ubuntu = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
 
-        expect(ubuntu.sourceUrl).toContain("partner-images.canonical.com/hyper-v/");
-        expect(ubuntu.sourceUrl).toMatch(/\.vhdx\.zip$/);
+        expect(ubuntu.sourceUrl).toContain("cloud-images.ubuntu.com/releases/noble/release-20260801/");
+        expect(ubuntu.sourceUrl).toMatch(/server-cloudimg-amd64\.img$/);
         expect(ubuntu.sourceUrl).not.toContain("azure.vhd");
-        expect(ubuntu.sourceFormat).toBe("vhdx-zip");
+        expect(ubuntu.sourceUrl).not.toContain("ubuntu-desktop-hyperv");
+        expect(ubuntu.sourceFormat).toBe("qcow2");
+        expect(ubuntu.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(ubuntu.virtualSizeBytes).toBe(32 * 1024 * 1024 * 1024);
         expect(ubuntu.generation).toBe(2);
     });
 
@@ -54,13 +57,13 @@ describe("Hyper-V image store module", () => {
     it("preserves a regular retry-cache candidate for checksum verification on the next attempt", () => {
         const profileRoot = join(tmpdir(), `ccc-hyper-v-image-cleanup-${process.pid}-${Date.now()}`);
         mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
-        writeFileSync(join(profileRoot, "source.vhdx.zip"), "verified-archive");
+        writeFileSync(join(profileRoot, "source.qcow2"), "verified-source");
         writeFileSync(join(profileRoot, "base.partial.vhdx"), "partial-image");
 
         try {
             cleanupIncompleteHyperVImageArtifacts(profileRoot);
 
-            expect(readFileSync(join(profileRoot, "source.vhdx.zip"), "utf8")).toBe("verified-archive");
+            expect(readFileSync(join(profileRoot, "source.qcow2"), "utf8")).toBe("verified-source");
             expect(existsSync(join(profileRoot, "base.partial.vhdx"))).toBe(false);
             expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
         } finally {
@@ -77,7 +80,7 @@ describe("Hyper-V image store module", () => {
         (kind) => {
             const root = join(tmpdir(), `ccc-hyper-v-invalid-cache-${kind}-${process.pid}-${Date.now()}`);
             const profileRoot = join(root, "profile");
-            const sourceArchivePath = join(profileRoot, "source.vhdx.zip");
+            const sourceArchivePath = join(profileRoot, "source.qcow2");
             mkdirSync(profileRoot, { recursive: true });
 
             try {
@@ -111,11 +114,11 @@ describe("Hyper-V image store module", () => {
         },
     );
 
-    it("retains the bounded source archive and removes transient work after committing an automatic image manifest", async () => {
+    it("retains the bounded cloud image and removes transient work after committing an automatic image manifest", async () => {
         const privateRoot = join(tmpdir(), `ccc-hyper-v-image-success-${process.pid}-${Date.now()}`);
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
         const imagePath = join(profileRoot, "base.vhdx");
-        const sourceArchivePath = join(profileRoot, "source.vhdx.zip");
+        const sourceArchivePath = join(profileRoot, "source.qcow2");
         const image = Buffer.from("automatic-hyper-v-image");
         const sha256 = createHash("sha256").update(image).digest("hex");
         mkdirSync(profileRoot, { recursive: true });
@@ -133,7 +136,7 @@ describe("Hyper-V image store module", () => {
                         mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
                         writeFileSync(join(profileRoot, ".acquire-work", "extracted.vhdx"), "temporary");
                         writeFileSync(imagePath, image);
-                        writeFileSync(sourceArchivePath, "verified-archive");
+                        writeFileSync(sourceArchivePath, "verified-source");
                         return {
                             mode: "exec",
                             provider: "hyper-v",
@@ -162,8 +165,10 @@ describe("Hyper-V image store module", () => {
             );
 
             expect(result).toEqual(expect.objectContaining({ ok: true, prepared: true }));
-            expect(readFileSync(join(profileRoot, "manifest.json"), "utf8")).toContain(sha256);
-            expect(readFileSync(sourceArchivePath, "utf8")).toBe("verified-archive");
+            const manifestText = readFileSync(join(profileRoot, "manifest.json"), "utf8");
+            expect(manifestText).toContain(sha256);
+            expect(manifestText).toContain(HYPER_V_IMAGE_CATALOG["ubuntu-lts"].sourceSha256);
+            expect(readFileSync(sourceArchivePath, "utf8")).toBe("verified-source");
             expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
         } finally {
             rmSync(privateRoot, { recursive: true, force: true });
@@ -183,6 +188,7 @@ describe("Hyper-V image store module", () => {
             catalogId: catalog.catalogId,
             sourceUrl: catalog.sourceUrl,
             sourceFormat: catalog.sourceFormat,
+            sourceSha256: catalog.sourceSha256,
             licenseId: catalog.licenseId,
             generation: 1,
             secureBootTemplate: catalog.secureBootTemplate,
@@ -191,6 +197,41 @@ describe("Hyper-V image store module", () => {
             sha256: "a".repeat(64),
             sizeBytes: 23,
             virtualSizeBytes: 32 * 1024 * 1024 * 1024,
+            vhdType: "Dynamic",
+            preparedAt: new Date().toISOString(),
+        }));
+
+        try {
+            expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
+                .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
+        } finally {
+            rmSync(privateRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("rejects an automatic image manifest produced from a different catalog source checksum", () => {
+        const privateRoot = join(tmpdir(), `ccc-hyper-v-checksum-manifest-${process.pid}-${Date.now()}`);
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        const catalog = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
+        const image = Buffer.from("automatic-hyper-v-image");
+        mkdirSync(profileRoot, { recursive: true });
+        writeFileSync(imagePath, image);
+        writeFileSync(join(profileRoot, "manifest.json"), JSON.stringify({
+            version: 3,
+            profile: "ubuntu-lts",
+            catalogId: catalog.catalogId,
+            sourceUrl: catalog.sourceUrl,
+            sourceFormat: catalog.sourceFormat,
+            sourceSha256: "f".repeat(64),
+            licenseId: catalog.licenseId,
+            generation: catalog.generation,
+            secureBootTemplate: catalog.secureBootTemplate,
+            preparationVersion: 1,
+            imagePath,
+            sha256: createHash("sha256").update(image).digest("hex"),
+            sizeBytes: image.length,
+            virtualSizeBytes: catalog.virtualSizeBytes,
             vhdType: "Dynamic",
             preparedAt: new Date().toISOString(),
         }));

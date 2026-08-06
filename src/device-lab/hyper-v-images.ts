@@ -3,6 +3,12 @@ import { join, resolve } from "path";
 import { readDeviceLabStateFile } from "../device-lab-state-file.js";
 import { writeJsonFileAtomically } from "../device-lab-shared-state.js";
 import {
+    HYPER_V_UBUNTU_IMAGE_CATALOG_ID,
+    HYPER_V_UBUNTU_IMAGE_SHA256,
+    HYPER_V_UBUNTU_IMAGE_URL,
+    HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES,
+} from "../host-control/hyper-v/ubuntu-image.js";
+import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
     HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
     HYPER_V_WINDOWS_EVALUATION_RECEIPT_FILE,
@@ -34,9 +40,11 @@ export const HYPER_V_IMAGE_CATALOG = {
         generation: 2,
     },
     "ubuntu-lts": {
-        catalogId: "canonical-ubuntu-24.04-lts-hyper-v-desktop-20260731",
-        sourceUrl: "https://partner-images.canonical.com/hyper-v/desktop/noble/20260731/ubuntu-noble-hyperv-amd64-ubuntu-desktop-hyperv.vhdx.zip",
-        sourceFormat: "vhdx-zip",
+        catalogId: HYPER_V_UBUNTU_IMAGE_CATALOG_ID,
+        sourceUrl: HYPER_V_UBUNTU_IMAGE_URL,
+        sourceFormat: "qcow2",
+        sourceSha256: HYPER_V_UBUNTU_IMAGE_SHA256,
+        virtualSizeBytes: HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES,
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
         generation: 2,

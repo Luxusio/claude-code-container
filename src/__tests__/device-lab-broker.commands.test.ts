@@ -807,7 +807,8 @@ describe("device-lab host broker lifecycle commands", () => {
                 return script.includes(`$ExpectedBaseImageHash = '${imageSha256}'`)
                     && script.includes(`$BaseImage = '${imagePath.replaceAll("'", "''")}'`)
                     && script.includes("[IO.FileShare]::Read")
-                    && script.includes("hyper-v-created-disk-parent-mismatch");
+                    && script.includes("$DiskCopySource.CopyTo($DiskCopyOutput, 8MB)")
+                    && script.includes("hyper-v-created-disk-format-mismatch");
             })).toBe(true);
             const callsAfterCreate = commandRunner.mock.calls.length;
             const duplicateCreate = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2 });
@@ -1032,6 +1033,7 @@ describe("device-lab host broker lifecycle commands", () => {
             catalogId: "user-provided-vhdx",
             sourceUrl: null,
             sourceFormat: "vhdx",
+            sourceSha256: null,
             licenseId: null,
             generation: 2,
             secureBootTemplate: "MicrosoftWindows",

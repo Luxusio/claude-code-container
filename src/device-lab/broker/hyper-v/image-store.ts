@@ -36,7 +36,8 @@ export type HyperVImageManifest = {
     profile: HyperVImageProfile;
     catalogId: string;
     sourceUrl: string | null;
-    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip";
+    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip" | "qcow2";
+    sourceSha256: string | null;
     licenseId: string | null;
     generation: 1 | 2;
     secureBootTemplate: "MicrosoftWindows" | "MicrosoftUEFICertificateAuthority";
@@ -110,26 +111,29 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
             assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
         });
     }
-    const sourceArchive = join(profileRoot, "source.vhdx.zip");
-    try {
-        const archiveMetadata = lstatSync(sourceArchive);
-        const validRetryCache = archiveMetadata.isFile()
-            && !archiveMetadata.isSymbolicLink()
-            && archiveMetadata.nlink === 1
-            && archiveMetadata.size > 0
-            && archiveMetadata.size <= HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES;
-        if (!validRetryCache) {
-            if (archiveMetadata.isDirectory() && !archiveMetadata.isSymbolicLink()) {
-                quarantineAndRemoveDirectory(sourceArchive, (path) => {
-                    assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cache-cleanup");
-                    assertNoSymlinkPathComponents(path, "hyper-v-base-image-cache-cleanup");
-                });
-            } else {
-                rmSync(sourceArchive, { force: true });
+    for (const sourceCache of [join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip")]) {
+        try {
+            const archiveMetadata = lstatSync(sourceCache);
+            const currentCache = sourceCache.endsWith("source.qcow2");
+            const validRetryCache = currentCache
+                && archiveMetadata.isFile()
+                && !archiveMetadata.isSymbolicLink()
+                && archiveMetadata.nlink === 1
+                && archiveMetadata.size > 0
+                && archiveMetadata.size <= HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES;
+            if (!validRetryCache) {
+                if (archiveMetadata.isDirectory() && !archiveMetadata.isSymbolicLink()) {
+                    quarantineAndRemoveDirectory(sourceCache, (path) => {
+                        assertDeviceLabPathWithinRoot(profileRoot, path, "hyper-v-base-image-cache-cleanup");
+                        assertNoSymlinkPathComponents(path, "hyper-v-base-image-cache-cleanup");
+                    });
+                } else {
+                    rmSync(sourceCache, { force: true });
+                }
             }
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
         }
-    } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }
     if (!existsSync(join(profileRoot, "manifest.json"))) rmSync(join(profileRoot, "base.vhdx"), { force: true });
 }
@@ -314,6 +318,7 @@ function hyperVImageManifest(
         catalogId: automatic && catalog ? catalog.catalogId : "user-provided-vhdx",
         sourceUrl: automatic && catalog ? catalog.sourceUrl : null,
         sourceFormat: automatic && catalog ? catalog.sourceFormat : "vhdx",
+        sourceSha256: automatic && catalog && "sourceSha256" in catalog ? catalog.sourceSha256 : null,
         licenseId: automatic && catalog ? catalog.licenseId : null,
         generation: observation.generation,
         secureBootTemplate: profile === "ubuntu-lts" ? "MicrosoftUEFICertificateAuthority" : "MicrosoftWindows",
@@ -341,7 +346,8 @@ export function readHyperVImageManifestMetadata(
             || value.profile !== profile
             || typeof value.catalogId !== "string"
             || (value.sourceUrl !== null && typeof value.sourceUrl !== "string")
-            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip")
+            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip" && value.sourceFormat !== "qcow2")
+            || (value.sourceSha256 !== null && (typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(value.sourceSha256)))
             || (value.licenseId !== null && typeof value.licenseId !== "string")
             || (value.generation !== 1 && value.generation !== 2)
             || (value.secureBootTemplate !== "MicrosoftWindows" && value.secureBootTemplate !== "MicrosoftUEFICertificateAuthority")
@@ -365,16 +371,21 @@ export function readHyperVImageManifestMetadata(
     if (!manifest) throw new Error("hyper-v-base-image-manifest-missing");
     const catalog = profile === "windows-server" || profile === "ubuntu-lts" ? HYPER_V_IMAGE_CATALOG[profile] : null;
     if (manifest.catalogId !== "user-provided-vhdx") {
+        const catalogSourceSha256 = catalog && "sourceSha256" in catalog ? catalog.sourceSha256 : null;
         if (!catalog
             || manifest.catalogId !== catalog.catalogId
             || manifest.sourceUrl !== catalog.sourceUrl
             || manifest.sourceFormat !== catalog.sourceFormat
+            || manifest.sourceSha256 !== catalogSourceSha256
             || manifest.licenseId !== catalog.licenseId
             || manifest.generation !== catalog.generation
             || manifest.secureBootTemplate !== catalog.secureBootTemplate) {
             throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
         }
-    } else if (!allowUserProvided || manifest.sourceUrl !== null || manifest.licenseId !== null || manifest.sourceFormat !== "vhdx") {
+        if ("virtualSizeBytes" in catalog && manifest.virtualSizeBytes !== catalog.virtualSizeBytes) {
+            throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
+        }
+    } else if (!allowUserProvided || manifest.sourceUrl !== null || manifest.sourceSha256 !== null || manifest.licenseId !== null || manifest.sourceFormat !== "vhdx") {
         throw new Error("hyper-v-base-image-manifest-provenance-mismatch");
     }
     const image = inspectLargeRegularFile(profileRoot, expectedImagePath, "hyper-v-base-image");
