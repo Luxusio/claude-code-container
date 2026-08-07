@@ -7,6 +7,7 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 import { createServer } from "net";
+import { hiddenWindowsPowerShellArgs } from "../../device-lab-mcp/src/state/windows-system-powershell.mjs";
 import {
     describeProcessIdentities,
     identityForPid,
@@ -369,12 +370,12 @@ async function stopOwnedChild(broker, registry) {
 
 function brokerRssBytes(pid) {
     const result = process.platform === "win32"
-        ? spawnSync("powershell.exe", [
+        ? spawnSync("powershell.exe", hiddenWindowsPowerShellArgs([
             "-NoProfile",
             "-NonInteractive",
             "-Command",
             `$p=Get-Process -Id ${pid} -ErrorAction Stop; [Console]::Out.Write([int64]$p.WorkingSet64)`,
-        ], { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 1024 * 1024 })
+        ]), { encoding: "utf8", windowsHide: true, timeout: 5000, maxBuffer: 1024 * 1024 })
         : spawnSync("ps", ["-o", "rss=", "-p", String(pid)], {
             encoding: "utf8",
             windowsHide: true,

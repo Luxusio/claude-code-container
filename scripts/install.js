@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { execSync, execFileSync, spawnSync } from "child_process";
 import { homedir } from "os";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "../device-lab-mcp/src/state/windows-system-powershell.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(__dirname, "..");
@@ -141,21 +142,27 @@ function buildImage() {
 
 const PATH_LIMIT = 32767;
 
+function trustedWindowsPowerShell() {
+    const powershell = canonicalWindowsPowerShellPath();
+    if (!powershell) throw new Error("Trusted Windows PowerShell is unavailable");
+    return powershell;
+}
+
 function readUserPath() {
-    const out = execFileSync("powershell.exe", [
+    const out = execFileSync(trustedWindowsPowerShell(), hiddenWindowsPowerShellArgs([
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command", `[Environment]::GetEnvironmentVariable("Path","User")`,
-    ], { encoding: "utf8", windowsHide: true });
+    ]), { encoding: "utf8", windowsHide: true });
     return out.replace(/\r?\n$/, "");
 }
 
 function writeUserPath(value) {
-    execFileSync("powershell.exe", [
+    execFileSync(trustedWindowsPowerShell(), hiddenWindowsPowerShellArgs([
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command", `[Environment]::SetEnvironmentVariable("Path", $env:__CCC_NEW_PATH, "User")`,
-    ], {
+    ]), {
         encoding: "utf8",
         windowsHide: true,
         env: { ...process.env, __CCC_NEW_PATH: value },

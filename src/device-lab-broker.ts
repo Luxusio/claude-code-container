@@ -15,7 +15,7 @@ import { deviceLabProjectEnumerationErrorCode, enumerateDeviceProjectIds } from 
 import { assertDeviceLabPathWithinRoot, deviceLabStateFileErrorCode, readDeviceLabBinaryFile, readDeviceLabBinaryFileWithinRoot, readDeviceLabStateFile, readDeviceLabTextFile, withDeviceLabReadableFile, writeDeviceLabBinaryFile } from "./device-lab-state-file.js";
 import { deviceRuntimeProcessIdentityMatches, inspectDeviceRuntimeProcessIdentity, probeDeviceRuntimeProcessLiveness, readDeviceRuntimeProcessIdentity, readDeviceRuntimeProcessStartToken, signalDeviceRuntimeProcess, type DeviceRuntimeProcessIdentity } from "./device-lab-process-identity.js";
 import { withSharedMutationLock, withSharedMutationLockAsync, writeFileAtomically, writeJsonFileAtomically } from "./device-lab-shared-state.js";
-import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken, windowsHandleBoundTerminationScript } from "./windows-system-powershell.js";
 import { assertHyperVOperationDeadline, HyperVOperationDeadlineError, hyperVOperationDeadlineExpired, hyperVRemainingTimeout } from "./device-lab/broker/hyper-v/deadline.js";
 import {
     assertNoSymlinkPathComponents,
@@ -126,7 +126,7 @@ const DEVICE_BROKER_CAPABILITY_DESKTOP_DEVICE_TOOL_TIMEOUTS = "http-desktop-devi
 const DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_HELPER_CONFIG = "http-windows-sandbox-helper-config";
 const DEVICE_BROKER_CAPABILITY_ANDROID_DEVICE_TOOL_PROXY = "http-android-device-tool-proxy";
 const DEVICE_BROKER_CAPABILITY_VERSION_REPORTING = "http-broker-version-reporting";
-const DEVICE_BROKER_CAPABILITY_HIDDEN_PROVIDER_CHILDREN = "windows-hidden-provider-children-v6";
+const DEVICE_BROKER_CAPABILITY_HIDDEN_PROVIDER_CHILDREN = "windows-hidden-provider-children-v7";
 const DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_WINDOW_MINIMIZE = "windows-sandbox-window-minimize-v4";
 const DEVICE_BROKER_CAPABILITY_WINDOWS_SANDBOX_RUNTIME_OWNERSHIP = "windows-sandbox-runtime-snapshot-ownership-v1";
 const DEVICE_BROKER_CAPABILITY_APPIUM3_NPM_RUNTIME = "appium3-scoped-security-npm-cwd-v1";
@@ -2172,36 +2172,6 @@ export function parseWindowsBrokerNetstatListenerForTest(output: string, port: n
 }
 
 function discoverWindowsBrokerPortProcess(port: number): BrokerPortProcess | null {
-    const powershell = canonicalWindowsPowerShellPath();
-    const script = [
-        `$c = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1`,
-        "if (-not $c) { exit 1 }",
-        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"",
-        "$h = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue",
-        "if (-not $p -or -not $h) { exit 1 }",
-        "[pscustomobject]@{ pid = [int]$c.OwningProcess; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
-    ].join("; ");
-    const result = powershell ? spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10000,
-    }) : { status: null, stdout: "" };
-    if (result.status === 0 && result.stdout) {
-        try {
-            const parsed = JSON.parse(result.stdout) as { pid?: unknown; commandLine?: unknown; startToken?: unknown };
-            const pid = Number(parsed.pid);
-            if (Number.isInteger(pid) && pid > 0) {
-                return {
-                    pid,
-                    commandLine: typeof parsed.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "",
-                    processIdentity: readDeviceRuntimeProcessIdentity(pid, { platform: "win32" }),
-                    processStartToken: typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : null,
-                };
-            }
-        } catch {
-            // Fall through to the locale-independent netstat listener lookup.
-        }
-    }
     const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
     const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
         encoding: "utf8",
@@ -2212,6 +2182,40 @@ function discoverWindowsBrokerPortProcess(port: number): BrokerPortProcess | nul
         ? parseWindowsBrokerNetstatListenerForTest(netstat.stdout || "", port)
         : null;
     if (!listener) return null;
+    const powershell = canonicalWindowsPowerShellPath();
+    const script = [
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${listener.pid}"`,
+        `$h = Get-Process -Id ${listener.pid} -ErrorAction SilentlyContinue`,
+        "if (-not $p -or -not $h) { exit 1 }",
+        "[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
+    ].join("; ");
+    const result = powershell ? spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]), {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 10000,
+    }) : { status: null, stdout: "" };
+    if (result.status === 0 && result.stdout) {
+        try {
+            const parsed = JSON.parse(result.stdout) as { pid?: unknown; commandLine?: unknown; startToken?: unknown };
+            const pid = Number(parsed.pid);
+            const commandLine = typeof parsed.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "";
+            const startToken = typeof parsed.startToken === "string" ? `windows:${parsed.startToken}` : "";
+            if (pid === listener.pid && commandLine && startToken) {
+                return {
+                    pid,
+                    commandLine,
+                    processIdentity: {
+                        pid,
+                        startToken,
+                        commandHash: createHash("sha256").update(commandLine).digest("hex"),
+                    },
+                    processStartToken: startToken,
+                };
+            }
+        } catch {
+            // Fall through to the locale-independent netstat listener lookup.
+        }
+    }
     return {
         ...listener,
         processIdentity: readDeviceRuntimeProcessIdentity(listener.pid, { platform: "win32" }),
@@ -3304,7 +3308,7 @@ function serviceCommandsFor(action: ServiceAction, plan: ServicePlan, normalized
         const executable = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
         const task = psQuote(plan.serviceName);
         void action;
-        return [serviceProviderCommand("powershell", executable, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Get-ScheduledTask -TaskName ${task} | Select-Object TaskName,State | ConvertTo-Json -Compress`])];
+        return [serviceProviderCommand("powershell", executable, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", `Get-ScheduledTask -TaskName ${task} | Select-Object TaskName,State | ConvertTo-Json -Compress`]))];
     }
     return [];
 }
@@ -9783,7 +9787,11 @@ export function windowsSandboxMinimizeWatchdogArgs(timeoutMs = DEVICE_BROKER_WIN
 
 export function providerCommandSpawn(command: ProviderCommand, platform: NodeJS.Platform = process.platform): { executable?: string; args: string[] } {
     const executable = command.executable;
-    const args = command.args || [];
+    const args = platform === "win32"
+        && executable
+        && /^(?:powershell|pwsh)(?:\.exe)?$/i.test(win32.basename(executable))
+        ? hiddenWindowsPowerShellArgs(command.args || [])
+        : command.args || [];
     if (platform === "win32" && command.windowStyle === "minimized") {
         const invocation = windowsMinimizedStartProcessInvocation(command);
         if (invocation) return invocation;
@@ -10212,7 +10220,7 @@ function processIdentity(pid) {
         } else if (process.platform === "win32") {
             if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) return null;
             const script = "$P = Get-CimInstance Win32_Process -Filter 'ProcessId = " + pid + "' -ErrorAction SilentlyContinue; if ($P) { [pscustomobject]@{ startToken = $P.CreationDate.ToUniversalTime().ToString('o'); commandLine = [string]$P.CommandLine } | ConvertTo-Json -Compress }";
-            const observed = spawnSync(payload.windowsPowerShellPath, ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 5000, windowsHide: true });
+            const observed = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", timeout: 5000, windowsHide: true });
             const parsed = observed.status === 0 && observed.stdout && observed.stdout.trim() ? JSON.parse(observed.stdout) : null;
             startToken = parsed && typeof parsed.startToken === "string" ? "windows:" + parsed.startToken : "";
             commandLine = parsed && typeof parsed.commandLine === "string" ? parsed.commandLine : "";
@@ -10261,7 +10269,7 @@ function terminateTree(pid, expectedIdentity) {
         if (typeof payload.windowsPowerShellPath !== "string" || !payload.windowsPowerShellPath) {
             return { attempted: false, ok: false, pid, signal: "SIGKILL", platform: process.platform, error: "windows-system-powershell-unavailable" };
         }
-        const result = spawnSync(payload.windowsPowerShellPath, ["-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
+        const result = spawnSync(payload.windowsPowerShellPath, ["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", windowsTerminationScript], {
             encoding: "utf8",
             windowsHide: true,
             timeout: 11000,

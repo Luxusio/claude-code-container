@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { DISPLAY, PACKAGE_ROOT } from "./context.mjs";
+import { hiddenWindowsPowerShellArgs } from "./state/windows-system-powershell.mjs";
 
 export const DEVICE_COMMAND_TIMEOUT_MS = 120_000;
 export const DEVICE_COMMAND_MAX_TIMEOUT_MS = 600_000;
@@ -32,6 +33,9 @@ function quoteWindowsCommandArg(value) {
 }
 
 function spawnInvocation(cmd, args = []) {
+    if (process.platform === "win32" && /^(?:powershell|pwsh)(?:\.exe)?$/i.test(String(cmd).split(/[\\/]/).at(-1) || "")) {
+        return { cmd, args: hiddenWindowsPowerShellArgs(args) };
+    }
     if (process.platform === "win32" && /\.(bat|cmd)$/i.test(String(cmd))) {
         const commandLine = [quoteWindowsCommandArg(cmd), ...args.map(quoteWindowsCommandArg)].join(" ");
         return { cmd: "cmd.exe", args: ["/d", "/s", "/c", commandLine] };

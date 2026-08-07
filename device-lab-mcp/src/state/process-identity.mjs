@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
-import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath } from "./windows-system-powershell.mjs";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.mjs";
 
 function validPid(pid) {
     return Number.isInteger(pid) && pid > 0;
@@ -34,7 +34,7 @@ function windowsProcessIdentity(pid) {
     const powershell = canonicalWindowsPowerShellPath();
     if (!powershell) return null;
     const script = windowsProcessIdentityScript(pid);
-    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf-8",
         timeout: 5000,
         windowsHide: true,
@@ -63,7 +63,7 @@ function windowsProcessIdentityAsync(pid) {
             resolve(null);
             return;
         }
-        execFile(powershell, ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+        execFile(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)]), {
             encoding: "utf-8",
             timeout: 5000,
             windowsHide: true,

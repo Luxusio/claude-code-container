@@ -2,11 +2,16 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { hiddenWindowsPowerShellArgs } from "../device-lab-mcp/src/state/windows-system-powershell.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assetRoot = join(repoRoot, "scripts", "host-control", "hyper-v");
 const requireParser = process.argv.includes("--require-parser");
 const runPester = process.argv.includes("--pester");
+
+function validationPowerShellArgs(args) {
+    return process.platform === "win32" ? hiddenWindowsPowerShellArgs(args) : [...args];
+}
 
 function filesUnder(root) {
     return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -27,7 +32,7 @@ function powershellCandidates() {
 function findPowerShell() {
     for (const executable of powershellCandidates()) {
         if (executable.includes(join("", "System32")) && !existsSync(executable)) continue;
-        const probe = spawnSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"], {
+        const probe = spawnSync(executable, validationPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()"]), {
             encoding: "utf8",
             windowsHide: true,
         });
@@ -56,7 +61,7 @@ const parser = [
     "if ($Failures.Count -gt 0) { [Console]::Error.WriteLine(($Failures -join [Environment]::NewLine)); exit 1 }",
     "[Console]::Out.WriteLine(('PASS PowerShell parser files=' + $Files.Count))",
 ].join("\n");
-const parsed = spawnSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", parser], {
+const parsed = spawnSync(executable, validationPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", parser]), {
     input: JSON.stringify(files),
     encoding: "utf8",
     windowsHide: true,
@@ -70,7 +75,7 @@ process.stdout.write(parsed.stdout);
 
 if (runPester) {
     const pesterScript = join(assetRoot, "run-pester.ps1");
-    const tested = spawnSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", pesterScript], {
+    const tested = spawnSync(executable, validationPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", pesterScript]), {
         encoding: "utf8",
         windowsHide: true,
         maxBuffer: 4 * 1024 * 1024,

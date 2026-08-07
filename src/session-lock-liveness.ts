@@ -1,6 +1,6 @@
 import { spawnSync } from "child_process";
 import { readFileSync } from "fs";
-import { canonicalWindowsPowerShellPath, canonicalWindowsTasklistPath } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsTasklistPath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.js";
 
 export type SessionLockLiveness = "active" | "stale" | "unknown";
 
@@ -60,7 +60,7 @@ function observeProcessStart(pid: number): ProcessStartObservation {
                 "try { Write-Output ('FOUND:' + $P.StartTime.ToUniversalTime().Ticks) }",
                 "catch { Write-Output 'UNKNOWN' }",
             ].join("\n");
-            const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+            const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
                 encoding: "utf-8",
                 timeout: 5000,
                 windowsHide: true,

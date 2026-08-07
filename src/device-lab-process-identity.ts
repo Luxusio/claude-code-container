@@ -1,7 +1,7 @@
 import { execFile, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { readFileSync } from "fs";
-import { canonicalWindowsPowerShellPath } from "./windows-system-powershell.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.js";
 
 export type DeviceRuntimeProcessIdentity = {
     pid: number;
@@ -42,7 +42,7 @@ function windowsProcessStartToken(pid: number): string | null {
     const powershell = canonicalWindowsPowerShellPath();
     if (!powershell) return null;
     const script = `$P = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
-    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
@@ -92,7 +92,7 @@ function windowsProcessIdentity(pid: number): DeviceRuntimeProcessIdentity | nul
     const powershell = canonicalWindowsPowerShellPath();
     if (!powershell) return null;
     const script = windowsProcessIdentityScript(pid);
-    const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         timeout: 5000,
         windowsHide: true,
@@ -127,7 +127,7 @@ function windowsProcessIdentityAsync(pid: number): Promise<DeviceRuntimeProcessI
             resolve(null);
             return;
         }
-        execFile(powershell, ["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)], {
+        execFile(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", windowsProcessIdentityScript(pid)]), {
             encoding: "utf8",
             timeout: 5000,
             windowsHide: true,

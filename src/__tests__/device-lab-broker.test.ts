@@ -9,6 +9,7 @@ import { pathToFileURL } from "url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
     boundedBrokerErrorPayload,
+    boundedProviderCommandRunnerScript,
     compareBrokerVersionsForTest,
     createDeviceBrokerServer,
     DEVICE_BROKER_CONTROL_RESPONSE_LIMIT_BYTES,
@@ -55,6 +56,12 @@ function fakeBrokerPortProcess(pid: number, commandLine: string | null) {
 
 describe("device-lab host broker daemon", () => {
     let originalHome: string | undefined;
+
+    it("forces hidden windows for provider and broker-inspection PowerShell children", () => {
+        const runner = boundedProviderCommandRunnerScript();
+        expect(runner).toContain('["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script]');
+        expect(runner).toContain("windowsHide: true");
+    });
 
     it("bounds retained startup diagnostics while preserving the most recent attempts", () => {
         const attempts: unknown[] = [];
@@ -363,7 +370,7 @@ describe("device-lab host broker daemon", () => {
                 "http-windows-sandbox-helper-config",
                 "http-android-device-tool-proxy",
                 "http-broker-version-reporting",
-                "windows-hidden-provider-children-v6",
+                "windows-hidden-provider-children-v7",
                 "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
                 "appium3-scoped-security-npm-cwd-v1",
                 "constant-time-existing-owner-auth-v1",
@@ -874,7 +881,7 @@ describe("device-lab host broker daemon", () => {
             expect(statusPayload.broker.implemented).toContain("http-windows-sandbox-helper-config");
             expect(statusPayload.broker.implemented).toContain("http-android-device-tool-proxy");
             expect(statusPayload.broker.implemented).toContain("http-broker-version-reporting");
-            expect(statusPayload.broker.implemented).toContain("windows-hidden-provider-children-v6");
+            expect(statusPayload.broker.implemented).toContain("windows-hidden-provider-children-v7");
             expect(statusPayload.broker.implemented).toContain("windows-sandbox-window-minimize-v4");
             expect(statusPayload.broker.implemented).toContain("appium3-scoped-security-npm-cwd-v1");
             expect(statusPayload.broker.implemented).toContain("constant-time-existing-owner-auth-v1");
@@ -1098,7 +1105,7 @@ describe("device-lab host broker daemon", () => {
         ["provider-bound automatic image finalization", "hyper-v-provider-image-finalization-v22", null],
         ["redacted Hyper-V network stage diagnostics", "hyper-v-network-failure-diagnostics-v9", "hyper-v-network-failure-diagnostics-v7"],
         ["persisted Hyper-V network identity repair", "hyper-v-setup-network-v10", "hyper-v-setup-network-v7"],
-        ["hidden elevated PowerShell children", "windows-hidden-provider-children-v6", "windows-hidden-provider-children-v5"],
+        ["hidden elevated PowerShell children", "windows-hidden-provider-children-v7", "windows-hidden-provider-children-v6"],
     ])("replaces a same-version broker missing the Hyper-V %s contract", async (_label, missingCapability, previousCapability) => {
         const ownerId = "2222222222222222";
         const currentCapabilities = deviceBrokerStatus({ ownerId }).implemented;
@@ -1268,7 +1275,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1437,7 +1444,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1601,7 +1608,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1682,7 +1689,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -1955,7 +1962,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",
@@ -2042,7 +2049,7 @@ describe("device-lab host broker daemon", () => {
             "http-windows-sandbox-helper-config",
             "http-android-device-tool-proxy",
             "http-broker-version-reporting",
-            "windows-hidden-provider-children-v6",
+            "windows-hidden-provider-children-v7",
             "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
             "appium3-scoped-security-npm-cwd-v1",
             "constant-time-existing-owner-auth-v1",

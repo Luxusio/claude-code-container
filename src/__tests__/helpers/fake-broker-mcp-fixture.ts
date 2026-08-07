@@ -5,6 +5,7 @@ import { join } from "path";
 
 const FAKE_BROKER_CAPABILITIES = [
     "windows-sandbox-window-minimize-v4",
+    "windows-hidden-provider-children-v7",
     "constant-time-existing-owner-auth-v1",
     "atomic-owner-secret-provisioning-v1",
     "owner-mutation-serialization-v1",

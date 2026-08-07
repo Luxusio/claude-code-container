@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from "path";
 import { ownerBasis, ownerId, PACKAGE_ROOT, projectMountPath } from "./context.mjs";
 import { writeJsonFileAtomically } from "./state/shared-mutation-lock.mjs";
 import { readDeviceLabStateFile } from "./state/state-file.mjs";
-import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, terminateWindowsProcessByStartToken } from "./state/windows-system-powershell.mjs";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath, hiddenWindowsPowerShellArgs, terminateWindowsProcessByStartToken } from "./state/windows-system-powershell.mjs";
 
 const HOST_CANDIDATES = [
     "127.0.0.1",
@@ -23,6 +23,7 @@ const TRUSTED_BROKER_HOSTS = new Set(HOST_CANDIDATES);
 const BROKER_BIND_ANY_HOSTS = new Set(["0.0.0.0", "::"]);
 export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "windows-sandbox-window-minimize-v4",
+    "windows-hidden-provider-children-v7",
     "constant-time-existing-owner-auth-v1",
     "atomic-owner-secret-provisioning-v1",
     "owner-mutation-serialization-v1",
@@ -992,16 +993,22 @@ export function parseWindowsNetstatListenerForTest(output, port) {
 }
 
 function discoverWindowsBrokerPortProcess(port) {
+    const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
+    const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
+        encoding: "utf8",
+        windowsHide: true,
+        timeout: 1500,
+    }) : { status: null, stdout: "" };
+    const listener = netstat.status === 0 ? parseWindowsNetstatListenerForTest(netstat.stdout, port) : null;
+    if (!listener) return null;
     const powershell = canonicalWindowsPowerShellPath();
     const script = [
-        `$c = Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1`,
-        "if (-not $c) { exit 1 }",
-        "$p = Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\"",
-        "$h = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue",
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${listener.pid}"`,
+        `$h = Get-Process -Id ${listener.pid} -ErrorAction SilentlyContinue`,
         "if (-not $p -or -not $h) { exit 1 }",
-        "[pscustomobject]@{ pid = [int]$c.OwningProcess; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
+        "[pscustomobject]@{ pid = [int]$p.ProcessId; commandLine = [string]$p.CommandLine; startToken = $h.StartTime.ToUniversalTime().ToString('o') } | ConvertTo-Json -Compress",
     ].join("; ");
-    const result = powershell ? spawnSync(powershell, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], {
+    const result = powershell ? spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
         timeout: 1500,
@@ -1010,7 +1017,7 @@ function discoverWindowsBrokerPortProcess(port) {
         try {
             const parsed = JSON.parse(result.stdout);
             const pid = Number(parsed?.pid);
-            if (Number.isInteger(pid) && pid > 0) {
+            if (pid === listener.pid) {
                 return {
                     pid,
                     commandLine: typeof parsed?.commandLine === "string" ? parsed.commandLine.replace(/\r?\n/g, " ").trim() : "",
@@ -1021,14 +1028,6 @@ function discoverWindowsBrokerPortProcess(port) {
             // Fall through to the locale-independent netstat listener lookup.
         }
     }
-    const netstatPath = canonicalWindowsSystemExecutablePath("netstat.exe");
-    const netstat = netstatPath ? spawnSync(netstatPath, ["-ano", "-p", "tcp"], {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 1500,
-    }) : { status: null, stdout: "" };
-    const listener = netstat.status === 0 ? parseWindowsNetstatListenerForTest(netstat.stdout, port) : null;
-    if (!listener) return null;
     return { ...listener, processStartToken: readBrokerProcessStartToken(listener.pid, "win32") };
 }
 
@@ -1055,7 +1054,7 @@ function readBrokerProcessStartToken(pid, platform = process.platform) {
         const powershell = canonicalWindowsPowerShellPath();
         if (!powershell) return null;
         const script = `$P = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($P) { [Console]::Out.Write($P.StartTime.ToUniversalTime().ToString('o')) }`;
-        const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], {
+        const result = spawnSync(powershell, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
             encoding: "utf8",
             windowsHide: true,
             timeout: 1500,

@@ -23,6 +23,7 @@ import { homedir, platform } from "os";
 import { fileURLToPath } from "url";
 import { CLIPBOARD_FILES_CONTAINER_DIR, CLIPBOARD_FILES_DIR } from "./utils.js";
 import { sessionLockLiveness } from "./session-lock-liveness.js";
+import { canonicalWindowsPowerShellPath, hiddenWindowsPowerShellArgs } from "./windows-system-powershell.js";
 
 // === Version (for auto-restart on upgrade) ===
 // Uses content hash of the compiled server file so ANY code change triggers restart
@@ -83,11 +84,24 @@ function detectPlatform(): ClipboardPlatform {
     return "unsupported";
 }
 
+function clipboardPowerShellPath(): string | null {
+    if (process.platform === "win32") return canonicalWindowsPowerShellPath();
+    if (process.platform !== "linux") return null;
+    try {
+        if (!/microsoft|wsl/i.test(readFileSync("/proc/version", "utf8"))) return null;
+    } catch {
+        return null;
+    }
+    return canonicalWindowsPowerShellPath("/mnt/c/Windows");
+}
+
 function canRunPowerShellExe(): boolean {
     try {
-        const result = spawnSync("powershell.exe", [
+        const powershell = clipboardPowerShellPath();
+        if (!powershell) return false;
+        const result = spawnSync(powershell, hiddenWindowsPowerShellArgs([
             "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "exit 0",
-        ], {
+        ]), {
             timeout: 1000,
             stdio: "ignore",
             windowsHide: true,
@@ -360,9 +374,11 @@ function ensurePersistentPS(): ChildProcess {
     persistentPS = null;
     psAssemblyLoaded = false;
 
-    const ps = spawn("powershell.exe", [
+    const powershell = clipboardPowerShellPath();
+    if (!powershell) throw new Error("trusted Windows PowerShell is unavailable");
+    const ps = spawn(powershell, hiddenWindowsPowerShellArgs([
         "-NoProfile", "-NoLogo", "-NonInteractive", "-Command", "-",
-    ], {
+    ]), {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
     });

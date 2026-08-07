@@ -25,6 +25,8 @@ describe("Hyper-V PowerShell assets", () => {
 
         expect(command.provider).toBe("hyper-v");
         expect(command.args.slice(0, -1)).toEqual([
+            "-WindowStyle",
+            "Hidden",
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",

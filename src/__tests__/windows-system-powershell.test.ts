@@ -6,6 +6,7 @@ import {
     canonicalWindowsPowerShellPath,
     canonicalWindowsTasklistPath,
     canonicalWindowsSystemExecutablePath,
+    hiddenWindowsPowerShellArgs,
     spawnableWindowsExecutablePath,
     terminateWindowsProcessByStartToken,
     windowsHandleBoundTerminationScript,
@@ -15,6 +16,88 @@ describe("canonical Windows PowerShell", () => {
     const roots: string[] = [];
     afterEach(() => {
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    it("forces hidden PowerShell startup and replaces conflicting caller policies", () => {
+        expect(hiddenWindowsPowerShellArgs(["-NoProfile", "-Command", "exit 0"])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+        expect(hiddenWindowsPowerShellArgs([
+            "-NoProfile",
+            "-WindowStyle", "Normal",
+            "-WindowStyle:Minimized",
+            "-Command",
+            "exit 0",
+        ])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+        expect(hiddenWindowsPowerShellArgs([
+            "-w",
+            "Normal",
+            "-WindowS:Minimized",
+            "-NoProfile",
+        ])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+        ]);
+        expect(hiddenWindowsPowerShellArgs(["-WindowS:Normal", "payload"])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "payload",
+        ]);
+        expect(hiddenWindowsPowerShellArgs([
+            "-WindowStyle",
+            "Normal",
+            "-File",
+            "script.ps1",
+            "-w",
+            "Normal",
+        ])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+            "script.ps1",
+            "-w",
+            "Normal",
+        ]);
+        expect(hiddenWindowsPowerShellArgs(["-Command", "Write-Output", "-WindowStyle", "Normal"])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            "Write-Output",
+            "-WindowStyle",
+            "Normal",
+        ]);
+        expect(hiddenWindowsPowerShellArgs([
+            "-CommandWithArgs",
+            "Write-Output $args",
+            "-WindowStyle",
+            "Normal",
+        ])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-CommandWithArgs",
+            "Write-Output $args",
+            "-WindowStyle",
+            "Normal",
+        ]);
+        expect(hiddenWindowsPowerShellArgs(["-cwa", "Write-Output $args", "-w", "Normal"])).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-cwa",
+            "Write-Output $args",
+            "-w",
+            "Normal",
+        ]);
     });
 
     it("accepts only verified local executable paths", () => {

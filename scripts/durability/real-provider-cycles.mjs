@@ -10,6 +10,7 @@ import { androidDiscovery, handleAndroidTool } from "../../device-lab-mcp/src/ba
 import { handleAndroidRealTool } from "../../device-lab-mcp/src/backends/android-device.mjs";
 import { ownerId as currentOwnerId } from "../../device-lab-mcp/src/context.mjs";
 import { listOwnedAndroidAvdArtifacts, ownedAndroidAvdName, removeOwnedAndroidAvdArtifacts } from "../../device-lab-mcp/src/state/android-avd-storage.mjs";
+import { hiddenWindowsPowerShellArgs } from "../../device-lab-mcp/src/state/windows-system-powershell.mjs";
 import { readPhysicalLeases, releaseOwnedPhysicalLeaseResidue } from "../../device-lab-mcp/src/state/physical-lease-store.mjs";
 import { listRunningWindowsSandboxSessions } from "../real-tests/windows-sandbox-e2e.ts";
 import { withExclusiveRealProviderRun } from "../real-tests/exclusive-real-provider-run.ts";
@@ -364,7 +365,7 @@ export function listHyperVVmInventory(options = {}) {
         "}",
         "ConvertTo-Json -InputObject $Rows -Compress -Depth 5",
     ].join("; ");
-    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
         timeout: 30_000,
@@ -383,7 +384,7 @@ export function listHyperVNetworkInventory(options = {}) {
         "$Addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { [ordered]@{ interfaceAlias = [string]$_.InterfaceAlias; address = [string]$_.IPAddress; prefixLength = [int]$_.PrefixLength } })",
         "[ordered]@{ switches = $Switches; nats = $Nats; addresses = $Addresses } | ConvertTo-Json -Compress -Depth 5",
     ].join("; ");
-    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = (options.spawnSyncImpl || spawnSync)(options.powershell || "powershell.exe", hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
         timeout: 30_000,

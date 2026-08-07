@@ -1,5 +1,6 @@
 
 import { isAbsolute, relative, resolve, sep } from "path";
+import { hiddenWindowsPowerShellArgs } from "../../windows-system-powershell.js";
 
 import {
     type HyperVProviderCommand,
@@ -119,7 +120,7 @@ export function command(executable: string, script: string, input?: string): Hyp
             mode: "exec",
             provider: "hyper-v",
             executable,
-            args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(loader)],
+            args: hiddenWindowsPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedPowerShell(loader)]),
             input: Buffer.from(program, "utf8").toString("base64"),
         };
     }
@@ -127,7 +128,7 @@ export function command(executable: string, script: string, input?: string): Hyp
         mode: "exec",
         provider: "hyper-v",
         executable,
-        args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        args: hiddenWindowsPowerShellArgs(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded]),
         ...(input !== undefined ? { input } : {}),
     };
 }

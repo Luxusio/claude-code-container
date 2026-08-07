@@ -25,6 +25,19 @@ test("unsupported platforms fail closed instead of using coarse PID timestamps",
     );
 });
 
+test("Windows process identity inspection starts PowerShell hidden", () => {
+    let observedArgs;
+    const snapshot = processIdentitySnapshot({
+        platform: "win32",
+        spawnSyncImpl: (_executable, args) => {
+            observedArgs = args;
+            return { status: 0, stdout: "[]", stderr: "" };
+        },
+    });
+    assert.deepEqual(snapshot, []);
+    assert.deepEqual(observedArgs.slice(0, 2), ["-WindowStyle", "Hidden"]);
+});
+
 test("sampling retains reparented descendants by identity and ignores reused PIDs", () => {
     const root = identity(100, 1, "root-a");
     const child = identity(101, 100, "child-a");

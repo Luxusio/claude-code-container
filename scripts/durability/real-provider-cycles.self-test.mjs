@@ -852,18 +852,20 @@ test("detects test-owned Hyper-V VMs even when CCC owner state is absent", () =>
 test("Windows Hyper-V inventory commands request disks, checkpoints, switches, NATs, and addresses", () => {
     const commands = [];
     const spawnSyncImpl = (_executable, args) => {
-        commands.push(args.at(-1));
+        commands.push(args);
         return commands.length === 1
             ? { status: 0, stdout: "[]", stderr: "" }
             : { status: 0, stdout: JSON.stringify({ switches: [], nats: [], addresses: [] }), stderr: "" };
     };
     assert.deepEqual(listHyperVVmInventory({ platform: "win32", spawnSyncImpl }), []);
     assert.deepEqual(listHyperVNetworkInventory({ platform: "win32", spawnSyncImpl }), { switches: [], nats: [], addresses: [] });
-    assert.match(commands[0], /Get-VMHardDiskDrive/);
-    assert.match(commands[0], /Get-VMSnapshot/);
-    assert.match(commands[1], /Get-VMSwitch/);
-    assert.match(commands[1], /Get-NetNat/);
-    assert.match(commands[1], /Get-NetIPAddress/);
+    assert.deepEqual(commands[0].slice(0, 2), ["-WindowStyle", "Hidden"]);
+    assert.deepEqual(commands[1].slice(0, 2), ["-WindowStyle", "Hidden"]);
+    assert.match(commands[0].at(-1), /Get-VMHardDiskDrive/);
+    assert.match(commands[0].at(-1), /Get-VMSnapshot/);
+    assert.match(commands[1].at(-1), /Get-VMSwitch/);
+    assert.match(commands[1].at(-1), /Get-NetNat/);
+    assert.match(commands[1].at(-1), /Get-NetIPAddress/);
 });
 
 test("Windows Hyper-V inventory reports the one-time management permission remedy", () => {

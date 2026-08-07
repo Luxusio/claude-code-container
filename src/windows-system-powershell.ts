@@ -50,6 +50,25 @@ export function canonicalWindowsPowerShellPath(testSystemRoot?: string): string 
     return canonicalWindowsSystemExecutablePath("WindowsPowerShell/v1.0/powershell.exe", testSystemRoot);
 }
 
+export function hiddenWindowsPowerShellArgs(args: readonly string[]): string[] {
+    const filtered: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        const match = /^-([a-z]+)((?::|=).*)?$/i.exec(arg);
+        const parameter = match?.[1]?.toLowerCase();
+        if (parameter && ["command", "commandwithargs", "cwa", "encodedcommand", "file"].some((terminal) => terminal.startsWith(parameter))) {
+            filtered.push(...args.slice(index));
+            break;
+        }
+        if (parameter && "windowstyle".startsWith(parameter)) {
+            if (!match?.[2] && index + 1 < args.length && !args[index + 1].startsWith("-")) index += 1;
+            continue;
+        }
+        filtered.push(arg);
+    }
+    return ["-WindowStyle", "Hidden", ...filtered];
+}
+
 export function canonicalWindowsTasklistPath(testSystemRoot?: string): string | null {
     return canonicalWindowsSystemExecutablePath("tasklist.exe", testSystemRoot);
 }
@@ -110,7 +129,7 @@ export function terminateWindowsProcessByStartToken(
         return { ok: false, pid, reason: "windows-process-identity-unavailable" };
     }
     const script = windowsHandleBoundTerminationScript();
-    const result = spawnSync(powershellPath, ["-NoProfile", "-NonInteractive", "-Command", script], {
+    const result = spawnSync(powershellPath, hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", script]), {
         encoding: "utf8",
         windowsHide: true,
         timeout: Math.max(1000, timeoutMs + 1000),

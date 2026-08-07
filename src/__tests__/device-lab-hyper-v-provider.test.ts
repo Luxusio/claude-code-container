@@ -88,6 +88,12 @@ function loaderOf(command: { args: string[] }): string {
 }
 
 describe("Hyper-V provider adapter", () => {
+    it("hides every host PowerShell adapter process", () => {
+        const command = hyperVReadinessCommand("powershell.exe");
+        expect(command.args.slice(0, 2)).toEqual(["-WindowStyle", "Hidden"]);
+        expect(command.args).toContain("-NonInteractive");
+    });
+
     it.skipIf(process.platform !== "win32")("creates provisioning ISO media from a fenced file tree", () => {
         const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-media-probe-"));
         try {
@@ -144,6 +150,8 @@ describe("Hyper-V provider adapter", () => {
                 "}",
             ].join("\n");
             const result = spawnSync("powershell.exe", [
+                "-WindowStyle",
+                "Hidden",
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
@@ -200,6 +208,8 @@ describe("Hyper-V provider adapter", () => {
                 "Invoke-CccCleanupFailureCase $PrimaryIsoPath $PrimarySourceRoot $InvalidFiles 'hyper-v-provisioning-media-source-entry-invalid'",
             ].join("\n");
             const cleanupFailureResult = spawnSync("powershell.exe", [
+                "-WindowStyle",
+                "Hidden",
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
@@ -346,6 +356,8 @@ describe("Hyper-V provider adapter", () => {
                 "try { & tar.exe -tf $Archive; if ($LASTEXITCODE -ne 0) { throw 'tar-read-failed' } } finally { $Handle.Dispose() }",
             ].join("\n");
             const result = spawnSync("powershell.exe", [
+                "-WindowStyle",
+                "Hidden",
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
@@ -405,6 +417,8 @@ describe("Hyper-V provider adapter", () => {
                 "if ($Status -ne 0) { throw 'hyper-v-linux-ssh-keygen-probe-failed' }",
             ].join("\n");
             const created = spawnSync("powershell.exe", [
+                "-WindowStyle",
+                "Hidden",
                 "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-EncodedCommand", Buffer.from(probe, "utf16le").toString("base64"),
             ], { encoding: "utf8", timeout: 30_000, windowsHide: true });
@@ -810,6 +824,8 @@ describe("Hyper-V provider adapter", () => {
             "if (@($Errors).Count -gt 0) { [Console]::Error.WriteLine((@($Errors | ForEach-Object { $_.Message }) -join [Environment]::NewLine)); exit 1 }",
         ].join("\n");
         const result = spawnSync("powershell.exe", [
+            "-WindowStyle",
+            "Hidden",
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -1181,6 +1197,8 @@ describe("Hyper-V provider adapter", () => {
                 "[ordered]@{ ok = $true; events = @($script:CleanupEvents) } | ConvertTo-Json -Compress",
             ].join("\n");
             const result = spawnSync("powershell.exe", [
+                "-WindowStyle",
+                "Hidden",
                 "-NoLogo",
                 "-NoProfile",
                 "-NonInteractive",
@@ -1743,6 +1761,8 @@ describe("Hyper-V provider adapter", () => {
 
     it.skipIf(process.platform !== "win32")("computes IPv4 prefix masks on Windows PowerShell 5.1 without signed overflow", () => {
         const result = spawnSync("powershell.exe", [
+            "-WindowStyle",
+            "Hidden",
             "-NoProfile",
             "-NonInteractive",
             "-Command",

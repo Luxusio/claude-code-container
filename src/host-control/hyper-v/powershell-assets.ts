@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 import { lstatSync, readFileSync, realpathSync } from "fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "path";
 import { fileURLToPath } from "url";
+import { hiddenWindowsPowerShellArgs } from "../../windows-system-powershell.js";
 
 import type { HyperVProviderCommand } from "./contracts.js";
 import {
@@ -52,7 +53,7 @@ export function hyperVPowerShellFileCommand<Operation extends HyperVPowerShellOp
         mode: "exec",
         provider: "hyper-v",
         executable,
-        args: [
+        args: hiddenWindowsPowerShellArgs([
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
@@ -60,7 +61,7 @@ export function hyperVPowerShellFileCommand<Operation extends HyperVPowerShellOp
             "Bypass",
             "-File",
             hyperVPowerShellAssetPath(operation),
-        ],
+        ]),
         input,
     };
 }

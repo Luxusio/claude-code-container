@@ -4866,6 +4866,31 @@ describe("device-lab host broker lifecycle commands", () => {
         });
     });
 
+    it("forces every Windows PowerShell provider command to start hidden", () => {
+        expect(providerCommandSpawn({
+            mode: "exec",
+            provider: "process-inventory",
+            executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            args: ["-NoProfile", "-Command", "exit 0"],
+        }, "win32")).toEqual({
+            executable: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+            args: ["-WindowStyle", "Hidden", "-NoProfile", "-Command", "exit 0"],
+        });
+
+        expect(providerCommandSpawn({
+            mode: "exec",
+            provider: "process-inventory",
+            executable: "pwsh.exe",
+            args: ["-WindowStyle", "Hidden", "-NoProfile", "-Command", "exit 0"],
+        }, "win32").args).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+    });
+
     it("uses hidden child-process options for provider commands by default", () => {
         expect(hiddenChildProcessOptions({ detached: true, stdio: "ignore" as const })).toEqual({
             detached: true,

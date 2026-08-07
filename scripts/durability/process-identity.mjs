@@ -1,5 +1,6 @@
 import { spawnSync } from "child_process";
 import { readFileSync, readdirSync } from "fs";
+import { hiddenWindowsPowerShellArgs } from "../../device-lab-mcp/src/state/windows-system-powershell.mjs";
 
 function linuxProcessSnapshot(procRoot = "/proc") {
     const entries = [];
@@ -26,7 +27,7 @@ function windowsProcessSnapshot(spawnSyncImpl = spawnSync) {
         "$ErrorActionPreference='Stop'",
         "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate | ConvertTo-Json -Compress",
     ].join("; ");
-    const result = spawnSyncImpl("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", command], {
+    const result = spawnSyncImpl("powershell.exe", hiddenWindowsPowerShellArgs(["-NoProfile", "-NonInteractive", "-Command", command]), {
         encoding: "utf8",
         windowsHide: true,
         timeout: 5000,

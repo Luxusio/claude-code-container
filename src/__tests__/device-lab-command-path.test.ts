@@ -93,6 +93,35 @@ describe("device-lab commandPath", () => {
         }));
     });
 
+    it("forces hidden PowerShell arguments at the shared MCP command boundary", () => {
+        setPlatform("win32");
+        spawnSyncMock.mockReturnValue({ status: 0, stdout: "", stderr: "" } as ReturnType<typeof spawnSync>);
+
+        run("powershell.exe", ["-NoProfile", "-Command", "exit 0"]);
+        run("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", [
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+
+        expect(spawnSyncMock.mock.calls[0][1]).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+        expect(spawnSyncMock.mock.calls[1][1]).toEqual([
+            "-WindowStyle",
+            "Hidden",
+            "-NoProfile",
+            "-Command",
+            "exit 0",
+        ]);
+    });
+
     it("clamps explicit command execution bounds", () => {
         spawnSyncMock.mockReturnValue({ status: 0, stdout: "", stderr: "" } as ReturnType<typeof spawnSync>);
 
