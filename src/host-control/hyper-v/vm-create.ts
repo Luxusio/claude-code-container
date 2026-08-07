@@ -210,7 +210,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  $CreatedOsDisks = @(Get-VMHardDiskDrive -VM $CreatedVm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
         "  if ($CreatedOsDisks.Count -ne 1) { throw 'hyper-v-created-disk-attachment-mismatch' }",
         "  if ($VmGeneration -eq 2) {",
-        `    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -FirstBootDevice $CreatedOsDisks[0] -ErrorAction Stop`,
+        `    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop`,
         "  } else {",
         "    Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop",
         "  }",

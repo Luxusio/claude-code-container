@@ -586,7 +586,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v19` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v20` additionally prevents reuse of a
   broker that still acquires an interactive desktop VHDX or reports every
   unexpected VM creation preflight failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
@@ -602,6 +602,14 @@ Real-provider tests:
   rejects Sparse, Compressed, or Encrypted filesystem attributes, and verifies
   it with `Get-VHD` before publishing those exact bytes. The provider does not
   pass the bootable disk through a second `Convert-VHD` serialization step.
+  Before publication, the pinned Ubuntu image is mounted without a drive
+  letter and its EFI system partition is given the standard removable-media
+  fallback loader. CCC copies `EFI/ubuntu` to `EFI/boot` and renames
+  `shimx64.efi` to `bootx64.efi`, matching Microsoft's documented requirement
+  for cloned Generation 2 Ubuntu disks. The image catalog revision invalidates
+  images that lack this fallback path. Generation 2 VM creation replaces the
+  firmware boot order with the OS disk instead of merely moving that disk ahead
+  of potentially stale NVRAM entries.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

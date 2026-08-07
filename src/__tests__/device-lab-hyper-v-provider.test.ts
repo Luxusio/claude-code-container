@@ -252,6 +252,7 @@ describe("Hyper-V provider adapter", () => {
             "Set-CccAcquireStage 'hyper-v-base-image-source-hash-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-source-inspection-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-convert-failed'",
+            "Set-CccAcquireStage 'hyper-v-base-image-efi-fallback-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-hash-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'",
@@ -745,11 +746,32 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$QemuHashBefore = Get-CccGuardedSha256 $QemuGuard");
         expect(script).toContain("$QemuHashAfter = Get-CccGuardedSha256 $QemuGuard");
         expect(script).toContain("if ($QemuHashAfter -ne $QemuHashBefore) { throw 'hyper-v-qemu-img-mutated' }");
+        expect(script).toContain("Mount-VHD -Path $QemuOutputPath -NoDriveLetter");
+        expect(script).toContain("'{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'");
+        expect(script).toContain("$UbuntuEfiPath = Join-Path $EfiAccessPath 'EFI\\ubuntu'");
+        expect(script).toContain("$FallbackEfiPath = Join-Path $EfiAccessPath 'EFI\\boot'");
+        expect(script).toContain("Move-Item -LiteralPath $FallbackShimPath -Destination $FallbackBootPath");
+        expect(script).toContain("Dismount-VHD -Path $QemuOutputPath");
+        expect(script).toContain("Dismount-VHD -Path $QemuOutputPath -ErrorAction Stop");
+        expect(script).toContain("Remove-PartitionAccessPath -InputObject $EfiPartitions[0] -AccessPath $EfiAccessPath -ErrorAction Stop");
+        expect(script).toContain("Get-DiskImage -ImagePath $QemuOutputPath -ErrorAction Stop).Attached");
+        expect(script).toContain("-not (Test-Path -LiteralPath (Join-Path $EfiAccessPath 'EFI'))");
+        expect(script).toContain("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or -not $EfiDetachVerified) { throw 'hyper-v-base-image-efi-cleanup-failed' }");
+        expect(script).toContain("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or ($UbuntuMountAttempted -and -not $EfiDetachVerified)) { $FinalEfiCleanupFailed = $true }");
+        expect(script).toContain("if ($FinalEfiCleanupFailed) { throw 'hyper-v-base-image-efi-cleanup-failed' }");
+        expect(script.indexOf("$UbuntuMountAttempted = $false", script.indexOf("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or -not $EfiDetachVerified)")))
+            .toBeLessThan(script.indexOf("Remove-Item -LiteralPath $QemuOutputPath -Force -ErrorAction Stop"));
+        expect(script.indexOf("if ($FinalEfiCleanupFailed) { throw 'hyper-v-base-image-efi-cleanup-failed' }"))
+            .toBeGreaterThan(script.indexOf("Remove-Item -LiteralPath $NormalizedQemuPath -Force -ErrorAction SilentlyContinue"));
+        expect(script).toContain("if ($EfiPreparationFailure) { throw $EfiPreparationFailure }");
+        expect(script).not.toContain("Dismount-VHD -Path $QemuOutputPath -ErrorAction SilentlyContinue");
+        expect(script).not.toContain("Remove-PartitionAccessPath -InputObject $EfiPartitions[0] -AccessPath $EfiAccessPath -ErrorAction SilentlyContinue");
+        expect(script.indexOf("Mount-VHD -Path $QemuOutputPath"))
+            .toBeLessThan(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"));
         expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("function Get-CccVhdGeneration");
         expect(script).not.toContain("Mount-VHD -Path $Path");
-        expect(script).not.toContain("Get-Disk -ErrorAction Stop");
         expect(script).toContain("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath");
         expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
         expect(script).toContain("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath");
@@ -979,7 +1001,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("AutomaticCheckpointsEnabled $false");
         expect(script).toContain("CheckpointType ProductionOnly");
         expect(script).toContain("EnableSecureBoot On");
-        expect(script).toContain("-FirstBootDevice $CreatedOsDisks[0]");
+        expect(script).toContain("-BootOrder @($CreatedOsDisks[0])");
+        expect(script).not.toContain("-FirstBootDevice $CreatedOsDisks[0]");
         expect(script).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(script).toContain("Get-VMSwitch -Name $SwitchName");
         expect(script).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
@@ -1262,7 +1285,8 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
-        expect(seedScript).toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
+        expect(seedScript).toContain("Set-VMFirmware -VM $Vm -BootOrder @($OsDisks[0])");
+        expect(seedScript).not.toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
         expect(seedScript).toContain("Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(seedScript).toContain("$Image.FileSystemsToCreate = 7");
