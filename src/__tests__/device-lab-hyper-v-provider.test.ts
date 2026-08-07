@@ -1355,6 +1355,11 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("apply_network_config: false");
         expect(seedScript).toContain("/etc/netplan/99-ccc-static.yaml");
         expect(seedScript).toContain("'  - [netplan, apply]'");
+        expect(seedScript).toContain("'package_update: false'");
+        expect(seedScript).not.toContain("'package_update: true'");
+        expect(seedScript).not.toContain("'packages:'");
+        expect(seedScript).not.toContain("'  - openssh-server'");
+        expect(seedScript).toContain("'  - [systemctl, enable, --now, ssh]'");
         expect(seedScript).toContain("ssh-keygen.exe");
         expect(seedScript).toContain("function New-CccSshKey");
         expect(seedScript).toContain("$StartInfo.Arguments = '-q -t ed25519 -N \"\"");
@@ -1372,6 +1377,11 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("hyper-v-linux-seed-' + $CccProvisionStage + '-command-failed");
         expect(seedScript).toContain("ssh_host_ed25519_key");
         expect(seedScript).toContain("ssh_deletekeys: true");
+        expect(seedScript).toContain("'ssh_keys:'");
+        expect(seedScript).toContain("'  ed25519_private: |'");
+        expect(seedScript).toContain("('  ed25519_public: ' + $HostPublicKeyText)");
+        expect(seedScript).toContain("$HostPrivateKeyYaml = (($HostPrivateKeyText -split");
+        expect(seedScript).not.toContain("'  - path: /etc/ssh/ssh_host_ed25519_key'");
         expect(seedScript).toContain("sshHostKeyFingerprint");
         expect(seedScript).toContain("Add-VMDvdDrive -VM $Vm -Path $SeedDisk");
         expect(seedScript).not.toContain("$SeedSource");

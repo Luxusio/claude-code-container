@@ -3259,8 +3259,13 @@ remain unchanged where they are the behavior under test.
     not cross a Storage cmdlet UAC boundary. VM creation replaces the firmware
     boot order with the managed OS disk, removing stale NVRAM entries rather
     than only moving the disk ahead of them.
-    Brokers advertise `hyper-v-provider-image-finalization-v22`, preventing a
-    desktop-image broker from being reused by Level 3.
+    Linux cloud-init does not run online package updates before SSH readiness:
+    the pinned Ubuntu Server image already contains OpenSSH. The seed deletes
+    inherited host keys, installs the owner-scoped ED25519 pair through
+    cloud-init's native `ssh_keys` contract, writes the network configuration,
+    and enables that local service directly. Brokers advertise
+    `hyper-v-provider-image-finalization-v23`, preventing a desktop-image or
+    package-update-blocking broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
     The deleted device's allocation is atomically removed, its owner artifacts
@@ -3288,7 +3293,7 @@ remain unchanged where they are the behavior under test.
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v22`
+    `hyper-v-provider-image-finalization-v23`
     for this guard contract. Acquisition reports distinct bounded stages for
     source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
@@ -3320,7 +3325,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v22` for this contract.
+    `hyper-v-provider-image-finalization-v23` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3343,4 +3348,4 @@ remain unchanged where they are the behavior under test.
     `New-VHD -Differencing` compatibility boundary while preserving immutable
     shared-image verification. Brokers
     advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v22` for this contract.
+    `hyper-v-provider-image-finalization-v23` for this contract.

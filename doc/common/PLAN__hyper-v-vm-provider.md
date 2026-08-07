@@ -596,9 +596,17 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v22` additionally prevents reuse of a
-  broker that still acquires an interactive desktop VHDX or reports every
-  unexpected VM creation preflight failure as the initial generic stage. VM
+  `hyper-v-provider-image-finalization-v23` additionally prevents reuse of a
+  broker whose Linux seed blocks SSH activation behind online package updates.
+  The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
+  disables package updates on the first boot, writes the owner-scoped host
+  keys and static network, then enables the local SSH service without waiting
+  for an archive mirror. Cloud-init deletes any host keys inherited from the
+  base image, then installs the owner-scoped ED25519 pair through its native
+  `ssh_keys` contract before SSH starts. The same contract rejects brokers
+  that still acquire
+  an interactive desktop VHDX or report every unexpected VM creation preflight
+  failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
   state before host capacity, storage, path, VM identity, network, disk, and VM
   configuration operations. Parent-image integrity is checked immediately
