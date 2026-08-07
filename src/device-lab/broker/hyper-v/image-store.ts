@@ -36,7 +36,7 @@ export type HyperVImageManifest = {
     profile: HyperVImageProfile;
     catalogId: string;
     sourceUrl: string | null;
-    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip" | "qcow2";
+    sourceFormat: "vhdx" | "vhd-tar-gz" | "vhdx-zip" | "qcow2" | "vmdk";
     sourceSha256: string | null;
     licenseId: string | null;
     generation: 1 | 2;
@@ -111,10 +111,10 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
             assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
         });
     }
-    for (const sourceCache of [join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip")]) {
+    for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip")]) {
         try {
             const archiveMetadata = lstatSync(sourceCache);
-            const currentCache = sourceCache.endsWith("source.qcow2");
+            const currentCache = sourceCache.endsWith("source.vmdk");
             const validRetryCache = currentCache
                 && archiveMetadata.isFile()
                 && !archiveMetadata.isSymbolicLink()
@@ -346,7 +346,7 @@ export function readHyperVImageManifestMetadata(
             || value.profile !== profile
             || typeof value.catalogId !== "string"
             || (value.sourceUrl !== null && typeof value.sourceUrl !== "string")
-            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip" && value.sourceFormat !== "qcow2")
+            || (value.sourceFormat !== "vhdx" && value.sourceFormat !== "vhd-tar-gz" && value.sourceFormat !== "vhdx-zip" && value.sourceFormat !== "qcow2" && value.sourceFormat !== "vmdk")
             || (value.sourceSha256 !== null && (typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(value.sourceSha256)))
             || (value.licenseId !== null && typeof value.licenseId !== "string")
             || (value.generation !== 1 && value.generation !== 2)

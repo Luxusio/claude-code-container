@@ -343,14 +343,10 @@ paths use the same broker contract.
   thirty-minute outer RPC window for hashing, VM creation, and guest
   provisioning after the transfer completes.
 - Create an owner-scoped independent VHDX clone for each disposable VM.
-- Use Generation 2 for Windows profiles and compatible explicit imports. Use
-  Generation 1 BIOS for the automatic Ubuntu profile so copied cloud disks do
-  not depend on per-VM UEFI NVRAM boot entries.
-- Generation 1 does not provide Secure Boot. The automatic Ubuntu profile
-  therefore anchors image trust in the pinned Canonical SHA-256, the
-  Authenticode-verified converter, broker-private ACLs, and the versioned image
-  manifest/capability contract. Environments that require Secure Boot must use
-  a compatible explicit Generation 2 image instead.
+- Use Generation 2 for Windows, the automatic Ubuntu profile, and compatible
+  explicit imports. The automatic Ubuntu path uses Canonical's VMDK artifact
+  documented for conversion to Hyper-V VHDX, rather than the QCOW artifact
+  documented for QEMU/KVM.
 - Use the Microsoft Windows Secure Boot template for Windows guests.
 - Use the Microsoft UEFI Certificate Authority template for supported Linux
   guests.
@@ -563,19 +559,18 @@ Real-provider tests:
   device types. They never expose VM names, disk paths, credentials, raw
   PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
   the observed VM state instead of assuming a started VM remained running.
-- The automatic Ubuntu profile uses Canonical's pinned Ubuntu Server cloud
-  image, not the interactive Hyper-V desktop image or the Azure-specific VHD.
-  CCC verifies the dated release SHA-256 and converts the QCOW2 BIOS/UEFI image
+- The automatic Ubuntu profile uses Canonical's pinned Ubuntu Server VMDK
+  image, not the QEMU-oriented QCOW image, interactive Hyper-V desktop image,
+  or Azure-specific VHD. CCC verifies the dated release SHA-256 and converts
+  the VMDK image
   into a pre-created dynamic 32 GiB VHDX with `qemu-img.exe` at the current user's default
   Android SDK path. CCC requires a valid Google Authenticode signature, rejects
   reparse paths, holds the source image and converter identities open across
   inspection/conversion, and binds the source URL and checksum into the cache
-  manifest. The automatic Linux profile uses Generation 1 BIOS boot because a
-  newly created Generation 2 VM has no Ubuntu NVRAM boot entry and copied
-  Ubuntu disks are not guaranteed to contain the removable-media
-  `EFI/BOOT/BOOTX64.EFI` fallback. This avoids mounting and mutating the trusted
-  base image solely to synthesize that fallback. The catalog fences the QCOW2
-  format and Generation 1 boot contract. The provisioning media retains both
+  manifest. The automatic Linux profile uses Generation 2 with the Microsoft
+  UEFI Certificate Authority template, matching Canonical's Hyper-V guidance.
+  The catalog fences the VMDK format and Generation 2 boot contract. The
+  provisioning media retains both
   generic NoCloud files
   and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
   `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
@@ -591,7 +586,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v17` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v18` additionally prevents reuse of a
   broker that still acquires an interactive desktop VHDX or reports every
   unexpected VM creation preflight failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage

@@ -226,7 +226,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/cache",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         });
 
         expect(acquire.args).toContain("-EncodedCommand");
@@ -264,7 +264,7 @@ describe("Hyper-V provider adapter", () => {
                 .toBeLessThan(acquireScript.indexOf(acquireStages[index]));
         }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.img");
+        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.vmdk");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -272,7 +272,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-loader-probe",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         });
         const run = (input: string) => spawnSync(acquire.executable, acquire.args, {
             input,
@@ -652,7 +652,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         });
         const script = scriptOf(command);
         expect(script).toContain("$SourceImagePath =");
@@ -669,18 +669,18 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Entry.Attributes -band [IO.FileAttributes]::ReparsePoint");
         expect(script).toContain("Protect-CccImageDirectory $ProfileRoot");
         expect(script.match(/Protect-CccImageDirectory \$ProfileRoot/g)?.length).toBeGreaterThanOrEqual(3);
-        expect(script).toContain("source.qcow2");
-        expect(script).toContain("$ImageDownloadPath = Join-Path $WorkPath 'source.download.qcow2'");
+        expect(script).toContain("source.vmdk");
+        expect(script).toContain("$ImageDownloadPath = Join-Path $WorkPath 'source.download.vmdk'");
         expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Container");
         expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Leaf");
         expect(script).toContain("$SourceReady = $CachedHash -eq $UbuntuImageSha256");
         expect(script).toContain("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath");
         expect(script.indexOf("Get-FileHash -LiteralPath $ImageDownloadPath"))
             .toBeLessThan(script.indexOf("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath"));
-        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64.img");
+        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64.vmdk");
         expect(script).not.toContain("azure.vhd");
         expect(script).not.toContain("ubuntu-desktop-hyperv");
-        expect(script).toContain("0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe");
+        expect(script).toContain("8fdafa961e9de4f26747e89a122093ed772565e80bddb45bc39e2eb57df07988");
         expect(script).not.toContain("SHA256SUMS");
         expect(script).toContain("$UbuntuMaxBytes = [long]5GB");
         expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com'");
@@ -703,10 +703,10 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("if (-not (Test-Path -LiteralPath $QemuImg -PathType Leaf)) { throw 'hyper-v-qemu-img-unavailable' }"))
             .toBeLessThan(script.indexOf("Save-BoundedDownload $UbuntuImageUrl"));
         expect(script).toContain("& $QemuImg info --output=json $SourceImagePath");
-        expect(script).toContain("[string]$SourceInfo.format -ne 'qcow2'");
+        expect(script).toContain("[string]$SourceInfo.format -ne 'vmdk'");
         expect(script).toContain("& $QemuImg create -f vhdx -o subformat=dynamic $QemuOutputPath $UbuntuVirtualSizeBytes");
         expect(script).toContain("hyper-v-base-image-destination-create-failed");
-        expect(script).toContain("& $QemuImg convert -n -f qcow2 -O vhdx $SourceImagePath $QemuOutputPath");
+        expect(script).toContain("& $QemuImg convert -n -f vmdk -O vhdx $SourceImagePath $QemuOutputPath");
         expect(script).toContain("if ([long]$ConvertedVhd.Size -ne $UbuntuVirtualSizeBytes) { throw 'hyper-v-base-image-convert-failed' }");
         expect(script).toContain("$QemuOutputGuard.CopyTo($NormalizedOutput, 8388608)");
         expect(script).toContain("$NormalizedOutput = [IO.File]::Open($NormalizedQemuPath");
@@ -775,7 +775,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath"))
             .toBeLessThan(script.indexOf("Protect-CccImageDirectory $ProfileRoot", script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath")));
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash");
-        expect(script).toContain("$ExpectedGeneration = 1");
+        expect(script).toContain("$ExpectedGeneration = 2");
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("hyper-v-base-image-generation-mismatch");
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false");
@@ -792,7 +792,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-hyper-v-parser-probe",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         });
         const parser = [
             "$Encoded = [Console]::In.ReadToEnd().Trim()",
@@ -831,7 +831,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "relative/images",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         })).toThrow("hyper-v-base-image-root-invalid");
         expect(() => hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
@@ -843,7 +843,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         })).toThrow("hyper-v-base-image-generation-mismatch");
         expect(() => hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
@@ -1047,7 +1047,7 @@ describe("Hyper-V provider adapter", () => {
             vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
             baseImagePath: "/state/images/hyper-v/ubuntu-lts.vhdx",
             baseImageSha256,
-            baseImageGeneration: 1,
+            baseImageGeneration: 2,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01",
             diskPath: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01/disks/root.vhdx",
@@ -1059,7 +1059,7 @@ describe("Hyper-V provider adapter", () => {
             bootstrapDhcp: true,
             secureBootTemplate: "MicrosoftUEFICertificateAuthority",
         }));
-        expect(linuxScript).toContain("$ExpectedVmGeneration = 1");
+        expect(linuxScript).toContain("$ExpectedVmGeneration = 2");
         expect(linuxScript).toContain("Generation = $VmGeneration");
         expect(linuxScript).toContain("if ($VmGeneration -eq 2)");
         expect(linuxScript).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");

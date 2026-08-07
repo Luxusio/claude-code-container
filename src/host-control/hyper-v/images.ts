@@ -87,7 +87,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     if (options.profile !== "windows-server" && options.profile !== "ubuntu-lts") {
         throw new Error("hyper-v-base-image-profile-not-automatic");
     }
-    const profileGeneration = options.profile === "windows-server" ? 2 : 1;
+    const profileGeneration = 2;
     if (options.expectedGeneration !== profileGeneration) {
         throw new Error("hyper-v-base-image-generation-mismatch");
     }
@@ -95,7 +95,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     const imagePath = resolve(profileRoot, "base.vhdx");
     const partialPath = resolve(profileRoot, "base.partial.vhdx");
     const workPath = resolve(profileRoot, ".acquire-work");
-    const sourceImagePath = resolve(profileRoot, "source.qcow2");
+    const sourceImagePath = resolve(profileRoot, "source.vmdk");
     const script = jsonScript([
         `$Profile = ${psQuote(options.profile)}`,
         `$ImageRoot = ${psQuote(imageRoot)}`,
@@ -268,8 +268,8 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "      try { return ([BitConverter]::ToString($Hasher.ComputeHash($Stream))).Replace('-', '').ToLowerInvariant() } finally { $Hasher.Dispose(); $Stream.Position = 0 }",
         "    }",
         "    $QemuHashBefore = Get-CccGuardedSha256 $QemuGuard",
-        "    $ImageDownloadPath = Join-Path $WorkPath 'source.download.qcow2'",
-        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com' -and $FinalUri.AbsolutePath.EndsWith('/ubuntu-24.04-server-cloudimg-amd64.img', [StringComparison]::OrdinalIgnoreCase)) }",
+        "    $ImageDownloadPath = Join-Path $WorkPath 'source.download.vmdk'",
+        "    $ValidateCanonical = { param([Uri]$FinalUri) return ($FinalUri.Scheme -eq 'https' -and $FinalUri.DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com' -and $FinalUri.AbsolutePath.EndsWith('/ubuntu-24.04-server-cloudimg-amd64.vmdk', [StringComparison]::OrdinalIgnoreCase)) }",
         "    $SourceReady = $false",
         "    if (Test-Path -LiteralPath $SourceImagePath -PathType Container) { throw 'hyper-v-base-image-hash-failed' }",
         "    if (Test-Path -LiteralPath $SourceImagePath -PathType Leaf) {",
@@ -302,14 +302,14 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    $SourceInfoText = & $QemuImg info --output=json $SourceImagePath 2>$null",
         "    if ($LASTEXITCODE -ne 0 -or -not $SourceInfoText) { throw 'hyper-v-base-image-source-inspection-failed' }",
         "    $SourceInfo = ($SourceInfoText -join [Environment]::NewLine) | ConvertFrom-Json -ErrorAction Stop",
-        "    if ([string]$SourceInfo.format -ne 'qcow2' -or [long]$SourceInfo.'virtual-size' -le 0 -or [long]$SourceInfo.'virtual-size' -gt [long]128GB) { throw 'hyper-v-base-image-source-format-invalid' }",
+        "    if ([string]$SourceInfo.format -ne 'vmdk' -or [long]$SourceInfo.'virtual-size' -le 0 -or [long]$SourceInfo.'virtual-size' -gt [long]128GB) { throw 'hyper-v-base-image-source-format-invalid' }",
         "    $ProfileDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($ProfileRoot))",
         "    if ([long]$ProfileDrive.AvailableFreeSpace -lt ([long](Get-Item -LiteralPath $SourceImagePath).Length + [long]4GB)) { throw 'hyper-v-host-disk-capacity-exceeded' }",
         "    Set-CccAcquireStage 'hyper-v-base-image-destination-create-failed'",
         "    & $QemuImg create -f vhdx -o subformat=dynamic $QemuOutputPath $UbuntuVirtualSizeBytes 2>$null",
         "    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $QemuOutputPath -PathType Leaf)) { throw 'hyper-v-base-image-destination-create-failed' }",
         "    Set-CccAcquireStage 'hyper-v-base-image-convert-failed'",
-        "    & $QemuImg convert -n -f qcow2 -O vhdx $SourceImagePath $QemuOutputPath 2>$null",
+        "    & $QemuImg convert -n -f vmdk -O vhdx $SourceImagePath $QemuOutputPath 2>$null",
         "    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $QemuOutputPath -PathType Leaf)) { throw 'hyper-v-base-image-convert-failed' }",
         "    $ConvertedVhd = Get-VHD -Path $QemuOutputPath -ErrorAction Stop",
         "    if ([long]$ConvertedVhd.Size -ne $UbuntuVirtualSizeBytes) { throw 'hyper-v-base-image-convert-failed' }",

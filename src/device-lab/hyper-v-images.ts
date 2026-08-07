@@ -42,12 +42,12 @@ export const HYPER_V_IMAGE_CATALOG = {
     "ubuntu-lts": {
         catalogId: HYPER_V_UBUNTU_IMAGE_CATALOG_ID,
         sourceUrl: HYPER_V_UBUNTU_IMAGE_URL,
-        sourceFormat: "qcow2",
+        sourceFormat: "vmdk",
         sourceSha256: HYPER_V_UBUNTU_IMAGE_SHA256,
         virtualSizeBytes: HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES,
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
-        generation: 1,
+        generation: 2,
     },
 } as const;
 
