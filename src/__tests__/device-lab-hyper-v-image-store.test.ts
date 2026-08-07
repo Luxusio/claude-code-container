@@ -132,7 +132,6 @@ describe("Hyper-V image store module", () => {
                     cwd: privateRoot,
                     privateRoot,
                     resolveExecutable: () => "powershell.exe",
-                    resolveElevationExecutable: () => "system-powershell.exe",
                     run: async () => {
                         mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
                         writeFileSync(join(profileRoot, ".acquire-work", "extracted.vhdx"), "temporary");
@@ -176,14 +175,11 @@ describe("Hyper-V image store module", () => {
         }
     });
 
-    it("retries the Ubuntu EFI fallback step through the hidden elevated transport", async () => {
+    it("does not retry obsolete EFI mutation failures through elevation", async () => {
         const privateRoot = join(tmpdir(), `ccc-hyper-v-image-elevated-${process.pid}-${Date.now()}`);
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
-        const imagePath = join(profileRoot, "base.vhdx");
         const sourceArchivePath = join(profileRoot, "source.vmdk");
-        const image = Buffer.from("automatic-hyper-v-elevated-image");
-        const sha256 = createHash("sha256").update(image).digest("hex");
-        const commands: Array<{ executable?: string; args?: string[]; input?: string }> = [];
+        const commands: Array<{ executable?: string }> = [];
 
         try {
             const result = await resolveHyperVImageForCreate(
@@ -194,41 +190,17 @@ describe("Hyper-V image store module", () => {
                     cwd: privateRoot,
                     privateRoot,
                     resolveExecutable: () => "provider-powershell.exe",
-                    resolveElevationExecutable: (standardExecutable) => {
-                        expect(standardExecutable).toBe("provider-powershell.exe");
-                        return "system-powershell.exe";
-                    },
                     run: async (providerCommand) => {
                         commands.push(providerCommand);
-                        if (commands.length === 1) {
-                            mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
-                            writeFileSync(join(profileRoot, ".acquire-work", "converted.qemu.vhdx"), "temporary");
-                            writeFileSync(sourceArchivePath, "verified-source");
-                            return {
-                                mode: "exec",
-                                provider: "hyper-v",
-                                status: 1,
-                                stdout: "",
-                                stderr: "hyper-v-base-image-efi-fallback-failed",
-                            };
-                        }
-                        writeFileSync(imagePath, image);
+                        mkdirSync(join(profileRoot, ".acquire-work"), { recursive: true });
+                        writeFileSync(join(profileRoot, ".acquire-work", "converted.qemu.vhdx"), "temporary");
+                        writeFileSync(sourceArchivePath, "verified-source");
                         return {
                             mode: "exec",
                             provider: "hyper-v",
-                            status: 0,
-                            stdout: JSON.stringify({
-                                ok: true,
-                                profile: "ubuntu-lts",
-                                imagePath,
-                                sha256,
-                                sizeBytes: image.length,
-                                virtualSizeBytes: 32 * 1024 * 1024 * 1024,
-                                vhdType: "Dynamic",
-                                generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation,
-                                reused: false,
-                            }),
-                            stderr: "",
+                            status: 1,
+                            stdout: "",
+                            stderr: "hyper-v-base-image-efi-fallback-failed",
                         };
                     },
                     limits: {
@@ -240,15 +212,12 @@ describe("Hyper-V image store module", () => {
                 },
             );
 
-            expect(result).toEqual(expect.objectContaining({ ok: true, prepared: true }));
-            expect(commands).toHaveLength(2);
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                error: "hyper-v-base-image-prepare-failed",
+            }));
+            expect(commands).toHaveLength(1);
             expect(commands[0].executable).toBe("provider-powershell.exe");
-            expect(commands[1].executable).toBe("system-powershell.exe");
-            const standardScript = Buffer.from(commands[0].args!.at(-1)!, "base64").toString("utf16le");
-            const elevatedLoader = Buffer.from(commands[1].args!.at(-1)!, "base64").toString("utf16le");
-            expect(standardScript).not.toContain("-Verb RunAs");
-            expect(elevatedLoader).toContain("$E=[Console]::In.ReadToEnd().Trim()");
-            expect(Buffer.from(commands[1].input!, "base64").toString("utf8")).toContain("-Verb RunAs");
             expect(existsSync(join(profileRoot, ".acquire-work"))).toBe(false);
             expect(readFileSync(sourceArchivePath, "utf8")).toBe("verified-source");
         } finally {
@@ -353,7 +322,7 @@ describe("Hyper-V image store module", () => {
         }));
 
         try {
-            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-vmdk-hyper-v-20260801-v3");
+            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-vmdk-hyper-v-20260801-v4");
             expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
                 .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
         } finally {
@@ -377,7 +346,6 @@ describe("Hyper-V image store module", () => {
                     cwd: privateRoot,
                     privateRoot,
                     resolveExecutable: () => "powershell.exe",
-                    resolveElevationExecutable: () => "system-powershell.exe",
                     run: async () => {
                         mkdirSync(profileRoot, { recursive: true });
                         writeFileSync(imagePath, image);

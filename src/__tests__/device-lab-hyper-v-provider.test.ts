@@ -252,7 +252,6 @@ describe("Hyper-V provider adapter", () => {
             "Set-CccAcquireStage 'hyper-v-base-image-source-hash-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-source-inspection-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-convert-failed'",
-            "Set-CccAcquireStage 'hyper-v-base-image-efi-fallback-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-hash-failed'",
             "Set-CccAcquireStage 'hyper-v-base-image-partial-inspection-failed'",
@@ -266,22 +265,6 @@ describe("Hyper-V provider adapter", () => {
         }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
         expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.vmdk");
-    });
-
-    it("wraps Ubuntu acquisition in the hidden elevated transport when requested", () => {
-        const acquire = hyperVAcquireBaseImageCommand({
-            executable: "powershell.exe",
-            profile: "ubuntu-lts",
-            imageRoot: "/cache",
-            expectedGeneration: 2,
-            elevatedDeadlineUnixMs: Date.now() + 60_000,
-        });
-
-        const elevatedScript = scriptOf(acquire);
-        expect(elevatedScript).toContain("-Verb RunAs");
-        expect(elevatedScript).toContain("-WindowStyle Hidden");
-        expect(elevatedScript).toContain("$ProgramEncoded =");
-        expect(elevatedScript).toContain("GetNamedPipeClientProcessId");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -762,28 +745,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$QemuHashBefore = Get-CccGuardedSha256 $QemuGuard");
         expect(script).toContain("$QemuHashAfter = Get-CccGuardedSha256 $QemuGuard");
         expect(script).toContain("if ($QemuHashAfter -ne $QemuHashBefore) { throw 'hyper-v-qemu-img-mutated' }");
-        expect(script).toContain("Mount-VHD -Path $QemuOutputPath -NoDriveLetter");
-        expect(script).toContain("'{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}'");
-        expect(script).toContain("$UbuntuEfiPath = Join-Path $EfiAccessPath 'EFI\\ubuntu'");
-        expect(script).toContain("$FallbackEfiPath = Join-Path $EfiAccessPath 'EFI\\boot'");
-        expect(script).toContain("Move-Item -LiteralPath $FallbackShimPath -Destination $FallbackBootPath");
-        expect(script).toContain("Dismount-VHD -Path $QemuOutputPath");
-        expect(script).toContain("Dismount-VHD -Path $QemuOutputPath -ErrorAction Stop");
-        expect(script).toContain("Remove-PartitionAccessPath -InputObject $EfiPartitions[0] -AccessPath $EfiAccessPath -ErrorAction Stop");
-        expect(script).toContain("Get-DiskImage -ImagePath $QemuOutputPath -ErrorAction Stop).Attached");
-        expect(script).toContain("-not (Test-Path -LiteralPath (Join-Path $EfiAccessPath 'EFI'))");
-        expect(script).toContain("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or -not $EfiDetachVerified) { throw 'hyper-v-base-image-efi-cleanup-failed' }");
-        expect(script).toContain("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or ($UbuntuMountAttempted -and -not $EfiDetachVerified)) { $FinalEfiCleanupFailed = $true }");
-        expect(script).toContain("if ($FinalEfiCleanupFailed) { throw 'hyper-v-base-image-efi-cleanup-failed' }");
-        expect(script.indexOf("$UbuntuMountAttempted = $false", script.indexOf("if ($MountedUbuntuVhd -or $EfiAccessPathAdded -or -not $EfiDetachVerified)")))
-            .toBeLessThan(script.indexOf("Remove-Item -LiteralPath $QemuOutputPath -Force -ErrorAction Stop"));
-        expect(script.indexOf("if ($FinalEfiCleanupFailed) { throw 'hyper-v-base-image-efi-cleanup-failed' }"))
-            .toBeGreaterThan(script.indexOf("Remove-Item -LiteralPath $NormalizedQemuPath -Force -ErrorAction SilentlyContinue"));
-        expect(script).toContain("if ($EfiPreparationFailure) { throw $EfiPreparationFailure }");
-        expect(script).not.toContain("Dismount-VHD -Path $QemuOutputPath -ErrorAction SilentlyContinue");
-        expect(script).not.toContain("Remove-PartitionAccessPath -InputObject $EfiPartitions[0] -AccessPath $EfiAccessPath -ErrorAction SilentlyContinue");
-        expect(script.indexOf("Mount-VHD -Path $QemuOutputPath"))
-            .toBeLessThan(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"));
+        expect(script).not.toContain("Mount-VHD -Path $QemuOutputPath");
+        expect(script).not.toContain("Add-PartitionAccessPath");
+        expect(script).not.toContain("Remove-PartitionAccessPath");
+        expect(script).not.toContain("EFI\\ubuntu");
+        expect(script).not.toContain("EFI\\boot");
         expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("function Get-CccVhdGeneration");

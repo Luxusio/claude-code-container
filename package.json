@@ -43,6 +43,7 @@
     "test:hyper-v:powershell": "node scripts/validate-hyper-v-powershell.mjs",
     "test:hyper-v:pester": "node scripts/validate-hyper-v-powershell.mjs --require-parser --pester",
     "test:hyper-v:package": "node scripts/test-hyper-v-package.mjs",
+    "test:hyper-v:ubuntu-image": "node --import tsx scripts/verify-hyper-v-ubuntu-image.ts",
     "test:hyper-v:static": "npm run test:hyper-v:contracts && npm run test:hyper-v:powershell",
     "typecheck:real-tests": "tsc -p tsconfig.real-tests.json",
     "test:durability:device-lab": "node scripts/durability/run.mjs broker",

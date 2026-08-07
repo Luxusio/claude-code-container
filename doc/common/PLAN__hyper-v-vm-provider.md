@@ -213,7 +213,17 @@ without triggering Windows `EINVAL` for an unsupported executable path form.
 Automatic image acquisition accepts only the fixed Microsoft Evaluation Center
 redirector and Canonical release endpoints plus their explicit redirect
 allowlists. The Canonical release URL and SHA256 digest are pinned in source;
-changing either requires a reviewed code change. Canonical archives contain
+changing either requires a reviewed code change. Every Canonical catalog update
+must verify the downloaded VMDK and its QEMU-converted raw disk without mounting
+the guest filesystem:
+
+```bash
+npm run test:hyper-v:ubuntu-image -- --source <downloaded-vmdk> [--qemu-img <path>]
+```
+
+The verifier binds the source to the catalog SHA-256, parses the converted disk's
+GPT and FAT32 structures with bounded reads, and requires non-empty
+`EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi` files. Canonical archives contain
 only a bounded number and total size of regular files/directories with relative,
 non-traversing, non-duplicate paths. After extraction, CCC rejects reparse
 points and requires the regular-file count, each file size, and total extracted
@@ -586,7 +596,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v21` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v22` additionally prevents reuse of a
   broker that still acquires an interactive desktop VHDX or reports every
   unexpected VM creation preflight failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
@@ -602,23 +612,14 @@ Real-provider tests:
   rejects Sparse, Compressed, or Encrypted filesystem attributes, and verifies
   it with `Get-VHD` before publishing those exact bytes. The provider does not
   pass the bootable disk through a second `Convert-VHD` serialization step.
-  Before publication, the pinned Ubuntu image is mounted without a drive
-  letter and its EFI system partition is given the standard removable-media
-  fallback loader. CCC copies `EFI/ubuntu` to `EFI/boot` and renames
-  `shimx64.efi` to `bootx64.efi`, matching Microsoft's documented requirement
-  for cloned Generation 2 Ubuntu disks. The image catalog revision invalidates
-  images that lack this fallback path. Generation 2 VM creation replaces the
-  firmware boot order with the OS disk instead of merely moving that disk ahead
-  of potentially stale NVRAM entries.
-  Hyper-V Administrators can manage VMs without receiving the Storage cmdlet
-  authority needed to expose an EFI partition. Acquisition therefore attempts
-  the bounded operation normally first and, only when the EFI fallback stage
-  fails, cleans transient artifacts and retries through CCC's hidden,
-  process-identity-verified elevated PowerShell transport. The elevated child
-  is launched only through CCC's non-reparse, canonical Windows system
-  PowerShell path; provider and `PATH` overrides remain confined to the
-  unelevated attempt. The pinned source cache is retained and reverified, so
-  elevation does not repeat the download.
+  The checksum-pinned Canonical VMDK was verified to contain both
+  `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`. QEMU conversion and the
+  byte-identical normalization preserve that guest filesystem, so acquisition
+  does not mount or mutate the EFI partition and does not require Storage
+  cmdlet elevation. Generation 2 VM creation replaces the firmware boot order
+  with the OS disk instead of merely moving that disk ahead of potentially
+  stale NVRAM entries. The v22 broker contract fences out the obsolete EFI
+  mutation path.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

@@ -8860,7 +8860,6 @@ function resolveHyperVImageForCreate(
         cwd: normalized.cwd,
         privateRoot: brokerPrivateRoot(),
         resolveExecutable: (name) => providerExecutable(name, normalized),
-        resolveElevationExecutable: hyperVElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         limits: {
             acquireTimeoutMs: DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,

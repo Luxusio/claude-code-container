@@ -397,10 +397,6 @@ export function elevatedNetworkCommand(executable: string, networkScript: string
     return elevatedPowerShellCommand(executable, networkScript, deadlineUnixMs);
 }
 
-export function elevatedImageCommand(executable: string, imageScript: string, deadlineUnixMs: number): HyperVProviderCommand {
-    return elevatedPowerShellCommand(executable, imageScript, deadlineUnixMs);
-}
-
 export function ownedVmPrelude(options: HyperVCommandOptions): string[] {
     assertIdentity(options);
     if (!options.vmId) throw new Error("hyper-v-vm-id-missing");
