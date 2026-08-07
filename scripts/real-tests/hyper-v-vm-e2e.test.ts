@@ -508,6 +508,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             dvdCount: 1,
                             hardDiskControllers: ["ide"],
                             bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
+                            diagnosticComplete: false,
+                            diagnosticErrors: ["hyper-v-diagnostic-integration-services-unavailable"],
                         },
                     },
                 },
@@ -515,6 +517,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
         }, "fallback");
         expect(message.slice(0, 600)).toContain('boot={"provider":"hyper-v-powershell-direct"');
         expect(message.slice(0, 600)).toContain('"heartbeat":true');
+        expect(message.slice(0, 600)).toContain('"diagnosticComplete":false');
+        expect(message.slice(0, 600)).toContain('"diagnosticErrors":["hyper-v-diagnostic-integration-services-unavailable"]');
         expect(message.slice(0, 600)).toContain('"boot":["hard-disk","dvd","network"]');
         expect(message).not.toContain("outerouter");
         expect(message).not.toContain("innerinner");

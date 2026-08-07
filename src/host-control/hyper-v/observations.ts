@@ -120,7 +120,7 @@ export function parseHyperVBaseImageObservation(stdout: string): HyperVBaseImage
         sizeBytes: parsed.sizeBytes,
         virtualSizeBytes: parsed.virtualSizeBytes,
         vhdType: parsed.vhdType,
-        generation: parsed.generation,
+        generation: parsed.generation as 1 | 2,
         reused: parsed.reused,
     };
 }
@@ -334,17 +334,29 @@ export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVG
 
 export function parseHyperVGuestBootDiagnosticObservation(stdout: string): HyperVGuestBootDiagnosticObservation | null {
     const parsed = parseLastJsonObject(stdout);
+    const diagnosticErrorCodes = new Set([
+        "hyper-v-diagnostic-vm-observation-incomplete",
+        "hyper-v-diagnostic-integration-services-unavailable",
+        "hyper-v-diagnostic-integration-services-incomplete",
+        "hyper-v-diagnostic-firmware-unavailable",
+        "hyper-v-diagnostic-firmware-incomplete",
+        "hyper-v-diagnostic-bios-unavailable",
+        "hyper-v-diagnostic-bios-incomplete",
+        "hyper-v-diagnostic-hard-disks-unavailable",
+        "hyper-v-diagnostic-hard-disks-incomplete",
+        "hyper-v-diagnostic-dvd-drives-unavailable",
+    ]);
     if (!parsed
         || parsed.ok !== true
         || typeof parsed.vmId !== "string"
         || !VM_ID_PATTERN.test(parsed.vmId)
         || typeof parsed.vmName !== "string"
         || typeof parsed.state !== "string"
-        || !["Off", "Running", "Starting", "Stopping", "Saving", "Saved", "Pausing", "Paused", "Resuming", "Reset", "FastSaved", "FastSaving", "ForceShutdown", "ForceReboot", "RunningCritical", "OffCritical", "StoppingCritical", "SavedCritical", "PausedCritical", "StartingCritical", "ResetCritical", "SavingCritical", "PausingCritical", "ResumingCritical", "FastSavedCritical", "FastSavingCritical"].includes(parsed.state)
+        || !["Unknown", "Off", "Running", "Starting", "Stopping", "Saving", "Saved", "Pausing", "Paused", "Resuming", "Reset", "FastSaved", "FastSaving", "ForceShutdown", "ForceReboot", "RunningCritical", "OffCritical", "StoppingCritical", "SavedCritical", "PausedCritical", "StartingCritical", "ResetCritical", "SavingCritical", "PausingCritical", "ResumingCritical", "FastSavedCritical", "FastSavingCritical"].includes(parsed.state)
         || typeof parsed.uptimeMs !== "number"
         || !Number.isSafeInteger(parsed.uptimeMs)
         || parsed.uptimeMs < 0
-        || (parsed.generation !== 1 && parsed.generation !== 2)
+        || (parsed.generation !== null && parsed.generation !== 1 && parsed.generation !== 2)
         || (parsed.secureBootEnabled !== null && typeof parsed.secureBootEnabled !== "boolean")
         || (parsed.heartbeatEnabled !== null && typeof parsed.heartbeatEnabled !== "boolean")
         || (parsed.heartbeatPrimaryStatus !== null && (typeof parsed.heartbeatPrimaryStatus !== "number" || !Number.isSafeInteger(parsed.heartbeatPrimaryStatus) || parsed.heartbeatPrimaryStatus < 0))
@@ -373,14 +385,20 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         || parsed.hardDiskControllers.some((candidate: unknown) => !["ide", "scsi"].includes(String(candidate)))
         || !Array.isArray(parsed.bootDeviceTypes)
         || parsed.bootDeviceTypes.length > 8
-        || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))) return null;
+        || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))
+        || typeof parsed.diagnosticComplete !== "boolean"
+        || !Array.isArray(parsed.diagnosticErrors)
+        || parsed.diagnosticErrors.length > 16
+        || new Set(parsed.diagnosticErrors).size !== parsed.diagnosticErrors.length
+        || parsed.diagnosticErrors.some((candidate: unknown) => typeof candidate !== "string" || !diagnosticErrorCodes.has(candidate))
+        || parsed.diagnosticComplete !== (parsed.diagnosticErrors.length === 0)) return null;
     return {
         ok: true,
         vmId: parsed.vmId.toLowerCase(),
         vmName: parsed.vmName,
         state: parsed.state,
         uptimeMs: parsed.uptimeMs,
-        generation: parsed.generation,
+        generation: parsed.generation as 1 | 2 | null,
         secureBootEnabled: parsed.secureBootEnabled as boolean | null,
         heartbeatEnabled: parsed.heartbeatEnabled as boolean | null,
         heartbeatPrimaryStatus: parsed.heartbeatPrimaryStatus as number | null,
@@ -395,5 +413,7 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         dvdCount: parsed.dvdCount,
         hardDiskControllers: parsed.hardDiskControllers,
         bootDeviceTypes: parsed.bootDeviceTypes,
+        diagnosticComplete: parsed.diagnosticComplete,
+        diagnosticErrors: parsed.diagnosticErrors,
     };
 }

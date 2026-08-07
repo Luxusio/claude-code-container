@@ -112,8 +112,13 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v1`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v2`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
+The v2 diagnostic operation is total after VM ownership validation: failures
+from firmware, BIOS, integration-service, disk, or DVD inspection produce a
+partial observation plus bounded allowlisted `diagnosticErrors`. One optional
+Hyper-V cmdlet can no longer hide all remaining boot evidence or leak its raw
+PowerShell error text.
 Version 17 preserves every explicit, allowlisted Windows VM creation failure
 code through the redacted broker response. Host capacity, image integrity,
 disk construction, VM identity, and network selection failures therefore

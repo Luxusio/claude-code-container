@@ -11,6 +11,7 @@ import {
     ensureHostBrokerReady,
     HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT,
     HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
+    HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT,
     HYPER_V_LEVEL3_PROVIDER_CONTRACT,
     probeHostBrokerCapabilities,
 } from "./support/level3-host.ts";
@@ -31,6 +32,7 @@ function brokerStatusOutput(capabilities = HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABI
 describe("Hyper-V Level 3 launcher", () => {
     it("requires the current Hyper-V network ownership contract", () => {
         expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT);
+        expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT);
     });
 
     it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {

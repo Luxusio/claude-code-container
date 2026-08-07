@@ -128,7 +128,7 @@ export type HyperVGuestBootDiagnosticObservation = {
     vmName: string;
     state: string;
     uptimeMs: number;
-    generation: 1 | 2;
+    generation: 1 | 2 | null;
     secureBootEnabled: boolean | null;
     heartbeatEnabled: boolean | null;
     heartbeatPrimaryStatus: number | null;
@@ -143,6 +143,8 @@ export type HyperVGuestBootDiagnosticObservation = {
     dvdCount: number;
     hardDiskControllers: string[];
     bootDeviceTypes: string[];
+    diagnosticComplete: boolean;
+    diagnosticErrors: string[];
 };
 
 export type HyperVBaseImageObservation = {

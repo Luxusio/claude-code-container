@@ -1713,7 +1713,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
             const result = bootDiagnostic
-                ? { ok: true, vmId, vmName: bootDiagnosticFailure === "identity" ? "wrong-vm" : vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: bootDiagnosticState || vmState, uptimeMs: 1000, secureBootEnabled: null, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["ide"], bootDeviceTypes: ["hard-disk", "dvd"] }
+                ? { ok: true, vmId, vmName: bootDiagnosticFailure === "identity" ? "wrong-vm" : vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: bootDiagnosticState || vmState, uptimeMs: 1000, secureBootEnabled: null, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["ide"], bootDeviceTypes: ["hard-disk", "dvd"], diagnosticComplete: true, diagnosticErrors: [] }
                 : imageSetup
                 ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, reused: false }
                 : networkSetup

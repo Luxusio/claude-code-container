@@ -2031,6 +2031,8 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
+            diagnosticComplete: true,
+            diagnosticErrors: [],
         }))).toEqual({
             ok: true,
             vmId,
@@ -2047,6 +2049,8 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
+            diagnosticComplete: true,
+            diagnosticErrors: [],
         });
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
             ok: true,
@@ -2064,6 +2068,8 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["C:\\secret"],
+            diagnosticComplete: true,
+            diagnosticErrors: [],
         }))).toBeNull();
         expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
             ok: true,
@@ -2081,6 +2087,50 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["ide"],
             bootDeviceTypes: Array(9).fill("hard-disk"),
+            diagnosticComplete: true,
+            diagnosticErrors: [],
+        }))).toBeNull();
+        expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
+            ok: true,
+            vmId,
+            vmName,
+            state: "Unknown",
+            uptimeMs: 0,
+            generation: null,
+            secureBootEnabled: null,
+            heartbeatEnabled: null,
+            heartbeatPrimaryStatus: null,
+            heartbeatSecondaryStatus: null,
+            integrationServices: [],
+            hardDiskCount: 0,
+            dvdCount: 0,
+            hardDiskControllers: [],
+            bootDeviceTypes: [],
+            diagnosticComplete: false,
+            diagnosticErrors: ["hyper-v-diagnostic-vm-observation-incomplete"],
+        }))).toMatchObject({
+            generation: null,
+            diagnosticComplete: false,
+            diagnosticErrors: ["hyper-v-diagnostic-vm-observation-incomplete"],
+        });
+        expect(parseHyperVGuestBootDiagnosticObservation(JSON.stringify({
+            ok: true,
+            vmId,
+            vmName,
+            state: "Running",
+            uptimeMs: 0,
+            generation: 2,
+            secureBootEnabled: null,
+            heartbeatEnabled: null,
+            heartbeatPrimaryStatus: null,
+            heartbeatSecondaryStatus: null,
+            integrationServices: [],
+            hardDiskCount: 0,
+            dvdCount: 0,
+            hardDiskControllers: [],
+            bootDeviceTypes: [],
+            diagnosticComplete: false,
+            diagnosticErrors: ["private-path"],
         }))).toBeNull();
     });
 

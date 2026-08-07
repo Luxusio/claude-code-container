@@ -133,5 +133,92 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
         @($Result.bootDeviceTypes).Count | Should -Be 2
         $Result.bootDeviceTypes[0] | Should -Be 'hard-disk'
         $Result.bootDeviceTypes[1] | Should -Be 'dvd'
+        $Result.diagnosticComplete | Should -BeTrue
+        @($Result.diagnosticErrors).Count | Should -Be 0
+    }
+
+    It 'returns bounded partial evidence when optional Hyper-V readers fail' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            State = 'Running'
+            Uptime = [TimeSpan]::FromSeconds(30)
+            Generation = 2
+        }
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader { throw 'private integration failure' } `
+            -FirmwareReader { throw 'private firmware failure' } `
+            -HardDiskReader { throw 'private disk failure' } `
+            -DvdReader { throw 'private dvd failure' }
+
+        $Result.ok | Should -BeTrue
+        $Result.state | Should -Be 'Running'
+        $Result.generation | Should -Be 2
+        $Result.uptimeMs | Should -Be 30000
+        $Result.diagnosticComplete | Should -BeFalse
+        @($Result.diagnosticErrors) | Should -Be @(
+            'hyper-v-diagnostic-integration-services-unavailable',
+            'hyper-v-diagnostic-firmware-unavailable',
+            'hyper-v-diagnostic-hard-disks-unavailable',
+            'hyper-v-diagnostic-dvd-drives-unavailable'
+        )
+        ($Result | ConvertTo-Json -Depth 8) | Should -Not -Match 'private'
+    }
+
+    It 'survives sparse VM and reader objects under strict mode' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+        }
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader { @([pscustomobject]@{}) } `
+            -HardDiskReader { @([pscustomobject]@{}) } `
+            -DvdReader { @() }
+
+        $Result.ok | Should -BeTrue
+        $Result.state | Should -Be 'Unknown'
+        $Result.generation | Should -BeNullOrEmpty
+        $Result.diagnosticComplete | Should -BeFalse
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-vm-observation-incomplete'
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-integration-services-incomplete'
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-hard-disks-incomplete'
+    }
+
+    It 'contains throwing CIM-style property getters without leaking their errors' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            State = 'Running'
+            Generation = 2
+        }
+        $Vm | Add-Member -MemberType ScriptProperty -Name Uptime -Value { throw 'private uptime failure' }
+        $Service = [pscustomobject]@{
+            Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'
+            Name = 'Heartbeat'
+            PrimaryStatus = 2
+            SecondaryStatus = 0
+        }
+        $Service | Add-Member -MemberType ScriptProperty -Name Enabled -Value { throw 'private service failure' }
+        $Firmware = [pscustomobject]@{ SecureBoot = $true }
+        $Firmware | Add-Member -MemberType ScriptProperty -Name BootOrder -Value { throw 'private firmware failure' }
+        $Disk = [pscustomobject]@{}
+        $Disk | Add-Member -MemberType ScriptProperty -Name ControllerType -Value { throw 'private disk failure' }
+        $IntegrationServiceReader = { param($TargetVm) @($Service) }.GetNewClosure()
+        $FirmwareReader = { param($TargetVm) $Firmware }.GetNewClosure()
+        $HardDiskReader = { param($TargetVm) @($Disk) }.GetNewClosure()
+
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader $IntegrationServiceReader `
+            -FirmwareReader $FirmwareReader `
+            -HardDiskReader $HardDiskReader `
+            -DvdReader { @() }
+
+        $Result.ok | Should -BeTrue
+        $Result.diagnosticComplete | Should -BeFalse
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-vm-observation-incomplete'
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-integration-services-incomplete'
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-firmware-incomplete'
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-hard-disks-incomplete'
+        ($Result | ConvertTo-Json -Depth 8) | Should -Not -Match 'private'
     }
 }
