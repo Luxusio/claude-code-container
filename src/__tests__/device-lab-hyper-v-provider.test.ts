@@ -268,6 +268,22 @@ describe("Hyper-V provider adapter", () => {
         expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.vmdk");
     });
 
+    it("wraps Ubuntu acquisition in the hidden elevated transport when requested", () => {
+        const acquire = hyperVAcquireBaseImageCommand({
+            executable: "powershell.exe",
+            profile: "ubuntu-lts",
+            imageRoot: "/cache",
+            expectedGeneration: 2,
+            elevatedDeadlineUnixMs: Date.now() + 60_000,
+        });
+
+        const elevatedScript = scriptOf(acquire);
+        expect(elevatedScript).toContain("-Verb RunAs");
+        expect(elevatedScript).toContain("-WindowStyle Hidden");
+        expect(elevatedScript).toContain("$ProgramEncoded =");
+        expect(elevatedScript).toContain("GetNamedPipeClientProcessId");
+    });
+
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
         const acquire = hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",

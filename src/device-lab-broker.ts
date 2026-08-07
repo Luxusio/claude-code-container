@@ -3148,7 +3148,7 @@ function canonicalWindowsPowerShellForElevation(): string | null {
     }
 }
 
-function hyperVNetworkElevationExecutable(standardExecutable: string): string {
+function hyperVElevationExecutable(standardExecutable: string): string {
     if (process.platform !== "win32") return standardExecutable;
     const canonical = canonicalWindowsPowerShellForElevation();
     if (!canonical) throw new Error("hyper-v-system-powershell-unavailable");
@@ -8860,6 +8860,7 @@ function resolveHyperVImageForCreate(
         cwd: normalized.cwd,
         privateRoot: brokerPrivateRoot(),
         resolveExecutable: (name) => providerExecutable(name, normalized),
+        resolveElevationExecutable: hyperVElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         limits: {
             acquireTimeoutMs: DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,
@@ -8882,7 +8883,7 @@ function hyperVNetworkRuntime(normalized: NormalizedBrokerOptions): HyperVNetwor
     return {
         ...hyperVNetworkStateRuntime(),
         resolveExecutable: (name) => providerExecutable(name, normalized),
-        resolveElevationExecutable: hyperVNetworkElevationExecutable,
+        resolveElevationExecutable: hyperVElevationExecutable,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
         commandOutputBytes: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         allocationReferenced: (allocation) => hyperVNetworkAllocationReferenced(allocation, readDevices),

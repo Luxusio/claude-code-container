@@ -586,7 +586,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v20` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v21` additionally prevents reuse of a
   broker that still acquires an interactive desktop VHDX or reports every
   unexpected VM creation preflight failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
@@ -610,6 +610,15 @@ Real-provider tests:
   images that lack this fallback path. Generation 2 VM creation replaces the
   firmware boot order with the OS disk instead of merely moving that disk ahead
   of potentially stale NVRAM entries.
+  Hyper-V Administrators can manage VMs without receiving the Storage cmdlet
+  authority needed to expose an EFI partition. Acquisition therefore attempts
+  the bounded operation normally first and, only when the EFI fallback stage
+  fails, cleans transient artifacts and retries through CCC's hidden,
+  process-identity-verified elevated PowerShell transport. The elevated child
+  is launched only through CCC's non-reparse, canonical Windows system
+  PowerShell path; provider and `PATH` overrides remain confined to the
+  unelevated attempt. The pinned source cache is retained and reverified, so
+  elevation does not repeat the download.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

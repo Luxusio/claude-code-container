@@ -12,6 +12,7 @@ import {
     assertPathInside,
     jsonScript,
     command,
+    elevatedImageCommand,
 } from "./core.js";
 import { HYPER_V_UBUNTU_IMAGE_SHA256, HYPER_V_UBUNTU_IMAGE_URL, HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES } from "./ubuntu-image.js";
 
@@ -433,5 +434,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "  if ($FinalEfiCleanupFailed) { throw 'hyper-v-base-image-efi-cleanup-failed' }",
         "}",
     ], undefined, true);
-    return command(options.executable, script);
+    return options.elevatedDeadlineUnixMs === undefined
+        ? command(options.executable, script)
+        : elevatedImageCommand(options.executable, script, options.elevatedDeadlineUnixMs);
 }

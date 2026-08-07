@@ -67,6 +67,7 @@ export interface HyperVImageStoreRuntime {
     cwd: string;
     privateRoot: string;
     resolveExecutable(name: string): string | null;
+    resolveElevationExecutable(standardExecutable: string): string;
     run(
         command: HyperVProviderCommand,
         options: { timeoutMs: number; outputLimit: number },
@@ -535,7 +536,7 @@ export async function resolveHyperVImageForCreate(
                 const powershell = resolvePowerShell(runtime);
                 if (!powershell) throw new Error("missing-provider-command:powershell");
                 const imagePath = join(globalProfileRoot, "base.vhdx");
-                const execution = await runtime.run(hyperVAcquireBaseImageCommand({
+                let execution = await runtime.run(hyperVAcquireBaseImageCommand({
                     executable: powershell,
                     profile: automaticProfile,
                     imageRoot: hyperVImageRoot(runtime.privateRoot),
@@ -544,6 +545,22 @@ export async function resolveHyperVImageForCreate(
                     timeoutMs: hyperVRemainingTimeout(deadlineAt, runtime.limits.acquireTimeoutMs),
                     outputLimit: runtime.limits.commandOutputBytes,
                 });
+                if (!commandSucceeded(execution)
+                    && profile === "ubuntu-lts"
+                    && hyperVProviderDiagnosticCode(execution, "hyper-v-powershell-execution-failed") === "hyper-v-base-image-efi-fallback-failed") {
+                    cleanupIncompleteHyperVImageArtifacts(globalProfileRoot);
+                    const elevatedTimeoutMs = hyperVRemainingTimeout(deadlineAt, runtime.limits.acquireTimeoutMs);
+                    execution = await runtime.run(hyperVAcquireBaseImageCommand({
+                        executable: runtime.resolveElevationExecutable(powershell),
+                        profile: automaticProfile,
+                        imageRoot: hyperVImageRoot(runtime.privateRoot),
+                        expectedGeneration: HYPER_V_IMAGE_CATALOG[automaticProfile].generation,
+                        elevatedDeadlineUnixMs: Date.now() + Math.max(1, elevatedTimeoutMs - 5_000),
+                    }), {
+                        timeoutMs: elevatedTimeoutMs,
+                        outputLimit: runtime.limits.commandOutputBytes,
+                    });
+                }
                 if (hyperVOperationDeadlineExpired(deadlineAt)) {
                     cleanupIncompleteHyperVImageArtifacts(globalProfileRoot);
                     throw new HyperVOperationDeadlineError();

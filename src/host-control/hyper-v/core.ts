@@ -283,7 +283,7 @@ export function isoWriterLines(): string[] {
     ];
 }
 
-export function elevatedNetworkCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
+function elevatedPowerShellCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
     if (!Number.isSafeInteger(deadlineUnixMs) || deadlineUnixMs <= 0) throw new Error("hyper-v-network-deadline-invalid");
     const programEncoded = Buffer.from(networkScript, "utf8").toString("base64");
     const innerScript = [
@@ -391,6 +391,14 @@ export function elevatedNetworkCommand(executable: string, networkScript: string
         "}",
     ].join("\n");
     return command(executable, outerScript);
+}
+
+export function elevatedNetworkCommand(executable: string, networkScript: string, deadlineUnixMs: number): HyperVProviderCommand {
+    return elevatedPowerShellCommand(executable, networkScript, deadlineUnixMs);
+}
+
+export function elevatedImageCommand(executable: string, imageScript: string, deadlineUnixMs: number): HyperVProviderCommand {
+    return elevatedPowerShellCommand(executable, imageScript, deadlineUnixMs);
 }
 
 export function ownedVmPrelude(options: HyperVCommandOptions): string[] {
