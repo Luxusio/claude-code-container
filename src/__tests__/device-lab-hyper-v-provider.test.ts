@@ -717,18 +717,22 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("& $QemuImg convert"))
             .toBeLessThan(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"));
         expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
-            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedQemuPath"));
-        expect(script).toContain("Convert-VHD -Path $NormalizedQemuPath -DestinationPath $PartialPath -VHDType Dynamic -ErrorAction Stop");
-        expect(script).toContain("$NormalizedHashBefore = (Get-FileHash -LiteralPath $NormalizedQemuPath");
-        expect(script).toContain("$NormalizedHashAfter = (Get-FileHash -LiteralPath $NormalizedQemuPath");
-        expect(script).toContain("if ($NormalizedHashAfter -ne $NormalizedHashBefore) { throw 'hyper-v-base-image-native-finalize-failed' }");
+            .toBeLessThan(script.indexOf("Move-Item -LiteralPath $NormalizedQemuPath -Destination $PartialPath"));
+        expect(script).toContain("$QemuOutputHash = (Get-FileHash -LiteralPath $QemuOutputPath");
+        expect(script).toContain("$NormalizedHash = (Get-FileHash -LiteralPath $NormalizedQemuPath");
+        expect(script).toContain("if ($NormalizedHash -ne $QemuOutputHash) { throw 'hyper-v-base-image-normalize-failed' }");
+        expect(script).toContain("Move-Item -LiteralPath $NormalizedQemuPath -Destination $PartialPath -ErrorAction Stop");
+        expect(script).toContain("if ($Profile -eq 'ubuntu-lts' -and $PartialHashBefore -ne $NormalizedHash) { throw 'hyper-v-base-image-partial-mutated' }");
+        expect(script.indexOf("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath"))
+            .toBeLessThan(script.indexOf("$PartialHashBefore -ne $NormalizedHash"));
         expect(script).toContain("[long]$QemuOutputItem.Length + $UbuntuVirtualSizeBytes + [long]2GB");
-        expect(script.indexOf("Convert-VHD -Path $NormalizedQemuPath"))
+        expect(script.indexOf("Move-Item -LiteralPath $NormalizedQemuPath -Destination $PartialPath"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         expect(script).not.toContain("Resize-VHD -Path $PartialPath");
         expect(script).toContain("hyper-v-base-image-source-inspection-failed");
         expect(script).toContain("hyper-v-base-image-convert-failed");
-        expect(script).toContain("hyper-v-base-image-native-finalize-failed");
+        expect(script).not.toContain("Convert-VHD -Path $NormalizedQemuPath");
+        expect(script).not.toContain("hyper-v-base-image-native-finalize-failed");
         expect(script).toContain("hyper-v-base-image-partial-inspection-failed");
         expect(script).toContain("hyper-v-base-image-final-move-failed");
         expect(script).toContain("hyper-v-base-image-final-inspection-failed");

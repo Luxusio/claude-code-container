@@ -586,7 +586,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v18` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v19` additionally prevents reuse of a
   broker that still acquires an interactive desktop VHDX or reports every
   unexpected VM creation preflight failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
@@ -597,10 +597,11 @@ Real-provider tests:
   CCC closes all copy handles before `Get-VHD` or `New-VM`, then requires the
   clone to have the expected SHA-256, matching file length and virtual size,
   VHDX format, and no parent.
-  QEMU's intermediate VHDX is normalized into a newly created ordinary file,
-  then finalized by Hyper-V's native `Convert-VHD` implementation before it is
-  published as the base image. CCC rejects Sparse, Compressed, or Encrypted filesystem attributes
-  before finalizing that image.
+  QEMU's intermediate VHDX is normalized into a newly created ordinary file.
+  CCC requires the normalized file to be byte-identical to QEMU's output,
+  rejects Sparse, Compressed, or Encrypted filesystem attributes, and verifies
+  it with `Get-VHD` before publishing those exact bytes. The provider does not
+  pass the bootable disk through a second `Convert-VHD` serialization step.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

@@ -3229,10 +3229,12 @@ remain unchanged where they are the behavior under test.
     Authenticode signature and identity, converts Canonical's Hyper-V
     documented VMDK source to a
     pre-created dynamic 32 GiB VHDX, copies it into an ordinary non-sparse
-    file, then uses native `Convert-VHD` to publish a Hyper-V-authored dynamic
-    VHDX bound to the catalog's fixed Generation 2 contract and Linux UEFI CA
-    Secure Boot template. The QEMU-oriented QCOW source is not accepted.
-    Brokers advertise `hyper-v-provider-image-finalization-v18`, preventing a
+    file, verifies that the copy is byte-identical and accepted by `Get-VHD`,
+    then publishes those exact VHDX bytes. It does not reserialize the bootable
+    disk through `Convert-VHD`. The image is bound to the catalog's fixed
+    Generation 2 contract and Linux UEFI CA Secure Boot template. The
+    QEMU-oriented QCOW source is not accepted.
+    Brokers advertise `hyper-v-provider-image-finalization-v19`, preventing a
     desktop-image broker from being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
@@ -3261,7 +3263,7 @@ remain unchanged where they are the behavior under test.
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v18`
+    `hyper-v-provider-image-finalization-v19`
     for this guard contract. Acquisition reports distinct bounded stages for
     source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
@@ -3293,7 +3295,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v18` for this contract.
+    `hyper-v-provider-image-finalization-v19` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3316,4 +3318,4 @@ remain unchanged where they are the behavior under test.
     `New-VHD -Differencing` compatibility boundary while preserving immutable
     shared-image verification. Brokers
     advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v18` for this contract.
+    `hyper-v-provider-image-finalization-v19` for this contract.
