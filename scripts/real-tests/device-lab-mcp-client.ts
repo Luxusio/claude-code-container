@@ -427,6 +427,7 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? JSON.stringify({
             provider: typeof boot.provider === "string" ? boot.provider : undefined,
             error: typeof boot.error === "string" ? boot.error : undefined,
+            diagnosticError: typeof boot.diagnosticError === "string" ? boot.diagnosticError : undefined,
             state: bootObservation && typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
             uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
             generation: bootObservation && (bootObservation.generation === 1 || bootObservation.generation === 2) ? bootObservation.generation : undefined,

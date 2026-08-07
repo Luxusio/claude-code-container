@@ -1604,6 +1604,7 @@ describe("device-lab Hyper-V broker", () => {
         writeFileSync(uploadPath, "upload");
         let vmState = "Off";
         let bootDiagnosticState: string | null = null;
+        let bootDiagnosticFailure: "command" | "invalid" | "identity" | null = null;
         let snapshotExists = false;
         let sshFailure = false;
         let readinessFailure = false;
@@ -1684,6 +1685,12 @@ describe("device-lab Hyper-V broker", () => {
             const recovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const seed = script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'");
             const bootDiagnostic = script.includes("Get-CccGuestBootDiagnosticResult $Vm");
+            if (bootDiagnostic && bootDiagnosticFailure === "command") {
+                return { ...command, status: 1, stdout: "", stderr: "hyper-v-guest-boot-diagnostic-command-failed: host detail" };
+            }
+            if (bootDiagnostic && bootDiagnosticFailure === "invalid") {
+                return { ...command, status: 0, stdout: "{}", stderr: "" };
+            }
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");
@@ -1706,7 +1713,7 @@ describe("device-lab Hyper-V broker", () => {
                 writeFileSync(knownHostsPath, `${networkAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
             }
             const result = bootDiagnostic
-                ? { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: bootDiagnosticState || vmState, uptimeMs: 1000, secureBootEnabled: null, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["ide"], bootDeviceTypes: ["hard-disk", "dvd"] }
+                ? { ok: true, vmId, vmName: bootDiagnosticFailure === "identity" ? "wrong-vm" : vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: bootDiagnosticState || vmState, uptimeMs: 1000, secureBootEnabled: null, heartbeatEnabled: true, heartbeatPrimaryStatus: 2, heartbeatSecondaryStatus: 0, integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }], hardDiskCount: 1, dvdCount: 1, hardDiskControllers: ["ide"], bootDeviceTypes: ["hard-disk", "dvd"] }
                 : imageSetup
                 ? { ok: true, profile: "ubuntu-lts", imagePath, sha256: imageSha256, sizeBytes: 9, virtualSizeBytes: 32 * 1024 * 1024 * 1024, vhdType: "Dynamic", generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, reused: false }
                 : networkSetup
@@ -1796,6 +1803,31 @@ describe("device-lab Hyper-V broker", () => {
             writeFileSync(knownHostsPath, `${allocatedAddress} ssh-ed25519 ${hostKeyBase64} ccc-host\n`);
 
             readinessFailure = true;
+            bootDiagnosticFailure = "command";
+            const diagnosticFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(diagnosticFailure.status).toBe(502);
+            const diagnosticFailureBody = await diagnosticFailure.json();
+            expect(diagnosticFailureBody.result.boot).toEqual(expect.objectContaining({
+                ready: false,
+                provider: "hyper-v-ssh",
+                diagnosticAvailable: false,
+                diagnosticError: "hyper-v-guest-boot-diagnostic-command-failed",
+            }));
+            expect(diagnosticFailureBody.result.boot).not.toHaveProperty("diagnostic");
+            expect(JSON.stringify(diagnosticFailureBody)).not.toContain("host detail");
+            bootDiagnosticFailure = "invalid";
+            const invalidDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect((await invalidDiagnostic.json()).result.boot).toEqual(expect.objectContaining({
+                diagnosticAvailable: false,
+                diagnosticError: "hyper-v-guest-boot-diagnostic-invalid",
+            }));
+            bootDiagnosticFailure = "identity";
+            const mismatchedDiagnostic = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect((await mismatchedDiagnostic.json()).result.boot).toEqual(expect.objectContaining({
+                diagnosticAvailable: false,
+                diagnosticError: "hyper-v-guest-boot-diagnostic-identity-mismatch",
+            }));
+            bootDiagnosticFailure = null;
             bootDiagnosticState = "OffCritical";
             const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);

@@ -460,24 +460,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                         ready: false,
                         provider: "hyper-v-ssh",
                         error: "ssh-connection-refused",
-                        diagnosticAvailable: true,
-                        diagnostic: {
-                            vmId: "12345678-1234-1234-1234-123456789abc",
-                            vmName: "private-vm-name",
-                            state: "Running",
-                            uptimeMs: 600123,
-                            generation: 2,
-                            secureBootEnabled: true,
-                            heartbeatEnabled: true,
-                            heartbeatPrimaryStatus: 2,
-                            heartbeatSecondaryStatus: 0,
-                            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
-                            hardDiskCount: 1,
-                            dvdCount: 1,
-                            hardDiskControllers: ["scsi"],
-                            bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
-                            diskPath: "C:\\Users\\Luxus\\private\\root.vhdx",
-                        },
+                        diagnosticAvailable: false,
+                        diagnosticError: "hyper-v-guest-boot-diagnostic-command-failed",
                     },
                     execution: {
                         command: {
@@ -491,11 +475,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         }, "fallback");
         expect(message).toContain("hyper-v-guest-not-ready");
         expect(message).toContain('"error":"ssh-connection-refused"');
-        expect(message).toContain('"state":"Running"');
-        expect(message).toContain('"generation":2');
-        expect(message).toContain('"controllers":["scsi"]');
-        expect(message).toContain('"heartbeat":true');
-        expect(message).toContain('"boot":["hard-disk","dvd","network"]');
+        expect(message).toContain('"diagnosticError":"hyper-v-guest-boot-diagnostic-command-failed"');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");

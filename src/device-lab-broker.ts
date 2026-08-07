@@ -12392,6 +12392,7 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestBootDiagnosticExecution: ProviderCommandResult | null = null;
     let hyperVGuestBootDiagnostic: ReturnType<typeof parseHyperVGuestBootDiagnosticObservation> | null = null;
     let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
+    let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
@@ -12669,10 +12670,19 @@ async function lifecycleCommandInvokeUnlocked(
             hyperVGuestBootDiagnostic = commandSucceeded(hyperVGuestBootDiagnosticExecution)
                 ? parseHyperVGuestBootDiagnosticObservation(hyperVGuestBootDiagnosticExecution.stdout || "")
                 : null;
+            if (!hyperVGuestBootDiagnostic) {
+                hyperVGuestBootDiagnosticFailureCode = commandSucceeded(hyperVGuestBootDiagnosticExecution)
+                    ? "hyper-v-guest-boot-diagnostic-invalid"
+                    : hyperVProviderDiagnosticCode(
+                        hyperVGuestBootDiagnosticExecution,
+                        "hyper-v-guest-boot-diagnostic-failed",
+                    ) || "hyper-v-guest-boot-diagnostic-failed";
+            }
             if (hyperVGuestBootDiagnostic
                 && (hyperVGuestBootDiagnostic.vmId !== String(field(device, "vmId") || "").toLowerCase()
                     || hyperVGuestBootDiagnostic.vmName !== field(device, "vmName"))) {
                 hyperVGuestBootDiagnostic = null;
+                hyperVGuestBootDiagnosticFailureCode = "hyper-v-guest-boot-diagnostic-identity-mismatch";
             }
             hyperVGuestBootDiagnosticPublic = hyperVGuestBootDiagnostic ? {
                 state: hyperVGuestBootDiagnostic.state,
@@ -12688,8 +12698,11 @@ async function lifecycleCommandInvokeUnlocked(
                 hardDiskControllers: hyperVGuestBootDiagnostic.hardDiskControllers,
                 bootDeviceTypes: hyperVGuestBootDiagnostic.bootDeviceTypes,
             } : null;
-        } catch {
-            hyperVGuestBootDiagnosticExecution = null;
+        } catch (error) {
+            hyperVGuestBootDiagnosticFailureCode = hyperVBoundedErrorCode(
+                error,
+                "hyper-v-guest-boot-diagnostic-failed",
+            );
             hyperVGuestBootDiagnostic = null;
         }
     }
@@ -12908,6 +12921,7 @@ async function lifecycleCommandInvokeUnlocked(
                             error: hyperVGuestReadyFailureCode || "guest-not-ready",
                             ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
                             diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
+                            ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                         },
                 } : {}),
                 ...(windowsMinimizeWatchdog ? { minimizeWatchdog: windowsMinimizeWatchdog } : {}),
@@ -12946,6 +12960,7 @@ async function lifecycleCommandInvokeUnlocked(
                                     diagnosticAvailable: Boolean(
                                         hyperVGuestBootDiagnosticPublic,
                                     ),
+                                    ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                                 },
                             } : {}),
                         }
@@ -12959,6 +12974,7 @@ async function lifecycleCommandInvokeUnlocked(
                                 provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
                                 error: hyperVGuestReadyFailureCode || "guest-not-ready",
                                 diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
+                                ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                             },
                         }
                         : registration || (macosBoot && !macosBoot.ok) || (androidBoot && !androidBoot.ok)

@@ -709,6 +709,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("& $QemuImg convert -n -f qcow2 -O vhdx $SourceImagePath $QemuOutputPath");
         expect(script).toContain("if ([long]$ConvertedVhd.Size -ne $UbuntuVirtualSizeBytes) { throw 'hyper-v-base-image-convert-failed' }");
         expect(script).toContain("$QemuOutputGuard.CopyTo($NormalizedOutput, 8388608)");
+        expect(script).toContain("$NormalizedOutput = [IO.File]::Open($NormalizedQemuPath");
         expect(script).toContain("[IO.FileAttributes]::SparseFile");
         expect(script).toContain("[IO.FileAttributes]::Compressed");
         expect(script).toContain("[IO.FileAttributes]::Encrypted");
@@ -716,10 +717,18 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("& $QemuImg convert"))
             .toBeLessThan(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"));
         expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
+            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedQemuPath"));
+        expect(script).toContain("Convert-VHD -Path $NormalizedQemuPath -DestinationPath $PartialPath -VHDType Dynamic -ErrorAction Stop");
+        expect(script).toContain("$NormalizedHashBefore = (Get-FileHash -LiteralPath $NormalizedQemuPath");
+        expect(script).toContain("$NormalizedHashAfter = (Get-FileHash -LiteralPath $NormalizedQemuPath");
+        expect(script).toContain("if ($NormalizedHashAfter -ne $NormalizedHashBefore) { throw 'hyper-v-base-image-native-finalize-failed' }");
+        expect(script).toContain("[long]$QemuOutputItem.Length + $UbuntuVirtualSizeBytes + [long]2GB");
+        expect(script.indexOf("Convert-VHD -Path $NormalizedQemuPath"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         expect(script).not.toContain("Resize-VHD -Path $PartialPath");
         expect(script).toContain("hyper-v-base-image-source-inspection-failed");
         expect(script).toContain("hyper-v-base-image-convert-failed");
+        expect(script).toContain("hyper-v-base-image-native-finalize-failed");
         expect(script).toContain("hyper-v-base-image-partial-inspection-failed");
         expect(script).toContain("hyper-v-base-image-final-move-failed");
         expect(script).toContain("hyper-v-base-image-final-inspection-failed");

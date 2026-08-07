@@ -244,6 +244,42 @@ describe("Hyper-V image store module", () => {
         }
     });
 
+    it("rejects a cached Ubuntu image produced by the pre-native-finalization catalog", () => {
+        const privateRoot = join(tmpdir(), `ccc-hyper-v-old-finalization-manifest-${process.pid}-${Date.now()}`);
+        const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
+        const imagePath = join(profileRoot, "base.vhdx");
+        const catalog = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
+        const image = Buffer.from("pre-native-finalization-image");
+        mkdirSync(profileRoot, { recursive: true });
+        writeFileSync(imagePath, image);
+        writeFileSync(join(profileRoot, "manifest.json"), JSON.stringify({
+            version: 3,
+            profile: "ubuntu-lts",
+            catalogId: "canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-20260801-v2",
+            sourceUrl: catalog.sourceUrl,
+            sourceFormat: catalog.sourceFormat,
+            sourceSha256: catalog.sourceSha256,
+            licenseId: catalog.licenseId,
+            generation: catalog.generation,
+            secureBootTemplate: catalog.secureBootTemplate,
+            preparationVersion: 1,
+            imagePath,
+            sha256: createHash("sha256").update(image).digest("hex"),
+            sizeBytes: image.length,
+            virtualSizeBytes: catalog.virtualSizeBytes,
+            vhdType: "Dynamic",
+            preparedAt: new Date().toISOString(),
+        }));
+
+        try {
+            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-20260801-v3");
+            expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
+                .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
+        } finally {
+            rmSync(privateRoot, { recursive: true, force: true });
+        }
+    });
+
     it("rejects an automatic provider observation whose generation differs from the catalog", async () => {
         const privateRoot = join(tmpdir(), `ccc-hyper-v-generation-observation-${process.pid}-${Date.now()}`);
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
