@@ -73,6 +73,9 @@ function ConvertTo-CccDiagnosticBool {
         [Parameter(Mandatory = $true)] [string] $ErrorCode
     )
     if ($Value -is [bool]) { return [bool]$Value }
+    $Text = if ($null -eq $Value) { '' } else { [string]$Value }
+    if ($Text -eq 'On' -or $Text -eq 'True') { return $true }
+    if ($Text -eq 'Off' -or $Text -eq 'False') { return $false }
     [void]$DiagnosticErrors.Add($ErrorCode)
     return $Default
 }

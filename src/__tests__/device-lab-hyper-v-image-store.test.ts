@@ -15,7 +15,7 @@ import {
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 
 describe("Hyper-V image store module", () => {
-    it("uses Canonical's generic UEFI cloud image instead of an interactive desktop image", () => {
+    it("uses Canonical's generic BIOS-capable cloud image instead of an interactive desktop image", () => {
         const ubuntu = HYPER_V_IMAGE_CATALOG["ubuntu-lts"];
 
         expect(ubuntu.sourceUrl).toContain("cloud-images.ubuntu.com/releases/noble/release-20260801/");
@@ -25,7 +25,7 @@ describe("Hyper-V image store module", () => {
         expect(ubuntu.sourceFormat).toBe("qcow2");
         expect(ubuntu.sourceSha256).toMatch(/^[a-f0-9]{64}$/);
         expect(ubuntu.virtualSizeBytes).toBe(32 * 1024 * 1024 * 1024);
-        expect(ubuntu.generation).toBe(2);
+        expect(ubuntu.generation).toBe(1);
     });
 
     it("keeps image cache paths below the injected private root", () => {
@@ -190,7 +190,7 @@ describe("Hyper-V image store module", () => {
             sourceFormat: catalog.sourceFormat,
             sourceSha256: catalog.sourceSha256,
             licenseId: catalog.licenseId,
-            generation: 1,
+            generation: 2,
             secureBootTemplate: catalog.secureBootTemplate,
             preparationVersion: 1,
             imagePath,
@@ -272,7 +272,7 @@ describe("Hyper-V image store module", () => {
         }));
 
         try {
-            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-20260801-v3");
+            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-bios-20260801-v1");
             expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
                 .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
         } finally {
@@ -311,7 +311,7 @@ describe("Hyper-V image store module", () => {
                                 sizeBytes: image.length,
                                 virtualSizeBytes: 32 * 1024 * 1024 * 1024,
                                 vhdType: "Dynamic",
-                                generation: 1,
+                                generation: 2,
                                 reused: false,
                             }),
                             stderr: "",

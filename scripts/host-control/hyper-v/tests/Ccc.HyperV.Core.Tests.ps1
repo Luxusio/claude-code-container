@@ -137,6 +137,26 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
         @($Result.diagnosticErrors).Count | Should -Be 0
     }
 
+    It 'normalizes Hyper-V OnOffState firmware values without degrading diagnostics' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111111111111111'
+            State = 'Running'
+            Uptime = [TimeSpan]::FromSeconds(30)
+            Generation = 2
+        }
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader { @([pscustomobject]@{ Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'; Name = 'Heartbeat'; Enabled = 'On'; PrimaryStatus = 2; SecondaryStatus = 0 }) } `
+            -FirmwareReader { [pscustomobject]@{ SecureBoot = 'On'; BootOrder = @([pscustomobject]@{ BootType = 'Drive'; Device = [pscustomobject]@{ Type = 'Vhd' } }) } } `
+            -HardDiskReader { @([pscustomobject]@{ ControllerType = 'SCSI' }) } `
+            -DvdReader { @() }
+
+        $Result.secureBootEnabled | Should -BeTrue
+        $Result.heartbeatEnabled | Should -BeTrue
+        @($Result.diagnosticErrors) | Should -Not -Contain 'hyper-v-diagnostic-firmware-incomplete'
+        @($Result.diagnosticErrors) | Should -Not -Contain 'hyper-v-diagnostic-integration-services-incomplete'
+    }
+
     It 'returns bounded partial evidence when optional Hyper-V readers fail' {
         $Vm = [pscustomobject]@{
             Id = [Guid]'12345678-1234-1234-1234-123456789abc'

@@ -226,7 +226,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/cache",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
 
         expect(acquire.args).toContain("-EncodedCommand");
@@ -272,7 +272,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-loader-probe",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
         const run = (input: string) => spawnSync(acquire.executable, acquire.args, {
             input,
@@ -652,7 +652,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
         const script = scriptOf(command);
         expect(script).toContain("$SourceImagePath =");
@@ -775,7 +775,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath"))
             .toBeLessThan(script.indexOf("Protect-CccImageDirectory $ProfileRoot", script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath")));
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash");
-        expect(script).toContain("$ExpectedGeneration = 2");
+        expect(script).toContain("$ExpectedGeneration = 1");
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("hyper-v-base-image-generation-mismatch");
         expect(script).toContain("Write-BaseObservation $Vhd $Generation $false");
@@ -792,7 +792,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "C:\\ccc-hyper-v-parser-probe",
-            expectedGeneration: 2,
+            expectedGeneration: 1,
         });
         const parser = [
             "$Encoded = [Console]::In.ReadToEnd().Trim()",
@@ -825,7 +825,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "windows-11" as "windows-server",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         })).toThrow("hyper-v-base-image-profile-not-automatic");
         expect(() => hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
@@ -843,7 +843,7 @@ describe("Hyper-V provider adapter", () => {
             executable: "powershell.exe",
             profile: "ubuntu-lts",
             imageRoot: "/state/images/hyper-v",
-            expectedGeneration: 1,
+            expectedGeneration: 2,
         })).toThrow("hyper-v-base-image-generation-mismatch");
         expect(() => hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
@@ -1047,7 +1047,7 @@ describe("Hyper-V provider adapter", () => {
             vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
             baseImagePath: "/state/images/hyper-v/ubuntu-lts.vhdx",
             baseImageSha256,
-            baseImageGeneration: 2,
+            baseImageGeneration: 1,
             baseImageRoot: "/state/images/hyper-v",
             deviceRoot: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01",
             diskPath: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01/disks/root.vhdx",
@@ -1059,6 +1059,10 @@ describe("Hyper-V provider adapter", () => {
             bootstrapDhcp: true,
             secureBootTemplate: "MicrosoftUEFICertificateAuthority",
         }));
+        expect(linuxScript).toContain("$ExpectedVmGeneration = 1");
+        expect(linuxScript).toContain("Generation = $VmGeneration");
+        expect(linuxScript).toContain("if ($VmGeneration -eq 2)");
+        expect(linuxScript).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(linuxScript).toContain("Get-VMSwitch -Name 'Default Switch'");
         expect(linuxScript).toContain("hyper-v-bootstrap-dhcp-switch-unavailable");
         expect(linuxScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");

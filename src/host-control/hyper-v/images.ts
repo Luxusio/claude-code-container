@@ -87,7 +87,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     if (options.profile !== "windows-server" && options.profile !== "ubuntu-lts") {
         throw new Error("hyper-v-base-image-profile-not-automatic");
     }
-    const profileGeneration = 2;
+    const profileGeneration = options.profile === "windows-server" ? 2 : 1;
     if (options.expectedGeneration !== profileGeneration) {
         throw new Error("hyper-v-base-image-generation-mismatch");
     }

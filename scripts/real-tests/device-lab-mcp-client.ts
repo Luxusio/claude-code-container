@@ -428,10 +428,6 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             provider: typeof boot.provider === "string" ? boot.provider : undefined,
             error: typeof boot.error === "string" ? boot.error : undefined,
             diagnosticError: typeof boot.diagnosticError === "string" ? boot.diagnosticError : undefined,
-            diagnosticComplete: bootObservation && typeof bootObservation.diagnosticComplete === "boolean" ? bootObservation.diagnosticComplete : undefined,
-            diagnosticErrors: bootObservation && Array.isArray(bootObservation.diagnosticErrors)
-                ? bootObservation.diagnosticErrors.filter((candidate: unknown) => typeof candidate === "string").slice(0, 8)
-                : undefined,
             state: bootObservation && typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
             uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
             generation: bootObservation && (bootObservation.generation === 1 || bootObservation.generation === 2) ? bootObservation.generation : undefined,
@@ -446,6 +442,9 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             controllers: bootObservation && Array.isArray(bootObservation.hardDiskControllers)
                 ? bootObservation.hardDiskControllers.filter((candidate: unknown) => ["ide", "scsi"].includes(String(candidate))).slice(0, 3)
                 : undefined,
+            boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
+                ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
+                : undefined,
             services: bootObservation && Array.isArray(bootObservation.integrationServices)
                 ? bootObservation.integrationServices.slice(0, 8).map((candidate: unknown) => {
                     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
@@ -455,9 +454,10 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
                         : null;
                 }).filter(Boolean)
                 : undefined,
-            boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
-                    ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
-                    : undefined,
+            diagnosticComplete: bootObservation && typeof bootObservation.diagnosticComplete === "boolean" ? bootObservation.diagnosticComplete : undefined,
+            diagnosticErrors: bootObservation && Array.isArray(bootObservation.diagnosticErrors)
+                ? bootObservation.diagnosticErrors.filter((candidate: unknown) => typeof candidate === "string").slice(0, 8)
+                : undefined,
         })
         : "";
     const boundedDetail = (candidate: unknown) => {

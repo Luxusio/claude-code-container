@@ -47,7 +47,7 @@ export const HYPER_V_IMAGE_CATALOG = {
         virtualSizeBytes: HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES,
         licenseId: null,
         secureBootTemplate: "MicrosoftUEFICertificateAuthority",
-        generation: 2,
+        generation: 1,
     },
 } as const;
 
