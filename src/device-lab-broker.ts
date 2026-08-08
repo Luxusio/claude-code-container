@@ -451,6 +451,16 @@ const DEVICE_BROKER_HYPER_V_BACKENDS = new Set(["windows-vm", "linux-vm"]);
 function isHyperVBackend(backend: string | null | undefined): boolean {
     return typeof backend === "string" && DEVICE_BROKER_HYPER_V_BACKENDS.has(backend);
 }
+
+function hyperVSecureBootConfiguration(backend: string) {
+    const linuxGuest = backend === "linux-vm";
+    return {
+        secureBootEnabled: !linuxGuest,
+        secureBootTemplate: linuxGuest
+            ? "MicrosoftUEFICertificateAuthority" as const
+            : "MicrosoftWindows" as const,
+    };
+}
 const DEVICE_BROKER_LIFECYCLE_COMMANDS = new Set(["device_create", "device_status", "device_start", "device_stop", "device_reboot", "device_delete"]);
 const LIFECYCLE_METHOD_RE = /^(device|mobile)\./;
 const DEVICE_BROKER_DESKTOP_TOOL_METHODS = new Set([
@@ -5359,9 +5369,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
         const privateRoot = hyperVPrivateDeviceRoot(ownerId, parsed.backend, parsed.deviceId);
         const diskPath = join(deviceRoot, "disks", "root.vhdx");
         const profile = typeof create.profile === "string" ? create.profile : linuxGuest ? "ubuntu-lts" : "windows-11";
-        const secureBootTemplate = linuxGuest || create.secureBootTemplate === "MicrosoftUEFICertificateAuthority"
-            ? "MicrosoftUEFICertificateAuthority"
-            : "MicrosoftWindows";
+        const secureBoot = hyperVSecureBootConfiguration(parsed.backend);
         return {
             id: parsed.deviceId,
             name,
@@ -5404,7 +5412,7 @@ function createOwnerDeviceRecord(ownerId: string, parsed: CommandParamSuccess): 
             ...(typeof create.networkGateway === "string" ? { networkGateway: create.networkGateway } : {}),
             ...(typeof create.networkPrefix === "string" ? { networkPrefix: create.networkPrefix } : {}),
             ...(create.outboundPolicy === "nat" ? { outboundPolicy: "nat" } : {}),
-            secureBootTemplate,
+            ...secureBoot,
             snapshots: [],
             status: "stopped",
             runtimeState: "Off",
@@ -9218,9 +9226,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
                 macAddress: typeof create.macAddress === "string" ? create.macAddress : null,
                 networking: create.networking !== false,
                 bootstrapDhcp: linuxGuest,
-                secureBootTemplate: linuxGuest || create.secureBootTemplate === "MicrosoftUEFICertificateAuthority"
-                    ? "MicrosoftUEFICertificateAuthority"
-                    : "MicrosoftWindows",
+                ...hyperVSecureBootConfiguration(parsed.backend),
             });
         } catch (error) {
             return { error: error instanceof Error ? error.message : "invalid-hyper-v-create-options", missing: [] };
@@ -11274,9 +11280,7 @@ function hyperVCreateConfigurationConflicts(device: Record<string, unknown>, par
         memoryMb: typeof create.memoryMb === "number" ? create.memoryMb : 4096,
         cpus: typeof create.cpus === "number" ? create.cpus : 2,
         networking: create.networking !== false,
-        secureBootTemplate: linuxGuest || create.secureBootTemplate === "MicrosoftUEFICertificateAuthority"
-            ? "MicrosoftUEFICertificateAuthority"
-            : "MicrosoftWindows",
+        ...hyperVSecureBootConfiguration(parsed.backend),
     };
     if (typeof create.diskMaxBytes === "number") expected.diskMaxBytes = create.diskMaxBytes;
     if (typeof create.baseImageSha256 === "string") expected.baseImageSha256 = create.baseImageSha256.toLowerCase();
@@ -11398,7 +11402,10 @@ function lifecycleCommandPlan(ownerId: string, params: unknown, normalized?: Nor
                         ? redactBrokerDeviceSecrets(plannedDevice)
                         : plannedDevice,
                     create: redactSecrets && isHyperVBackend(parsed.backend)
-                        ? publicHyperVCreateConfiguration(effectiveParsed.create)
+                        ? publicHyperVCreateConfiguration({
+                            ...(effectiveParsed.create || {}),
+                            ...hyperVSecureBootConfiguration(parsed.backend),
+                        })
                         : redactBrokerCreateSecrets(effectiveParsed.create),
                     providerCommand: normalized
                         ? redactSecrets && isHyperVBackend(parsed.backend)

@@ -101,6 +101,7 @@ describe("Hyper-V public response projection", () => {
             profile: "windows-11",
             memoryMb: 4096,
             cpus: 2,
+            secureBootEnabled: false,
             sourceImage: "C:\\images\\windows.vhdx",
             sshPassword: "secret",
             privateRoot: "C:\\private",
@@ -109,6 +110,7 @@ describe("Hyper-V public response projection", () => {
             profile: "windows-11",
             memoryMb: 4096,
             cpus: 2,
+            secureBootEnabled: false,
             sourceImageConfigured: true,
             sshPasswordConfigured: true,
         });

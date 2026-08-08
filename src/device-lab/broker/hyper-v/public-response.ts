@@ -445,6 +445,7 @@ export function redactHyperVDeviceSecrets(device: unknown): unknown {
         "networkPrefix",
         "outboundPolicy",
         "secureBootTemplate",
+        "secureBootEnabled",
         "activeSnapshotId",
         "status",
         "runtimeState",
@@ -476,6 +477,7 @@ export function publicHyperVCreateConfiguration(
             "diskMaxBytes",
             "networking",
             "secureBootTemplate",
+            "secureBootEnabled",
         ]),
         ...(typeof record.sourceImage === "string"
             || typeof record.image === "string"

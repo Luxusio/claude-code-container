@@ -1063,6 +1063,22 @@ describe("Hyper-V provider adapter", () => {
             memoryMb: 512,
             cpus: 2,
         })).toThrow("hyper-v-memory-mb-invalid");
+        expect(() => hyperVCreateCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            baseImagePath: "/state/images/hyper-v/windows-11.vhdx",
+            baseImageSha256,
+            baseImageGeneration: 1,
+            baseImageRoot: "/state/images/hyper-v",
+            deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
+            diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
+            diskMaxBytes: 64 * 1024 * 1024 * 1024,
+            memoryMb: 4096,
+            cpus: 2,
+        })).toThrow("hyper-v-secure-boot-generation-invalid");
 
         const linuxScript = scriptOf(hyperVCreateCommand({
             executable: "powershell.exe",
@@ -1082,6 +1098,7 @@ describe("Hyper-V provider adapter", () => {
             switchName: "CCC Device Lab",
             macAddress: "02:11:22:33:44:66",
             bootstrapDhcp: true,
+            secureBootEnabled: false,
             secureBootTemplate: "MicrosoftUEFICertificateAuthority",
         }));
         expect(linuxScript).toContain("$ExpectedVmGeneration = 2");
@@ -1093,7 +1110,8 @@ describe("Hyper-V provider adapter", () => {
         expect(linuxScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");
         expect(linuxScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
         expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
-        expect(linuxScript).toContain("SecureBootTemplate 'MicrosoftUEFICertificateAuthority'");
+        expect(linuxScript).toContain("Set-VMFirmware -VM $CreatedVm -EnableSecureBoot Off");
+        expect(linuxScript).not.toContain("SecureBootTemplate 'MicrosoftUEFICertificateAuthority'");
     });
 
     it.skipIf(process.platform !== "win32")("executes verified cloning and preserves failures while every rollback action is attempted", () => {

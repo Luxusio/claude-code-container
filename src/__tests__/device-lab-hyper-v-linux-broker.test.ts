@@ -80,6 +80,81 @@ describe("device-lab Hyper-V broker", () => {
         else process.env.HOME = originalHome;
     });
 
+    it("publishes backend-owned Secure Boot policies despite request overrides", async () => {
+        const cwd = join(process.env.HOME!, "project-secure-boot-plan");
+        mkdirSync(cwd, { recursive: true });
+        const ownerId = deviceLabOwnerId(cwd);
+        const server = createDeviceBrokerServer({
+            cwd,
+            host: "127.0.0.1",
+            port: 0,
+            platform: "win32",
+            providerPaths: { "powershell.exe": "/fake/powershell.exe" },
+            commandRunner: vi.fn(),
+        });
+        try {
+            const baseUrl = await listen(server);
+            const response = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: {
+                        backend: "linux-vm",
+                        command: "device_create",
+                        deviceId: "secure-boot-plan",
+                        incarnationId: "0123456789abcdef0123456789abcdef",
+                        name: "Secure Boot plan",
+                        profile: "ubuntu-lts",
+                        sourceImage: "C:\\images\\ubuntu.vhdx",
+                        secureBootTemplate: "MicrosoftWindows",
+                    },
+                }),
+            });
+            expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
+            expect(await response.json()).toEqual(expect.objectContaining({
+                result: expect.objectContaining({
+                    create: expect.objectContaining({
+                        secureBootEnabled: false,
+                        secureBootTemplate: "MicrosoftUEFICertificateAuthority",
+                    }),
+                    device: expect.objectContaining({ secureBootEnabled: false }),
+                }),
+            }));
+
+            const windowsResponse = await fetch(ownerRpcEndpoint(baseUrl, ownerId), {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.command.plan",
+                    params: {
+                        backend: "windows-vm",
+                        command: "device_create",
+                        deviceId: "secure-boot-windows-plan",
+                        incarnationId: "fedcba9876543210fedcba9876543210",
+                        name: "Windows Secure Boot plan",
+                        profile: "windows-11",
+                        sourceImage: "C:\\images\\windows.vhdx",
+                        secureBootTemplate: "MicrosoftUEFICertificateAuthority",
+                    },
+                }),
+            });
+            expect(windowsResponse.status, JSON.stringify(await windowsResponse.clone().json())).toBe(200);
+            expect(await windowsResponse.json()).toEqual(expect.objectContaining({
+                result: expect.objectContaining({
+                    create: expect.objectContaining({
+                        secureBootEnabled: true,
+                        secureBootTemplate: "MicrosoftWindows",
+                    }),
+                    device: expect.objectContaining({ secureBootEnabled: true }),
+                }),
+            }));
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
     it("rejects a duplicate Hyper-V create that names a different source image", async () => {
         const cwd = join(process.env.HOME!, "project-source-conflict");
         mkdirSync(cwd, { recursive: true });
@@ -95,6 +170,7 @@ describe("device-lab Hyper-V broker", () => {
             cpus: 2,
             networking: true,
             secureBootTemplate: "MicrosoftUEFICertificateAuthority",
+            secureBootEnabled: false,
         }]);
         const commandRunner = vi.fn();
         const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0, platform: "win32", commandRunner });

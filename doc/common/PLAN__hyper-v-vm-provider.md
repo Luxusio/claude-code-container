@@ -577,8 +577,14 @@ Real-provider tests:
   Android SDK path. CCC requires a valid Google Authenticode signature, rejects
   reparse paths, holds the source image and converter identities open across
   inspection/conversion, and binds the source URL and checksum into the cache
-  manifest. The automatic Linux profile uses Generation 2 with the Microsoft
-  UEFI Certificate Authority template, matching Canonical's Hyper-V guidance.
+  manifest. The automatic Linux profile remains a Generation 2 UEFI VM, but
+  disables Hyper-V Secure Boot because Microsoft documents that some Linux
+  Generation 2 guests fail to boot while it is enabled. Windows profiles keep
+  Secure Boot enabled with the Microsoft Windows template. The persisted and
+  public create configuration records this decision as `secureBootEnabled`.
+  Request-provided templates cannot override either backend-owned policy.
+  A Secure-Boot-enabled VM requires Generation 2, so Windows Generation 1
+  images are rejected before a provider command is emitted.
   The catalog fences the VMDK format and Generation 2 boot contract. The
   provisioning media retains both
   generic NoCloud files
@@ -596,8 +602,9 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v23` additionally prevents reuse of a
-  broker whose Linux seed blocks SSH activation behind online package updates.
+  `hyper-v-provider-image-finalization-v24` additionally prevents reuse of a
+  broker that enables Secure Boot for the automatic Linux profile or whose
+  Linux seed blocks SSH activation behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
   disables package updates on the first boot, writes the owner-scoped host
   keys and static network, then enables the local SSH service without waiting

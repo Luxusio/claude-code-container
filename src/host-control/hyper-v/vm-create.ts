@@ -27,6 +27,8 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
     const cpus = boundedInteger(options.cpus, 1, 64, "cpus");
     const diskMaxBytes = boundedInteger(options.diskMaxBytes, 1024 * 1024 * 1024, Number.MAX_SAFE_INTEGER, "disk-max-bytes");
     const marker = ownershipMarker(options.ownerId, options.deviceId, options.incarnationId);
+    const secureBootEnabled = options.secureBootEnabled !== false;
+    if (secureBootEnabled && options.baseImageGeneration !== 2) throw new Error("hyper-v-secure-boot-generation-invalid");
     const secureBootTemplate = options.secureBootTemplate || "MicrosoftWindows";
     const switchName = options.switchName ? String(options.switchName) : "";
     if (switchName.length > 128 || /[\u0000-\u001f]/.test(switchName)) throw new Error("hyper-v-switch-name-invalid");
@@ -210,7 +212,9 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  $CreatedOsDisks = @(Get-VMHardDiskDrive -VM $CreatedVm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
         "  if ($CreatedOsDisks.Count -ne 1) { throw 'hyper-v-created-disk-attachment-mismatch' }",
         "  if ($VmGeneration -eq 2) {",
-        `    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop`,
+        ...(secureBootEnabled
+            ? [`    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop`]
+            : ["    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot Off -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop"]),
         "  } else {",
         "    Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop",
         "  }",
