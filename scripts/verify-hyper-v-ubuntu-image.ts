@@ -1,13 +1,15 @@
 import { createHash } from "crypto";
-import { copyFileSync, createReadStream, closeSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync } from "fs";
+import { createReadStream, closeSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, realpathSync, rmSync, writeSync } from "fs";
 import { tmpdir } from "os";
-import { join, resolve } from "path";
+import { join, resolve, sep } from "path";
 import { spawnSync } from "child_process";
 
 import {
     HYPER_V_UBUNTU_IMAGE_SHA256,
     HYPER_V_UBUNTU_IMAGE_URL,
 } from "../src/host-control/hyper-v/ubuntu-image.js";
+import { tarVerboseEntrySize } from "../src/host-control/hyper-v/tar-listing.js";
+import { canonicalWindowsPowerShellPath, canonicalWindowsSystemExecutablePath } from "../src/windows-system-powershell.js";
 
 const EFI_SYSTEM_PARTITION_GUID = Buffer.from("28732ac11ff8d211ba4b00a0c93ec93b", "hex");
 const REQUIRED_EFI_FILES = ["EFI/BOOT/BOOTX64.EFI", "EFI/ubuntu/shimx64.efi"] as const;
@@ -24,18 +26,55 @@ type FatVolume = {
     partitionEnd: number;
 };
 
-function parseOptions(args: string[]): { source: string; qemuImg: string } {
+function resolveTarExecutable(explicit: string): string {
+    const candidates = explicit
+        ? [resolve(explicit)]
+        : process.platform === "win32"
+            ? [canonicalWindowsSystemExecutablePath("tar.exe")].filter((value): value is string => Boolean(value))
+            : ["/usr/bin/tar", "/bin/tar"];
+    for (const candidate of candidates) {
+        try {
+            const canonical = realpathSync(candidate);
+            const metadata = lstatSync(canonical);
+            if (!metadata.isFile() || metadata.isSymbolicLink()) continue;
+            if (process.platform === "win32") {
+                const systemTar = canonicalWindowsSystemExecutablePath("tar.exe");
+                const powershell = canonicalWindowsPowerShellPath();
+                if (!systemTar || !powershell || canonical.toLowerCase() !== systemTar.toLowerCase()) continue;
+                const trust = spawnSync(powershell, [
+                    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+                    "$s=Get-AuthenticodeSignature -LiteralPath $env:CCC_VERIFY_TAR; if ($s.Status -eq 'Valid' -and $s.SignerCertificate.Subject -match '(^|, )O=Microsoft Corporation(,|$)') { exit 0 }; exit 1",
+                ], {
+                    encoding: "utf8",
+                    timeout: 30_000,
+                    windowsHide: true,
+                    maxBuffer: 64 * 1024,
+                    env: { ...process.env, CCC_VERIFY_TAR: canonical },
+                });
+                if (trust.status !== 0 || trust.error) continue;
+            } else if (metadata.uid !== 0 || (metadata.mode & 0o022) !== 0) {
+                continue;
+            }
+            return canonical;
+        } catch {
+            // Try the next canonical executable candidate.
+        }
+    }
+    throw new Error("hyper-v-image-verifier-archive-tool-unavailable");
+}
+
+function parseOptions(args: string[]): { source: string; tar: string } {
     let source = "";
-    let qemuImg = process.env.CCC_QEMU_IMG || "qemu-img";
+    let tar = "";
     for (let index = 0; index < args.length; index++) {
         if (args[index] === "--source" && args[index + 1]) source = args[++index];
-        else if (args[index] === "--qemu-img" && args[index + 1]) qemuImg = args[++index];
+        else if (args[index] === "--tar" && args[index + 1]) tar = args[++index];
         else throw new Error(`unknown argument: ${args[index]}`);
     }
     if (!source) {
-        throw new Error(`missing --source <qcow2>; download the pinned image first: ${HYPER_V_UBUNTU_IMAGE_URL}`);
+        throw new Error(`missing --source <vhd.tar.gz>; download the pinned image first: ${HYPER_V_UBUNTU_IMAGE_URL}`);
     }
-    return { source: resolve(source), qemuImg };
+    return { source: resolve(source), tar: resolveTarExecutable(tar) };
 }
 
 function readExact(fd: number, offset: number, length: number): Buffer {
@@ -56,6 +95,49 @@ async function sha256(path: string): Promise<string> {
     const hash = createHash("sha256");
     for await (const chunk of createReadStream(path)) hash.update(chunk);
     return hash.digest("hex");
+}
+
+function copyBoundedArchive(sourcePath: string, destinationPath: string, maximumBytes: number): void {
+    const source = openSync(sourcePath, "r");
+    const destination = openSync(destinationPath, "wx", 0o600);
+    try {
+        const metadata = fstatSync(source);
+        if (!metadata.isFile() || metadata.size <= 0 || metadata.size > maximumBytes) {
+            throw new Error("hyper-v-image-verifier-source-invalid");
+        }
+        const buffer = Buffer.allocUnsafe(1024 * 1024);
+        let copied = 0;
+        while (true) {
+            const count = readSync(source, buffer, 0, buffer.length, null);
+            if (count === 0) break;
+            copied += count;
+            if (copied > maximumBytes) throw new Error("hyper-v-image-verifier-source-invalid");
+            let written = 0;
+            while (written < count) written += writeSync(destination, buffer, written, count - written);
+        }
+        if (copied !== metadata.size) throw new Error("hyper-v-image-verifier-source-mutated");
+    } finally {
+        closeSync(destination);
+        closeSync(source);
+    }
+}
+
+function validateVhdFooter(fd: number, imageSize: number): void {
+    if (!Number.isSafeInteger(imageSize) || imageSize < 1024 || imageSize > 32 * 1024 * 1024 * 1024) {
+        throw new Error("hyper-v-image-verifier-vhd-size-invalid");
+    }
+    const footer = readExact(fd, imageSize - 512, 512);
+    if (footer.toString("ascii", 0, 8) !== "conectix") throw new Error("hyper-v-image-verifier-vhd-footer-missing");
+    const currentSize = Number(footer.readBigUInt64BE(48));
+    const diskType = footer.readUInt32BE(60);
+    if (!Number.isSafeInteger(currentSize) || currentSize <= 0 || currentSize + 512 !== imageSize || diskType !== 2) {
+        throw new Error("hyper-v-image-verifier-vhd-footer-invalid");
+    }
+    const expectedChecksum = footer.readUInt32BE(64);
+    footer.writeUInt32BE(0, 64);
+    let sum = 0;
+    for (const value of footer) sum = (sum + value) >>> 0;
+    if ((~sum >>> 0) !== expectedChecksum) throw new Error("hyper-v-image-verifier-vhd-checksum-invalid");
 }
 
 function parseEfiPartition(fd: number, imageSize: number): Partition {
@@ -205,31 +287,72 @@ function validateFatFile(fd: number, volume: FatVolume, entry: FatEntry, path: s
 async function main(): Promise<void> {
     const options = parseOptions(process.argv.slice(2));
     const source = lstatSync(options.source);
-    if (!source.isFile() || source.isSymbolicLink()) throw new Error("hyper-v-image-verifier-source-invalid");
-    const sourceSha256 = await sha256(options.source);
-    if (sourceSha256 !== HYPER_V_UBUNTU_IMAGE_SHA256) throw new Error("hyper-v-image-verifier-source-hash-mismatch");
-
+    if (!source.isFile() || source.isSymbolicLink()) {
+        throw new Error("hyper-v-image-verifier-source-invalid");
+    }
     const work = mkdtempSync(join(tmpdir(), "ccc-hyper-v-ubuntu-verify-"));
-    const verifiedSourcePath = join(work, "source.qcow2");
-    const rawPath = join(work, "ubuntu.raw");
+    const verifiedArchive = join(work, "source.vhd.tar.gz");
     try {
-        copyFileSync(options.source, verifiedSourcePath);
-        const verifiedSourceSha256 = await sha256(verifiedSourcePath);
-        if (verifiedSourceSha256 !== HYPER_V_UBUNTU_IMAGE_SHA256) {
-            throw new Error("hyper-v-image-verifier-source-copy-hash-mismatch");
+        copyBoundedArchive(options.source, verifiedArchive, 5 * 1024 * 1024 * 1024);
+        const sourceSha256 = await sha256(verifiedArchive);
+        if (sourceSha256 !== HYPER_V_UBUNTU_IMAGE_SHA256) throw new Error("hyper-v-image-verifier-source-hash-mismatch");
+
+        const listing = spawnSync(options.tar, ["-tf", verifiedArchive], {
+            encoding: "utf8",
+            timeout: 60 * 1000,
+            windowsHide: true,
+            maxBuffer: 1024 * 1024,
+        });
+        if (listing.status !== 0 || listing.error) throw new Error("hyper-v-image-verifier-archive-list-failed");
+        const entries = listing.stdout.split(/\r?\n/u).filter(Boolean);
+        if (entries.length < 1 || entries.length > 64) throw new Error("hyper-v-image-verifier-archive-entry-count-invalid");
+        const seen = new Set<string>();
+        const vhdEntries: string[] = [];
+        for (const entry of entries) {
+            const normalized = entry.replaceAll("\\", "/");
+            const components = normalized.split("/");
+            if (!normalized || /[\x00-\x1f]/u.test(normalized) || normalized.startsWith("/") || normalized.startsWith("-")
+                || /^[A-Za-z]:/u.test(normalized) || components.includes("..") || seen.has(normalized.toLowerCase())) {
+                throw new Error("hyper-v-image-verifier-archive-path-invalid");
+            }
+            seen.add(normalized.toLowerCase());
+            if (normalized.toLowerCase().endsWith(".vhd")) vhdEntries.push(normalized);
         }
-        const conversion = spawnSync(options.qemuImg, ["convert", "-f", "qcow2", "-O", "raw", verifiedSourcePath, rawPath], {
+        if (vhdEntries.length !== 1) throw new Error("hyper-v-image-verifier-archive-vhd-count-invalid");
+
+        const verbose = spawnSync(options.tar, ["-tvf", verifiedArchive], {
+            encoding: "utf8",
+            timeout: 60 * 1000,
+            windowsHide: true,
+            maxBuffer: 1024 * 1024,
+        });
+        if (verbose.status !== 0 || verbose.error) throw new Error("hyper-v-image-verifier-archive-list-failed");
+        const typeLines = verbose.stdout.split(/\r?\n/u).filter(Boolean);
+        if (typeLines.length !== entries.length || typeLines.some((line) => line[0] !== "-" && line[0] !== "d")) {
+            throw new Error("hyper-v-image-verifier-archive-entry-type-invalid");
+        }
+        const vhdIndex = entries.indexOf(vhdEntries[0]);
+        const declaredSize = vhdIndex >= 0 ? tarVerboseEntrySize(typeLines[vhdIndex], vhdEntries[0]) : null;
+        if (declaredSize === null || !Number.isSafeInteger(declaredSize) || declaredSize < 1024 * 1024 * 1024 || declaredSize > 32 * 1024 * 1024 * 1024) {
+            throw new Error("hyper-v-image-verifier-archive-size-invalid");
+        }
+        const extraction = spawnSync(options.tar, ["-xf", verifiedArchive, "-C", work, vhdEntries[0]], {
             encoding: "utf8",
             timeout: 10 * 60 * 1000,
             windowsHide: true,
             maxBuffer: 1024 * 1024,
         });
-        if (conversion.status !== 0 || conversion.error) {
-            throw new Error(`hyper-v-image-verifier-convert-failed:${conversion.error?.message || conversion.stderr.trim()}`);
+        if (extraction.status !== 0 || extraction.error) {
+            throw new Error("hyper-v-image-verifier-extract-failed");
         }
-        const fd = openSync(rawPath, "r");
+        const extractedPath = resolve(work, vhdEntries[0]);
+        if (!extractedPath.startsWith(`${resolve(work)}${sep}`)) throw new Error("hyper-v-image-verifier-extracted-path-invalid");
+        const extracted = lstatSync(extractedPath);
+        if (!extracted.isFile() || extracted.isSymbolicLink()) throw new Error("hyper-v-image-verifier-extracted-file-invalid");
+        const fd = openSync(extractedPath, "r");
         try {
             const imageSize = fstatSync(fd).size;
+            validateVhdFooter(fd, imageSize);
             const efiPartition = parseEfiPartition(fd, imageSize);
             const volume = parseFatVolume(fd, efiPartition);
             for (const path of REQUIRED_EFI_FILES) {
@@ -238,7 +361,13 @@ async function main(): Promise<void> {
         } finally {
             closeSync(fd);
         }
-        process.stdout.write(`${JSON.stringify({ ok: true, source: options.source, sourceSha256, requiredEfiFiles: REQUIRED_EFI_FILES })}\n`);
+        process.stdout.write(`${JSON.stringify({
+            ok: true,
+            source: "source.vhd.tar.gz",
+            sourceSha256,
+            archiveEntry: vhdEntries[0],
+            requiredEfiFiles: REQUIRED_EFI_FILES,
+        })}\n`);
     } finally {
         rmSync(work, { recursive: true, force: true });
     }

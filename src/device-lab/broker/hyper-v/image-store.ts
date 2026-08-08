@@ -111,10 +111,10 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
             assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
         });
     }
-    for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip")]) {
+    for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip"), join(profileRoot, "source.vhd.tar.gz")]) {
         try {
             const archiveMetadata = lstatSync(sourceCache);
-            const currentCache = sourceCache.endsWith("source.qcow2");
+            const currentCache = sourceCache.endsWith("source.vhd.tar.gz");
             const validRetryCache = currentCache
                 && archiveMetadata.isFile()
                 && !archiveMetadata.isSymbolicLink()
@@ -535,6 +535,7 @@ export async function resolveHyperVImageForCreate(
                 const powershell = resolvePowerShell(runtime);
                 if (!powershell) throw new Error("missing-provider-command:powershell");
                 const imagePath = join(globalProfileRoot, "base.vhdx");
+                cleanupIncompleteHyperVImageArtifacts(globalProfileRoot);
                 const execution = await runtime.run(hyperVAcquireBaseImageCommand({
                     executable: powershell,
                     profile: automaticProfile,
