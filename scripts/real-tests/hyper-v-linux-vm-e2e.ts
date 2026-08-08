@@ -47,7 +47,6 @@ function boundedDiagnosticIdentity(value: unknown, fallback: string) {
 export function writeHyperVLinuxFailureDiagnostic(input: {
     outputRoot?: string;
     step: string;
-    deviceId: string;
     created: boolean;
     error: unknown;
 }) {
@@ -60,7 +59,6 @@ export function writeHyperVLinuxFailureDiagnostic(input: {
         generatedAt,
         backend: "linux-vm",
         step: boundedDiagnosticIdentity(input.step, "unknown-step"),
-        deviceId: boundedDiagnosticIdentity(input.deviceId, "unknown-device"),
         created: input.created,
         failure: (input.error as any)?.brokerPayload
             ? brokerToolFailureEvidence((input.error as any).brokerPayload)
@@ -75,8 +73,7 @@ export function writeHyperVLinuxFailureDiagnostic(input: {
         let renamed = false;
         try {
             writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
-            // Node's Windows rename does not replace an existing destination.
-            rmSync(target, { force: true });
+            // libuv uses replacement rename semantics on Windows and POSIX.
             renameSync(temporary, target);
             renamed = true;
         } finally {
@@ -286,7 +283,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             return { status: "PASS", deviceId, verifiedCapabilities: [...calledCapabilities].sort() };
         } catch (error: any) {
             try {
-                const diagnostic = writeHyperVLinuxFailureDiagnostic({ step: currentStep, deviceId, created, error });
+                const diagnostic = writeHyperVLinuxFailureDiagnostic({ step: currentStep, created, error });
                 return { status: "FAIL", reason: `${currentStep}: details=results/device-lab-real/hyper-v-linux-diagnostic-latest.json; ${terminalFailureSummary(error)}` };
             } catch (diagnosticError) {
                 return { status: "FAIL", reason: `${currentStep}: diagnostic-write-failed=${boundedFailureMessage(diagnosticError)}; ${terminalFailureSummary(error)}` };

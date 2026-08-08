@@ -603,7 +603,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         const error = new Error("unsafe C:\\Users\\Luxus\\private token=secret");
         Object.defineProperty(error, "brokerPayload", { value: failure });
         try {
-            const paths = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "start and wait for SSH", deviceId: "linux-hyper-v-real-e2e-1", created: true, error });
+            const paths = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "start and wait for SSH", created: true, error });
             const content = readFileSync(paths.latestPath, "utf8");
             const record = JSON.parse(content);
             expect(record.failure.boot.diagnostic.bootEntries).toHaveLength(1);
@@ -613,8 +613,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(content).not.toContain("C:\\Users");
             expect(content).not.toContain('"endpoint":');
             expect(content).not.toContain("diskPath");
+            expect(content).not.toContain("deviceId");
             expect(readFileSync(paths.timestampedPath, "utf8")).toBe(content);
-            const generic = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "assert contract", deviceId: "linux-hyper-v-real-e2e-1", created: false, error: new Error("authentication failed token=secret") });
+            const generic = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "assert contract", created: false, error: new Error("authentication failed token=secret") });
             const genericContent = readFileSync(generic.latestPath, "utf8");
             expect(genericContent).toContain("failure-message-redacted");
             expect(genericContent).not.toContain("token=secret");
