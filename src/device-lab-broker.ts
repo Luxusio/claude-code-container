@@ -89,6 +89,29 @@ export const DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 2 * 60 * 1000
 export const DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS = DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS
     + DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS;
 
+export function hyperVProviderDeadlineAt(
+    backend: string,
+    command: string,
+    cleanupDeadlineAt: number,
+): number {
+    const needsCleanupReserve = command === "device_create"
+        || (backend === "linux-vm" && (command === "device_start" || command === "device_reboot"));
+    return needsCleanupReserve && Number.isFinite(cleanupDeadlineAt)
+        ? cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS
+        : cleanupDeadlineAt;
+}
+
+export function hyperVLifecycleCleanupTimeoutMs(
+    backend: string,
+    command: string,
+    operationTimeoutMs: number,
+): number {
+    return operationTimeoutMs + (backend === "linux-vm"
+        && (command === "device_start" || command === "device_reboot")
+        ? DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS
+        : 0);
+}
+
 function hyperVLifecycleOperationTimeoutMs(parsed: CommandParamSuccess): number {
     if ((parsed.command !== "device_start" && parsed.command !== "device_reboot") || parsed.waitForBoot === false) {
         return DEVICE_BROKER_HYPER_V_LIFECYCLE_TIMEOUT_MS;
@@ -7196,6 +7219,11 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
     if (command === "device_create" && backend === "linux-vm" && create?.networking === false) {
         return { ok: false, status: 400, error: "linux-vm-networking-required" };
     }
+    if (backend === "linux-vm"
+        && (command === "device_start" || command === "device_reboot")
+        && input.waitForBoot === false) {
+        return { ok: false, status: 400, error: "linux-vm-bootstrap-requires-boot-wait" };
+    }
     const deviceId = typeof input.deviceId === "string" && input.deviceId.trim()
         ? input.deviceId.trim()
         : command === "device_create"
@@ -12343,7 +12371,7 @@ async function lifecycleCommandInvokeUnlocked(
     const windowsSandboxBaselineHandles = windowsSandboxWindowSnapshot && commandSucceeded(windowsSandboxWindowSnapshot)
         ? windowsSandboxWindowHandlesFromOutput(windowsSandboxWindowSnapshot.stdout || "")
         : null;
-    const execution = isHyperVBackend(parsed.backend)
+    let execution = isHyperVBackend(parsed.backend)
         ? await hyperVProviderCommandRunner(normalized, effectiveProviderCommand, {
             timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 120000),
             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
@@ -12354,15 +12382,21 @@ async function lifecycleCommandInvokeUnlocked(
             : normalized.commandTimeoutMs,
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         });
-    if (isHyperVBackend(parsed.backend) && hyperVOperationDeadlineExpired(hyperVDeadlineAt)) {
+    const hyperVProviderDeadlineExpired = isHyperVBackend(parsed.backend) && hyperVOperationDeadlineExpired(hyperVDeadlineAt);
+    const linuxBootstrapMayNeedContainment = parsed.backend === "linux-vm"
+        && (parsed.command === "device_start" || parsed.command === "device_reboot");
+    if (hyperVProviderDeadlineExpired && !linuxBootstrapMayNeedContainment) {
         return {
             status: 504,
             payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId },
         };
     }
-    let success = commandSucceeded(execution)
+    let success = !hyperVProviderDeadlineExpired && (commandSucceeded(execution)
         || commandToleratesMissingMacosVmDelete(parsed, execution)
-        || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution);
+        || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution));
+    if (hyperVProviderDeadlineExpired && linuxBootstrapMayNeedContainment) {
+        execution = { ...execution, error: "hyper-v-operation-deadline-exceeded" };
+    }
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
         const avdName = field(payload.result?.device, "avdName");
         const avdRoot = approvedAndroidAvdRoot(field(payload.result?.device, "avdRoot"), normalized.platform);
@@ -12409,6 +12443,7 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
     let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
+    let hyperVContainedRuntimeState: "Off" | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
     let windowsMinimizeWatchdogCleanup: ReturnType<typeof cancelBrokerWindowsMinimizeWatchdog> | null = null;
@@ -12639,6 +12674,7 @@ async function lifecycleCommandInvokeUnlocked(
                         incarnationId: hyperVDeviceIncarnationId(device) || "",
                         vmName: field(device, "vmName") || "",
                         vmId: field(device, "vmId"),
+                        managedMacAddress: field(device, "macAddress") || "",
                     });
                     const cleanupExecution = await hyperVProviderCommandRunner(normalized, cleanupCommand, {
                         timeoutMs: hyperVRemainingTimeout(hyperVDeadlineAt, 30000),
@@ -12660,6 +12696,63 @@ async function lifecycleCommandInvokeUnlocked(
                 hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: error instanceof Error ? error.message : String(error) };
                 success = false;
             }
+        }
+    }
+    if (!success
+        && parsed.backend === "linux-vm"
+        && (parsed.command === "device_start" || parsed.command === "device_reboot")
+        && parsed.waitForBoot !== false) {
+        const device = payload.result?.device as Record<string, unknown>;
+        let bootstrapContained = false;
+        try {
+            const cleanupCommand = hyperVBootstrapNetworkCleanupCommand({
+                executable: providerCommand.executable || "powershell.exe",
+                ownerId,
+                deviceId: parsed.deviceId,
+                incarnationId: hyperVDeviceIncarnationId(device) || "",
+                vmName: field(device, "vmName") || "",
+                vmId: field(device, "vmId"),
+                managedMacAddress: field(device, "macAddress") || "",
+            });
+            const cleanupExecution = await hyperVProviderCommandRunner(normalized, cleanupCommand, {
+                timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
+                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+            });
+            bootstrapContained = commandSucceeded(cleanupExecution)
+                && Boolean(parseHyperVBootstrapNetworkCleanupObservation(cleanupExecution.stdout || ""));
+        } catch {
+            bootstrapContained = false;
+        }
+        if (!bootstrapContained) {
+            try {
+                const stopExecution = await hyperVProviderCommandRunner(normalized, hyperVStopCommand({
+                    executable: providerCommand.executable || "powershell.exe",
+                    ownerId,
+                    deviceId: parsed.deviceId,
+                    incarnationId: hyperVDeviceIncarnationId(device) || "",
+                    vmName: field(device, "vmName") || "",
+                    vmId: field(device, "vmId"),
+                }, true), {
+                    timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
+                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                });
+                const stopObservation = commandSucceeded(stopExecution)
+                    ? parseHyperVVmObservation(stopExecution.stdout || "")
+                    : null;
+                bootstrapContained = Boolean(stopObservation
+                    && stopObservation.state === "Off"
+                    && stopObservation.vmId === String(field(device, "vmId") || "").toLowerCase()
+                    && stopObservation.vmName === field(device, "vmName"));
+                if (bootstrapContained) hyperVContainedRuntimeState = "Off";
+            } catch {
+                bootstrapContained = false;
+            }
+        }
+        if (!bootstrapContained) {
+            hyperVGuestReadyExecution = {
+                ...(hyperVGuestReadyExecution || { mode: "exec", provider: "hyper-v-ssh", status: null }),
+                error: "hyper-v-bootstrap-network-containment-failed",
+            };
         }
     }
     if (!success
@@ -12839,10 +12932,13 @@ async function lifecycleCommandInvokeUnlocked(
     }
     let updatedDevice: unknown;
     try {
-        if (!success && hyperVGuestReadyExecution && isHyperVBackend(parsed.backend) && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
+        if (!success
+            && (hyperVGuestReadyExecution || hyperVContainedRuntimeState)
+            && isHyperVBackend(parsed.backend)
+            && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
             mutateOwnerDevices(ownerId, parsed.stateKey, (devices) => devices.map((candidate) => {
                 if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== parsed.deviceId) return candidate;
-                const observedRuntimeState = hyperVGuestBootDiagnostic?.state || "Running";
+                const observedRuntimeState = hyperVContainedRuntimeState || hyperVGuestBootDiagnostic?.state || "Running";
                 updatedDevice = {
                     ...(candidate as Record<string, unknown>),
                     status: observedRuntimeState === "Running" ? "running" : "stopped",
@@ -13371,11 +13467,9 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
     const hyperVCleanupDeadlineAt = isHyperVBackend(parsed.backend) && !parsed.dryRun
         ? Date.now() + (parsed.command === "device_create"
             ? DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS
-            : hyperVLifecycleOperationTimeoutMs(parsed))
+            : hyperVLifecycleCleanupTimeoutMs(parsed.backend, parsed.command, hyperVLifecycleOperationTimeoutMs(parsed)))
         : Number.POSITIVE_INFINITY;
-    const hyperVDeadlineAt = parsed.command === "device_create" && Number.isFinite(hyperVCleanupDeadlineAt)
-        ? hyperVCleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS
-        : hyperVCleanupDeadlineAt;
+    const hyperVDeadlineAt = hyperVProviderDeadlineAt(parsed.backend, parsed.command, hyperVCleanupDeadlineAt);
     if (isHyperVBackend(parsed.backend) && parsed.dryRun) {
         return parsed.command === "device_create"
             ? lifecycleHyperVCommandInvokeLocked(ownerId, params, parsed, normalized)

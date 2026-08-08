@@ -34,6 +34,8 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
     if (switchName.length > 128 || /[\u0000-\u001f]/.test(switchName)) throw new Error("hyper-v-switch-name-invalid");
     const macAddress = options.macAddress ? String(options.macAddress).toUpperCase() : "";
     if (macAddress && !/^02(?::[0-9A-F]{2}){5}$/.test(macAddress)) throw new Error("hyper-v-mac-address-invalid");
+    const bootstrapMacAddress = macAddress ? `06${macAddress.slice(2)}` : "";
+    if (options.bootstrapDhcp === true && !bootstrapMacAddress) throw new Error("hyper-v-bootstrap-mac-address-missing");
     const lines = [
         `$VmName = ${psQuote(options.vmName)}`,
         `$Marker = ${psQuote(marker)}`,
@@ -46,6 +48,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         `$DiskMaxBytes = [long]${diskMaxBytes}`,
         `$SwitchName = ${psQuote(switchName)}`,
         `$MacAddress = ${psQuote(macAddress)}`,
+        `$BootstrapMacAddress = ${psQuote(bootstrapMacAddress)}`,
         `$Networking = ${options.networking === false ? "$false" : "$true"}`,
         `$BootstrapDhcp = ${options.bootstrapDhcp === true ? "$true" : "$false"}`,
         "function Set-CccVmCreateStage([string]$Stage) {",
@@ -131,6 +134,9 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "      if ($BootstrapSwitches.Count -ne 1) { throw 'hyper-v-bootstrap-dhcp-switch-unavailable' }",
         "      $BootstrapSwitch = $BootstrapSwitches[0]",
         "      if ([string]$BootstrapSwitch.Id -eq [string]$ResolvedSwitch.Id) { throw 'hyper-v-bootstrap-network-switch-conflict' }",
+        "      $BootstrapMacHex = $BootstrapMacAddress.Replace(':', '')",
+        "      $BootstrapMacConflicts = @(Get-VMNetworkAdapter -All -ErrorAction Stop | Where-Object { ([string]$_.MacAddress).ToUpperInvariant() -eq $BootstrapMacHex })",
+        "      if ($BootstrapMacConflicts.Count -gt 0) { throw 'hyper-v-bootstrap-mac-address-conflict' }",
         "    }",
         "  }",
         "  Assert-NoReparsePath $BaseImage",
@@ -195,6 +201,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "    $BootstrapAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop)",
         "    if ($BootstrapAdapters.Count -ne 1) { throw 'hyper-v-bootstrap-network-adapter-unavailable' }",
         "    Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP' -ErrorAction Stop",
+        "    Set-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -StaticMacAddress ($BootstrapMacAddress.Replace(':', '')) -ErrorAction Stop",
         "    Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network' -ErrorAction Stop",
         "    $ManagedAdapters = @(Get-VMNetworkAdapter -VM $CreatedVm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Device Network' })",
         "    if ($ManagedAdapters.Count -ne 1) { throw 'hyper-v-managed-network-adapter-unavailable' }",
@@ -206,6 +213,10 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  if ($MacAddress) {",
         "    if (-not $ManagedAdapter) { throw 'hyper-v-managed-network-adapter-unavailable' }",
         "    Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress ($MacAddress.Replace(':', '')) -ErrorAction Stop",
+        "  }",
+        "  if ($BootstrapSwitch) {",
+        "    $AssignedBootstrapMatches = @(Get-VMNetworkAdapter -All -ErrorAction Stop | Where-Object { ([string]$_.MacAddress).ToUpperInvariant() -eq $BootstrapMacAddress.Replace(':', '') })",
+        "    if ($AssignedBootstrapMatches.Count -ne 1 -or [string]$AssignedBootstrapMatches[0].VMId -ne [string]$CreatedVm.Id -or [string]$AssignedBootstrapMatches[0].Name -cne 'CCC Bootstrap DHCP') { throw 'hyper-v-bootstrap-mac-address-conflict' }",
         "  }",
         `  Set-VMProcessor -VM $CreatedVm -Count ${cpus} -ErrorAction Stop`,
         "  Set-VMMemory -VM $CreatedVm -DynamicMemoryEnabled $false -ErrorAction Stop",

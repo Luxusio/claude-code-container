@@ -48,29 +48,14 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
     );
     const username = assertLinuxUsername(options.guestUsername);
     const address = assertIpv4(options.networkAddress, "linux-network-address");
-    const gateway = assertIpv4(options.networkGateway, "linux-network-gateway");
-    const prefixLength = boundedInteger(options.networkPrefixLength, 16, 30, "linux-network-prefix-length");
+    assertIpv4(options.networkGateway, "linux-network-gateway");
+    boundedInteger(options.networkPrefixLength, 16, 30, "linux-network-prefix-length");
     const macAddress = String(options.macAddress || "").toLowerCase();
     if (!/^02(?::[0-9a-f]{2}){5}$/.test(macAddress)) throw new Error("hyper-v-mac-address-invalid");
-    const dnsServers = (options.dnsServers?.length ? options.dnsServers : ["1.1.1.1", "8.8.8.8"])
-        .map((server) => assertIpv4(server, "linux-dns-server"));
+    const bootstrapMacAddress = `06${macAddress.slice(2)}`;
+    (options.dnsServers?.length ? options.dnsServers : ["1.1.1.1", "8.8.8.8"])
+        .forEach((server) => assertIpv4(server, "linux-dns-server"));
     const metadata = `instance-id: ${options.ownerId}-${options.deviceId}\nlocal-hostname: ${options.vmName}\n`;
-    const networkConfig = [
-        "version: 2",
-        "ethernets:",
-        "  ccc0:",
-        "    match:",
-        `      macaddress: '${macAddress}'`,
-        "    set-name: ccc0",
-        `    addresses: [${address}/${prefixLength}]`,
-        `    gateway4: ${gateway}`,
-        `    nameservers: { addresses: [${dnsServers.join(", ")}] }`,
-        "",
-    ].join("\n");
-    const netplanConfig = [
-        "network:",
-        ...networkConfig.split("\n").map((line) => line ? `  ${line}` : line),
-    ].join("\n");
     return command(options.executable, jsonScript([
         "function Set-CccProvisionStage([string]$Stage) {",
         "  $script:CccProvisionStage = $Stage",
@@ -87,10 +72,9 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         `$HostPrivateKey = ${psQuote(hostPrivateKeyPath)}`,
         `$HostPublicKey = ${psQuote(hostPublicKeyPath)}`,
         `$KnownHosts = ${psQuote(knownHostsPath)}`,
+        `$ExpectedBootstrapMac = ${psQuote(bootstrapMacAddress.replaceAll(":", "").toUpperCase())}`,
         `$MediaSourceRoot = ${psQuote(mediaSourceRoot)}`,
         `$MetadataBase64 = ${psQuote(Buffer.from(metadata, "utf8").toString("base64"))}`,
-        `$NetworkBase64 = ${psQuote(Buffer.from(networkConfig, "utf8").toString("base64"))}`,
-        `$NetplanBase64 = ${psQuote(Buffer.from(netplanConfig, "utf8").toString("base64"))}`,
         `$GuestUsername = ${psQuote(username)}`,
         "Set-CccProvisionStage 'vm-state'",
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-linux-seed-requires-stopped-vm' }",
@@ -141,7 +125,18 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "$HostFingerprint = 'SHA256:' + [Convert]::ToBase64String(([Security.Cryptography.SHA256]::Create()).ComputeHash([Convert]::FromBase64String($Matches[1]))).TrimEnd('=')",
         "$HostPrivateKeyYaml = (($HostPrivateKeyText -split '\\r?\\n') | ForEach-Object { '    ' + $_ }) -join [Environment]::NewLine",
         "Set-Content -LiteralPath $KnownHosts -Value (" + psQuote(address) + " + ' ' + $HostPublicKeyText) -Encoding ASCII -Force",
-        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'ssh_keys:', '  ed25519_private: |', $HostPrivateKeyYaml, ('  ed25519_public: ' + $HostPublicKeyText), 'package_update: false', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'write_files:', '  - path: /etc/netplan/99-ccc-static.yaml', '    owner: root:root', \"    permissions: '0600'\", '    encoding: b64', ('    content: ' + $NetplanBase64), 'runcmd:', '  - [netplan, apply]', '  - [systemctl, enable, --now, ssh]', '') -join [Environment]::NewLine",
+        "Set-CccProvisionStage 'bootstrap-network'",
+        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' -and $_.SwitchName -eq 'Default Switch' })",
+        "if ($BootstrapAdapters.Count -ne 1) { throw 'hyper-v-linux-bootstrap-adapter-invalid' }",
+        "$BootstrapMacHex = ([string]$BootstrapAdapters[0].MacAddress).ToUpperInvariant()",
+        "if ($BootstrapMacHex -notmatch '^[0-9A-F]{12}$') { throw 'hyper-v-linux-bootstrap-mac-invalid' }",
+        "if ($BootstrapMacHex -ne $ExpectedBootstrapMac) { throw 'hyper-v-linux-bootstrap-mac-identity-mismatch' }",
+        "$HostBootstrapMacMatches = @(Get-VMNetworkAdapter -All -ErrorAction Stop | Where-Object { ([string]$_.MacAddress).ToUpperInvariant() -eq $ExpectedBootstrapMac })",
+        "if ($HostBootstrapMacMatches.Count -ne 1 -or [string]$HostBootstrapMacMatches[0].VMId -ne [string]$Vm.Id -or [string]$HostBootstrapMacMatches[0].Name -cne 'CCC Bootstrap DHCP') { throw 'hyper-v-linux-bootstrap-mac-identity-mismatch' }",
+        "$BootstrapMac = (($BootstrapMacHex -replace '(..)(?!$)', '$1:')).ToLowerInvariant()",
+        "$NetworkConfig = @('version: 2', 'ethernets:', '  bootstrap0:', '    match:', (\"      macaddress: '\" + $BootstrapMac + \"'\"), '    set-name: bootstrap0', '    dhcp4: true', '    dhcp6: false', '') -join [Environment]::NewLine",
+        "$NetworkBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($NetworkConfig))",
+        "$UserData = @('#cloud-config', ('hostname: ' + $ExpectedName), 'manage_etc_hosts: true', ('user: ' + $GuestUsername), 'ssh_pwauth: false', 'disable_root: true', 'ssh_deletekeys: true', 'ssh_keys:', '  ed25519_private: |', $HostPrivateKeyYaml, ('  ed25519_public: ' + $HostPublicKeyText), 'package_update: false', 'users:', '  - default', ('  - name: ' + $GuestUsername), '    groups: [adm, sudo]', '    sudo: ALL=(ALL) NOPASSWD:ALL', '    shell: /bin/bash', '    lock_passwd: true', '    ssh_authorized_keys:', ('      - ' + $PublicKeyText), 'runcmd:', '  - [systemctl, enable, --now, ssh]', '') -join [Environment]::NewLine",
         "$UserDataBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($UserData))",
         "$PublicKeyXml = [Security.SecurityElement]::Escape($PublicKeyText)",
         "$OvfEnvironment = @('<?xml version=\"1.0\" encoding=\"utf-8\"?>', '<ns0:Environment xmlns=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns0=\"http://schemas.dmtf.org/ovf/environment/1\" xmlns:ns1=\"http://schemas.microsoft.com/windowsazure\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">', '<ns1:ProvisioningSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:LinuxProvisioningConfigurationSet>', '<ns1:ConfigurationSetType>LinuxProvisioningConfiguration</ns1:ConfigurationSetType>', ('<ns1:HostName>' + $ExpectedName + '</ns1:HostName>'), ('<ns1:UserName>' + $GuestUsername + '</ns1:UserName>'), '<ns1:UserPassword />', ('<ns1:CustomData>' + $UserDataBase64 + '</ns1:CustomData>'), '<ns1:DisableSshPasswordAuthentication>true</ns1:DisableSshPasswordAuthentication>', '<ns1:SSH><ns1:PublicKeys><ns1:PublicKey><ns1:Path>/home/' + $GuestUsername + '/.ssh/authorized_keys</ns1:Path><ns1:Value>' + $PublicKeyXml + '</ns1:Value></ns1:PublicKey></ns1:PublicKeys></ns1:SSH>', '</ns1:LinuxProvisioningConfigurationSet>', '</ns1:ProvisioningSection>', '<ns1:PlatformSettingsSection>', '<ns1:Version>1.0</ns1:Version>', '<ns1:PlatformSettings>', '<ns1:KmsServerHostname>kms.core.windows.net</ns1:KmsServerHostname>', '<ns1:ProvisionGuestAgent>false</ns1:ProvisionGuestAgent>', '<ns1:GuestAgentPackageName xsi:nil=\"true\" />', '<ns1:PreprovisionedVMType xsi:nil=\"true\" />', '</ns1:PlatformSettings>', '</ns1:PlatformSettingsSection>', '</ns0:Environment>') -join [Environment]::NewLine",
@@ -223,16 +218,22 @@ export function hyperVLinuxNetworkFinalizeCommand(options: HyperVLinuxNetworkFin
 }
 
 export function hyperVBootstrapNetworkCleanupCommand(options: HyperVBootstrapNetworkCleanupOptions): HyperVProviderCommand {
+    const managedMacAddress = String(options.managedMacAddress || "").toUpperCase();
+    if (!/^02(?::[0-9A-F]{2}){5}$/.test(managedMacAddress)) throw new Error("hyper-v-mac-address-invalid");
+    const bootstrapMacHex = `06${managedMacAddress.slice(2)}`.replaceAll(":", "");
     return command(options.executable, jsonScript([
         ...ownedVmPrelude(options),
-        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' })",
+        `$ExpectedBootstrapMac = ${psQuote(bootstrapMacHex)}`,
+        "$BootstrapAdapters = @(Get-VMNetworkAdapter -VM $Vm -ErrorAction Stop | Where-Object { ([string]$_.MacAddress).ToUpperInvariant() -eq $ExpectedBootstrapMac })",
         "if ($BootstrapAdapters.Count -gt 1) { throw 'hyper-v-bootstrap-network-adapter-ambiguous' }",
         "$Removed = $false",
         "if ($BootstrapAdapters.Count -eq 1) {",
-        "  if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') { throw 'hyper-v-bootstrap-network-adapter-identity-mismatch' }",
+        "  if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch' -or [string]$BootstrapAdapters[0].Name -cne 'CCC Bootstrap DHCP') { throw 'hyper-v-bootstrap-network-adapter-identity-mismatch' }",
         "  Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -Confirm:$false -ErrorAction Stop",
         "  $Removed = $true",
         "}",
+        "$RemainingBootstrapAdapters = @(Get-VMNetworkAdapter -All -ErrorAction Stop | Where-Object { ([string]$_.MacAddress).ToUpperInvariant() -eq $ExpectedBootstrapMac })",
+        "if ($RemainingBootstrapAdapters.Count -ne 0) { throw 'hyper-v-bootstrap-network-containment-failed' }",
         "$Result = [ordered]@{ ok = $true; removed = $Removed; alreadyMissing = (-not $Removed) }",
         "$Result | ConvertTo-Json -Compress -Depth 4",
     ]));

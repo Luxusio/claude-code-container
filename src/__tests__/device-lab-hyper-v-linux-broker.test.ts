@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeviceBrokerServer, DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS, DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS } from "../device-lab-broker.js";
+import { createDeviceBrokerServer, DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS, DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS, hyperVLifecycleCleanupTimeoutMs, hyperVProviderDeadlineAt } from "../device-lab-broker.js";
 import { deviceLabOwnerId } from "../device-lab-owner.js";
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
@@ -66,6 +66,20 @@ function hyperVNetworkCleanupResult<T extends { args?: string[]; input?: string 
 }
 
 describe("device-lab Hyper-V broker", () => {
+    it("reserves containment time for Linux start and reboot deadlines", () => {
+        const operationTimeoutMs = 17 * 60 * 1000;
+        expect(hyperVLifecycleCleanupTimeoutMs("linux-vm", "device_start", operationTimeoutMs))
+            .toBe(operationTimeoutMs + DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        expect(hyperVLifecycleCleanupTimeoutMs("linux-vm", "device_reboot", operationTimeoutMs))
+            .toBe(operationTimeoutMs + DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        const cleanupDeadlineAt = 1_000_000;
+        expect(hyperVProviderDeadlineAt("linux-vm", "device_start", cleanupDeadlineAt))
+            .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        expect(hyperVProviderDeadlineAt("linux-vm", "device_reboot", cleanupDeadlineAt))
+            .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        expect(hyperVProviderDeadlineAt("windows-vm", "device_start", cleanupDeadlineAt))
+            .toBe(cleanupDeadlineAt);
+    });
     let originalHome: string | undefined;
 
     beforeEach(() => {
@@ -1693,6 +1707,8 @@ describe("device-lab Hyper-V broker", () => {
         let elevatedNetworkSetups = 0;
         let elevatedNetworkCleanups = 0;
         let bootstrapNetworkCleanups = 0;
+        let bootstrapCleanupFailure = false;
+        let providerLifecycleFailure = false;
 
         const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
             if (command.provider === "hyper-v-ssh") {
@@ -1729,6 +1745,7 @@ describe("device-lab Hyper-V broker", () => {
             }
             if (script.includes("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]")) {
                 bootstrapNetworkCleanups += 1;
+                if (bootstrapCleanupFailure) return { ...command, status: 1, stdout: "", stderr: "cleanup failed" };
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, removed: bootstrapNetworkCleanups === 1, alreadyMissing: bootstrapNetworkCleanups > 1 }), stderr: "" };
             }
             if (script.includes("CccHyperVNetworkPipeNative")) {
@@ -1770,6 +1787,9 @@ describe("device-lab Hyper-V broker", () => {
             const networkAddress = expectedNetworkAddress;
             const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
             const deleting = script.includes("Remove-VM -VM $Vm");
+            if (providerLifecycleFailure && (script.includes("Start-VM") || script.includes("Restart-VM"))) {
+                return { ...command, status: 1, stdout: "", stderr: "provider lifecycle failed" };
+            }
             if (script.includes("Start-VM") || script.includes("Restart-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
             if (script.includes("Checkpoint-VM")) snapshotExists = true;
@@ -1846,16 +1866,13 @@ describe("device-lab Hyper-V broker", () => {
             const seedScript = commandRunner.mock.calls
                 .map(([command]) => providerScript(command))
                 .find((script) => script.includes("Write-CccIso $IsoFiles $SeedDisk 'cidata'"));
-            const networkBase64 = seedScript?.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
-            expect(networkBase64).toBeTruthy();
-            const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
-            expect(networkConfig).toContain("  ccc0:");
-            expect(networkConfig).toContain("set-name: ccc0");
-            expect(networkConfig).not.toContain("set-name: eth0");
-            expect(networkConfig).toContain(`macaddress: '${allocatedMac}'`);
-            const netplanBase64 = seedScript?.match(/\$NetplanBase64 = '([^']+)'/)?.[1];
-            expect(netplanBase64).toBeTruthy();
-            expect(Buffer.from(netplanBase64!, "base64").toString("utf8")).toMatch(/^network:\n  version: 2\n/);
+            expect(seedScript).toContain("$_.Name -eq 'CCC Bootstrap DHCP' -and $_.SwitchName -eq 'Default Switch'");
+            expect(seedScript).toContain("'  bootstrap0:'");
+            expect(seedScript).toContain("'    set-name: bootstrap0'");
+            expect(seedScript).toContain("'    dhcp4: true'");
+            expect(seedScript).not.toContain("'  ccc0:'");
+            expect(seedScript).not.toContain(`macaddress: '${allocatedMac}'`);
+            expect(seedScript).not.toContain("/etc/netplan/99-ccc-static.yaml");
             expect(createdBody.result.device).not.toHaveProperty("privateRoot");
             expect(createdBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(createdBody)).not.toContain('"sshPrivateKeyPath"');
@@ -1869,6 +1886,25 @@ describe("device-lab Hyper-V broker", () => {
             expect(repeatedCreateBody.result.device).not.toHaveProperty("privateRoot");
             expect(repeatedCreateBody.result.device).not.toHaveProperty("sshPrivateKeyPath");
             expect(JSON.stringify(repeatedCreateBody)).not.toContain('"sshPrivateKeyPath"');
+
+            const callsBeforeUnsafeStart = commandRunner.mock.calls.length;
+            const unsafeStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: false });
+            expect(unsafeStart.status).toBe(400);
+            expect(await unsafeStart.json()).toEqual(expect.objectContaining({ error: "linux-vm-bootstrap-requires-boot-wait" }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeUnsafeStart);
+
+            providerLifecycleFailure = true;
+            bootstrapCleanupFailure = true;
+            const providerFailedStart = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
+            expect(providerFailedStart.status).toBe(502);
+            expect(await providerFailedStart.json()).toEqual(expect.objectContaining({
+                result: expect.objectContaining({
+                    device: expect.objectContaining({ status: "stopped", runtimeState: "Off", bootReady: false }),
+                }),
+            }));
+            expect(vmState).toBe("Off");
+            providerLifecycleFailure = false;
+            bootstrapCleanupFailure = false;
 
             writeFileSync(knownHostsPath, `${allocatedAddress} ssh-ed25519 ${Buffer.from("tampered-host-key").toString("base64")} attacker\n`);
             const sshCallsBeforeTamper = commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh").length;
@@ -1905,6 +1941,7 @@ describe("device-lab Hyper-V broker", () => {
             }));
             bootDiagnosticFailure = null;
             bootDiagnosticState = "OffCritical";
+            bootstrapCleanupFailure = true;
             const exhausted = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(exhausted.status).toBe(502);
             const exhaustedBody = await exhausted.json();
@@ -1937,7 +1974,7 @@ describe("device-lab Hyper-V broker", () => {
             }));
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmId");
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmName");
-            expect(exhaustedBody.result.device).toEqual(expect.objectContaining({ status: "stopped", runtimeState: "OffCritical", bootReady: false }));
+            expect(exhaustedBody.result.device).toEqual(expect.objectContaining({ status: "stopped", runtimeState: "Off", bootReady: false }));
             expect(exhaustedBody.result.execution.command).toEqual(expect.objectContaining({
                 guestReadiness: {
                     provider: "hyper-v-ssh",
@@ -1951,9 +1988,13 @@ describe("device-lab Hyper-V broker", () => {
             expect(exhaustedBody.result.execution.command).not.toHaveProperty("stderr");
             expect(exhaustedBody.result.providerCommand).toEqual({ mode: "exec", provider: "hyper-v" });
             expect(exhaustedBody.detail).toBe(readinessError);
+            expect(vmState).toBe("Off");
+            bootstrapCleanupFailure = false;
             readinessFailure = false;
             bootDiagnosticState = null;
 
+            expect(bootstrapNetworkCleanups).toBeGreaterThan(0);
+            bootstrapNetworkCleanups = 0;
             bootstrapAddressAvailable = true;
             managedReadinessFailure = true;
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });

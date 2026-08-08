@@ -3271,7 +3271,7 @@ remain unchanged where they are the behavior under test.
     inherited host keys, installs the owner-scoped ED25519 pair through
     cloud-init's native `ssh_keys` contract, writes the network configuration,
     and enables that local service directly. Brokers advertise
-    `hyper-v-provider-image-finalization-v25`, preventing a desktop-image,
+    `hyper-v-provider-image-finalization-v26`, preventing a desktop-image,
     Linux-Secure-Boot, or package-update-blocking broker from being reused by
     Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
@@ -3301,7 +3301,7 @@ remain unchanged where they are the behavior under test.
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v25`
+    `hyper-v-provider-image-finalization-v26`
     for this guard contract. Acquisition reports distinct bounded stages for
     source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
@@ -3333,7 +3333,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v25` for this contract.
+    `hyper-v-provider-image-finalization-v26` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3356,7 +3356,7 @@ remain unchanged where they are the behavior under test.
     `New-VHD -Differencing` compatibility boundary while preserving immutable
     shared-image verification. Brokers
     advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v25` for this contract.
+    `hyper-v-provider-image-finalization-v26` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
     `hyper-v-guest-readiness-diagnostics-v3` contract exposes allowlisted boot

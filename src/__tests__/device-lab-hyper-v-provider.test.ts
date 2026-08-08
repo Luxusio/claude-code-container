@@ -1089,6 +1089,26 @@ describe("Hyper-V provider adapter", () => {
             cpus: 2,
         })).toThrow("hyper-v-secure-boot-generation-invalid");
 
+        expect(() => hyperVCreateCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId: "linux-ci-01",
+            incarnationId,
+            vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
+            baseImagePath: "/state/images/hyper-v/ubuntu-lts.vhdx",
+            baseImageSha256,
+            baseImageGeneration: 2,
+            baseImageRoot: "/state/images/hyper-v",
+            deviceRoot: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01",
+            diskPath: "/state/owners/0123456789abcdef/linux-vm/linux-ci-01/disks/root.vhdx",
+            diskMaxBytes: 64 * 1024 * 1024 * 1024,
+            memoryMb: 4096,
+            cpus: 2,
+            switchName: "CCC Device Lab",
+            bootstrapDhcp: true,
+            secureBootEnabled: false,
+        })).toThrow("hyper-v-bootstrap-mac-address-missing");
+
         const linuxScript = scriptOf(hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
@@ -1117,6 +1137,12 @@ describe("Hyper-V provider adapter", () => {
         expect(linuxScript).toContain("Get-VMSwitch -Name 'Default Switch'");
         expect(linuxScript).toContain("hyper-v-bootstrap-dhcp-switch-unavailable");
         expect(linuxScript).toContain("Rename-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -NewName 'CCC Bootstrap DHCP'");
+        expect(linuxScript).toContain("$BootstrapMacAddress = '06:11:22:33:44:66'");
+        expect(linuxScript).toContain("Get-VMNetworkAdapter -All -ErrorAction Stop");
+        expect(linuxScript).toContain("hyper-v-bootstrap-mac-address-conflict");
+        expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0] -StaticMacAddress ($BootstrapMacAddress.Replace(':', ''))");
+        expect(linuxScript).toContain("$AssignedBootstrapMatches = @(Get-VMNetworkAdapter -All");
+        expect(linuxScript).toContain("[string]$AssignedBootstrapMatches[0].VMId -ne [string]$CreatedVm.Id");
         expect(linuxScript).toContain("Add-VMNetworkAdapter -VM $CreatedVm -SwitchName $ResolvedSwitch.Name -Name 'CCC Device Network'");
         expect(linuxScript).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
         expect(linuxScript).toContain("Set-VMFirmware -VM $CreatedVm -EnableSecureBoot Off");
@@ -1256,13 +1282,18 @@ describe("Hyper-V provider adapter", () => {
             incarnationId,
             vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
             vmId,
+            managedMacAddress: "02:11:22:33:44:66",
         });
         const script = scriptOf(cleanup);
         expect(script).toContain("Get-VM -Id $ExpectedId");
         expect(script).toContain(`$ExpectedMarker = 'ccc-device-lab:${ownerId}:linux-ci-01:${incarnationId}'`);
-        expect(script).toContain("$_.Name -eq 'CCC Bootstrap DHCP'");
+        expect(script).toContain("$ExpectedBootstrapMac = '061122334466'");
+        expect(script).toContain("([string]$_.MacAddress).ToUpperInvariant() -eq $ExpectedBootstrapMac");
         expect(script).toContain("[string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch'");
+        expect(script).toContain("[string]$BootstrapAdapters[0].Name -cne 'CCC Bootstrap DHCP'");
         expect(script).toContain("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]");
+        expect(script).toContain("$RemainingBootstrapAdapters = @(Get-VMNetworkAdapter -All");
+        expect(script).toContain("hyper-v-bootstrap-network-containment-failed");
         expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":true,"alreadyMissing":false}')).toEqual({
             ok: true,
             removed: true,
@@ -1274,6 +1305,8 @@ describe("Hyper-V provider adapter", () => {
             alreadyMissing: true,
         });
         expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":"yes","alreadyMissing":false}')).toBeNull();
+        expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":false,"alreadyMissing":false}')).toBeNull();
+        expect(parseHyperVBootstrapNetworkCleanupObservation('{"ok":true,"removed":true,"alreadyMissing":true}')).toBeNull();
     });
 
     it("provisions a fenced cloud-init seed and owner-scoped SSH transport for Linux guests", () => {
@@ -1350,21 +1383,20 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("$ImageRoot.AddFile(");
         expect(seedScript).not.toContain("input.Read(");
         expect(seedScript).toContain("network-config");
-        const networkBase64 = seedScript.match(/\$NetworkBase64 = '([^']+)'/)?.[1];
-        expect(networkBase64).toBeTruthy();
-        const networkConfig = Buffer.from(networkBase64!, "base64").toString("utf8");
-        expect(networkConfig).toContain("  ccc0:");
-        expect(networkConfig).toContain("macaddress: '02:11:22:33:44:66'");
-        expect(networkConfig).toContain("set-name: ccc0");
-        expect(networkConfig).not.toContain("set-name: eth0");
-        expect(networkConfig).not.toContain("name: 'e*'");
-        expect(networkConfig.startsWith("version: 2\n")).toBe(true);
-        const netplanBase64 = seedScript.match(/\$NetplanBase64 = '([^']+)'/)?.[1];
-        expect(netplanBase64).toBeTruthy();
-        const netplanConfig = Buffer.from(netplanBase64!, "base64").toString("utf8");
-        expect(netplanConfig.startsWith("network:\n  version: 2\n")).toBe(true);
-        expect(seedScript).toContain("('    content: ' + $NetplanBase64)");
-        expect(seedScript).not.toContain("('    content: ' + $NetworkBase64)");
+        expect(seedScript).toContain("$_.Name -eq 'CCC Bootstrap DHCP' -and $_.SwitchName -eq 'Default Switch'");
+        expect(seedScript).toContain("hyper-v-linux-bootstrap-adapter-invalid");
+        expect(seedScript).toContain("hyper-v-linux-bootstrap-mac-invalid");
+        expect(seedScript).toContain("$BootstrapMacHex = ([string]$BootstrapAdapters[0].MacAddress)");
+        expect(seedScript).toContain("$ExpectedBootstrapMac = '061122334466'");
+        expect(seedScript).toContain("hyper-v-linux-bootstrap-mac-identity-mismatch");
+        expect(seedScript).toContain("$HostBootstrapMacMatches = @(Get-VMNetworkAdapter -All");
+        expect(seedScript).toContain("'  bootstrap0:'");
+        expect(seedScript).toContain("'    set-name: bootstrap0'");
+        expect(seedScript).toContain("'    dhcp4: true'");
+        expect(seedScript).toContain("'    dhcp6: false'");
+        expect(seedScript).toContain("$NetworkBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($NetworkConfig))");
+        expect(seedScript).not.toContain("'  ccc0:'");
+        expect(seedScript).not.toContain("'    set-name: ccc0'");
         expect(seedScript).not.toContain("<ns1:dscfg>");
         expect(seedScript).toContain("'ovf-env.xml' = [Convert]::FromBase64String($OvfEnvironmentBase64)");
         expect(seedScript).toContain("<ns1:LinuxProvisioningConfigurationSet>");
@@ -1380,8 +1412,8 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript.indexOf("</ns1:ProvisioningSection>")).toBeLessThan(seedScript.indexOf("<ns1:PlatformSettingsSection>"));
         expect(seedScript.indexOf("</ns1:PlatformSettingsSection>")).toBeLessThan(seedScript.indexOf("</ns0:Environment>"));
         expect(seedScript).not.toContain("apply_network_config: false");
-        expect(seedScript).toContain("/etc/netplan/99-ccc-static.yaml");
-        expect(seedScript).toContain("'  - [netplan, apply]'");
+        expect(seedScript).not.toContain("/etc/netplan/99-ccc-static.yaml");
+        expect(seedScript).not.toContain("'  - [netplan, apply]'");
         expect(seedScript).toContain("'package_update: false'");
         expect(seedScript).not.toContain("'package_update: true'");
         expect(seedScript).not.toContain("'packages:'");

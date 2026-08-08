@@ -593,25 +593,40 @@ Real-provider tests:
   generic NoCloud files
   and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
   `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
-  switch, and cloud-init matches that NIC by its owner-assigned static MAC before
-  applying the deterministic CCC IP.
-  The managed NIC uses the unique guest name `ccc0`, avoiding a first-boot
-  collision with the bootstrap adapter that initially owns `eth0`.
-  After SSH succeeds through that address, the broker removes the named
-  `Default Switch` adapter using the owner-fenced VM identity.
+  switch. VM creation assigns that adapter a static `06:*` locally administered
+  MAC derived from the collision-fenced managed `02:*` MAC. Initial cloud-init
+  networking matches only the named bootstrap adapter by that assigned MAC and
+  rejects host-wide MAC conflicts or an observed identity mismatch both after
+  adapter assignment and immediately before seed completion.
+  It enables DHCP on that adapter and deliberately
+  leaves the managed NIC unconfigured. After SSH succeeds through the bootstrap
+  address, the broker writes the deterministic static `ccc0` netplan for the
+  owner-assigned managed MAC, waits for that address, and removes the named
+  `Default Switch` adapter using the owner-fenced VM identity. This ordering
+  prevents an explicit managed-only cloud-init network document from disabling
+  DHCP on the very adapter needed to bootstrap SSH. Any readiness or transition
+  failure removes the bootstrap NIC; if removal cannot be verified, the broker
+  force-stops the VM and verifies the resulting `Off` observation so DHCP-backed
+  SSH cannot remain exposed. Linux start and reboot reject `waitForBoot=false`
+  because the bootstrap-to-managed transition is part of the required start
+  transaction rather than optional readiness polling. Their cleanup deadline
+  extends the normal provider and boot budget by a separate five-minute
+  containment reserve. Cleanup identifies the adapter by its deterministic MAC,
+  then verifies that no host adapter retains that MAC.
   Broker compatibility requires both `hyper-v-azure-ovf-seed-v2` and
   `hyper-v-azure-bootstrap-dhcp-v1`, `hyper-v-azure-local-ovf-v1`, and
   `hyper-v-bootstrap-nic-cleanup-v1`,
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v25` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v26` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile or whose
   Linux seed blocks SSH activation behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
   disables package updates on the first boot, writes the owner-scoped host
-  keys and static network, then enables the local SSH service without waiting
-  for an archive mirror. Cloud-init deletes any host keys inherited from the
+  keys and bootstrap DHCP network, then enables the local SSH service without
+  waiting for an archive mirror. The broker applies the static managed network
+  only after bootstrap SSH is reachable. Cloud-init deletes any host keys inherited from the
   base image, then installs the owner-scoped ED25519 pair through its native
   `ssh_keys` contract before SSH starts. The same contract rejects brokers
   that still acquire
@@ -636,7 +651,7 @@ Real-provider tests:
   does not mount or mutate the EFI partition and does not require Storage
   cmdlet elevation. Generation 2 VM creation follows Canonical Multipass by
   passing `BootDevice=VHD` to `New-VM`, disabling dynamic memory, and leaving
-  Hyper-V's generated firmware order intact. The v25 broker contract fences
+  Hyper-V's generated firmware order intact. The v26 broker contract fences
   out the obsolete manual EFI boot-order path.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache

@@ -202,6 +202,7 @@ export function parseHyperVRecoveryObservation(stdout: string): HyperVRecoveryOb
 export function parseHyperVBootstrapNetworkCleanupObservation(stdout: string): HyperVBootstrapNetworkCleanupObservation | null {
     const parsed = parseLastJsonObject(stdout);
     if (!parsed || parsed.ok !== true || typeof parsed.removed !== "boolean" || typeof parsed.alreadyMissing !== "boolean") return null;
+    if (parsed.removed === parsed.alreadyMissing) return null;
     return parsed as HyperVBootstrapNetworkCleanupObservation;
 }
 
