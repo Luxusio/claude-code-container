@@ -58,6 +58,9 @@ describe("Hyper-V host setup CLI", () => {
                 freeMemoryMb: 16384,
                 logicalProcessors: 16,
                 missing: ["hyper-v-powershell-module", "hypervisor", "vmms-service"],
+                qemuImgAvailable: false,
+                qemuImgTrusted: false,
+                linuxImageMissing: ["hyper-v-qemu-img-unavailable"],
             }),
             stderr: "",
         }));
@@ -75,6 +78,9 @@ describe("Hyper-V host setup CLI", () => {
         expect(result.text).toContain("ccc devices setup hyper-v --confirm");
         expect(result.text).toContain("start the Hyper-V Virtual Machine Management (vmms) service");
         expect(result.text).toContain("windowsEvaluationLicenseAccepted: false");
+        expect(result.text).toContain("qemuImgAvailable: false");
+        expect(result.text).toContain("linuxImageMissing: hyper-v-qemu-img-unavailable");
+        expect(result.text).toContain("Android SDK Emulator package from Google");
         const encodedScript = Buffer.from(runner.mock.calls[0][1].at(-1), "base64").toString("utf16le");
         expect(encodedScript).not.toContain("Enable-WindowsOptionalFeature");
     });

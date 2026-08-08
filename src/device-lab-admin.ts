@@ -842,8 +842,14 @@ export function setupHyperVHost(confirm: boolean, options: HyperVSetupHostOption
                 `sessionRefreshRequired: ${readiness.sessionRefreshRequired ?? false}`,
                 `rebootPending: ${readiness.rebootPending}`,
                 `missing: ${readiness.missing.join(", ")}`,
+                `qemuImgAvailable: ${readiness.qemuImgAvailable ?? false}`,
+                `qemuImgTrusted: ${readiness.qemuImgTrusted ?? false}`,
+                `linuxImageMissing: ${(readiness.linuxImageMissing || []).join(", ")}`,
                 `windowsEvaluationLicenseAccepted: ${licenseAccepted}`,
                 ...(!licenseAccepted ? ["action: accept the Windows Server evaluation terms once with 'ccc devices setup hyper-v --confirm --accept-windows-evaluation-license'"] : []),
+                ...((readiness.linuxImageMissing || []).length > 0
+                    ? ["action: install the Android SDK Emulator package from Google so %LOCALAPPDATA%\\Android\\Sdk\\emulator\\qemu-img.exe is available for Hyper-V Linux images"]
+                    : []),
                 ...actions,
             ].join("\n"),
         };
@@ -974,7 +980,8 @@ function hyperVLinuxSmokeResult(tools: Record<string, string | null>, timeoutMs:
     const readiness = parseHyperVReadiness(result.stdout || "");
     if (!readiness) return { backend: "linux-vm", status: "FAIL", detail: "invalid Hyper-V readiness response", commands };
     if (!readiness.available) return { backend: "linux-vm", status: "SKIP", detail: `missing ${readiness.missing.join(", ") || "Hyper-V prerequisites"}`, commands };
-    return { backend: "linux-vm", status: "PASS", detail: "Hyper-V, SSH, and SCP are ready; no VM started", commands };
+    if ((readiness.linuxImageMissing || []).length > 0) return { backend: "linux-vm", status: "SKIP", detail: `missing ${readiness.linuxImageMissing!.join(", ")}`, commands };
+    return { backend: "linux-vm", status: "PASS", detail: "Hyper-V, trusted qemu-img, SSH, and SCP are ready; no VM started", commands };
 }
 
 export function deviceLabSmoke(cwd = process.cwd(), timeoutMs = 5000, profile?: string, options: SmokeOptions = {}): { ownerId: string; mode: SmokeMode; results: SmokeResult[] } {

@@ -76,6 +76,11 @@ export function parseHyperVReadiness(stdout: string): HyperVReadiness | null {
         ...(typeof parsed.hyperVAdministratorsMember === "boolean" ? { hyperVAdministratorsMember: parsed.hyperVAdministratorsMember } : {}),
         ...(typeof parsed.managementAccess === "boolean" ? { managementAccess: parsed.managementAccess } : {}),
         ...(typeof parsed.sessionRefreshRequired === "boolean" ? { sessionRefreshRequired: parsed.sessionRefreshRequired } : {}),
+        ...(typeof parsed.qemuImgAvailable === "boolean" ? { qemuImgAvailable: parsed.qemuImgAvailable } : {}),
+        ...(typeof parsed.qemuImgTrusted === "boolean" ? { qemuImgTrusted: parsed.qemuImgTrusted } : {}),
+        ...(Array.isArray(parsed.linuxImageMissing) ? {
+            linuxImageMissing: parsed.linuxImageMissing.filter((item): item is string => typeof item === "string"),
+        } : {}),
         ...(typeof parsed.detail === "string" ? { detail: parsed.detail } : {}),
     };
 }

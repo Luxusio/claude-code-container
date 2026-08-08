@@ -3605,7 +3605,12 @@ async function hostBackends(ownerId: string, normalized: NormalizedBrokerOptions
             : hyperVReadiness
                 ? hyperVReadiness.missing
                 : ["hyper-v-readiness"];
-    const hyperVLinuxMissing = [...hyperVMissing, ...(ssh ? [] : ["ssh"]), ...(scp ? [] : ["scp"])];
+    const hyperVLinuxMissing = [
+        ...hyperVMissing,
+        ...(hyperVReadiness?.linuxImageMissing || []),
+        ...(ssh ? [] : ["ssh"]),
+        ...(scp ? [] : ["scp"]),
+    ];
     const macosMissing = normalized.platform !== "darwin"
         ? ["macos-host"]
         : (macosProviders.length > 0 ? [] : ["macos-vm-provider"]);

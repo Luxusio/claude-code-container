@@ -30,6 +30,14 @@ export function hyperVReadinessCommand(executable: string): HyperVProviderComman
         "try { $HyperVAdministratorsMember = [bool]@(Get-LocalGroupMember -SID ([Security.Principal.SecurityIdentifier]'S-1-5-32-578') -ErrorAction Stop | Where-Object { $_.SID.Value -eq $CurrentUserSid }).Count } catch { $HyperVAdministratorsMember = $false }",
         "if ($ModuleAvailable -and $VmmsRunning) { try { @(Get-VM -ErrorAction Stop) | Out-Null; $ManagementAccess = $true } catch { $ManagementAccess = $false } }",
         "$SessionRefreshRequired = $HyperVAdministratorsMember -and -not $ManagementAccess",
+        "$LocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
+        "$QemuImg = if ($LocalAppData) { Join-Path $LocalAppData 'Android\\Sdk\\emulator\\qemu-img.exe' } else { $null }",
+        "$QemuImgAvailable = $false",
+        "if ($QemuImg -and (Test-Path -LiteralPath $QemuImg -PathType Leaf)) { try { $QemuItem = Get-Item -LiteralPath $QemuImg -Force -ErrorAction Stop; $QemuImgAvailable = -not $QemuItem.PSIsContainer -and ($QemuItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 -and [long]$QemuItem.Length -gt 0 } catch { $QemuImgAvailable = $false } }",
+        "$QemuImgTrusted = $false",
+        "if ($QemuImgAvailable) { try { $QemuSignature = Get-AuthenticodeSignature -LiteralPath $QemuImg -ErrorAction Stop; $QemuImgTrusted = [string]$QemuSignature.Status -eq 'Valid' -and $QemuSignature.SignerCertificate -and [string]$QemuSignature.SignerCertificate.Subject -match '(^|, )O=Google LLC(,|$)' } catch { $QemuImgTrusted = $false } }",
+        "$LinuxImageMissing = @()",
+        "if (-not $QemuImgAvailable) { $LinuxImageMissing += 'hyper-v-qemu-img-unavailable' } elseif (-not $QemuImgTrusted) { $LinuxImageMissing += 'hyper-v-qemu-img-untrusted' }",
         "$RebootPending = (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending') -or (Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')",
         "$Missing = @()",
         "if (-not $ModuleAvailable) { $Missing += 'hyper-v-powershell-module' }",
@@ -39,7 +47,7 @@ export function hyperVReadinessCommand(executable: string): HyperVProviderComman
         "$TotalMemoryMb = if ($ComputerInfo) { [Math]::Floor([double]$ComputerInfo.TotalPhysicalMemory / 1MB) } else { 0 }",
         "$FreeMemoryMb = if ($OperatingSystem) { [Math]::Floor([double]$OperatingSystem.FreePhysicalMemory / 1KB) } else { 0 }",
         "$LogicalProcessors = if ($ComputerInfo) { [int]$ComputerInfo.NumberOfLogicalProcessors } else { 0 }",
-        "$Result = [ordered]@{ ok = $true; available = ($Missing.Count -eq 0); platform = 'win32'; moduleAvailable = $ModuleAvailable; hypervisorPresent = $HypervisorPresent; vmmsRunning = $VmmsRunning; rebootPending = [bool]$RebootPending; totalMemoryMb = [long]$TotalMemoryMb; freeMemoryMb = [long]$FreeMemoryMb; logicalProcessors = $LogicalProcessors; missing = $Missing; hyperVAdministratorsMember = [bool]$HyperVAdministratorsMember; managementAccess = [bool]$ManagementAccess; sessionRefreshRequired = [bool]$SessionRefreshRequired }",
+        "$Result = [ordered]@{ ok = $true; available = ($Missing.Count -eq 0); platform = 'win32'; moduleAvailable = $ModuleAvailable; hypervisorPresent = $HypervisorPresent; vmmsRunning = $VmmsRunning; rebootPending = [bool]$RebootPending; totalMemoryMb = [long]$TotalMemoryMb; freeMemoryMb = [long]$FreeMemoryMb; logicalProcessors = $LogicalProcessors; missing = $Missing; hyperVAdministratorsMember = [bool]$HyperVAdministratorsMember; managementAccess = [bool]$ManagementAccess; sessionRefreshRequired = [bool]$SessionRefreshRequired; qemuImgAvailable = [bool]$QemuImgAvailable; qemuImgTrusted = [bool]$QemuImgTrusted; linuxImageMissing = $LinuxImageMissing }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ].join("\n");
     return command(executable, script);

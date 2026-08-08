@@ -148,7 +148,7 @@ cycles measure provider lifecycle and residue cleanup rather than repeatedly
 transferring the host Node executable.
 
 The `linux-vm` target requires Hyper-V and OpenSSH client tools. A cache miss
-downloads the official Ubuntu 24.04 LTS Azure VHD archive, verifies Canonical's
+downloads the official generic Ubuntu 24.04 LTS QCOW2 image, verifies Canonical's
 published checksum, and converts it to VHDX automatically. Each cycle
 creates an owner-scoped cloud-init seed and SSH key, verifies the static CCC
 NAT address and outbound connectivity, exercises SSH/SCP and checkpoints, and

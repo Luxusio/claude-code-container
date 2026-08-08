@@ -36,6 +36,9 @@ describe("Hyper-V public response projection", () => {
         "hyper-v-vm-path-inspection-failed",
         "hyper-v-base-image-source-mutated",
         "hyper-v-base-image-partial-mutated",
+        "hyper-v-qemu-img-unavailable",
+        "hyper-v-qemu-img-untrusted",
+        "hyper-v-qemu-img-mutated",
     ])("preserves the bounded image mutation diagnostic %s", (diagnosticCode) => {
         expect(hyperVProviderDiagnosticCode({
             error: "hyper-v-powershell-execution-failed",

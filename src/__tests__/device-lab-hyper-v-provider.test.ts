@@ -56,7 +56,6 @@ import {
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
 } from "../host-control/hyper-v/index.js";
-import { tarVerboseEntrySize } from "../host-control/hyper-v/tar-listing.js";
 import { hyperVProviderDiagnosticCode } from "../device-lab/broker/hyper-v/public-response.js";
 
 const ownerId = "0123456789abcdef";
@@ -89,17 +88,6 @@ function loaderOf(command: { args: string[] }): string {
 }
 
 describe("Hyper-V provider adapter", () => {
-    it("parses GNU and Windows bsdtar verbose entry sizes without fixing a date layout", () => {
-        const entry = "ubuntu-24.04-server-cloudimg-amd64-azure.vhd";
-
-        expect(tarVerboseEntrySize(`-rw-r--r-- root/root 32212255232 2026-07-25 08:44 ${entry}`, entry))
-            .toBe(32212255232);
-        expect(tarVerboseEntrySize(`-rw-r--r-- 0 root wheel 32212255232 Jul 25 08:44 ${entry}`, entry))
-            .toBe(32212255232);
-        expect(tarVerboseEntrySize(`lrwxrwxrwx 0 root wheel 4 Jul 25 08:44 ${entry}`, entry)).toBeNull();
-        expect(tarVerboseEntrySize(`-rw-r--r-- 0 root wheel 32212255232 Jul 25 08:44 other.vhd`, entry)).toBeNull();
-    });
-
     it("hides every host PowerShell adapter process", () => {
         const command = hyperVReadinessCommand("powershell.exe");
         expect(command.args.slice(0, 2)).toEqual(["-WindowStyle", "Hidden"]);
@@ -286,7 +274,8 @@ describe("Hyper-V provider adapter", () => {
                 .toBeLessThan(acquireScript.indexOf(acquireStages[index]));
         }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
+        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.img");
+        expect(acquireScript).not.toContain("-azure.vhd.tar.gz");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -673,7 +662,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).not.toContain("$SourceUrl =");
     });
 
-    it("builds a fixed checksummed Canonical Azure VHD conversion command", () => {
+    it("builds a checksummed generic QCOW2 to native VHDX conversion command", () => {
         const command = hyperVAcquireBaseImageCommand({
             executable: "powershell.exe",
             profile: "ubuntu-lts",
@@ -681,7 +670,7 @@ describe("Hyper-V provider adapter", () => {
             expectedGeneration: 2,
         });
         const script = scriptOf(command);
-        expect(script).toContain("$SourceArchivePath =");
+        expect(script).toContain("$SourceImagePath =");
         expect(script).toContain("function Protect-CccImageDirectory([string]$Path)");
         expect(script).toContain("$Security.SetAccessRuleProtection($true, $false)");
         expect(script).toContain("$Security.SetOwner($CurrentSid)");
@@ -695,57 +684,48 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Entry.Attributes -band [IO.FileAttributes]::ReparsePoint");
         expect(script).toContain("Protect-CccImageDirectory $ProfileRoot");
         expect(script.match(/Protect-CccImageDirectory \$ProfileRoot/g)?.length).toBeGreaterThanOrEqual(3);
-        expect(script).toContain("source.vhd.tar.gz");
-        expect(script).toContain("$ArchiveDownloadPath = Join-Path $WorkPath 'source.download.vhd.tar.gz'");
-        expect(script).toContain("Test-Path -LiteralPath $SourceArchivePath -PathType Container");
-        expect(script).toContain("Test-Path -LiteralPath $SourceArchivePath -PathType Leaf");
-        expect(script).toContain("$ArchiveReady = $CachedHash -eq $UbuntuImageSha256");
-        expect(script).toContain("Move-Item -LiteralPath $ArchiveDownloadPath -Destination $SourceArchivePath");
-        expect(script.indexOf("Get-FileHash -LiteralPath $ArchiveDownloadPath"))
-            .toBeLessThan(script.indexOf("Move-Item -LiteralPath $ArchiveDownloadPath -Destination $SourceArchivePath"));
-        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz");
+        expect(script).toContain("source.qcow2");
+        expect(script).toContain("$ImageDownloadPath = Join-Path $WorkPath 'source.download.qcow2'");
+        expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Container");
+        expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Leaf");
+        expect(script).toContain("$SourceReady = $CachedHash -eq $UbuntuImageSha256");
+        expect(script).toContain("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath");
+        expect(script.indexOf("Get-FileHash -LiteralPath $ImageDownloadPath"))
+            .toBeLessThan(script.indexOf("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath"));
+        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260725/ubuntu-24.04-server-cloudimg-amd64.img");
+        expect(script).not.toContain("-azure.vhd.tar.gz");
         expect(script).not.toContain("ubuntu-desktop-hyperv");
-        expect(script).toContain("877af8e9eaec90ec7c4ca166da0092bf99ddbc8988500451c8ee4b37a216457c");
+        expect(script).toContain("d1940f7d69d343355e183dff1e08a59852d32e7309baa7a4bad8365b11b005ac");
         expect(script).not.toContain("SHA256SUMS");
         expect(script).toContain("$UbuntuMaxBytes = [long]5GB");
         expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com'");
-        expect(script).toContain("$ArchiveGuard = [IO.File]::Open($SourceArchivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("$SourceGuard = [IO.File]::Open($SourceImagePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
         expect(script).toContain("hyper-v-base-image-checksum-mismatch");
-        expect(script).not.toContain("qemu-img");
-        expect(script).toContain("$TarPath = Join-Path ([Environment]::SystemDirectory) 'tar.exe'");
-        expect(script).toContain("Assert-NoReparsePath $TarPath");
-        expect(script).toContain("Get-AuthenticodeSignature -LiteralPath $TarPath");
-        expect(script).toContain("O=Microsoft Corporation");
-        expect(script).toContain("hyper-v-base-image-archive-tool-untrusted");
-        expect(script).toContain("$ArchiveEntries = @(& $TarPath -tf $SourceArchivePath)");
-        expect(script).toContain("$ArchiveTypes = @(& $TarPath -tvf $SourceArchivePath)");
-        expect(script).toContain("$VhdArchiveIndex = [Array]::IndexOf");
-        expect(script).toContain("$VhdTypeLine.EndsWith($VhdEntries[0], [StringComparison]::Ordinal)");
-        expect(script).toContain("$VhdTypeFields | Select-Object -Skip 1");
-        expect(script).toContain("[long]::TryParse($VhdTypeField, [ref]$NumericField)");
-        expect(script).toContain("$DeclaredVhdBytes -lt [long]1GB");
-        expect(script).toContain("($UbuntuVirtualSizeBytes * 2) + [long]8GB");
-        expect(script).toContain("$VhdEntries.Count -ne 1");
-        expect(script).toContain("$NormalizedEntry.StartsWith('/')");
-        expect(script).toContain("$NormalizedEntry -match '^[A-Za-z]:'");
-        expect(script).toContain("$NormalizedEntry.Split('/') | Where-Object { $_ -eq '..' }");
-        expect(script).toContain("$NormalizedEntry.StartsWith('-')");
-        expect(script).toContain("& $TarPath -xf $SourceArchivePath -C $ExtractPath $VhdEntries[0]");
-        expect(script).toContain("$ExtractedFiles.Count -ne 1");
-        expect(script).toContain("$SourceGuard.CopyTo($NormalizedOutput, 8388608)");
-        expect(script).toContain("Remove-Item -LiteralPath $SourcePath -Force -ErrorAction Stop");
-        expect(script).toContain("$NormalizedOutput = [IO.File]::Open($NormalizedSourcePath");
+        expect(script).toContain("Android\\Sdk\\emulator\\qemu-img.exe");
+        expect(script).toContain("Get-AuthenticodeSignature -LiteralPath $QemuImg");
+        expect(script).toContain("O=Google LLC");
+        expect(script).toContain("$SourceInfo.format -ne 'qcow2'");
+        expect(script).toContain("convert -f qcow2 -O vpc -o subformat=fixed,force_size=on");
+        expect(script).not.toContain("-O vhdx");
+        expect(script).toContain("info -f vpc --output=json $QemuOutputPath");
+        expect(script).toContain("$ConvertedInfo.format -ne 'vpc'");
+        expect(script).toContain("$QemuOutputGuard.CopyTo($NormalizedOutput, 8388608)");
+        expect(script).toContain("$NormalizedOutput = [IO.File]::Open($NormalizedVhdPath");
         expect(script).toContain("[IO.FileAttributes]::SparseFile");
         expect(script).toContain("[IO.FileAttributes]::Compressed");
         expect(script).toContain("[IO.FileAttributes]::Encrypted");
         expect(script).toContain("hyper-v-base-image-filesystem-attributes-invalid");
-        expect(script).toContain("[string]$NormalizedSourceVhd.VhdFormat -ne 'VHD'");
-        expect(script).toContain("Convert-VHD -Path $NormalizedSourcePath -DestinationPath $PartialPath -VHDType Dynamic");
+        expect(script).toContain("[string]$NormalizedVhd.VhdFormat -ne 'VHD'");
+        expect(script).toContain("[string]$NormalizedVhd.VhdType -ne 'Fixed'");
+        expect(script).toContain("$NormalizedVhdGuard = [IO.File]::Open($NormalizedVhdPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
+        expect(script).toContain("$GuardedNormalizedHashAfter = Get-CccGuardedSha256 $NormalizedVhdGuard");
+        expect(script).toContain("if ($GuardedNormalizedHashAfter -ne $GuardedNormalizedHash) { throw 'hyper-v-base-image-source-mutated' }");
+        expect(script).toContain("Convert-VHD -Path $NormalizedVhdPath -DestinationPath $PartialPath -VHDType Dynamic");
         expect(script).toContain("Resize-VHD -Path $PartialPath -SizeBytes $UbuntuVirtualSizeBytes");
         expect(script).toContain("[string]$ConvertedVhd.VhdFormat -ne 'VHDX'");
-        expect(script.indexOf("$SourceGuard.CopyTo($NormalizedOutput"))
-            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedSourcePath"));
-        expect(script.indexOf("Convert-VHD -Path $NormalizedSourcePath"))
+        expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
+            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"));
+        expect(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"))
             .toBeLessThan(script.indexOf("Resize-VHD -Path $PartialPath"));
         expect(script.indexOf("Resize-VHD -Path $PartialPath"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
@@ -756,9 +736,10 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("hyper-v-base-image-final-inspection-failed");
         expect(script).toContain("hyper-v-base-image-final-observation-failed");
         expect(script).toContain("[IO.FileAttributes]::ReparsePoint");
-        expect(script).toContain("$ArchiveHashBefore = (Get-FileHash -LiteralPath $SourceArchivePath");
-        expect(script).toContain("$ArchiveHashAfter = (Get-FileHash -LiteralPath $SourceArchivePath");
-        expect(script).toContain("if ($ArchiveHashAfter -ne $ArchiveHashBefore) { throw 'hyper-v-base-image-source-mutated' }");
+        expect(script).toContain("$SourceHashBefore = Get-CccGuardedSha256 $SourceGuard");
+        expect(script).toContain("$SourceHashAfter = Get-CccGuardedSha256 $SourceGuard");
+        expect(script).toContain("if ($SourceHashAfter -ne $SourceHashBefore) { throw 'hyper-v-base-image-source-mutated' }");
+        expect(script).toContain("if ($QemuHashAfter -ne $QemuHashBefore) { throw 'hyper-v-qemu-img-mutated' }");
         expect(script).toContain("$Vhd = Assert-BaseVhd $ImagePath");
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("function Get-CccVhdGeneration");
@@ -768,11 +749,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath");
         expect(script).toContain("if ($ValidatedPartialHash -ne $PartialHashBefore) { throw 'hyper-v-base-image-partial-mutated' }");
         expect(script).not.toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
-        expect(script.indexOf("$ArchiveHashBefore = (Get-FileHash -LiteralPath $SourceArchivePath"))
-            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedSourcePath"));
-        expect(script.indexOf("Convert-VHD -Path $NormalizedSourcePath"))
-            .toBeLessThan(script.indexOf("$ArchiveHashAfter = (Get-FileHash -LiteralPath $SourceArchivePath"));
-        expect(script).toContain("if ($ArchiveGuard) { $ArchiveGuard.Dispose(); $ArchiveGuard = $null }");
+        expect(script.indexOf("$SourceHashBefore = Get-CccGuardedSha256 $SourceGuard"))
+            .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"));
+        expect(script).toContain("if ($QemuGuard) { $QemuGuard.Dispose(); $QemuGuard = $null }");
         expect(script.indexOf("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         const partialGuardDispose = script.indexOf("} finally { $PartialGuard.Dispose(); $PartialGuard = $null }");
@@ -2390,8 +2369,12 @@ describe("Hyper-V provider adapter", () => {
         expect(readinessScript).toContain("Get-Service -Name vmms");
         expect(readinessScript).toContain("Get-VM -ErrorAction Stop");
         expect(readinessScript).toContain("hyper-v-management-permission");
-        expect(parseHyperVReadiness(`noise\n${JSON.stringify({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 65536, freeMemoryMb: 32768, logicalProcessors: 16, missing: [] })}\n`))
-            .toEqual({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 65536, freeMemoryMb: 32768, logicalProcessors: 16, missing: [] });
+        expect(readinessScript).toContain("hyper-v-qemu-img-unavailable");
+        expect(readinessScript).toContain("hyper-v-qemu-img-untrusted");
+        expect(readinessScript).toContain("Get-AuthenticodeSignature -LiteralPath $QemuImg");
+        expect(readinessScript).toContain("[IO.FileAttributes]::ReparsePoint");
+        expect(parseHyperVReadiness(`noise\n${JSON.stringify({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 65536, freeMemoryMb: 32768, logicalProcessors: 16, missing: [], qemuImgAvailable: true, qemuImgTrusted: true, linuxImageMissing: [] })}\n`))
+            .toEqual({ ok: true, available: true, platform: "win32", moduleAvailable: true, hypervisorPresent: true, vmmsRunning: true, rebootPending: false, totalMemoryMb: 65536, freeMemoryMb: 32768, logicalProcessors: 16, missing: [], qemuImgAvailable: true, qemuImgTrusted: true, linuxImageMissing: [] });
         expect(parseHyperVReadiness(JSON.stringify({ ok: true, available: true, missing: [] }))).toBeNull();
         expect(parseHyperVVmObservation(JSON.stringify({ ok: true, vmId: vmId.toUpperCase(), vmName: hyperVVmName(ownerId, deviceId, incarnationId), state: "Running", status: "Operating normally", uptimeMs: 42 })))
             .toMatchObject({ ok: true, vmId, state: "Running", uptimeMs: 42 });

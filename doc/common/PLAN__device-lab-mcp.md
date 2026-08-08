@@ -3236,11 +3236,12 @@ remain unchanged where they are the behavior under test.
     Brokers advertise and Level 3 requires `hyper-v-setup-network-v10` and
     `hyper-v-network-failure-diagnostics-v9`, replacing older brokers that lack
     the exact-identity marker repair contract.
-65. Unattended Hyper-V Linux guests use Canonical's dated Azure Ubuntu Server
-    VHD archive, not the interactive Hyper-V desktop image or generic QCOW2.
-    The provider verifies the pinned archive checksum, accepts exactly one
-    regular fixed VHD entry, normalizes its sparse representation into an
-    ordinary file, converts it to a dynamic VHDX with native `Convert-VHD`,
+65. Unattended Hyper-V Linux guests use Canonical's dated generic Ubuntu Server
+    QCOW2. Canonical documents the Azure VHD artifact as unable to run on
+    on-premises Hyper-V, so CCC rejects that source. The provider verifies the
+    pinned QCOW2 checksum, converts it to a fixed VHD with the Google-signed
+    Android SDK `qemu-img`, normalizes that file, converts it to a dynamic VHDX
+    with native `Convert-VHD`,
     expands it to 32 GiB with `Resize-VHD`, validates it with `Get-VHD`, and
     then publishes it. The image is bound to the catalog's fixed
     Generation 2 UEFI contract. Linux VM creation disables Hyper-V Secure Boot
@@ -3250,19 +3251,19 @@ remain unchanged where they are the behavior under test.
     configuration expose this choice as `secureBootEnabled`; request-provided
     templates cannot override the backend-owned policy. Secure-Boot-enabled
     Windows profiles require Generation 2 and reject Generation 1 images
-    before provider execution. Acquisition reserves twice the 32 GiB virtual
-    disk size plus an 8 GiB conversion margin. The extracted VHD is deleted
-    after normalization and before VHDX conversion, so no three full-size disk
-    representations coexist. Interrupted `.acquire-work` state is
+    before provider execution. Acquisition reserves twice the source virtual
+    size, the final 32 GiB virtual disk size, and an 8 GiB conversion margin.
+    Interrupted `.acquire-work` state is
     removed under the image preparation lock before each retry while the
-    checksum-bound archive cache is retained. The
-    Azure VHD source is required. The checksum-pinned source
+    checksum-bound QCOW2 cache is retained. The checksum-pinned source
     already contains `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`;
     native Hyper-V conversion preserves those files.
     Every catalog update must run
-    `npm run test:hyper-v:ubuntu-image -- --source <downloaded-vhd.tar.gz>
-    [--tar <path>]`; that bounded verifier binds the archive SHA-256, validates
-    the fixed VHD footer, and parses the disk's GPT and FAT32 structures to require both
+    `npm run test:hyper-v:ubuntu-image -- --source <downloaded-qcow2>
+    [--qemu-img <path>]`; that bounded verifier binds the QCOW2 SHA-256,
+    confirms its format, converts a private copy through fixed VHD and back to
+    raw sectors, and parses the
+    disk's GPT and FAT32 structures to require both
     non-empty loaders without mounting the guest filesystem.
     Acquisition therefore does not mount or mutate the EFI partition and does
     not cross a Storage cmdlet UAC boundary. VM creation follows Canonical
@@ -3273,9 +3274,9 @@ remain unchanged where they are the behavior under test.
     inherited host keys, installs the owner-scoped ED25519 pair through
     cloud-init's native `ssh_keys` contract, writes the network configuration,
     and enables that local service directly. Brokers advertise
-    `hyper-v-provider-image-finalization-v27`, preventing a desktop-image,
-    Linux-Secure-Boot, or package-update-blocking broker from being reused by
-    Level 3.
+    `hyper-v-provider-image-finalization-v28`, preventing an Azure-only image,
+    direct-QEMU-VHDX, Linux-Secure-Boot, or package-update-blocking broker from
+    being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
     shared-infrastructure cleanup after the target VM deletion is confirmed.
     The deleted device's allocation is atomically removed, its owner artifacts
@@ -3303,7 +3304,7 @@ remain unchanged where they are the behavior under test.
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v27`
+    `hyper-v-provider-image-finalization-v28`
     for this guard contract. Acquisition reports distinct bounded stages for
     source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
@@ -3335,7 +3336,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v27` for this contract.
+    `hyper-v-provider-image-finalization-v28` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3358,7 +3359,7 @@ remain unchanged where they are the behavior under test.
     `New-VHD -Differencing` compatibility boundary while preserving immutable
     shared-image verification. Brokers
     advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v27` for this contract.
+    `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
     `hyper-v-guest-readiness-diagnostics-v3` contract exposes allowlisted boot

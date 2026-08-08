@@ -14,7 +14,7 @@ import {
     command,
 } from "./core.js";
 import { HYPER_V_UBUNTU_IMAGE_SHA256, HYPER_V_UBUNTU_IMAGE_URL, HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES } from "./ubuntu-image.js";
-import { hyperVUbuntuAzureImageAcquisitionLines } from "./ubuntu-image-acquisition.js";
+import { hyperVUbuntuQcow2ImageAcquisitionLines } from "./ubuntu-image-acquisition.js";
 
 export function hyperVPrepareBaseImageCommand(options: HyperVBaseImageOptions): HyperVProviderCommand {
     const sourceImagePath = assertPathInside(options.sourceRoot, options.sourceImagePath, "base-image-source");
@@ -96,7 +96,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
     const imagePath = resolve(profileRoot, "base.vhdx");
     const partialPath = resolve(profileRoot, "base.partial.vhdx");
     const workPath = resolve(profileRoot, ".acquire-work");
-    const sourceArchivePath = resolve(profileRoot, "source.vhd.tar.gz");
+    const sourceImagePath = resolve(profileRoot, "source.qcow2");
     const script = jsonScript([
         `$Profile = ${psQuote(options.profile)}`,
         `$ImageRoot = ${psQuote(imageRoot)}`,
@@ -104,7 +104,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         `$ImagePath = ${psQuote(imagePath)}`,
         `$PartialPath = ${psQuote(partialPath)}`,
         `$WorkPath = ${psQuote(workPath)}`,
-        `$SourceArchivePath = ${psQuote(sourceArchivePath)}`,
+        `$SourceImagePath = ${psQuote(sourceImagePath)}`,
         `$ExpectedGeneration = ${options.expectedGeneration}`,
         "$WindowsUrl = 'https://go.microsoft.com/fwlink/?clcid=0x409&country=us&culture=en-us&linkid=2345826'",
         `$UbuntuImageUrl = ${psQuote(HYPER_V_UBUNTU_IMAGE_URL)}`,
@@ -166,8 +166,10 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    throw 'hyper-v-base-image-acl-failed'",
         "  }",
         "}",
-        "$ArchiveGuard = $null",
         "$SourceGuard = $null",
+        "$QemuGuard = $null",
+        "$QemuOutputGuard = $null",
+        "$NormalizedVhdGuard = $null",
         "$NormalizedOutput = $null",
         "$PartialGuard = $null",
         "try {",
@@ -176,7 +178,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "Assert-NoReparsePath $ImagePath",
         "Assert-NoReparsePath $PartialPath",
         "Assert-NoReparsePath $WorkPath",
-        "Assert-NoReparsePath $SourceArchivePath",
+        "Assert-NoReparsePath $SourceImagePath",
         "Import-Module Hyper-V -ErrorAction Stop",
         "Add-Type -AssemblyName System.Net.Http -ErrorAction Stop",
         "function Assert-BaseVhd([string]$Path) {",
@@ -248,7 +250,7 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "    $ValidateMicrosoftVhdx = { param([Uri]$FinalUri) $HostName = $FinalUri.DnsSafeHost.ToLowerInvariant(); return ($FinalUri.Scheme -eq 'https' -and $FinalUri.AbsolutePath.EndsWith('.vhdx', [StringComparison]::OrdinalIgnoreCase) -and ($HostName -eq 'download.microsoft.com' -or $HostName.EndsWith('.download.microsoft.com') -or $HostName -eq 'software-static.download.prss.microsoft.com')) }",
         "    Save-BoundedDownload $WindowsUrl $PartialPath $WindowsMaxBytes $ValidateMicrosoftHop $ValidateMicrosoftVhdx",
         "  } else {",
-        ...hyperVUbuntuAzureImageAcquisitionLines(),
+        ...hyperVUbuntuQcow2ImageAcquisitionLines(),
         "  }",
         "  Protect-CccImageDirectory $ProfileRoot",
         "  Set-CccAcquireStage 'hyper-v-base-image-partial-open-failed'",
@@ -286,8 +288,10 @@ export function hyperVAcquireBaseImageCommand(options: HyperVAcquireBaseImageOpt
         "} finally {",
         "  if ($PartialGuard) { $PartialGuard.Dispose(); $PartialGuard = $null }",
         "  if ($NormalizedOutput) { $NormalizedOutput.Dispose(); $NormalizedOutput = $null }",
+        "  if ($QemuOutputGuard) { $QemuOutputGuard.Dispose(); $QemuOutputGuard = $null }",
+        "  if ($NormalizedVhdGuard) { $NormalizedVhdGuard.Dispose(); $NormalizedVhdGuard = $null }",
         "  if ($SourceGuard) { $SourceGuard.Dispose(); $SourceGuard = $null }",
-        "  if ($ArchiveGuard) { $ArchiveGuard.Dispose(); $ArchiveGuard = $null }",
+        "  if ($QemuGuard) { $QemuGuard.Dispose(); $QemuGuard = $null }",
         "  Assert-NoReparsePath $PartialPath",
         "  Remove-Item -LiteralPath $PartialPath -Force -ErrorAction SilentlyContinue",
         "  Assert-NoReparsePath $WorkPath",

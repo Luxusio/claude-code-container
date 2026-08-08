@@ -26,7 +26,7 @@ import {
 
 const HYPER_V_IMAGE_MANIFEST_LIMIT_BYTES = 16 * 1024;
 const HYPER_V_IMPORTED_IMAGE_LIMIT_BYTES = 64 * 1024 * 1024 * 1024;
-const HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES = 6 * 1024 * 1024 * 1024;
+const HYPER_V_AUTOMATIC_SOURCE_CACHE_LIMIT_BYTES = 6 * 1024 * 1024 * 1024;
 const HYPER_V_IMAGE_LOCK_STALE_MS = 2 * 60 * 60 * 1000;
 
 export type HyperVImageProfile = "windows-11" | "windows-server" | "ubuntu-lts";
@@ -111,16 +111,16 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
             assertNoSymlinkPathComponents(path, "hyper-v-base-image-cleanup");
         });
     }
-    for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip"), join(profileRoot, "source.vhd.tar.gz")]) {
+    for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.vhdx.zip"), join(profileRoot, "source.vhd.tar.gz"), join(profileRoot, "source.qcow2")]) {
         try {
             const archiveMetadata = lstatSync(sourceCache);
-            const currentCache = sourceCache.endsWith("source.vhd.tar.gz");
+            const currentCache = sourceCache.endsWith("source.qcow2");
             const validRetryCache = currentCache
                 && archiveMetadata.isFile()
                 && !archiveMetadata.isSymbolicLink()
                 && archiveMetadata.nlink === 1
                 && archiveMetadata.size > 0
-                && archiveMetadata.size <= HYPER_V_AUTOMATIC_SOURCE_ARCHIVE_LIMIT_BYTES;
+                && archiveMetadata.size <= HYPER_V_AUTOMATIC_SOURCE_CACHE_LIMIT_BYTES;
             if (!validRetryCache) {
                 if (archiveMetadata.isDirectory() && !archiveMetadata.isSymbolicLink()) {
                     quarantineAndRemoveDirectory(sourceCache, (path) => {
