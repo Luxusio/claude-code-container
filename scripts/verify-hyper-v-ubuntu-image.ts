@@ -33,7 +33,7 @@ function parseOptions(args: string[]): { source: string; qemuImg: string } {
         else throw new Error(`unknown argument: ${args[index]}`);
     }
     if (!source) {
-        throw new Error(`missing --source <vmdk>; download the pinned image first: ${HYPER_V_UBUNTU_IMAGE_URL}`);
+        throw new Error(`missing --source <qcow2>; download the pinned image first: ${HYPER_V_UBUNTU_IMAGE_URL}`);
     }
     return { source: resolve(source), qemuImg };
 }
@@ -210,7 +210,7 @@ async function main(): Promise<void> {
     if (sourceSha256 !== HYPER_V_UBUNTU_IMAGE_SHA256) throw new Error("hyper-v-image-verifier-source-hash-mismatch");
 
     const work = mkdtempSync(join(tmpdir(), "ccc-hyper-v-ubuntu-verify-"));
-    const verifiedSourcePath = join(work, "source.vmdk");
+    const verifiedSourcePath = join(work, "source.qcow2");
     const rawPath = join(work, "ubuntu.raw");
     try {
         copyFileSync(options.source, verifiedSourcePath);
@@ -218,7 +218,7 @@ async function main(): Promise<void> {
         if (verifiedSourceSha256 !== HYPER_V_UBUNTU_IMAGE_SHA256) {
             throw new Error("hyper-v-image-verifier-source-copy-hash-mismatch");
         }
-        const conversion = spawnSync(options.qemuImg, ["convert", "-f", "vmdk", "-O", "raw", verifiedSourcePath, rawPath], {
+        const conversion = spawnSync(options.qemuImg, ["convert", "-f", "qcow2", "-O", "raw", verifiedSourcePath, rawPath], {
             encoding: "utf8",
             timeout: 10 * 60 * 1000,
             windowsHide: true,

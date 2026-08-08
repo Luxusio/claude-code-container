@@ -185,7 +185,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  if ($BaseImageHashAfterCreate -ne $ExpectedBaseImageHash) { throw 'hyper-v-base-image-hash-mismatch' }",
         "  $BaseImageStream.Dispose()",
         "  $BaseImageStream = $null",
-        `  $VmArgs = @{ Name = $VmName; Generation = $VmGeneration; MemoryStartupBytes = ${memoryMb}MB; VHDPath = $DiskPath }`,
+        `  $VmArgs = @{ Name = $VmName; Generation = $VmGeneration; MemoryStartupBytes = ${memoryMb}MB; VHDPath = $DiskPath; BootDevice = 'VHD' }`,
         "  if ($BootstrapSwitch) { $VmArgs.SwitchName = $BootstrapSwitch.Name } elseif ($ResolvedSwitch) { $VmArgs.SwitchName = $ResolvedSwitch.Name }",
         "  Set-CccVmCreateStage 'hyper-v-vm-create-failed'",
         "  $CreatedVm = New-VM @VmArgs -ErrorAction Stop",
@@ -208,13 +208,14 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "    Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress ($MacAddress.Replace(':', '')) -ErrorAction Stop",
         "  }",
         `  Set-VMProcessor -VM $CreatedVm -Count ${cpus} -ErrorAction Stop`,
+        "  Set-VMMemory -VM $CreatedVm -DynamicMemoryEnabled $false -ErrorAction Stop",
         "  Set-VM -VM $CreatedVm -AutomaticCheckpointsEnabled $false -CheckpointType ProductionOnly -Notes $Marker -ErrorAction Stop",
         "  $CreatedOsDisks = @(Get-VMHardDiskDrive -VM $CreatedVm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
         "  if ($CreatedOsDisks.Count -ne 1) { throw 'hyper-v-created-disk-attachment-mismatch' }",
         "  if ($VmGeneration -eq 2) {",
         ...(secureBootEnabled
-            ? [`    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop`]
-            : ["    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot Off -BootOrder @($CreatedOsDisks[0]) -ErrorAction Stop"]),
+            ? [`    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot On -SecureBootTemplate ${psQuote(secureBootTemplate)} -ErrorAction Stop`]
+            : ["    Set-VMFirmware -VM $CreatedVm -EnableSecureBoot Off -ErrorAction Stop"]),
         "  } else {",
         "    Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy') -ErrorAction Stop",
         "  }",

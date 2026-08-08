@@ -114,7 +114,7 @@ export function cleanupIncompleteHyperVImageArtifacts(profileRoot: string): void
     for (const sourceCache of [join(profileRoot, "source.vmdk"), join(profileRoot, "source.qcow2"), join(profileRoot, "source.vhdx.zip")]) {
         try {
             const archiveMetadata = lstatSync(sourceCache);
-            const currentCache = sourceCache.endsWith("source.vmdk");
+            const currentCache = sourceCache.endsWith("source.qcow2");
             const validRetryCache = currentCache
                 && archiveMetadata.isFile()
                 && !archiveMetadata.isSymbolicLink()

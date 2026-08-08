@@ -274,7 +274,7 @@ describe("Hyper-V provider adapter", () => {
                 .toBeLessThan(acquireScript.indexOf(acquireStages[index]));
         }
         expect(acquire.args.join(" ").length).toBeLessThan(2048);
-        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.vmdk");
+        expect(acquireScript).toContain("ubuntu-24.04-server-cloudimg-amd64.img");
     });
 
     it.skipIf(process.platform !== "win32")("classifies bounded-loader validation, parse, and execution failures on Windows PowerShell 5.1", () => {
@@ -683,18 +683,18 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Entry.Attributes -band [IO.FileAttributes]::ReparsePoint");
         expect(script).toContain("Protect-CccImageDirectory $ProfileRoot");
         expect(script.match(/Protect-CccImageDirectory \$ProfileRoot/g)?.length).toBeGreaterThanOrEqual(3);
-        expect(script).toContain("source.vmdk");
-        expect(script).toContain("$ImageDownloadPath = Join-Path $WorkPath 'source.download.vmdk'");
+        expect(script).toContain("source.qcow2");
+        expect(script).toContain("$ImageDownloadPath = Join-Path $WorkPath 'source.download.qcow2'");
         expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Container");
         expect(script).toContain("Test-Path -LiteralPath $SourceImagePath -PathType Leaf");
         expect(script).toContain("$SourceReady = $CachedHash -eq $UbuntuImageSha256");
         expect(script).toContain("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath");
         expect(script.indexOf("Get-FileHash -LiteralPath $ImageDownloadPath"))
             .toBeLessThan(script.indexOf("Move-Item -LiteralPath $ImageDownloadPath -Destination $SourceImagePath"));
-        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64.vmdk");
+        expect(script).toContain("https://cloud-images.ubuntu.com/releases/noble/release-20260801/ubuntu-24.04-server-cloudimg-amd64.img");
         expect(script).not.toContain("azure.vhd");
         expect(script).not.toContain("ubuntu-desktop-hyperv");
-        expect(script).toContain("8fdafa961e9de4f26747e89a122093ed772565e80bddb45bc39e2eb57df07988");
+        expect(script).toContain("0533b0655c32e68b31d792ecd6ccfca95abdbc536c4446874fe0513bd4140ffe");
         expect(script).not.toContain("SHA256SUMS");
         expect(script).toContain("$UbuntuMaxBytes = [long]5GB");
         expect(script).toContain("DnsSafeHost.ToLowerInvariant() -eq 'cloud-images.ubuntu.com'");
@@ -717,11 +717,13 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("if (-not (Test-Path -LiteralPath $QemuImg -PathType Leaf)) { throw 'hyper-v-qemu-img-unavailable' }"))
             .toBeLessThan(script.indexOf("Save-BoundedDownload $UbuntuImageUrl"));
         expect(script).toContain("& $QemuImg info --output=json $SourceImagePath");
-        expect(script).toContain("[string]$SourceInfo.format -ne 'vmdk'");
-        expect(script).toContain("& $QemuImg create -f vhdx -o subformat=dynamic $QemuOutputPath $UbuntuVirtualSizeBytes");
-        expect(script).toContain("hyper-v-base-image-destination-create-failed");
-        expect(script).toContain("& $QemuImg convert -n -f vmdk -O vhdx $SourceImagePath $QemuOutputPath");
-        expect(script).toContain("if ([long]$ConvertedVhd.Size -ne $UbuntuVirtualSizeBytes) { throw 'hyper-v-base-image-convert-failed' }");
+        expect(script).toContain("[string]$SourceInfo.format -ne 'qcow2'");
+        expect(script).not.toContain("& $QemuImg create");
+        expect(script).not.toContain("hyper-v-base-image-destination-create-failed");
+        expect(script).toContain("& $QemuImg convert -f qcow2 -O vhdx -o subformat=dynamic $SourceImagePath $QemuOutputPath");
+        expect(script).toContain("& $QemuImg info --output=json $QemuOutputPath");
+        expect(script).toContain("[string]$ConvertedInfo.format -ne 'vhdx'");
+        expect(script).not.toContain("Get-VHD -Path $QemuOutputPath");
         expect(script).toContain("$QemuOutputGuard.CopyTo($NormalizedOutput, 8388608)");
         expect(script).toContain("$NormalizedOutput = [IO.File]::Open($NormalizedQemuPath");
         expect(script).toContain("[IO.FileAttributes]::SparseFile");
@@ -731,10 +733,17 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("& $QemuImg convert"))
             .toBeLessThan(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"));
         expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
+            .toBeLessThan(script.indexOf("Resize-VHD -Path $NormalizedQemuPath"));
+        expect(script.indexOf("Resize-VHD -Path $NormalizedQemuPath"))
+            .toBeLessThan(script.indexOf("$NormalizedVhd = Get-VHD -Path $NormalizedQemuPath"));
+        expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
             .toBeLessThan(script.indexOf("Move-Item -LiteralPath $NormalizedQemuPath -Destination $PartialPath"));
         expect(script).toContain("$QemuOutputHash = (Get-FileHash -LiteralPath $QemuOutputPath");
+        expect(script).toContain("$NormalizedHashBeforeResize = (Get-FileHash -LiteralPath $NormalizedQemuPath");
+        expect(script).toContain("if ($NormalizedHashBeforeResize -ne $QemuOutputHash) { throw 'hyper-v-base-image-normalize-failed' }");
+        expect(script).toContain("Resize-VHD -Path $NormalizedQemuPath -SizeBytes $UbuntuVirtualSizeBytes");
+        expect(script).toContain("if ([long]$NormalizedVhd.Size -ne $UbuntuVirtualSizeBytes) { throw 'hyper-v-base-image-normalize-failed' }");
         expect(script).toContain("$NormalizedHash = (Get-FileHash -LiteralPath $NormalizedQemuPath");
-        expect(script).toContain("if ($NormalizedHash -ne $QemuOutputHash) { throw 'hyper-v-base-image-normalize-failed' }");
         expect(script).toContain("Move-Item -LiteralPath $NormalizedQemuPath -Destination $PartialPath -ErrorAction Stop");
         expect(script).toContain("if ($Profile -eq 'ubuntu-lts' -and $PartialHashBefore -ne $NormalizedHash) { throw 'hyper-v-base-image-partial-mutated' }");
         expect(script.indexOf("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath"))
@@ -774,8 +783,6 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("if ($ValidatedPartialHash -ne $PartialHashBefore) { throw 'hyper-v-base-image-partial-mutated' }");
         expect(script).not.toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
         expect(script.indexOf("$SourceHashBefore = Get-CccGuardedSha256 $SourceGuard"))
-            .toBeLessThan(script.indexOf("& $QemuImg create"));
-        expect(script.indexOf("& $QemuImg create"))
             .toBeLessThan(script.indexOf("& $QemuImg convert"));
         expect(script.indexOf("& $QemuImg convert"))
             .toBeLessThan(script.indexOf("$SourceHashAfter = Get-CccGuardedSha256 $SourceGuard"));
@@ -999,7 +1006,9 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("AutomaticCheckpointsEnabled $false");
         expect(script).toContain("CheckpointType ProductionOnly");
         expect(script).toContain("EnableSecureBoot On");
-        expect(script).toContain("-BootOrder @($CreatedOsDisks[0])");
+        expect(script).toContain("BootDevice = 'VHD'");
+        expect(script).toContain("Set-VMMemory -VM $CreatedVm -DynamicMemoryEnabled $false");
+        expect(script).not.toContain("-BootOrder @($CreatedOsDisks[0])");
         expect(script).not.toContain("-FirstBootDevice $CreatedOsDisks[0]");
         expect(script).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(script).toContain("Get-VMSwitch -Name $SwitchName");
@@ -1303,7 +1312,7 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
-        expect(seedScript).toContain("Set-VMFirmware -VM $Vm -BootOrder @($OsDisks[0])");
+        expect(seedScript).not.toContain("Set-VMFirmware -VM $Vm -BootOrder @($OsDisks[0])");
         expect(seedScript).not.toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
         expect(seedScript).toContain("Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");

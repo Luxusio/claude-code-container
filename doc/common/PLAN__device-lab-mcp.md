@@ -3238,13 +3238,13 @@ remain unchanged where they are the behavior under test.
     the exact-identity marker repair contract.
 65. Unattended Hyper-V Linux guests use Canonical's dated Ubuntu Server cloud
     image, not the interactive Hyper-V desktop image or the Azure-specific VHD.
-    The provider verifies the pinned VMDK checksum, resolves `qemu-img.exe`
+    The provider verifies the pinned QCOW2 checksum, resolves `qemu-img.exe`
     only from the current user's default Android SDK path, verifies its Google
-    Authenticode signature and identity, converts Canonical's Hyper-V
-    documented VMDK source to a
-    pre-created dynamic 32 GiB VHDX, copies it into an ordinary non-sparse
-    file, verifies that the copy is byte-identical and accepted by `Get-VHD`,
-    then publishes those exact VHDX bytes. It does not reserialize the bootable
+    Authenticode signature and identity, converts Canonical's generic QCOW2
+    source directly to a dynamic VHDX, copies it into an ordinary non-sparse
+    file, verifies that the pre-resize copy is byte-identical, expands it to
+    32 GiB with `Resize-VHD`, validates the result with `Get-VHD`, and then
+    publishes it. It does not reserialize the bootable
     disk through `Convert-VHD`. The image is bound to the catalog's fixed
     Generation 2 UEFI contract. Linux VM creation disables Hyper-V Secure Boot
     for compatibility with Linux Generation 2 guests that do not boot while it
@@ -3254,24 +3254,24 @@ remain unchanged where they are the behavior under test.
     templates cannot override the backend-owned policy. Secure-Boot-enabled
     Windows profiles require Generation 2 and reject Generation 1 images
     before provider execution. The
-    QEMU-oriented QCOW source is not accepted. The checksum-pinned source
+    generic QCOW2 source is required. The checksum-pinned source
     already contains `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`;
     QEMU conversion and byte-identical normalization preserve those files.
     Every catalog update must run
-    `npm run test:hyper-v:ubuntu-image -- --source <downloaded-vmdk>
+    `npm run test:hyper-v:ubuntu-image -- --source <downloaded-qcow2>
     [--qemu-img <path>]`; that bounded verifier binds the source SHA-256 and
     parses the converted disk's GPT and FAT32 structures to require both
     non-empty loaders without mounting the guest filesystem.
     Acquisition therefore does not mount or mutate the EFI partition and does
-    not cross a Storage cmdlet UAC boundary. VM creation replaces the firmware
-    boot order with the managed OS disk, removing stale NVRAM entries rather
-    than only moving the disk ahead of them.
+    not cross a Storage cmdlet UAC boundary. VM creation follows Canonical
+    Multipass by passing `BootDevice=VHD` to `New-VM`, disabling dynamic memory,
+    and preserving Hyper-V's generated Generation 2 firmware order.
     Linux cloud-init does not run online package updates before SSH readiness:
     the pinned Ubuntu Server image already contains OpenSSH. The seed deletes
     inherited host keys, installs the owner-scoped ED25519 pair through
     cloud-init's native `ssh_keys` contract, writes the network configuration,
     and enables that local service directly. Brokers advertise
-    `hyper-v-provider-image-finalization-v24`, preventing a desktop-image,
+    `hyper-v-provider-image-finalization-v25`, preventing a desktop-image,
     Linux-Secure-Boot, or package-update-blocking broker from being reused by
     Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
@@ -3294,14 +3294,14 @@ remain unchanged where they are the behavior under test.
     `Get-VHD` to reopen the disk through the Windows Virtual
     Disk API. Because write sharing permits
     in-place changes,
-    the source VMDK is SHA-256 checked before and after conversion and the
+    the source QCOW2 is SHA-256 checked before and after conversion and the
     partial VHDX is checked before and after its Hyper-V inspection. The
     published image must match the validated partial
     hash both before and after final inspection, and the broker hashes it once
     more before writing the manifest. A mismatch fails closed; processes under
     the current CCC user SID remain part of the trusted host principal.
     Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v24`
+    `hyper-v-provider-image-finalization-v25`
     for this guard contract. Acquisition reports distinct bounded stages for
     source hash/inspection, conversion, and partial
     open/hash/inspection so host-only failures do not collapse into a generic
@@ -3333,7 +3333,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v24` for this contract.
+    `hyper-v-provider-image-finalization-v25` for this contract.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3356,4 +3356,4 @@ remain unchanged where they are the behavior under test.
     `New-VHD -Differencing` compatibility boundary while preserving immutable
     shared-image verification. Brokers
     advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v24` for this contract.
+    `hyper-v-provider-image-finalization-v25` for this contract.

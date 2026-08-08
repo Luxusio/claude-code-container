@@ -214,11 +214,11 @@ Automatic image acquisition accepts only the fixed Microsoft Evaluation Center
 redirector and Canonical release endpoints plus their explicit redirect
 allowlists. The Canonical release URL and SHA256 digest are pinned in source;
 changing either requires a reviewed code change. Every Canonical catalog update
-must verify the downloaded VMDK and its QEMU-converted raw disk without mounting
+must verify the downloaded QCOW2 and its QEMU-converted raw disk without mounting
 the guest filesystem:
 
 ```bash
-npm run test:hyper-v:ubuntu-image -- --source <downloaded-vmdk> [--qemu-img <path>]
+npm run test:hyper-v:ubuntu-image -- --source <downloaded-qcow2> [--qemu-img <path>]
 ```
 
 The verifier binds the source to the catalog SHA-256, parses the converted disk's
@@ -354,9 +354,8 @@ paths use the same broker contract.
   provisioning after the transfer completes.
 - Create an owner-scoped independent VHDX clone for each disposable VM.
 - Use Generation 2 for Windows, the automatic Ubuntu profile, and compatible
-  explicit imports. The automatic Ubuntu path uses Canonical's VMDK artifact
-  documented for conversion to Hyper-V VHDX, rather than the QCOW artifact
-  documented for QEMU/KVM.
+  explicit imports. The automatic Ubuntu path uses Canonical's generic QCOW2
+  cloud image, matching Canonical Multipass's proven Hyper-V conversion path.
 - Use the Microsoft Windows Secure Boot template for Windows guests.
 - Use the Microsoft UEFI Certificate Authority template for supported Linux
   guests.
@@ -569,11 +568,10 @@ Real-provider tests:
   device types. They never expose VM names, disk paths, credentials, raw
   PowerShell/SSH output, or localized host errors. Failed lifecycle state follows
   the observed VM state instead of assuming a started VM remained running.
-- The automatic Ubuntu profile uses Canonical's pinned Ubuntu Server VMDK
-  image, not the QEMU-oriented QCOW image, interactive Hyper-V desktop image,
-  or Azure-specific VHD. CCC verifies the dated release SHA-256 and converts
-  the VMDK image
-  into a pre-created dynamic 32 GiB VHDX with `qemu-img.exe` at the current user's default
+- The automatic Ubuntu profile uses Canonical's pinned generic Ubuntu Server
+  QCOW2 image, not the interactive Hyper-V desktop image or Azure-specific VHD.
+  CCC verifies the dated release SHA-256 and converts the QCOW2 directly into
+  a dynamic VHDX with `qemu-img.exe` at the current user's default
   Android SDK path. CCC requires a valid Google Authenticode signature, rejects
   reparse paths, holds the source image and converter identities open across
   inspection/conversion, and binds the source URL and checksum into the cache
@@ -585,7 +583,7 @@ Real-provider tests:
   Request-provided templates cannot override either backend-owned policy.
   A Secure-Boot-enabled VM requires Generation 2, so Windows Generation 1
   images are rejected before a provider command is emitted.
-  The catalog fences the VMDK format and Generation 2 boot contract. The
+  The catalog fences the QCOW2 format and Generation 2 boot contract. The
   provisioning media retains both
   generic NoCloud files
   and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
@@ -602,7 +600,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v24` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v25` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile or whose
   Linux seed blocks SSH activation behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
@@ -623,18 +621,18 @@ Real-provider tests:
   clone to have the expected SHA-256, matching file length and virtual size,
   VHDX format, and no parent.
   QEMU's intermediate VHDX is normalized into a newly created ordinary file.
-  CCC requires the normalized file to be byte-identical to QEMU's output,
-  rejects Sparse, Compressed, or Encrypted filesystem attributes, and verifies
-  it with `Get-VHD` before publishing those exact bytes. The provider does not
+  CCC requires that pre-resize copy to be byte-identical to QEMU's output,
+  rejects Sparse, Compressed, or Encrypted filesystem attributes, expands it
+  with native `Resize-VHD`, and verifies the result with `Get-VHD`. The provider does not
   pass the bootable disk through a second `Convert-VHD` serialization step.
-  The checksum-pinned Canonical VMDK was verified to contain both
+  The checksum-pinned Canonical QCOW2 was verified to contain both
   `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`. QEMU conversion and the
   byte-identical normalization preserve that guest filesystem, so acquisition
   does not mount or mutate the EFI partition and does not require Storage
-  cmdlet elevation. Generation 2 VM creation replaces the firmware boot order
-  with the OS disk instead of merely moving that disk ahead of potentially
-  stale NVRAM entries. The v22 broker contract fences out the obsolete EFI
-  mutation path.
+  cmdlet elevation. Generation 2 VM creation follows Canonical Multipass by
+  passing `BootDevice=VHD` to `New-VM`, disabling dynamic memory, and leaving
+  Hyper-V's generated firmware order intact. The v25 broker contract fences
+  out the obsolete manual EFI boot-order path.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the
