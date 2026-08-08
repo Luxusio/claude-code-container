@@ -75,6 +75,7 @@ export function writeHyperVLinuxFailureDiagnostic(input: {
         let renamed = false;
         try {
             writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+            // Node's Windows rename does not replace an existing destination.
             rmSync(target, { force: true });
             renameSync(temporary, target);
             renamed = true;
