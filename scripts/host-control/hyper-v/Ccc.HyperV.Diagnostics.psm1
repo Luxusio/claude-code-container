@@ -40,6 +40,17 @@ function ConvertTo-CccDiagnosticInt {
     catch { return $null }
 }
 
+function ConvertTo-CccDiagnosticLong {
+    param([AllowNull()] [object] $Value)
+    if ($null -eq $Value) { return $null }
+    try {
+        $Converted = [long]$Value
+        if ($Converted -lt 0) { return $null }
+        return $Converted
+    }
+    catch { return $null }
+}
+
 function ConvertTo-CccDiagnosticString {
     param(
         [AllowNull()] [object] $Value,
@@ -88,7 +99,8 @@ function Get-CccGuestBootDiagnosticResult {
         [scriptblock] $FirmwareReader = { param($TargetVm) Get-VMFirmware -VM $TargetVm -ErrorAction Stop },
         [scriptblock] $BiosReader = { param($TargetVm) Get-VMBios -VM $TargetVm -ErrorAction Stop },
         [scriptblock] $HardDiskReader = { param($TargetVm) @(Get-VMHardDiskDrive -VM $TargetVm -ErrorAction Stop) },
-        [scriptblock] $DvdReader = { param($TargetVm) @(Get-VMDvdDrive -VM $TargetVm -ErrorAction Stop) }
+        [scriptblock] $DvdReader = { param($TargetVm) @(Get-VMDvdDrive -VM $TargetVm -ErrorAction Stop) },
+        [scriptblock] $VhdReader = { param($Path) Get-VHD -Path $Path -ErrorAction Stop }
     )
 
     $DiagnosticErrors = [System.Collections.Generic.List[string]]::new()
@@ -173,6 +185,7 @@ function Get-CccGuestBootDiagnosticResult {
     }
 
     $BootDeviceTypes = @()
+    $BootEntrySummary = @()
     if ($null -ne $Firmware) {
         $BootOrder = @(Get-CccDiagnosticProperty $Firmware 'BootOrder' @() $DiagnosticErrors 'hyper-v-diagnostic-firmware-incomplete' -Required)
         if ($BootOrder.Count -eq 0) { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-firmware-incomplete') }
@@ -184,15 +197,26 @@ function Get-CccGuestBootDiagnosticResult {
                     '' $DiagnosticErrors 'hyper-v-diagnostic-firmware-incomplete' -Required
                 $Device = Get-CccDiagnosticProperty $BootEntry 'Device' $null $DiagnosticErrors 'hyper-v-diagnostic-firmware-incomplete'
                 $DeviceType = if ($null -ne $Device) { ConvertTo-CccDiagnosticString $Device.GetType().Name } else { '' }
+                $ControllerType = if ($null -ne $Device) { ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $Device 'ControllerType') } else { '' }
+                $ControllerNumber = if ($null -ne $Device) { ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Device 'ControllerNumber') } else { $null }
+                $ControllerLocation = if ($null -ne $Device) { ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Device 'ControllerLocation') } else { $null }
                 $Classification = $BootType + ' ' + $DeviceType
                 if ($Classification -match 'HardDisk|Vhd') { $BootDeviceTypes += 'hard-disk' }
                 elseif ($Classification -match 'Dvd|Optical') { $BootDeviceTypes += 'dvd' }
                 elseif ($Classification -match 'Network') { $BootDeviceTypes += 'network' }
                 else { $BootDeviceTypes += 'unknown' }
+                $BootEntrySummary += [ordered]@{
+                    bootType = if ($BootType.Length -gt 64) { $BootType.Substring(0, 64) } else { $BootType }
+                    deviceType = if ($DeviceType.Length -gt 128) { $DeviceType.Substring(0, 128) } else { $DeviceType }
+                    controllerType = if ($ControllerType.Length -gt 32) { $ControllerType.Substring(0, 32) } else { $ControllerType }
+                    controllerNumber = $ControllerNumber
+                    controllerLocation = $ControllerLocation
+                }
             }
             catch {
                 [void]$DiagnosticErrors.Add('hyper-v-diagnostic-firmware-incomplete')
                 $BootDeviceTypes += 'unknown'
+                $BootEntrySummary += [ordered]@{ bootType = ''; deviceType = ''; controllerType = ''; controllerNumber = $null; controllerLocation = $null }
             }
         }
     }
@@ -207,6 +231,7 @@ function Get-CccGuestBootDiagnosticResult {
                 'LegacyNetworkAdapter' { $BootDeviceTypes += 'network' }
                 default { $BootDeviceTypes += 'unknown' }
             }
+            $BootEntrySummary += [ordered]@{ bootType = $BootEntryValue; deviceType = 'bios'; controllerType = ''; controllerNumber = $null; controllerLocation = $null }
         }
     }
 
@@ -219,6 +244,7 @@ function Get-CccGuestBootDiagnosticResult {
     }
     if ($HardDisksAvailable -and $HardDisks.Count -eq 0) { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-hard-disks-incomplete') }
     $HardDiskControllers = @()
+    $HardDiskSummary = @()
     $BoundedHardDisks = @($HardDisks | Select-Object -First 8)
     foreach ($HardDisk in $BoundedHardDisks) {
         try {
@@ -227,6 +253,27 @@ function Get-CccGuestBootDiagnosticResult {
                 '' $DiagnosticErrors 'hyper-v-diagnostic-hard-disks-incomplete' -Required).ToLowerInvariant()
             if ($Controller -eq 'ide' -or $Controller -eq 'scsi') { $HardDiskControllers += $Controller }
             else { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-hard-disks-incomplete') }
+            $ControllerNumber = ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $HardDisk 'ControllerNumber')
+            $ControllerLocation = ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $HardDisk 'ControllerLocation')
+            $Vhd = $null
+            try {
+                $DiskPath = ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $HardDisk 'Path')
+                if ($DiskPath) { $Vhd = & $VhdReader $DiskPath }
+            }
+            catch { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-vhd-inspection-incomplete') }
+            if ($null -eq $Vhd) { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-vhd-inspection-incomplete') }
+            $HardDiskSummary += [ordered]@{
+                controllerType = $Controller
+                controllerNumber = $ControllerNumber
+                controllerLocation = $ControllerLocation
+                vhdFormat = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $Vhd 'VhdFormat') } else { '' }
+                vhdType = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $Vhd 'VhdType') } else { '' }
+                sizeBytes = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticLong (Get-CccDiagnosticProperty $Vhd 'Size') } else { $null }
+                fileSizeBytes = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticLong (Get-CccDiagnosticProperty $Vhd 'FileSize') } else { $null }
+                minimumSizeBytes = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticLong (Get-CccDiagnosticProperty $Vhd 'MinimumSize') } else { $null }
+                logicalSectorSize = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Vhd 'LogicalSectorSize') } else { $null }
+                physicalSectorSize = if ($null -ne $Vhd) { ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Vhd 'PhysicalSectorSize') } else { $null }
+            }
         }
         catch { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-hard-disks-incomplete') }
     }
@@ -234,6 +281,16 @@ function Get-CccGuestBootDiagnosticResult {
     $DvdDrives = @()
     try { $DvdDrives = @(& $DvdReader $Vm) }
     catch { [void]$DiagnosticErrors.Add('hyper-v-diagnostic-dvd-drives-unavailable') }
+    $DvdSummary = @()
+    foreach ($Dvd in @($DvdDrives | Select-Object -First 8)) {
+        $DvdPath = ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $Dvd 'Path')
+        $DvdSummary += [ordered]@{
+            controllerType = (ConvertTo-CccDiagnosticString (Get-CccDiagnosticProperty $Dvd 'ControllerType')).ToLowerInvariant()
+            controllerNumber = ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Dvd 'ControllerNumber')
+            controllerLocation = ConvertTo-CccDiagnosticInt (Get-CccDiagnosticProperty $Dvd 'ControllerLocation')
+            mediaAttached = -not [string]::IsNullOrWhiteSpace($DvdPath)
+        }
+    }
 
     $HeartbeatEnabled = $null
     $HeartbeatPrimaryStatus = $null
@@ -269,6 +326,9 @@ function Get-CccGuestBootDiagnosticResult {
         dvdCount = $DvdDrives.Count
         hardDiskControllers = $HardDiskControllers
         bootDeviceTypes = $BootDeviceTypes
+        bootEntries = $BootEntrySummary
+        hardDisks = $HardDiskSummary
+        dvdDrives = $DvdSummary
         diagnosticComplete = $DiagnosticErrors.Count -eq 0
         diagnosticErrors = $DiagnosticErrors
     }

@@ -122,8 +122,9 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
         $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
             -IntegrationServiceReader { param($TargetVm) @([pscustomobject]@{ Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'; Name = 'Heartbeat'; Enabled = $true; PrimaryStatus = 2; SecondaryStatus = 0 }) } `
             -BiosReader { param($TargetVm) [pscustomobject]@{ StartupOrder = @('IDE', 'CD') } } `
-            -HardDiskReader { param($TargetVm) @([pscustomobject]@{ ControllerType = 'IDE' }) } `
-            -DvdReader { param($TargetVm) @([pscustomobject]@{}, [pscustomobject]@{}) }
+            -HardDiskReader { param($TargetVm) @([pscustomobject]@{ ControllerType = 'IDE'; ControllerNumber = 0; ControllerLocation = 0; Path = 'C:\disk.vhdx' }) } `
+            -DvdReader { param($TargetVm) @([pscustomobject]@{ ControllerType = 'IDE'; ControllerNumber = 1; ControllerLocation = 0; Path = 'C:\seed.iso' }, [pscustomobject]@{ ControllerType = 'IDE'; ControllerNumber = 1; ControllerLocation = 1; Path = $null }) } `
+            -VhdReader { param($Path) [pscustomobject]@{ VhdFormat = 'VHDX'; VhdType = 'Dynamic'; Size = 32GB; FileSize = 4GB; MinimumSize = 3GB; LogicalSectorSize = 512; PhysicalSectorSize = 4096 } }
         $Result.ok | Should -BeTrue
         $Result.heartbeatEnabled | Should -BeTrue
         $Result.heartbeatPrimaryStatus | Should -Be 2
@@ -133,6 +134,10 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
         @($Result.bootDeviceTypes).Count | Should -Be 2
         $Result.bootDeviceTypes[0] | Should -Be 'hard-disk'
         $Result.bootDeviceTypes[1] | Should -Be 'dvd'
+        $Result.hardDisks[0].vhdFormat | Should -Be 'VHDX'
+        $Result.hardDisks[0].sizeBytes | Should -Be 32GB
+        $Result.dvdDrives[0].mediaAttached | Should -BeTrue
+        $Result.dvdDrives[1].mediaAttached | Should -BeFalse
         $Result.diagnosticComplete | Should -BeTrue
         @($Result.diagnosticErrors).Count | Should -Be 0
     }
@@ -148,8 +153,9 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
         $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
             -IntegrationServiceReader { @([pscustomobject]@{ Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'; Name = 'Heartbeat'; Enabled = 'On'; PrimaryStatus = 2; SecondaryStatus = 0 }) } `
             -FirmwareReader { [pscustomobject]@{ SecureBoot = 'On'; BootOrder = @([pscustomobject]@{ BootType = 'Drive'; Device = [pscustomobject]@{ Type = 'Vhd' } }) } } `
-            -HardDiskReader { @([pscustomobject]@{ ControllerType = 'SCSI' }) } `
-            -DvdReader { @() }
+            -HardDiskReader { @([pscustomobject]@{ ControllerType = 'SCSI'; ControllerNumber = 0; ControllerLocation = 0; Path = 'C:\disk.vhdx' }) } `
+            -DvdReader { @() } `
+            -VhdReader { [pscustomobject]@{ VhdFormat = 'VHDX'; VhdType = 'Dynamic'; Size = 32GB; FileSize = 4GB; MinimumSize = 3GB; LogicalSectorSize = 512; PhysicalSectorSize = 4096 } }
 
         $Result.secureBootEnabled | Should -BeTrue
         $Result.heartbeatEnabled | Should -BeTrue
@@ -183,6 +189,30 @@ Describe 'CCC Hyper-V guest boot diagnostic operation' {
             'hyper-v-diagnostic-dvd-drives-unavailable'
         )
         ($Result | ConvertTo-Json -Depth 8) | Should -Not -Match 'private'
+    }
+
+    It 'returns bounded disk evidence when VHD inspection fails' {
+        $Vm = [pscustomobject]@{
+            Id = [Guid]'12345678-1234-1234-1234-123456789abc'
+            Name = 'ccc-0123456789abcdef-linux-ci-01-11111111111111111111'
+            State = 'Running'
+            Uptime = [TimeSpan]::FromSeconds(30)
+            Generation = 1
+        }
+        $Result = Get-CccGuestBootDiagnosticResult -Vm $Vm `
+            -IntegrationServiceReader { @([pscustomobject]@{ Id = [Guid]'84eaae65-2f2e-45f5-9bb5-0e857dc8eb47'; Name = 'Heartbeat'; Enabled = $true; PrimaryStatus = 2; SecondaryStatus = 0 }) } `
+            -BiosReader { [pscustomobject]@{ StartupOrder = @('IDE') } } `
+            -HardDiskReader { @([pscustomobject]@{ ControllerType = 'IDE'; ControllerNumber = 0; ControllerLocation = 0; Path = 'C:\secret-disk.vhdx' }) } `
+            -DvdReader { @() } `
+            -VhdReader { throw 'private VHD inspection failure' }
+
+        $Result.ok | Should -BeTrue
+        $Result.hardDiskCount | Should -Be 1
+        $Result.hardDisks[0].controllerType | Should -Be 'ide'
+        $Result.hardDisks[0].vhdFormat | Should -Be ''
+        $Result.diagnosticComplete | Should -BeFalse
+        @($Result.diagnosticErrors) | Should -Contain 'hyper-v-diagnostic-vhd-inspection-incomplete'
+        ($Result | ConvertTo-Json -Depth 8) | Should -Not -Match 'private|secret-disk|C:\\'
     }
 
     It 'survives sparse VM and reader objects under strict mode' {

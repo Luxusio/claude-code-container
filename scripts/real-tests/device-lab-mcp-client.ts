@@ -335,6 +335,169 @@ export function parseToolPayload(result) {
     return JSON.parse(text);
 }
 
+function boundedDiagnosticText(value: unknown, maxLength = 128): string | undefined {
+    return typeof value === "string"
+        && value.length <= maxLength
+        && /^[A-Za-z0-9 ._:+-]*$/.test(value)
+        ? value
+        : undefined;
+}
+
+function safeNonNegativeInteger(value: unknown): number | null | undefined {
+    if (value === null) return null;
+    return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : undefined;
+}
+
+function boundedTransportRecoveryAttempt(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const attempt = value as Record<string, unknown>;
+    return {
+        port: safeNonNegativeInteger(attempt.port),
+        status: safeNonNegativeInteger(attempt.status),
+        error: boundedBrokerDiagnosticCode(attempt.error),
+        durationMs: safeNonNegativeInteger(attempt.durationMs),
+        brokerDiagnostics: Array.isArray(attempt.brokerDiagnostics)
+            ? attempt.brokerDiagnostics.slice(0, 8).map(boundedBrokerDiagnosticCode).filter(Boolean)
+            : [],
+    };
+}
+
+export function brokerToolFailureEvidence(value: any) {
+    const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : null;
+    const attempts = Array.isArray(value?.attempts)
+        ? value.attempts
+        : Array.isArray(value?.launch?.attempts) ? value.launch.attempts : [];
+    const lastAttempt = attempts.at(-1);
+    const transportError = String(lastAttempt?.error || "").toLowerCase();
+    const transportCode = boundedBrokerDiagnosticCode(lastAttempt?.transportCode)
+        || (transportError.includes("timeout") ? "timeout"
+            : transportError.includes("econnrefused") || transportError.includes("connection refused") ? "connection-refused"
+                : transportError.includes("abort") ? "aborted"
+                    : transportError.includes("fetch") ? "fetch-failed"
+                        : transportError ? "transport-error" : undefined);
+    const boot = body?.result?.boot && typeof body.result.boot === "object" && !Array.isArray(body.result.boot)
+        ? body.result.boot
+        : value?.result?.boot && typeof value.result.boot === "object" && !Array.isArray(value.result.boot)
+            ? value.result.boot
+            : null;
+    const observation = boot?.diagnostic && typeof boot.diagnostic === "object" && !Array.isArray(boot.diagnostic)
+        ? boot.diagnostic
+        : null;
+    const sanitizeController = (candidate: unknown) => ["ide", "scsi", ""].includes(String(candidate)) ? String(candidate) : undefined;
+    const evidence: Record<string, unknown> = {
+        error: boundedBrokerDiagnosticCode(value?.error),
+        bodyError: boundedBrokerDiagnosticCode(body?.error),
+    };
+    if (lastAttempt && typeof lastAttempt === "object") {
+        evidence.transport = {
+            port: safeNonNegativeInteger(lastAttempt.port),
+            status: safeNonNegativeInteger(lastAttempt.status),
+            error: transportCode,
+            durationMs: safeNonNegativeInteger(lastAttempt.durationMs),
+            timeoutMs: safeNonNegativeInteger(lastAttempt.timeoutMs),
+        };
+    }
+    if (value?.transportRecovery && typeof value.transportRecovery === "object") {
+        evidence.transportRecovery = {
+            attempted: value.transportRecovery.attempted === true,
+            recovered: value.transportRecovery.recovered === true,
+            initial: boundedTransportRecoveryAttempt(value.transportRecovery.initial),
+            retry: boundedTransportRecoveryAttempt(value.transportRecovery.retry),
+        };
+    }
+    const provisioning = value?.provisioning && typeof value.provisioning === "object"
+        ? value.provisioning
+        : body?.provisioning && typeof body.provisioning === "object" ? body.provisioning : null;
+    if (provisioning) {
+        evidence.provisioning = {
+            status: safeNonNegativeInteger(provisioning.status),
+            signal: boundedBrokerDiagnosticCode(provisioning.signal),
+            error: boundedBrokerDiagnosticCode(provisioning.error),
+            diagnosticCode: boundedBrokerDiagnosticCode(provisioning.diagnosticCode),
+            outputOmitted: true,
+        };
+    }
+    if (boot) {
+        evidence.boot = {
+            provider: boundedBrokerDiagnosticCode(boot.provider),
+            error: boundedBrokerDiagnosticCode(boot.error),
+            diagnosticAvailable: typeof boot.diagnosticAvailable === "boolean" ? boot.diagnosticAvailable : undefined,
+            diagnosticError: boundedBrokerDiagnosticCode(boot.diagnosticError),
+            diagnostic: observation ? {
+                state: boundedDiagnosticText(observation.state, 64),
+                uptimeMs: safeNonNegativeInteger(observation.uptimeMs),
+                generation: observation.generation === 1 || observation.generation === 2 ? observation.generation : null,
+                secureBootEnabled: typeof observation.secureBootEnabled === "boolean" ? observation.secureBootEnabled : null,
+                heartbeatEnabled: typeof observation.heartbeatEnabled === "boolean" ? observation.heartbeatEnabled : null,
+                heartbeatPrimaryStatus: safeNonNegativeInteger(observation.heartbeatPrimaryStatus),
+                heartbeatSecondaryStatus: safeNonNegativeInteger(observation.heartbeatSecondaryStatus),
+                integrationServices: Array.isArray(observation.integrationServices)
+                    ? observation.integrationServices.slice(0, 16).flatMap((candidate: unknown) => {
+                        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+                        const service = candidate as Record<string, unknown>;
+                        const name = boundedDiagnosticText(service.name, 128);
+                        return name ? [{
+                            name,
+                            enabled: service.enabled === true,
+                            primaryStatus: safeNonNegativeInteger(service.primaryStatus),
+                            secondaryStatus: safeNonNegativeInteger(service.secondaryStatus),
+                        }] : [];
+                    }) : [],
+                hardDiskCount: safeNonNegativeInteger(observation.hardDiskCount),
+                dvdCount: safeNonNegativeInteger(observation.dvdCount),
+                hardDiskControllers: Array.isArray(observation.hardDiskControllers)
+                    ? observation.hardDiskControllers.slice(0, 8).map(sanitizeController).filter(Boolean) : [],
+                bootDeviceTypes: Array.isArray(observation.bootDeviceTypes)
+                    ? observation.bootDeviceTypes.slice(0, 8).filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))) : [],
+                bootEntries: Array.isArray(observation.bootEntries)
+                    ? observation.bootEntries.slice(0, 8).flatMap((candidate: unknown) => {
+                        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+                        const entry = candidate as Record<string, unknown>;
+                        return [{
+                            bootType: boundedDiagnosticText(entry.bootType, 64),
+                            deviceType: boundedDiagnosticText(entry.deviceType, 128),
+                            controllerType: boundedDiagnosticText(entry.controllerType, 32),
+                            controllerNumber: safeNonNegativeInteger(entry.controllerNumber),
+                            controllerLocation: safeNonNegativeInteger(entry.controllerLocation),
+                        }];
+                    }) : [],
+                hardDisks: Array.isArray(observation.hardDisks)
+                    ? observation.hardDisks.slice(0, 8).flatMap((candidate: unknown) => {
+                        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+                        const disk = candidate as Record<string, unknown>;
+                        return [{
+                            controllerType: sanitizeController(disk.controllerType),
+                            controllerNumber: safeNonNegativeInteger(disk.controllerNumber),
+                            controllerLocation: safeNonNegativeInteger(disk.controllerLocation),
+                            vhdFormat: boundedDiagnosticText(disk.vhdFormat, 32),
+                            vhdType: boundedDiagnosticText(disk.vhdType, 32),
+                            sizeBytes: safeNonNegativeInteger(disk.sizeBytes),
+                            fileSizeBytes: safeNonNegativeInteger(disk.fileSizeBytes),
+                            minimumSizeBytes: safeNonNegativeInteger(disk.minimumSizeBytes),
+                            logicalSectorSize: safeNonNegativeInteger(disk.logicalSectorSize),
+                            physicalSectorSize: safeNonNegativeInteger(disk.physicalSectorSize),
+                        }];
+                    }) : [],
+                dvdDrives: Array.isArray(observation.dvdDrives)
+                    ? observation.dvdDrives.slice(0, 8).flatMap((candidate: unknown) => {
+                        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+                        const dvd = candidate as Record<string, unknown>;
+                        return [{
+                            controllerType: sanitizeController(dvd.controllerType),
+                            controllerNumber: safeNonNegativeInteger(dvd.controllerNumber),
+                            controllerLocation: safeNonNegativeInteger(dvd.controllerLocation),
+                            mediaAttached: dvd.mediaAttached === true,
+                        }];
+                    }) : [],
+                diagnosticComplete: typeof observation.diagnosticComplete === "boolean" ? observation.diagnosticComplete : undefined,
+                diagnosticErrors: Array.isArray(observation.diagnosticErrors)
+                    ? observation.diagnosticErrors.slice(0, 16).map(boundedBrokerDiagnosticCode).filter(Boolean) : [],
+            } : null,
+        };
+    }
+    return evidence;
+}
+
 export function formatBrokerToolFailure(value: any, fallback: string) {
     const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body)
         ? value.body
@@ -352,12 +515,10 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
     const redactedExecution = executionCandidate?.outputRedacted === true ? executionCandidate : null;
     const diagnostic = provisioning
         ? JSON.stringify({
-            status: provisioning.status,
-            signal: provisioning.signal,
-            error: provisioning.error,
-            diagnosticCode: provisioning.diagnosticCode,
-            stdout: typeof provisioning.stdout === "string" ? provisioning.stdout.slice(-1024) : undefined,
-            stderr: typeof provisioning.stderr === "string" ? provisioning.stderr.slice(-2048) : undefined,
+            status: safeNonNegativeInteger(provisioning.status),
+            signal: boundedBrokerDiagnosticCode(provisioning.signal),
+            error: boundedBrokerDiagnosticCode(provisioning.error),
+            diagnosticCode: boundedBrokerDiagnosticCode(provisioning.diagnosticCode),
         })
         : redactedExecution
             ? JSON.stringify({
@@ -377,8 +538,8 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? attempts[attempts.length - 1]
         : null;
     const transportError = String(lastAttempt?.error || "").toLowerCase();
-    const transportErrorCode = typeof lastAttempt?.transportCode === "string"
-        ? lastAttempt.transportCode
+    const transportErrorCode = boundedBrokerDiagnosticCode(lastAttempt?.transportCode)
+        ? boundedBrokerDiagnosticCode(lastAttempt.transportCode)
         : transportError.includes("timeout")
         ? "timeout"
         : transportError.includes("econnrefused") || transportError.includes("connection refused")
@@ -403,8 +564,8 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? JSON.stringify({
             attempted: value.transportRecovery.attempted === true,
             recovered: value.transportRecovery.recovered === true,
-            initial: value.transportRecovery.initial,
-            retry: value.transportRecovery.retry,
+            initial: boundedTransportRecoveryAttempt(value.transportRecovery.initial),
+            retry: boundedTransportRecoveryAttempt(value.transportRecovery.retry),
         })
         : "";
     const brokerProcessDiagnostic = lastAttempt?.processVerification
@@ -412,7 +573,6 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
             reason: boundedBrokerDiagnosticCode(lastAttempt.reason),
             source: boundedBrokerDiagnosticCode(lastAttempt.processVerification.source),
             port: Number.isFinite(value?.port) ? value.port : undefined,
-            runtimePid: Number.isFinite(value?.runtime?.pid) ? value.runtime.pid : undefined,
         })
         : "";
     const boot = body?.result?.boot && typeof body.result.boot === "object" && !Array.isArray(body.result.boot)
@@ -425,10 +585,10 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         : null;
     const bootDiagnostic = boot
         ? JSON.stringify({
-            provider: typeof boot.provider === "string" ? boot.provider : undefined,
-            error: typeof boot.error === "string" ? boot.error : undefined,
-            diagnosticError: typeof boot.diagnosticError === "string" ? boot.diagnosticError : undefined,
-            state: bootObservation && typeof bootObservation.state === "string" ? bootObservation.state.slice(0, 64) : undefined,
+            provider: boundedBrokerDiagnosticCode(boot.provider),
+            error: boundedBrokerDiagnosticCode(boot.error),
+            diagnosticError: boundedBrokerDiagnosticCode(boot.diagnosticError),
+            state: bootObservation ? boundedDiagnosticText(bootObservation.state, 64) : undefined,
             uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,
             generation: bootObservation && (bootObservation.generation === 1 || bootObservation.generation === 2) ? bootObservation.generation : undefined,
             secureBoot: bootObservation && typeof bootObservation.secureBootEnabled === "boolean" ? bootObservation.secureBootEnabled : null,
@@ -449,14 +609,15 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
                 ? bootObservation.integrationServices.slice(0, 8).map((candidate: unknown) => {
                     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
                     const service = candidate as Record<string, unknown>;
-                    return typeof service.name === "string"
-                        ? [service.name.slice(0, 48), service.enabled === true, Number.isSafeInteger(service.primaryStatus) ? service.primaryStatus : null]
+                    const name = boundedDiagnosticText(service.name, 48);
+                    return name
+                        ? [name, service.enabled === true, Number.isSafeInteger(service.primaryStatus) ? service.primaryStatus : null]
                         : null;
                 }).filter(Boolean)
                 : undefined,
             diagnosticComplete: bootObservation && typeof bootObservation.diagnosticComplete === "boolean" ? bootObservation.diagnosticComplete : undefined,
             diagnosticErrors: bootObservation && Array.isArray(bootObservation.diagnosticErrors)
-                ? bootObservation.diagnosticErrors.filter((candidate: unknown) => typeof candidate === "string").slice(0, 8)
+                ? bootObservation.diagnosticErrors.map(boundedBrokerDiagnosticCode).filter(Boolean).slice(0, 8)
                 : undefined,
         })
         : "";
@@ -464,11 +625,11 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         if (typeof candidate !== "string" || candidate.length === 0) return "";
         const codes = candidate.match(/\b(?:appium|broker|hyper-v|powershell|ssh)-[a-z0-9-]{2,128}\b/g) || [];
         if (codes.length > 0) return [...new Set(codes)].slice(0, 4).join(",");
-        return candidate.length <= 160 ? candidate : `${candidate.slice(0, 157)}...`;
+        return "";
     };
     const parts = [
-        value?.error,
-        body?.error,
+        boundedBrokerDiagnosticCode(value?.error),
+        boundedBrokerDiagnosticCode(body?.error),
         bootDiagnostic ? `boot=${bootDiagnostic}` : "",
         bootDiagnostic ? "" : boundedDetail(value?.detail),
         bootDiagnostic ? "" : boundedDetail(body?.detail),
@@ -477,8 +638,8 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         transportDiagnostic,
         brokerProcessDiagnostic,
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
-    const message = [...new Set(parts)].join(": ") || fallback;
-    return message.slice(0, 4095);
+    const message = [...new Set(parts)].join(": ") || boundedDiagnosticText(fallback, 128) || "broker-operation-failed";
+    return message.slice(0, 511);
 }
 
 export function parseContractToolPayload<K extends keyof DeviceLabToolOutputMap>(name: K, result: any): DeviceLabToolOutputMap[K] {

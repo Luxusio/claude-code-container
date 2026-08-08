@@ -2,14 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
-import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxVmE2ECapability } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
     hyperVWindowsVmE2ECapability,
     resolveNpmCliPath,
     selectHyperVWindowsProfile,
 } from "./hyper-v-windows-vm-e2e.ts";
-import { formatBrokerToolFailure } from "./device-lab-mcp-client.ts";
+import { brokerToolFailureEvidence, formatBrokerToolFailure } from "./device-lab-mcp-client.ts";
 import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
     HYPER_V_WINDOWS_EVALUATION_LICENSE_URL,
@@ -287,11 +287,19 @@ describe("Hyper-V E2E zero-config image selection", () => {
         const message = formatBrokerToolFailure({
             ok: false,
             error: "broker-operation-failed",
+            transportRecovery: {
+                attempted: true,
+                recovered: false,
+                initial: { endpoint: "https://token@host/C:\\Users\\Luxus\\private" },
+                retry: { stderr: "token=secret" },
+            },
             body: {
                 error: "hyper-v-linux-seed-failed",
                 provisioning: {
                     status: 1,
                     diagnosticCode: "hyper-v-provisioning-media-stream-invalid",
+                    signal: "token=secret C:\\Users\\Luxus\\private",
+                    error: "token=secret C:\\Users\\Luxus\\private",
                     stdout: `prefix-${"x".repeat(2000)}`,
                     stderr: `prefix-${"y".repeat(3000)}`,
                 },
@@ -301,7 +309,38 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain("hyper-v-linux-seed-failed");
         expect(message).toContain("hyper-v-provisioning-media-stream-invalid");
         expect(message).not.toContain("prefix-");
-        expect(message.length).toBeLessThan(4096);
+        expect(message).not.toContain("token=secret");
+        expect(message).not.toContain("C:\\Users");
+        expect(message.length).toBeLessThan(512);
+    });
+
+    it("preserves structured evidence from MCP isError responses", () => {
+        const brokerPayload = {
+            ok: false,
+            error: "broker-operation-failed",
+            body: {
+                error: "hyper-v-guest-not-ready",
+                result: {
+                    boot: {
+                        provider: "hyper-v-ssh",
+                        error: "ssh-connection-timeout",
+                    },
+                },
+            },
+        };
+        let failure: any;
+        try {
+            hyperVLinuxToolPayload({
+                isError: true,
+                content: [{ type: "text", text: JSON.stringify(brokerPayload) }],
+            });
+        } catch (error) {
+            failure = error;
+        }
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.brokerPayload).toEqual(brokerPayload);
+        expect(failure.message).toContain("hyper-v-guest-not-ready");
+        expect(failure.message).toContain("ssh-connection-timeout");
     });
 
     it("reports redacted Hyper-V network execution diagnostics", () => {
@@ -419,6 +458,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain('"recovered":false');
         expect(message).toContain('"error":"connection-reset"');
         expect(message).toContain("hyper-v-network-setup-failed");
+        expect(message).not.toContain("brokerPid");
         expect(message).not.toContain("token=secret");
         expect(message).not.toContain("C:\\Users");
     });
@@ -443,7 +483,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain("broker-runtime-process-unverified");
         expect(message).toContain('"reason":"broker-reuse-process-unverified"');
         expect(message).toContain('"source":"unverified-broker-port-process"');
-        expect(message).toContain('"runtimePid":4321');
+        expect(message).not.toContain('"runtimePid"');
         expect(message).not.toContain("token@host");
         expect(message).not.toContain("C:\\private");
         expect(message).not.toContain("C:\\Users");
@@ -523,6 +563,64 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).not.toContain("outerouter");
         expect(message).not.toContain("innerinner");
         expect(message.length).toBeLessThan(600);
+    });
+
+    it("preserves full safe Hyper-V boot topology in a durable failure diagnostic", () => {
+        const outputRoot = mkdtempSync(join(tmpdir(), "ccc-hyper-v-diagnostic-"));
+        const failure = {
+            error: "broker-operation-failed",
+            endpoint: "http://127.0.0.1/private?token=secret",
+            body: {
+                error: "hyper-v-guest-not-ready",
+                result: {
+                    boot: {
+                        provider: "hyper-v-ssh",
+                        error: "ssh-connection-timeout",
+                        diagnosticAvailable: true,
+                        diagnostic: {
+                            state: "Running",
+                            uptimeMs: 1200000,
+                            generation: 2,
+                            secureBootEnabled: false,
+                            heartbeatEnabled: null,
+                            heartbeatPrimaryStatus: null,
+                            heartbeatSecondaryStatus: null,
+                            integrationServices: [{ name: "Heartbeat", enabled: true, primaryStatus: 2, secondaryStatus: 0 }],
+                            hardDiskCount: 1,
+                            dvdCount: 1,
+                            hardDiskControllers: ["scsi"],
+                            bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown"],
+                            bootEntries: [{ bootType: "Drive", deviceType: "HardDiskDrive", controllerType: "SCSI", controllerNumber: 0, controllerLocation: 0, diskPath: "C:\\Users\\Luxus\\private.vhdx" }],
+                            hardDisks: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 0, vhdFormat: "VHDX", vhdType: "Dynamic", sizeBytes: 34359738368, fileSizeBytes: 4294967296, minimumSizeBytes: 3221225472, logicalSectorSize: 512, physicalSectorSize: 4096, path: "C:\\Users\\Luxus\\private.vhdx" }],
+                            dvdDrives: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 1, mediaAttached: true, path: "C:\\Users\\Luxus\\seed.iso" }],
+                            diagnosticComplete: true,
+                            diagnosticErrors: [],
+                        },
+                    },
+                },
+            },
+        };
+        const error = new Error("unsafe C:\\Users\\Luxus\\private token=secret");
+        Object.defineProperty(error, "brokerPayload", { value: failure });
+        try {
+            const paths = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "start and wait for SSH", deviceId: "linux-hyper-v-real-e2e-1", created: true, error });
+            const content = readFileSync(paths.latestPath, "utf8");
+            const record = JSON.parse(content);
+            expect(record.failure.boot.diagnostic.bootEntries).toHaveLength(1);
+            expect(record.failure.boot.diagnostic.hardDisks[0]).toEqual(expect.objectContaining({ vhdFormat: "VHDX", logicalSectorSize: 512, physicalSectorSize: 4096 }));
+            expect(record.failure.boot.diagnostic.dvdDrives[0]).toEqual(expect.objectContaining({ mediaAttached: true }));
+            expect(content).not.toContain("token=secret");
+            expect(content).not.toContain("C:\\Users");
+            expect(content).not.toContain('"endpoint":');
+            expect(content).not.toContain("diskPath");
+            expect(readFileSync(paths.timestampedPath, "utf8")).toBe(content);
+            const generic = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "assert contract", deviceId: "linux-hyper-v-real-e2e-1", created: false, error: new Error("authentication failed token=secret") });
+            const genericContent = readFileSync(generic.latestPath, "utf8");
+            expect(genericContent).toContain("failure-message-redacted");
+            expect(genericContent).not.toContain("token=secret");
+        } finally {
+            rmSync(outputRoot, { recursive: true, force: true });
+        }
     });
 
     it("keeps the Windows E2E receipt contract free of product file-I/O imports", () => {

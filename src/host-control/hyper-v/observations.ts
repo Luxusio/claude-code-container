@@ -344,6 +344,7 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         "hyper-v-diagnostic-bios-incomplete",
         "hyper-v-diagnostic-hard-disks-unavailable",
         "hyper-v-diagnostic-hard-disks-incomplete",
+        "hyper-v-diagnostic-vhd-inspection-incomplete",
         "hyper-v-diagnostic-dvd-drives-unavailable",
     ]);
     if (!parsed
@@ -386,6 +387,44 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         || !Array.isArray(parsed.bootDeviceTypes)
         || parsed.bootDeviceTypes.length > 8
         || parsed.bootDeviceTypes.some((candidate: unknown) => !["hard-disk", "dvd", "network", "unknown"].includes(String(candidate)))
+        || !Array.isArray(parsed.bootEntries)
+        || parsed.bootEntries.length > 8
+        || parsed.bootEntries.some((candidate: unknown) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+            const entry = candidate as Record<string, unknown>;
+            return typeof entry.bootType !== "string" || entry.bootType.length > 64
+                || typeof entry.deviceType !== "string" || entry.deviceType.length > 128
+                || typeof entry.controllerType !== "string" || entry.controllerType.length > 32
+                || (entry.controllerNumber !== null && (!Number.isSafeInteger(entry.controllerNumber) || Number(entry.controllerNumber) < 0))
+                || (entry.controllerLocation !== null && (!Number.isSafeInteger(entry.controllerLocation) || Number(entry.controllerLocation) < 0));
+        })
+        || !Array.isArray(parsed.hardDisks)
+        || parsed.hardDisks.length > 8
+        || parsed.hardDisks.some((candidate: unknown) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+            const disk = candidate as Record<string, unknown>;
+            const nullableNonNegativeInteger = (value: unknown) => value === null || (Number.isSafeInteger(value) && Number(value) >= 0);
+            return !["ide", "scsi"].includes(String(disk.controllerType))
+                || !nullableNonNegativeInteger(disk.controllerNumber)
+                || !nullableNonNegativeInteger(disk.controllerLocation)
+                || typeof disk.vhdFormat !== "string" || disk.vhdFormat.length > 32
+                || typeof disk.vhdType !== "string" || disk.vhdType.length > 32
+                || !nullableNonNegativeInteger(disk.sizeBytes)
+                || !nullableNonNegativeInteger(disk.fileSizeBytes)
+                || !nullableNonNegativeInteger(disk.minimumSizeBytes)
+                || !nullableNonNegativeInteger(disk.logicalSectorSize)
+                || !nullableNonNegativeInteger(disk.physicalSectorSize);
+        })
+        || !Array.isArray(parsed.dvdDrives)
+        || parsed.dvdDrives.length > 8
+        || parsed.dvdDrives.some((candidate: unknown) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return true;
+            const dvd = candidate as Record<string, unknown>;
+            return !["ide", "scsi", ""].includes(String(dvd.controllerType))
+                || (dvd.controllerNumber !== null && (!Number.isSafeInteger(dvd.controllerNumber) || Number(dvd.controllerNumber) < 0))
+                || (dvd.controllerLocation !== null && (!Number.isSafeInteger(dvd.controllerLocation) || Number(dvd.controllerLocation) < 0))
+                || typeof dvd.mediaAttached !== "boolean";
+        })
         || typeof parsed.diagnosticComplete !== "boolean"
         || !Array.isArray(parsed.diagnosticErrors)
         || parsed.diagnosticErrors.length > 16
@@ -413,6 +452,9 @@ export function parseHyperVGuestBootDiagnosticObservation(stdout: string): Hyper
         dvdCount: parsed.dvdCount,
         hardDiskControllers: parsed.hardDiskControllers,
         bootDeviceTypes: parsed.bootDeviceTypes,
+        bootEntries: parsed.bootEntries,
+        hardDisks: parsed.hardDisks,
+        dvdDrives: parsed.dvdDrives,
         diagnosticComplete: parsed.diagnosticComplete,
         diagnosticErrors: parsed.diagnosticErrors,
     };

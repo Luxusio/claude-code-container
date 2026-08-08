@@ -1,9 +1,10 @@
 import assert from "assert";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { randomBytes } from "crypto";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { hyperVReadinessCommand, parseHyperVReadiness } from "../../src/host-control/hyper-v/index.ts";
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
-import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
+import { brokerToolFailureEvidence, formatBrokerToolFailure, lifecycleDevice, parseToolPayload, parseToolResult, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 
 const DEVICE_PREFIX = "linux-hyper-v-real-e2e-";
@@ -13,12 +14,75 @@ const CAPABILITIES = [
     "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete",
 ];
 
-function payload(result: any) {
-    const value = parseToolPayload(result);
-    if (value?.ok === false) {
-        throw new Error(formatBrokerToolFailure(value, "Hyper-V Linux broker operation failed"));
+export function hyperVLinuxToolPayload(result: any) {
+    const value = result?.isError === true ? parseToolResult(result) : parseToolPayload(result);
+    if (result?.isError === true || value?.ok === false) {
+        const error = new Error(formatBrokerToolFailure(value, "Hyper-V Linux broker operation failed"));
+        Object.defineProperty(error, "brokerPayload", { value });
+        throw error;
     }
     return value;
+}
+
+function boundedFailureMessage(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    const codes = message.match(/\b(?:broker|hyper-v|powershell|ssh)-[a-z0-9-]{2,128}\b/g) || [];
+    return codes.length > 0 ? [...new Set(codes)].slice(0, 8).join(",") : "failure-message-redacted";
+}
+
+function terminalFailureSummary(error: unknown) {
+    return (error as any)?.brokerPayload
+        ? formatBrokerToolFailure((error as any).brokerPayload, "Hyper-V Linux broker operation failed")
+        : boundedFailureMessage(error);
+}
+
+function boundedDiagnosticIdentity(value: unknown, fallback: string) {
+    return typeof value === "string"
+        && value.length <= 128
+        && /^[A-Za-z0-9 ._:+-]+$/.test(value)
+        ? value
+        : fallback;
+}
+
+export function writeHyperVLinuxFailureDiagnostic(input: {
+    outputRoot?: string;
+    step: string;
+    deviceId: string;
+    created: boolean;
+    error: unknown;
+}) {
+    const outputRoot = input.outputRoot || join(repoRoot, "results", "device-lab-real");
+    mkdirSync(outputRoot, { recursive: true });
+    const generatedAt = new Date().toISOString();
+    const timestamp = generatedAt.replace(/[:.]/g, "-");
+    const record = {
+        schemaVersion: 1,
+        generatedAt,
+        backend: "linux-vm",
+        step: boundedDiagnosticIdentity(input.step, "unknown-step"),
+        deviceId: boundedDiagnosticIdentity(input.deviceId, "unknown-device"),
+        created: input.created,
+        failure: (input.error as any)?.brokerPayload
+            ? brokerToolFailureEvidence((input.error as any).brokerPayload)
+            : { message: boundedFailureMessage(input.error) },
+        privacy: "Host paths, credentials, VM names, endpoints, and raw command output are omitted.",
+    };
+    const content = `${JSON.stringify(record, null, 2)}\n`;
+    const timestampedPath = join(outputRoot, `hyper-v-linux-diagnostic-${timestamp}.json`);
+    const latestPath = join(outputRoot, "hyper-v-linux-diagnostic-latest.json");
+    for (const target of [timestampedPath, latestPath]) {
+        const temporary = `${target}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+        let renamed = false;
+        try {
+            writeFileSync(temporary, content, { encoding: "utf8", mode: 0o600, flag: "wx" });
+            rmSync(target, { force: true });
+            renameSync(temporary, target);
+            renamed = true;
+        } finally {
+            if (!renamed) rmSync(temporary, { force: true });
+        }
+    }
+    return { timestampedPath, latestPath };
 }
 
 function resultValue(value: any) {
@@ -99,11 +163,11 @@ export function hyperVLinuxVmE2ECapability(options: any = {}) {
 }
 
 async function cleanupPrevious(callTool: (tool: string, args: any) => Promise<any>) {
-    const inventory = resultValue(payload(await callTool("device_inventory", { backend: "linux-vm" })));
+    const inventory = resultValue(hyperVLinuxToolPayload(await callTool("device_inventory", { backend: "linux-vm" })));
     const devices = Array.isArray(inventory?.devices) ? inventory.devices : [];
     for (const device of devices.filter((candidate: any) => String(candidate?.id || "").startsWith(DEVICE_PREFIX))) {
         try { await callTool("device_stop", { backend: "linux-vm", deviceId: device.id, incarnationId: device.incarnationId, force: true }); } catch { /* delete is still attempted */ }
-        payload(await callTool("device_delete", { backend: "linux-vm", deviceId: device.id, incarnationId: device.incarnationId, force: true, confirmDestructive: true }));
+        hyperVLinuxToolPayload(await callTool("device_delete", { backend: "linux-vm", deviceId: device.id, incarnationId: device.incarnationId, force: true, confirmDestructive: true }));
     }
 }
 
@@ -132,7 +196,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             await cleanupPrevious(callTool);
 
             currentStep = "create VM and cloud-init seed";
-            const createdDevice = lifecycleDevice(payload(await callTool("device_create", {
+            const createdDevice = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_create", {
                 ...direct,
                 name: "Real Hyper-V Ubuntu VM Test",
                 profile: "ubuntu-lts",
@@ -147,16 +211,16 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             const networkAddress = String(createdDevice.networkAddress || "");
 
             currentStep = "inventory VM";
-            const inventory = resultValue(payload(await callTool("device_inventory", { backend: "linux-vm" })));
+            const inventory = resultValue(hyperVLinuxToolPayload(await callTool("device_inventory", { backend: "linux-vm" })));
             assert.ok(Array.isArray(inventory.devices) && inventory.devices.some((device: any) => device.id === deviceId));
 
             currentStep = "start and wait for SSH";
-            const started = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
+            const started = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
             assert.strictEqual(started.status, "running");
             assert.strictEqual(started.bootReady, true);
 
             currentStep = "verify static guest address and NAT connectivity";
-            const networkProbe = resultValue(payload(await callTool("device_exec", {
+            const networkProbe = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", {
                 ...direct,
                 command: `ip -4 addr show | grep -F '${networkAddress}/' >/dev/null && getent hosts archive.ubuntu.com >/dev/null && timeout 15 bash -c '</dev/tcp/archive.ubuntu.com/80' && printf ccc-network-ok`,
             })));
@@ -164,20 +228,20 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             assert.match(networkProbe.stdout || "", /ccc-network-ok/);
 
             currentStep = "read VM status";
-            const status = lifecycleDevice(payload(await callTool("device_status", direct)), "device_status");
+            const status = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_status", direct)), "device_status");
             assert.strictEqual(status.id, deviceId);
             assert.strictEqual(status.status, "running");
 
             currentStep = "execute guest command";
-            const executed = resultValue(payload(await callTool("device_exec", { ...direct, command: "uname -sr && printf ccc-hyper-v-linux-e2e-ok" })));
+            const executed = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", { ...direct, command: "uname -sr && printf ccc-hyper-v-linux-e2e-ok" })));
             assert.strictEqual(executed.provider, "hyper-v-ssh");
             assert.match(executed.stdout || "", /ccc-hyper-v-linux-e2e-ok/);
 
             currentStep = "reboot VM and wait for SSH";
-            const rebooted = lifecycleDevice(payload(await callTool("device_reboot", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_reboot");
+            const rebooted = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_reboot", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_reboot");
             assert.strictEqual(rebooted.status, "running");
             assert.strictEqual(rebooted.bootReady, true);
-            const afterReboot = resultValue(payload(await callTool("device_exec", { ...direct, command: "printf ccc-hyper-v-linux-reboot-ok" })));
+            const afterReboot = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", { ...direct, command: "printf ccc-hyper-v-linux-reboot-ok" })));
             assert.match(afterReboot.stdout || "", /ccc-hyper-v-linux-reboot-ok/);
 
             currentStep = "upload and download guest file";
@@ -185,42 +249,47 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             const downloadPath = join(tempDir, "download.txt");
             const remotePath = "/tmp/ccc-hyper-v-linux-e2e.txt";
             writeFileSync(uploadPath, "ccc-hyper-v-linux-transfer-ok", "utf8");
-            resultValue(payload(await callTool("device_upload", { ...direct, localPath: uploadPath, remotePath })));
-            resultValue(payload(await callTool("device_download", { ...direct, remotePath, localPath: downloadPath })));
+            resultValue(hyperVLinuxToolPayload(await callTool("device_upload", { ...direct, localPath: uploadPath, remotePath })));
+            resultValue(hyperVLinuxToolPayload(await callTool("device_download", { ...direct, remotePath, localPath: downloadPath })));
             assert.strictEqual(readFileSync(downloadPath, "utf8"), "ccc-hyper-v-linux-transfer-ok");
 
             currentStep = "create production checkpoint";
-            const snapshot = resultValue(payload(await callTool("device_snapshot_create", { ...direct, snapshotName: "durability" })));
+            const snapshot = resultValue(hyperVLinuxToolPayload(await callTool("device_snapshot_create", { ...direct, snapshotName: "durability" })));
             const snapshotId = snapshot.snapshot?.id;
             assert.ok(snapshotId);
 
             currentStep = "list production checkpoints";
-            const snapshotList = resultValue(payload(await callTool("device_snapshot_list", direct)));
+            const snapshotList = resultValue(hyperVLinuxToolPayload(await callTool("device_snapshot_list", direct)));
             assert.ok(Array.isArray(snapshotList.snapshots));
             assert.ok(snapshotList.snapshots.some((candidate: any) => candidate?.id === snapshotId && candidate?.name === "durability"));
 
             currentStep = "restore production checkpoint";
-            resultValue(payload(await callTool("device_snapshot_restore", { ...direct, snapshotId, force: true, confirmDestructive: true })));
+            resultValue(hyperVLinuxToolPayload(await callTool("device_snapshot_restore", { ...direct, snapshotId, force: true, confirmDestructive: true })));
 
             currentStep = "verify SSH after checkpoint restore";
-            const restored = resultValue(payload(await callTool("device_exec", { ...direct, command: "printf ccc-hyper-v-linux-restored" })));
+            const restored = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", { ...direct, command: "printf ccc-hyper-v-linux-restored" })));
             assert.match(restored.stdout || "", /ccc-hyper-v-linux-restored/);
 
             currentStep = "delete production checkpoint";
-            resultValue(payload(await callTool("device_snapshot_delete", { ...direct, snapshotId, confirmDestructive: true })));
+            resultValue(hyperVLinuxToolPayload(await callTool("device_snapshot_delete", { ...direct, snapshotId, confirmDestructive: true })));
 
             currentStep = "stop VM";
-            lifecycleDevice(payload(await callTool("device_stop", { ...direct, force: true })), "device_stop");
+            lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_stop", { ...direct, force: true })), "device_stop");
 
             currentStep = "delete VM";
-            payload(await callTool("device_delete", { ...direct, force: true, confirmDestructive: true }));
+            hyperVLinuxToolPayload(await callTool("device_delete", { ...direct, force: true, confirmDestructive: true }));
             created = false;
 
             currentStep = "verify advertised capability coverage";
             assert.deepStrictEqual(CAPABILITIES.filter((tool) => !calledCapabilities.has(tool)), []);
             return { status: "PASS", deviceId, verifiedCapabilities: [...calledCapabilities].sort() };
         } catch (error: any) {
-            return { status: "FAIL", reason: `${currentStep}: ${error?.message || String(error)}` };
+            try {
+                const diagnostic = writeHyperVLinuxFailureDiagnostic({ step: currentStep, deviceId, created, error });
+                return { status: "FAIL", reason: `${currentStep}: details=results/device-lab-real/hyper-v-linux-diagnostic-latest.json; ${terminalFailureSummary(error)}` };
+            } catch (diagnosticError) {
+                return { status: "FAIL", reason: `${currentStep}: diagnostic-write-failed=${boundedFailureMessage(diagnosticError)}; ${terminalFailureSummary(error)}` };
+            }
         } finally {
             if (created) {
                 try { await callTool("device_stop", { ...direct, force: true }); } catch { /* best effort */ }

@@ -2102,6 +2102,9 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
+            bootEntries: [{ bootType: "Drive", deviceType: "Vhd", controllerType: "SCSI", controllerNumber: 0, controllerLocation: 0 }],
+            hardDisks: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 0, vhdFormat: "VHDX", vhdType: "Dynamic", sizeBytes: 34359738368, fileSizeBytes: 4294967296, minimumSizeBytes: 3221225472, logicalSectorSize: 512, physicalSectorSize: 4096 }],
+            dvdDrives: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 1, mediaAttached: true }],
             diagnosticComplete: true,
             diagnosticErrors: [],
         }))).toEqual({
@@ -2120,6 +2123,9 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["hard-disk", "dvd", "network"],
+            bootEntries: [{ bootType: "Drive", deviceType: "Vhd", controllerType: "SCSI", controllerNumber: 0, controllerLocation: 0 }],
+            hardDisks: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 0, vhdFormat: "VHDX", vhdType: "Dynamic", sizeBytes: 34359738368, fileSizeBytes: 4294967296, minimumSizeBytes: 3221225472, logicalSectorSize: 512, physicalSectorSize: 4096 }],
+            dvdDrives: [{ controllerType: "scsi", controllerNumber: 0, controllerLocation: 1, mediaAttached: true }],
             diagnosticComplete: true,
             diagnosticErrors: [],
         });
@@ -2139,6 +2145,7 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["scsi"],
             bootDeviceTypes: ["C:\\secret"],
+            bootEntries: [], hardDisks: [], dvdDrives: [],
             diagnosticComplete: true,
             diagnosticErrors: [],
         }))).toBeNull();
@@ -2158,6 +2165,7 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 1,
             hardDiskControllers: ["ide"],
             bootDeviceTypes: Array(9).fill("hard-disk"),
+            bootEntries: [], hardDisks: [], dvdDrives: [],
             diagnosticComplete: true,
             diagnosticErrors: [],
         }))).toBeNull();
@@ -2177,6 +2185,7 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 0,
             hardDiskControllers: [],
             bootDeviceTypes: [],
+            bootEntries: [], hardDisks: [], dvdDrives: [],
             diagnosticComplete: false,
             diagnosticErrors: ["hyper-v-diagnostic-vm-observation-incomplete"],
         }))).toMatchObject({
@@ -2200,6 +2209,7 @@ describe("Hyper-V provider adapter", () => {
             dvdCount: 0,
             hardDiskControllers: [],
             bootDeviceTypes: [],
+            bootEntries: [], hardDisks: [], dvdDrives: [],
             diagnosticComplete: false,
             diagnosticErrors: ["private-path"],
         }))).toBeNull();

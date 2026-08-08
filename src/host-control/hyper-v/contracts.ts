@@ -143,6 +143,31 @@ export type HyperVGuestBootDiagnosticObservation = {
     dvdCount: number;
     hardDiskControllers: string[];
     bootDeviceTypes: string[];
+    bootEntries: Array<{
+        bootType: string;
+        deviceType: string;
+        controllerType: string;
+        controllerNumber: number | null;
+        controllerLocation: number | null;
+    }>;
+    hardDisks: Array<{
+        controllerType: string;
+        controllerNumber: number | null;
+        controllerLocation: number | null;
+        vhdFormat: string;
+        vhdType: string;
+        sizeBytes: number | null;
+        fileSizeBytes: number | null;
+        minimumSizeBytes: number | null;
+        logicalSectorSize: number | null;
+        physicalSectorSize: number | null;
+    }>;
+    dvdDrives: Array<{
+        controllerType: string;
+        controllerNumber: number | null;
+        controllerLocation: number | null;
+        mediaAttached: boolean;
+    }>;
     diagnosticComplete: boolean;
     diagnosticErrors: string[];
 };

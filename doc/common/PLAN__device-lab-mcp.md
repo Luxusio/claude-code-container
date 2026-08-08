@@ -3357,3 +3357,12 @@ remain unchanged where they are the behavior under test.
     shared-image verification. Brokers
     advertise and Level 3 requires
     `hyper-v-provider-image-finalization-v25` for this contract.
+73. Hyper-V guest-readiness failures preserve a complete bounded boot
+    observation outside the compact terminal summary. The broker's
+    `hyper-v-guest-readiness-diagnostics-v3` contract exposes allowlisted boot
+    entry types, controller coordinates, VHD format/type/size/sector metadata,
+    DVD attachment state, integration-service status, and diagnostic error
+    codes. The Linux real test writes that safe evidence to
+    `results/device-lab-real/hyper-v-linux-diagnostic-latest.json` plus a
+    timestamped record before cleanup. Host paths, VM names, credentials,
+    endpoints, and raw PowerShell output are never copied into these records.
