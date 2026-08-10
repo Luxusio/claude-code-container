@@ -500,6 +500,18 @@ describe("Hyper-V E2E zero-config image selection", () => {
                         ready: false,
                         provider: "hyper-v-ssh",
                         error: "ssh-connection-refused",
+                        readiness: {
+                            managedSshAttempts: 3,
+                            bootstrapProbeAttempts: 2,
+                            bootstrapProbeSuccesses: 2,
+                            bootstrapAddressCount: 1,
+                            bootstrapSshAttempts: 2,
+                            networkFinalizeAttempts: 0,
+                            networkFinalizeSucceeded: false,
+                            guestSignalObserved: true,
+                            elapsedMs: 12345,
+                            privateAddress: "172.16.0.2",
+                        },
                         diagnosticAvailable: false,
                         diagnosticError: "hyper-v-guest-boot-diagnostic-command-failed",
                     },
@@ -515,12 +527,32 @@ describe("Hyper-V E2E zero-config image selection", () => {
         }, "fallback");
         expect(message).toContain("hyper-v-guest-not-ready");
         expect(message).toContain('"error":"ssh-connection-refused"');
+        expect(message).toContain('"bootstrapAddressCount":1');
+        expect(message).toContain('"guestSignalObserved":true');
         expect(message).toContain('"diagnosticError":"hyper-v-guest-boot-diagnostic-command-failed"');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");
         expect(message).not.toContain("C:\\Users");
+        expect(message).not.toContain("172.16.0.2");
         expect(message.length).toBeLessThan(600);
+    });
+
+    it("does not invent missing Hyper-V readiness booleans", () => {
+        const evidence = brokerToolFailureEvidence({
+            body: {
+                result: {
+                    boot: {
+                        provider: "hyper-v-ssh",
+                        error: "ssh-unavailable",
+                        readiness: { managedSshAttempts: 1 },
+                    },
+                },
+            },
+        }) as any;
+        expect(evidence.boot.readiness).toEqual(expect.objectContaining({ managedSshAttempts: 1 }));
+        expect(evidence.boot.readiness).not.toHaveProperty("networkFinalizeSucceeded");
+        expect(evidence.boot.readiness).not.toHaveProperty("guestSignalObserved");
     });
 
     it("keeps Hyper-V boot diagnostics ahead of long nested wrapper details", () => {
@@ -576,6 +608,18 @@ describe("Hyper-V E2E zero-config image selection", () => {
                     boot: {
                         provider: "hyper-v-ssh",
                         error: "ssh-connection-timeout",
+                        readiness: {
+                            managedSshAttempts: 4,
+                            bootstrapProbeAttempts: 4,
+                            bootstrapProbeSuccesses: 4,
+                            bootstrapAddressCount: 1,
+                            bootstrapSshAttempts: 4,
+                            networkFinalizeAttempts: 0,
+                            networkFinalizeSucceeded: false,
+                            guestSignalObserved: true,
+                            elapsedMs: 300000,
+                            privateAddress: "172.16.0.2",
+                        },
                         diagnosticAvailable: true,
                         diagnostic: {
                             state: "Running",
@@ -606,11 +650,23 @@ describe("Hyper-V E2E zero-config image selection", () => {
             const paths = writeHyperVLinuxFailureDiagnostic({ outputRoot, step: "start and wait for SSH", created: true, error });
             const content = readFileSync(paths.latestPath, "utf8");
             const record = JSON.parse(content);
+            expect(record.failure.boot.readiness).toEqual({
+                managedSshAttempts: 4,
+                bootstrapProbeAttempts: 4,
+                bootstrapProbeSuccesses: 4,
+                bootstrapAddressCount: 1,
+                bootstrapSshAttempts: 4,
+                networkFinalizeAttempts: 0,
+                networkFinalizeSucceeded: false,
+                guestSignalObserved: true,
+                elapsedMs: 300000,
+            });
             expect(record.failure.boot.diagnostic.bootEntries).toHaveLength(1);
             expect(record.failure.boot.diagnostic.hardDisks[0]).toEqual(expect.objectContaining({ vhdFormat: "VHDX", logicalSectorSize: 512, physicalSectorSize: 4096 }));
             expect(record.failure.boot.diagnostic.dvdDrives[0]).toEqual(expect.objectContaining({ mediaAttached: true }));
             expect(content).not.toContain("token=secret");
             expect(content).not.toContain("C:\\Users");
+            expect(content).not.toContain("172.16.0.2");
             expect(content).not.toContain('"endpoint":');
             expect(content).not.toContain("diskPath");
             expect(content).not.toContain("deviceId");

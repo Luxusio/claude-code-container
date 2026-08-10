@@ -3368,7 +3368,10 @@ remain unchanged where they are the behavior under test.
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
     bootstrap SSH, and network-finalization counters without addresses or raw
-    command output. The Linux real test writes that safe evidence to
-    `results/device-lab-real/hyper-v-linux-diagnostic-latest.json` plus a
+    command output. Those counters also select a specific bounded failure code
+    for missing guest signals, bootstrap inspection, address discovery,
+    bootstrap SSH, or network finalization instead of collapsing every case
+    into `ssh-connection-timeout`. The Linux real test writes that safe evidence
+    to `results/device-lab-real/hyper-v-linux-diagnostic-latest.json` plus a
     timestamped record before cleanup. Host paths, VM names, credentials,
     endpoints, and raw PowerShell output are never copied into these records.

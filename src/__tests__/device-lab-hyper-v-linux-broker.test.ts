@@ -11,6 +11,7 @@ import {
     hyperVLifecycleCleanupTimeoutMs,
     hyperVLinuxGuestSignalDeadlineAt,
     hyperVLinuxGuestSignalTimedOut,
+    hyperVLinuxGuestReadyTraceFailureCode,
     hyperVProviderDeadlineAt,
 } from "../device-lab-broker.js";
 import { deviceLabOwnerId } from "../device-lab-owner.js";
@@ -111,6 +112,49 @@ describe("device-lab Hyper-V broker", () => {
             startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
             true,
         )).toBe(false);
+    });
+
+    it("classifies Linux readiness traces without masking a shorter caller deadline", () => {
+        const trace = {
+            managedSshAttempts: 2,
+            bootstrapProbeAttempts: 2,
+            bootstrapProbeSuccesses: 2,
+            bootstrapAddressCount: 0,
+            bootstrapSshAttempts: 0,
+            networkFinalizeAttempts: 0,
+            networkFinalizeSucceeded: false,
+            guestSignalObserved: false,
+            elapsedMs: 1000,
+        };
+        expect(hyperVLinuxGuestReadyTraceFailureCode(trace, "ssh-unavailable"))
+            .toBe("hyper-v-bootstrap-address-unavailable");
+        expect(hyperVLinuxGuestReadyTraceFailureCode({
+            ...trace,
+            bootstrapProbeSuccesses: 0,
+            elapsedMs: DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS - 1,
+        }, "ssh-unavailable")).toBe("hyper-v-bootstrap-network-probe-failed");
+        expect(hyperVLinuxGuestReadyTraceFailureCode({
+            ...trace,
+            bootstrapProbeSuccesses: 0,
+            elapsedMs: DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+        }, "ssh-unavailable")).toBe("hyper-v-guest-boot-signal-timeout");
+        expect(hyperVLinuxGuestReadyTraceFailureCode({
+            ...trace,
+            bootstrapAddressCount: 1,
+            bootstrapSshAttempts: 2,
+            guestSignalObserved: true,
+        }, "ssh-connection-timeout")).toBe("hyper-v-bootstrap-ssh-unavailable");
+        expect(hyperVLinuxGuestReadyTraceFailureCode({
+            ...trace,
+            bootstrapAddressCount: 1,
+            bootstrapSshAttempts: 1,
+            networkFinalizeAttempts: 1,
+            guestSignalObserved: true,
+        }, "ssh-connection-timeout")).toBe("hyper-v-bootstrap-network-finalize-failed");
+        expect(hyperVLinuxGuestReadyTraceFailureCode(trace, "hyper-v-operation-deadline-exceeded"))
+            .toBe("hyper-v-operation-deadline-exceeded");
+        expect(hyperVLinuxGuestReadyTraceFailureCode(trace, "hyper-v-bootstrap-network-containment-failed"))
+            .toBe("hyper-v-bootstrap-network-containment-failed");
     });
     let originalHome: string | undefined;
 
@@ -1988,6 +2032,7 @@ describe("device-lab Hyper-V broker", () => {
             expect([
                 "ssh-unavailable",
                 "hyper-v-operation-deadline-exceeded",
+                "hyper-v-bootstrap-address-unavailable",
             ]).toContain(readinessError);
             expect(readinessError).not.toBe("hyper-v-guest-boot-signal-timeout");
             expect(exhaustedBody).toEqual(expect.objectContaining({

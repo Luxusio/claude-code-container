@@ -10739,6 +10739,45 @@ function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", res
     return "ssh-unavailable";
 }
 
+type HyperVLinuxGuestReadyTrace = {
+    managedSshAttempts: number;
+    bootstrapProbeAttempts: number;
+    bootstrapProbeSuccesses: number;
+    bootstrapAddressCount: number;
+    bootstrapSshAttempts: number;
+    networkFinalizeAttempts: number;
+    networkFinalizeSucceeded: boolean;
+    guestSignalObserved: boolean;
+    elapsedMs: number;
+};
+
+export function hyperVLinuxGuestReadyTraceFailureCode(
+    trace: HyperVLinuxGuestReadyTrace | null,
+    fallback: string,
+): string {
+    if (!trace) return fallback;
+    if (!fallback.startsWith("ssh-") && fallback !== "hyper-v-guest-boot-signal-timeout") {
+        return fallback;
+    }
+    if (!trace.guestSignalObserved
+        && trace.elapsedMs >= DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS) {
+        return "hyper-v-guest-boot-signal-timeout";
+    }
+    if (trace.bootstrapProbeAttempts > 0 && trace.bootstrapProbeSuccesses === 0) {
+        return "hyper-v-bootstrap-network-probe-failed";
+    }
+    if (trace.bootstrapProbeSuccesses > 0 && trace.bootstrapAddressCount === 0) {
+        return "hyper-v-bootstrap-address-unavailable";
+    }
+    if (trace.bootstrapSshAttempts > 0 && trace.networkFinalizeAttempts === 0) {
+        return "hyper-v-bootstrap-ssh-unavailable";
+    }
+    if (trace.networkFinalizeAttempts > 0 && !trace.networkFinalizeSucceeded) {
+        return "hyper-v-bootstrap-network-finalize-failed";
+    }
+    return fallback;
+}
+
 function commandToleratesMissingMacosVmDelete(parsed: CommandParamSuccess, result: ProviderCommandResult) {
     if (parsed.backend !== "macos-vm" || parsed.command !== "device_delete" || !parsed.force) return false;
     if (result.provider !== "tart") return false;
@@ -12457,17 +12496,7 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
     let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
-    let hyperVGuestReadyTrace: {
-        managedSshAttempts: number;
-        bootstrapProbeAttempts: number;
-        bootstrapProbeSuccesses: number;
-        bootstrapAddressCount: number;
-        bootstrapSshAttempts: number;
-        networkFinalizeAttempts: number;
-        networkFinalizeSucceeded: boolean;
-        guestSignalObserved: boolean;
-        elapsedMs: number;
-    } | null = null;
+    let hyperVGuestReadyTrace: HyperVLinuxGuestReadyTrace | null = null;
     let hyperVContainedRuntimeState: "Off" | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
@@ -12823,6 +12852,12 @@ async function lifecycleCommandInvokeUnlocked(
         && isHyperVBackend(parsed.backend)
         && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
         hyperVGuestReadyFailureCode = hyperVGuestReadinessFailureCode(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
+        if (parsed.backend === "linux-vm") {
+            hyperVGuestReadyFailureCode = hyperVLinuxGuestReadyTraceFailureCode(
+                hyperVGuestReadyTrace,
+                hyperVGuestReadyFailureCode,
+            );
+        }
         const device = payload.result?.device as Record<string, unknown>;
         try {
             const diagnosticCommand = hyperVGuestBootDiagnosticCommand({

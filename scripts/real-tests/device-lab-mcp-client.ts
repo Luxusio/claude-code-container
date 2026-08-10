@@ -362,6 +362,24 @@ function boundedTransportRecoveryAttempt(value: unknown) {
     };
 }
 
+function boundedHyperVReadiness(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const readiness = value as Record<string, unknown>;
+    return {
+        managedSshAttempts: safeNonNegativeInteger(readiness.managedSshAttempts),
+        bootstrapProbeAttempts: safeNonNegativeInteger(readiness.bootstrapProbeAttempts),
+        bootstrapProbeSuccesses: safeNonNegativeInteger(readiness.bootstrapProbeSuccesses),
+        bootstrapAddressCount: safeNonNegativeInteger(readiness.bootstrapAddressCount),
+        bootstrapSshAttempts: safeNonNegativeInteger(readiness.bootstrapSshAttempts),
+        networkFinalizeAttempts: safeNonNegativeInteger(readiness.networkFinalizeAttempts),
+        ...(typeof readiness.networkFinalizeSucceeded === "boolean"
+            ? { networkFinalizeSucceeded: readiness.networkFinalizeSucceeded } : {}),
+        ...(typeof readiness.guestSignalObserved === "boolean"
+            ? { guestSignalObserved: readiness.guestSignalObserved } : {}),
+        elapsedMs: safeNonNegativeInteger(readiness.elapsedMs),
+    };
+}
+
 export function brokerToolFailureEvidence(value: any) {
     const body = value?.body && typeof value.body === "object" && !Array.isArray(value.body) ? value.body : null;
     const attempts = Array.isArray(value?.attempts)
@@ -421,6 +439,7 @@ export function brokerToolFailureEvidence(value: any) {
         evidence.boot = {
             provider: boundedBrokerDiagnosticCode(boot.provider),
             error: boundedBrokerDiagnosticCode(boot.error),
+            readiness: boundedHyperVReadiness(boot.readiness),
             diagnosticAvailable: typeof boot.diagnosticAvailable === "boolean" ? boot.diagnosticAvailable : undefined,
             diagnosticError: boundedBrokerDiagnosticCode(boot.diagnosticError),
             diagnostic: observation ? {
@@ -587,6 +606,7 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
         ? JSON.stringify({
             provider: boundedBrokerDiagnosticCode(boot.provider),
             error: boundedBrokerDiagnosticCode(boot.error),
+            readiness: boundedHyperVReadiness(boot.readiness),
             diagnosticError: boundedBrokerDiagnosticCode(boot.diagnosticError),
             state: bootObservation ? boundedDiagnosticText(bootObservation.state, 64) : undefined,
             uptimeMs: bootObservation && Number.isSafeInteger(bootObservation.uptimeMs) ? bootObservation.uptimeMs : undefined,

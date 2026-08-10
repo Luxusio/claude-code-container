@@ -676,6 +676,11 @@ Real-provider tests:
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
   `hyper-v-guest-readiness-diagnostics-v4` for the bounded readiness trace.
+  Linux readiness failures classify no guest signal, failed bootstrap
+  inspection, missing bootstrap addresses, unavailable bootstrap SSH, and
+  failed static-network finalization separately. The compact failure and the
+  durable Level 3 diagnostic retain only attempt counters, booleans, and elapsed
+  time; guest addresses and command output remain excluded.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the
