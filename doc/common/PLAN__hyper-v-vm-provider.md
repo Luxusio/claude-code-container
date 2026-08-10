@@ -112,7 +112,7 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v4`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v5`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
@@ -675,7 +675,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v4` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v5` for the bounded readiness trace.
   Linux readiness failures classify no guest signal, failed bootstrap
   inspection, missing bootstrap addresses, unavailable bootstrap SSH, and
   failed static-network finalization separately. The compact failure and the
