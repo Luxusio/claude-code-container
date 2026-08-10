@@ -723,11 +723,47 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Convert-VHD -Path $NormalizedVhdPath -DestinationPath $PartialPath -VHDType Dynamic");
         expect(script).toContain("Resize-VHD -Path $PartialPath -SizeBytes $UbuntuVirtualSizeBytes");
         expect(script).toContain("[string]$ConvertedVhd.VhdFormat -ne 'VHDX'");
+        expect(script).toContain("Set-CccAcquireStage 'hyper-v-base-image-content-verify-failed'");
+        expect(script).toContain("convert|content-verify|partial-open");
+        expect(script).toContain("& $QemuImg compare -f vpc -F vhdx $NormalizedVhdPath $PartialPath");
+        expect(script).toContain("$CompareSourceGuard = [IO.File]::Open($NormalizedVhdPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("$CompareTargetGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("$CompareSourceHashBefore = Get-CccGuardedSha256 $CompareSourceGuard");
+        expect(script).toContain("$CompareTargetHashBefore = Get-CccGuardedSha256 $CompareTargetGuard");
+        expect(script).toContain("if ($CompareSourceHashBefore -ne $GuardedNormalizedHashAfter) { throw 'hyper-v-base-image-source-mutated' }");
+        expect(script).toContain("$CompareExitCode = $LASTEXITCODE");
+        expect(script).toContain("if ($CompareExitCode -ne 0) { throw 'hyper-v-base-image-content-verify-failed' }");
+        expect(script).toContain("if ($CompareSourceHashAfter -ne $CompareSourceHashBefore) { throw 'hyper-v-base-image-source-mutated' }");
+        expect(script).toContain("if ($CompareTargetHashAfter -ne $CompareTargetHashBefore) { throw 'hyper-v-base-image-partial-mutated' }");
+        expect(script).toContain("$CompareTargetExpectedHash = $CompareTargetHashAfter");
+        expect(script).toContain("$PartialHashBefore = if ($CompareTargetGuard) { Get-CccGuardedSha256 $CompareTargetGuard }");
+        expect(script).toContain("if ($CompareTargetExpectedHash -and $PartialHashBefore -ne $CompareTargetExpectedHash) { throw 'hyper-v-base-image-partial-mutated' }");
+        expect(script).toContain("if ($CompareTargetExpectedHash -and $ValidatedPartialHash -ne $CompareTargetExpectedHash) { throw 'hyper-v-base-image-partial-mutated' }");
+        expect(script).toContain("$FinalGuard = [IO.File]::Open($ImagePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)");
+        expect(script).toContain("$CompareTargetGuard.CopyTo($FinalGuard, 8388608)");
+        expect(script).toContain("$PublishedWriteHash = Get-CccGuardedSha256 $FinalGuard");
+        expect(script).toContain("$FinalGuard.Dispose(); $FinalGuard = $null");
+        expect(script).toContain("$FinalGuard = [IO.File]::Open($ImagePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
+        expect(script).toContain("$PublishedReadHash = Get-CccGuardedSha256 $FinalGuard");
+        expect(script).toContain("if ($PublishedReadHash -ne $PublishedWriteHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
+        expect(script).toContain("$FinalHashBefore = if ($FinalGuard) { Get-CccGuardedSha256 $FinalGuard }");
+        expect(script).toContain("if ($CompareTargetExpectedHash -and $FinalHashBefore -ne $CompareTargetExpectedHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
+        expect(script).toContain("$QemuHashAfterCompare = Get-CccGuardedSha256 $QemuGuard");
+        expect(script.indexOf("$CompareSourceGuard = [IO.File]::Open($NormalizedVhdPath"))
+            .toBeLessThan(script.indexOf("$NormalizedVhdGuard.Dispose(); $NormalizedVhdGuard = $null"));
+        expect(script.indexOf("$CompareTargetGuard.CopyTo($FinalGuard, 8388608)"))
+            .toBeLessThan(script.indexOf("$FinalHashBefore = if ($FinalGuard)"));
+        expect(script.indexOf("if ($CompareTargetGuard) { $CompareTargetGuard.Dispose(); $CompareTargetGuard = $null }"))
+            .toBeGreaterThan(script.indexOf("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash"));
+        expect(script.indexOf("if ($FinalGuard) { $FinalGuard.Dispose(); $FinalGuard = $null }"))
+            .toBeGreaterThan(script.indexOf("Write-BaseObservation $Vhd $Generation $false $ValidatedPartialHash"));
         expect(script.indexOf("$QemuOutputGuard.CopyTo($NormalizedOutput"))
             .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"));
         expect(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"))
             .toBeLessThan(script.indexOf("Resize-VHD -Path $PartialPath"));
         expect(script.indexOf("Resize-VHD -Path $PartialPath"))
+            .toBeLessThan(script.indexOf("& $QemuImg compare -f vpc -F vhdx"));
+        expect(script.indexOf("& $QemuImg compare -f vpc -F vhdx"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         expect(script).toContain("hyper-v-base-image-source-inspection-failed");
         expect(script).toContain("hyper-v-base-image-convert-failed");
@@ -744,26 +780,26 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$Generation = $ExpectedGeneration");
         expect(script).not.toContain("function Get-CccVhdGeneration");
         expect(script).not.toContain("Mount-VHD -Path $Path");
-        expect(script).toContain("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath");
-        expect(script).toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))");
-        expect(script).toContain("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath");
+        expect(script).toContain("$ValidatedPartialHash = if ($CompareTargetGuard) { Get-CccGuardedSha256 $CompareTargetGuard } else { (Get-FileHash -LiteralPath $PartialPath");
+        expect(script).toContain("if (-not $CompareTargetGuard) { $PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)) }");
+        expect(script).toContain("$PartialHashBefore = if ($CompareTargetGuard) { Get-CccGuardedSha256 $CompareTargetGuard } else { (Get-FileHash -LiteralPath $PartialPath");
         expect(script).toContain("if ($ValidatedPartialHash -ne $PartialHashBefore) { throw 'hyper-v-base-image-partial-mutated' }");
         expect(script).not.toContain("$PartialGuard = [IO.File]::Open($PartialPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)");
         expect(script.indexOf("$SourceHashBefore = Get-CccGuardedSha256 $SourceGuard"))
             .toBeLessThan(script.indexOf("Convert-VHD -Path $NormalizedVhdPath"));
         expect(script).toContain("if ($QemuGuard) { $QemuGuard.Dispose(); $QemuGuard = $null }");
-        expect(script.indexOf("$PartialHashBefore = (Get-FileHash -LiteralPath $PartialPath"))
+        expect(script.indexOf("$PartialHashBefore = if ($CompareTargetGuard)"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
-        const partialGuardDispose = script.indexOf("} finally { $PartialGuard.Dispose(); $PartialGuard = $null }");
+        const partialGuardDispose = script.indexOf("} finally { if ($PartialGuard) { $PartialGuard.Dispose(); $PartialGuard = $null } }");
         const catalogGeneration = script.indexOf("$Generation = $ExpectedGeneration");
         const reopenedPartialGuard = script.indexOf("$PartialGuard = [IO.File]::Open($PartialPath", catalogGeneration);
         expect(partialGuardDispose).toBeGreaterThan(script.indexOf("$Vhd = Assert-BaseVhd $PartialPath"));
         expect(partialGuardDispose).toBeLessThan(catalogGeneration);
         expect(reopenedPartialGuard).toBeGreaterThan(catalogGeneration);
-        expect(reopenedPartialGuard).toBeLessThan(script.indexOf("$ValidatedPartialHash = (Get-FileHash -LiteralPath $PartialPath"));
+        expect(reopenedPartialGuard).toBeLessThan(script.indexOf("$ValidatedPartialHash = if ($CompareTargetGuard)"));
         expect(script).toContain("if ($ExpectedHash -and $Hash -ne $ExpectedHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
         expect(script).toContain("if ($FinalHashBefore -ne $ValidatedPartialHash) { throw 'hyper-v-base-image-final-hash-mismatch' }");
-        expect(script.indexOf("$FinalHashBefore = (Get-FileHash -LiteralPath $ImagePath"))
+        expect(script.indexOf("$FinalHashBefore = if ($FinalGuard)"))
             .toBeLessThan(script.indexOf("$Vhd = Assert-BaseVhd $ImagePath"));
         expect(script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath"))
             .toBeLessThan(script.indexOf("Protect-CccImageDirectory $ProfileRoot", script.indexOf("Move-Item -LiteralPath $PartialPath -Destination $ImagePath")));

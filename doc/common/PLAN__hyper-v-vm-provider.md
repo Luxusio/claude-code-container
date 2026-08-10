@@ -112,9 +112,9 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v3`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v4`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
-The v3 diagnostic operation is total after VM ownership validation: failures
+The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
 partial observation plus bounded allowlisted `diagnosticErrors`. One optional
 Hyper-V cmdlet can no longer hide all remaining boot evidence or leak its raw
@@ -621,8 +621,13 @@ Real-provider tests:
   `hyper-v-bootstrap-nic-cleanup-v1`,
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
-  are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v29` additionally prevents reuse of a
+  remain bounded at 20 minutes end to end, but Linux boot fails after five
+  minutes with `hyper-v-guest-boot-signal-timeout` when neither managed SSH nor
+  a KVP bootstrap address has ever been observed. The bounded failure payload
+  records managed SSH attempts, bootstrap probe and address counts, bootstrap
+  SSH attempts, and static-network finalization state without exposing
+  addresses, paths, command output, or credentials.
+  `hyper-v-provider-image-finalization-v30` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile or whose
   Linux seed blocks SSH activation behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
@@ -647,6 +652,14 @@ Real-provider tests:
   CCC rejects Sparse, Compressed, Encrypted, and ReparsePoint filesystem
   attributes, converts it once with native `Convert-VHD`, expands the resulting
   VHDX with `Resize-VHD`, and verifies it with `Get-VHD` before publication.
+  It then uses the attested `qemu-img compare` implementation to compare the
+  fixed VHD and final VHDX guest-visible sectors. QEMU's non-strict comparison
+  permits only the resized VHDX's zero-filled tail; any changed source sector
+  fails acquisition before a VM is created. Read-only source and converted-image
+  handles deny writes and deletion during comparison; the converted-image handle
+  remains open while CCC copies it into a newly created, similarly guarded final
+  VHDX and completes final hash and `Get-VHD` validation. This binds the compared
+  bytes to the file actually published to the image cache.
   The checksum-pinned Canonical QCOW2 is verified to contain both
   `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`. Native conversion preserves
   that guest filesystem, so acquisition
@@ -658,9 +671,11 @@ Real-provider tests:
   attached OS disk. CCC therefore sets the unique owner disk as
   `FirstBootDevice` after VM creation and again after provisioning-media
   attachment, then reads the firmware order back and rejects a path mismatch
-  before starting the VM. The v29 broker contract fences out the Azure-only
+  before starting the VM. The v30 broker contract fences out the Azure-only
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
-  order nondeterministic.
+  order nondeterministic or publish a native VHDX without content-equivalence
+  verification. Broker compatibility also requires
+  `hyper-v-guest-readiness-diagnostics-v4` for the bounded readiness trace.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

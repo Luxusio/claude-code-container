@@ -75,6 +75,15 @@ export const DEVICE_BROKER_MAX_HELPER_TIMEOUT_MS = 300000;
 export const DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS = 600000;
 export const DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS = 10 * 60 * 1000;
 export const DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS = 20 * 60 * 1000;
+export const DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+export function hyperVLinuxGuestSignalDeadlineAt(startedAt: number): number {
+    return startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS;
+}
+
+export function hyperVLinuxGuestSignalTimedOut(startedAt: number, observedAt: number, guestSignalObserved: boolean): boolean {
+    return !guestSignalObserved && observedAt >= hyperVLinuxGuestSignalDeadlineAt(startedAt);
+}
 export const DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEVICE_BROKER_HYPER_V_IMAGE_LOCK_WAIT_MS = DEVICE_BROKER_HYPER_V_IMAGE_PREPARE_TIMEOUT_MS + 15000;
 export const DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS = 4 * 60 * 60 * 1000;
@@ -216,7 +225,7 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v3";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v4";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
@@ -12448,6 +12457,17 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
     let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
+    let hyperVGuestReadyTrace: {
+        managedSshAttempts: number;
+        bootstrapProbeAttempts: number;
+        bootstrapProbeSuccesses: number;
+        bootstrapAddressCount: number;
+        bootstrapSshAttempts: number;
+        networkFinalizeAttempts: number;
+        networkFinalizeSucceeded: boolean;
+        guestSignalObserved: boolean;
+        elapsedMs: number;
+    } | null = null;
     let hyperVContainedRuntimeState: "Off" | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
@@ -12570,8 +12590,17 @@ async function lifecycleCommandInvokeUnlocked(
             hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: "missing-provider-command:ssh" };
             success = false;
         } else {
+            const readinessStartedAt = Date.now();
             const deadline = Math.min(Date.now() + timeoutMs, hyperVDeadlineAt);
+            const guestSignalDeadline = hyperVLinuxGuestSignalDeadlineAt(readinessStartedAt);
             let attempts = 0;
+            let bootstrapProbeAttempts = 0;
+            let bootstrapProbeSuccesses = 0;
+            let bootstrapAddressCount = 0;
+            let bootstrapSshAttempts = 0;
+            let networkFinalizeAttempts = 0;
+            let networkFinalizeSucceeded = false;
+            let guestSignalObserved = false;
             try {
                 const privateRoot = field(device, "privateRoot") || "";
                 const expectedPrivateRoot = hyperVPrivateDeviceRoot(ownerId, "linux-vm", parsed.deviceId);
@@ -12605,8 +12634,12 @@ async function lifecycleCommandInvokeUnlocked(
                         timeoutMs: Math.min(timeoutMs, 30000),
                     });
                     hyperVGuestReadyExecution = await hyperVProviderCommandRunner(normalized, readyCommand, { timeoutMs: hyperVRemainingTimeout(deadline, 35000), outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
-                    if (commandSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) break;
+                    if (commandSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
+                        guestSignalObserved = true;
+                        break;
+                    }
                     if (!bootstrapFinalizationAttempted && Date.now() < deadline) {
+                        bootstrapProbeAttempts += 1;
                         const bootstrapCommand = hyperVBootstrapNetworkCommand({
                             executable: providerCommand.executable || "powershell.exe",
                             ownerId,
@@ -12622,7 +12655,11 @@ async function lifecycleCommandInvokeUnlocked(
                         const bootstrap = commandSucceeded(bootstrapExecution)
                             ? parseHyperVBootstrapNetworkObservation(bootstrapExecution.stdout || "")
                             : null;
+                        if (bootstrap) bootstrapProbeSuccesses += 1;
+                        bootstrapAddressCount = Math.max(bootstrapAddressCount, bootstrap?.addresses.length || 0);
+                        if ((bootstrap?.addresses.length || 0) > 0) guestSignalObserved = true;
                         for (const bootstrapAddress of bootstrap?.addresses || []) {
+                            bootstrapSshAttempts += 1;
                             const bootstrapReadyCommand = hyperVLinuxSshReadyCommand({
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
@@ -12645,6 +12682,7 @@ async function lifecycleCommandInvokeUnlocked(
                                 networkGateway,
                                 networkPrefixLength: Number(networkPrefix.split("/")[1]),
                             });
+                            networkFinalizeAttempts += 1;
                             const finalizeExecution = await hyperVProviderCommandRunner(normalized, finalizeCommand, {
                                 timeoutMs: hyperVRemainingTimeout(deadline, 15000),
                                 outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
@@ -12657,12 +12695,20 @@ async function lifecycleCommandInvokeUnlocked(
                                 break;
                             }
                             bootstrapFinalizationAttempted = true;
+                            networkFinalizeSucceeded = true;
                             break;
                         }
                     }
                     if (Date.now() < deadline) await sleep(Math.min(2000, Math.max(0, deadline - Date.now())));
-                } while (Date.now() < deadline);
+                } while (Date.now() < deadline && (guestSignalObserved || Date.now() < guestSignalDeadline));
                 success = Boolean(hyperVGuestReadyExecution && commandSucceeded(hyperVGuestReadyExecution) && String(hyperVGuestReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready"));
+                if (!success && hyperVLinuxGuestSignalTimedOut(readinessStartedAt, Date.now(), guestSignalObserved)) {
+                    hyperVGuestReadyExecution = {
+                        ...(hyperVGuestReadyExecution || { mode: "exec", provider: "hyper-v-ssh", status: null }),
+                        error: "hyper-v-guest-boot-signal-timeout",
+                        timedOut: false,
+                    };
+                }
                 hyperVGuestReady = success ? {
                     ok: true,
                     vmId: String(field(device, "vmId") || "").toLowerCase(),
@@ -12700,6 +12746,18 @@ async function lifecycleCommandInvokeUnlocked(
             } catch (error) {
                 hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: error instanceof Error ? error.message : String(error) };
                 success = false;
+            } finally {
+                hyperVGuestReadyTrace = {
+                    managedSshAttempts: attempts,
+                    bootstrapProbeAttempts,
+                    bootstrapProbeSuccesses,
+                    bootstrapAddressCount,
+                    bootstrapSshAttempts,
+                    networkFinalizeAttempts,
+                    networkFinalizeSucceeded,
+                    guestSignalObserved,
+                    elapsedMs: Math.max(0, Date.now() - readinessStartedAt),
+                };
             }
         }
     }
@@ -12953,6 +13011,7 @@ async function lifecycleCommandInvokeUnlocked(
                         ready: false,
                         provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
                         error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                        ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
                         ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
                     },
                     updatedAt: new Date().toISOString(),
@@ -13040,6 +13099,7 @@ async function lifecycleCommandInvokeUnlocked(
                             ready: false,
                             provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
                             error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                            ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
                             ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
                             diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
                             ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
@@ -13078,6 +13138,7 @@ async function lifecycleCommandInvokeUnlocked(
                                         : "hyper-v-powershell-direct",
                                     error: hyperVGuestReadyFailureCode
                                         || "guest-not-ready",
+                                    ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
                                     diagnosticAvailable: Boolean(
                                         hyperVGuestBootDiagnosticPublic,
                                     ),

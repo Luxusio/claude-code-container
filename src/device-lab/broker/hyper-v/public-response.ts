@@ -50,6 +50,7 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-base-image-source-inspection-failed",
     "hyper-v-base-image-source-open-failed",
     "hyper-v-base-image-convert-failed",
+    "hyper-v-base-image-content-verify-failed",
     "hyper-v-base-image-destination-create-failed",
     "hyper-v-bootstrap-dhcp-switch-unavailable",
     "hyper-v-bootstrap-mac-address-conflict",

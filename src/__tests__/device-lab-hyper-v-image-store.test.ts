@@ -315,7 +315,7 @@ describe("Hyper-V image store module", () => {
         }
     });
 
-    it("rejects a cached Ubuntu image produced by the pre-native-finalization catalog", () => {
+    it("reacquires the immediately previous Ubuntu catalog after adding native content verification", async () => {
         const privateRoot = join(tmpdir(), `ccc-hyper-v-old-finalization-manifest-${process.pid}-${Date.now()}`);
         const profileRoot = hyperVImageProfileRoot(privateRoot, "ubuntu-lts");
         const imagePath = join(profileRoot, "base.vhdx");
@@ -326,7 +326,7 @@ describe("Hyper-V image store module", () => {
         writeFileSync(join(profileRoot, "manifest.json"), JSON.stringify({
             version: 3,
             profile: "ubuntu-lts",
-            catalogId: "canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-20260801-v2",
+            catalogId: "canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-native-vhdx-20260725-v1",
             sourceUrl: catalog.sourceUrl,
             sourceFormat: catalog.sourceFormat,
             sourceSha256: catalog.sourceSha256,
@@ -343,9 +343,55 @@ describe("Hyper-V image store module", () => {
         }));
 
         try {
-            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-native-vhdx-20260725-v1");
-            expect(() => readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts"))
-                .toThrow("hyper-v-base-image-manifest-provenance-mismatch");
+            expect(catalog.catalogId).toBe("canonical-ubuntu-24.04-lts-server-cloudimg-qcow2-native-vhdx-20260725-v2");
+            let acquisitions = 0;
+            const replacement = Buffer.from("content-verified-native-vhdx");
+            const replacementSha256 = createHash("sha256").update(replacement).digest("hex");
+            const result = await resolveHyperVImageForCreate(
+                "0123456789abcdef",
+                { backend: "linux-vm", dryRun: false, create: { profile: "ubuntu-lts" } },
+                {},
+                {
+                    cwd: privateRoot,
+                    privateRoot,
+                    resolveExecutable: () => "powershell.exe",
+                    run: async () => {
+                        acquisitions += 1;
+                        expect(existsSync(imagePath)).toBe(false);
+                        expect(existsSync(join(profileRoot, "manifest.json"))).toBe(false);
+                        writeFileSync(imagePath, replacement);
+                        return {
+                            mode: "exec",
+                            provider: "hyper-v",
+                            status: 0,
+                            stdout: JSON.stringify({
+                                ok: true,
+                                profile: "ubuntu-lts",
+                                imagePath,
+                                sha256: replacementSha256,
+                                sizeBytes: replacement.length,
+                                virtualSizeBytes: catalog.virtualSizeBytes,
+                                vhdType: "Dynamic",
+                                generation: catalog.generation,
+                                reused: false,
+                            }),
+                            stderr: "",
+                        };
+                    },
+                    limits: {
+                        acquireTimeoutMs: 60_000,
+                        prepareTimeoutMs: 60_000,
+                        lockWaitMs: 60_000,
+                        commandOutputBytes: 64 * 1024,
+                    },
+                },
+            );
+            expect(acquisitions).toBe(1);
+            expect(result).toEqual(expect.objectContaining({ ok: true, prepared: true }));
+            expect(readHyperVImageManifestMetadata(privateRoot, "ubuntu-lts")).toEqual(expect.objectContaining({
+                catalogId: catalog.catalogId,
+                sha256: replacementSha256,
+            }));
         } finally {
             rmSync(privateRoot, { recursive: true, force: true });
         }

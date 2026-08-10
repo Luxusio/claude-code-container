@@ -3336,7 +3336,8 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v28` for this contract.
+    `hyper-v-provider-image-finalization-v30` for this contract, including
+    guest-visible content comparison between the fixed VHD and published VHDX.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
@@ -3362,10 +3363,12 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v3` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v4` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
-    codes. The Linux real test writes that safe evidence to
+    codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
+    bootstrap SSH, and network-finalization counters without addresses or raw
+    command output. The Linux real test writes that safe evidence to
     `results/device-lab-real/hyper-v-linux-diagnostic-latest.json` plus a
     timestamped record before cleanup. Host paths, VM names, credentials,
     endpoints, and raw PowerShell output are never copied into these records.

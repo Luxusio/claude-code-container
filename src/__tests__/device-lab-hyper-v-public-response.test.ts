@@ -12,6 +12,7 @@ describe("Hyper-V public response projection", () => {
         "hyper-v-base-image-final-hash-mismatch",
         "hyper-v-base-image-filesystem-attributes-invalid",
         "hyper-v-base-image-convert-failed",
+        "hyper-v-base-image-content-verify-failed",
         "hyper-v-base-image-destination-create-failed",
         "hyper-v-base-image-efi-cleanup-failed",
         "hyper-v-base-image-efi-fallback-failed",

@@ -3,7 +3,16 @@ import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeviceBrokerServer, DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS, DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS, hyperVLifecycleCleanupTimeoutMs, hyperVProviderDeadlineAt } from "../device-lab-broker.js";
+import {
+    createDeviceBrokerServer,
+    DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
+    DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+    hyperVLifecycleCleanupTimeoutMs,
+    hyperVLinuxGuestSignalDeadlineAt,
+    hyperVLinuxGuestSignalTimedOut,
+    hyperVProviderDeadlineAt,
+} from "../device-lab-broker.js";
 import { deviceLabOwnerId } from "../device-lab-owner.js";
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
@@ -79,6 +88,29 @@ describe("device-lab Hyper-V broker", () => {
             .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
         expect(hyperVProviderDeadlineAt("windows-vm", "device_start", cleanupDeadlineAt))
             .toBe(cleanupDeadlineAt);
+    });
+
+    it("classifies missing guest signals only after the independent five-minute threshold", () => {
+        const startedAt = 10_000;
+        const callerDeadline = startedAt + 1_000;
+        expect(hyperVLinuxGuestSignalDeadlineAt(startedAt))
+            .toBe(startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS);
+        expect(hyperVLinuxGuestSignalTimedOut(startedAt, callerDeadline, false)).toBe(false);
+        expect(hyperVLinuxGuestSignalTimedOut(
+            startedAt,
+            startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS - 1,
+            false,
+        )).toBe(false);
+        expect(hyperVLinuxGuestSignalTimedOut(
+            startedAt,
+            startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+            false,
+        )).toBe(true);
+        expect(hyperVLinuxGuestSignalTimedOut(
+            startedAt,
+            startedAt + DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+            true,
+        )).toBe(false);
     });
     let originalHome: string | undefined;
 
@@ -1700,6 +1732,9 @@ describe("device-lab Hyper-V broker", () => {
         let readinessFailure = false;
         let managedReadinessFailure = false;
         let bootstrapAddressAvailable = false;
+        let bootstrapSshFailure = false;
+        let networkFinalizeFailure = false;
+        let managedReadinessRemainsFailedAfterFinalize = false;
         let bootstrapNetworkFinalizations = 0;
         let scpFailure: "upload" | "download" | null = null;
         let pendingElevatedNetwork: "setup" | "cleanup" | null = null;
@@ -1722,10 +1757,14 @@ describe("device-lab Hyper-V broker", () => {
                     expect(target).toMatch(/@172\.20\.1\.8$/);
                     expect(guestCommand).toContain("netplan apply");
                     bootstrapNetworkFinalizations += 1;
-                    managedReadinessFailure = false;
+                    if (networkFinalizeFailure) {
+                        return { ...command, status: 1, stdout: "", stderr: "network finalize failed" };
+                    }
+                    if (!managedReadinessRemainsFailedAfterFinalize) managedReadinessFailure = false;
                 }
                 if (sshFailure
                     || (ready && readinessFailure)
+                    || (ready && bootstrapSshFailure && target.endsWith("@172.20.1.8"))
                     || (ready && managedReadinessFailure && target.endsWith(`@${expectedNetworkAddress}`))
                     || (download && scpFailure === "download")) {
                     return { ...command, status: 255, stdout: "", stderr: "ssh failed" };
@@ -1950,6 +1989,7 @@ describe("device-lab Hyper-V broker", () => {
                 "ssh-unavailable",
                 "hyper-v-operation-deadline-exceeded",
             ]).toContain(readinessError);
+            expect(readinessError).not.toBe("hyper-v-guest-boot-signal-timeout");
             expect(exhaustedBody).toEqual(expect.objectContaining({
                 error: "hyper-v-guest-not-ready",
                 result: expect.objectContaining({
@@ -1957,6 +1997,17 @@ describe("device-lab Hyper-V broker", () => {
                         ready: false,
                         provider: "hyper-v-ssh",
                         error: readinessError,
+                        readiness: expect.objectContaining({
+                            managedSshAttempts: expect.any(Number),
+                            bootstrapProbeAttempts: expect.any(Number),
+                            bootstrapProbeSuccesses: expect.any(Number),
+                            bootstrapAddressCount: 0,
+                            bootstrapSshAttempts: 0,
+                            networkFinalizeAttempts: 0,
+                            networkFinalizeSucceeded: false,
+                            guestSignalObserved: false,
+                            elapsedMs: expect.any(Number),
+                        }),
                         diagnosticAvailable: true,
                         diagnostic: expect.objectContaining({
                             state: "OffCritical",
@@ -1979,6 +2030,10 @@ describe("device-lab Hyper-V broker", () => {
                 guestReadiness: {
                     provider: "hyper-v-ssh",
                     error: readinessError,
+                    readiness: expect.objectContaining({
+                        guestSignalObserved: false,
+                        bootstrapAddressCount: 0,
+                    }),
                     diagnosticAvailable: true,
                 },
             }));
@@ -1996,6 +2051,50 @@ describe("device-lab Hyper-V broker", () => {
             expect(bootstrapNetworkCleanups).toBeGreaterThan(0);
             bootstrapNetworkCleanups = 0;
             bootstrapAddressAvailable = true;
+
+            managedReadinessFailure = true;
+            bootstrapSshFailure = true;
+            const bootstrapSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(bootstrapSshFailed.status).toBe(502);
+            const bootstrapSshReadiness = (await bootstrapSshFailed.json()).result.boot.readiness;
+            expect(bootstrapSshReadiness).toEqual(expect.objectContaining({
+                bootstrapAddressCount: 1,
+                networkFinalizeAttempts: 0,
+                networkFinalizeSucceeded: false,
+                guestSignalObserved: true,
+            }));
+            expect(bootstrapSshReadiness.bootstrapProbeSuccesses).toBeGreaterThan(0);
+            expect(bootstrapSshReadiness.bootstrapSshAttempts).toBeGreaterThan(0);
+            bootstrapSshFailure = false;
+
+            networkFinalizeFailure = true;
+            const finalizeFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(finalizeFailed.status).toBe(502);
+            const finalizeReadiness = (await finalizeFailed.json()).result.boot.readiness;
+            expect(finalizeReadiness).toEqual(expect.objectContaining({
+                bootstrapAddressCount: 1,
+                networkFinalizeSucceeded: false,
+                guestSignalObserved: true,
+            }));
+            expect(finalizeReadiness.bootstrapSshAttempts).toBeGreaterThan(0);
+            expect(finalizeReadiness.networkFinalizeAttempts).toBeGreaterThan(0);
+            networkFinalizeFailure = false;
+
+            managedReadinessRemainsFailedAfterFinalize = true;
+            const managedSshFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 3000 });
+            expect(managedSshFailed.status).toBe(502);
+            const managedSshReadiness = (await managedSshFailed.json()).result.boot.readiness;
+            expect(managedSshReadiness).toEqual(expect.objectContaining({
+                bootstrapAddressCount: 1,
+                networkFinalizeSucceeded: true,
+                guestSignalObserved: true,
+            }));
+            expect(managedSshReadiness.networkFinalizeAttempts).toBeGreaterThan(0);
+            expect(managedSshReadiness.managedSshAttempts).toBeGreaterThanOrEqual(2);
+            managedReadinessRemainsFailedAfterFinalize = false;
+
+            bootstrapNetworkFinalizations = 0;
+            bootstrapNetworkCleanups = 0;
             managedReadinessFailure = true;
             const started = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);

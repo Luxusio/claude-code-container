@@ -1,4 +1,6 @@
-import { readFileSync } from "fs";
+import { closeSync, ftruncateSync, mkdtempSync, openSync, readFileSync, rmSync, writeSync } from "fs";
+import { spawnSync } from "child_process";
+import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 
@@ -30,4 +32,40 @@ describe("Hyper-V Ubuntu image verifier", () => {
         expect(source).not.toContain("conversion.error?.message");
         expect(source).not.toContain("rawConversion.error?.message");
     });
+
+    it.runIf(spawnSync("qemu-img", ["--version"], { stdio: "ignore" }).status === 0)(
+        "compares fixed VHD content with a larger zero-tailed VHDX and rejects changed sectors",
+        () => {
+            const root = mkdtempSync(join(tmpdir(), "ccc-qemu-compare-"));
+            const sourceRaw = join(root, "source.raw");
+            const targetRaw = join(root, "target.raw");
+            const changedRaw = join(root, "changed.raw");
+            const sourceVhd = join(root, "source.vhd");
+            const targetVhdx = join(root, "target.vhdx");
+            const changedVhdx = join(root, "changed.vhdx");
+            const writeSector = (path: string, size: number, byte: string) => {
+                const handle = openSync(path, "w+");
+                try {
+                    ftruncateSync(handle, size);
+                    writeSync(handle, Buffer.from(byte), 0, 1, 4096);
+                } finally {
+                    closeSync(handle);
+                }
+            };
+            const qemu = (...args: string[]) => spawnSync("qemu-img", args, { encoding: "utf8" });
+
+            try {
+                writeSector(sourceRaw, 16 * 1024 * 1024, "x");
+                writeSector(targetRaw, 32 * 1024 * 1024, "x");
+                writeSector(changedRaw, 16 * 1024 * 1024, "y");
+                expect(qemu("convert", "-f", "raw", "-O", "vpc", "-o", "subformat=fixed,force_size=on", sourceRaw, sourceVhd).status).toBe(0);
+                expect(qemu("convert", "-f", "raw", "-O", "vhdx", targetRaw, targetVhdx).status).toBe(0);
+                expect(qemu("convert", "-f", "raw", "-O", "vhdx", changedRaw, changedVhdx).status).toBe(0);
+                expect(qemu("compare", "-f", "vpc", "-F", "vhdx", sourceVhd, targetVhdx).status).toBe(0);
+                expect(qemu("compare", "-f", "vpc", "-F", "vhdx", sourceVhd, changedVhdx).status).toBe(1);
+            } finally {
+                rmSync(root, { recursive: true, force: true });
+            }
+        },
+    );
 });
