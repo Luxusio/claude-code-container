@@ -622,7 +622,7 @@ Real-provider tests:
   preventing same-version daemons with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   are bounded at 20 minutes end to end for both PowerShell Direct and SSH.
-  `hyper-v-provider-image-finalization-v28` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v29` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile or whose
   Linux seed blocks SSH activation behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
@@ -651,11 +651,16 @@ Real-provider tests:
   `EFI/BOOT/BOOTX64.EFI` and `EFI/ubuntu/shimx64.efi`. Native conversion preserves
   that guest filesystem, so acquisition
   does not mount or mutate the EFI partition and does not require Storage
-  cmdlet elevation. Generation 2 VM creation follows Canonical Multipass by
-  passing `BootDevice=VHD` to `New-VM`, disabling dynamic memory, and leaving
-  Hyper-V's generated firmware order intact. The v28 broker contract fences
-  out the Azure-only VHD source, direct QEMU VHDX generation, and the obsolete
-  manual EFI boot-order path.
+  cmdlet elevation. Generation 2 VM creation passes `BootDevice=VHD` to
+  `New-VM` and disables dynamic memory. The exact checksum-pinned QCOW2 and its
+  fixed-VHD conversion both complete a UEFI boot under OVMF, while host
+  diagnostics showed Hyper-V placing an unknown firmware file entry before the
+  attached OS disk. CCC therefore sets the unique owner disk as
+  `FirstBootDevice` after VM creation and again after provisioning-media
+  attachment, then reads the firmware order back and rejects a path mismatch
+  before starting the VM. The v29 broker contract fences out the Azure-only
+  VHD source, direct QEMU VHDX generation, and brokers that leave this boot
+  order nondeterministic.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

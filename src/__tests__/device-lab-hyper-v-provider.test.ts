@@ -973,8 +973,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("EnableSecureBoot On");
         expect(script).toContain("BootDevice = 'VHD'");
         expect(script).toContain("Set-VMMemory -VM $CreatedVm -DynamicMemoryEnabled $false");
-        expect(script).not.toContain("-BootOrder @($CreatedOsDisks[0])");
-        expect(script).not.toContain("-FirstBootDevice $CreatedOsDisks[0]");
+        expect(script).toContain("-FirstBootDevice $CreatedOsDisks[0]");
+        expect(script).toContain("hyper-v-created-disk-boot-order-mismatch");
         expect(script).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(script).toContain("Get-VMSwitch -Name $SwitchName");
         expect(script).toContain("Set-VMNetworkAdapter -VMNetworkAdapter $ManagedAdapter -StaticMacAddress");
@@ -1310,8 +1310,8 @@ describe("Hyper-V provider adapter", () => {
         const seedScript = scriptOf(seed);
         expect(seedScript).toContain("IMAPI2FS.MsftFileSystemImage");
         expect(seedScript).toContain("Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot");
-        expect(seedScript).not.toContain("Set-VMFirmware -VM $Vm -BootOrder @($OsDisks[0])");
-        expect(seedScript).not.toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
+        expect(seedScript).toContain("Set-VMFirmware -VM $Vm -FirstBootDevice $OsDisks[0]");
+        expect(seedScript).toContain("hyper-v-linux-disk-boot-order-mismatch");
         expect(seedScript).toContain("Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(seedScript).toContain("$Image.FileSystemsToCreate = 7");

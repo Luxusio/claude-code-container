@@ -29,6 +29,8 @@ describe("Hyper-V public response projection", () => {
         "hyper-v-created-disk-format-mismatch",
         "hyper-v-created-disk-hash-mismatch",
         "hyper-v-created-disk-length-mismatch",
+        "hyper-v-created-disk-boot-order-mismatch",
+        "hyper-v-linux-disk-boot-order-mismatch",
         "hyper-v-device-root-acl-failed",
         "hyper-v-host-capacity-inspection-failed",
         "hyper-v-host-storage-inspection-failed",
