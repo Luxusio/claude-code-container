@@ -3374,13 +3374,15 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v9` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v10` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
     bootstrap PowerShell stage diagnostics,
     bootstrap SSH, and network-finalization counters without addresses or raw
-    command output. Those counters also select a specific bounded failure code
+    command output. The same contract restarts `sshd` after cloud-init installs
+    the pinned host key, preventing the daemon from retaining the base image's
+    old in-memory key. Those counters also select a specific bounded failure code
     for missing guest signals, bootstrap inspection, address discovery,
     bootstrap SSH, or network finalization instead of collapsing every case
     into `ssh-connection-timeout`. The Linux real test writes that safe evidence

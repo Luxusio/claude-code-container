@@ -1419,7 +1419,9 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).not.toContain("'package_update: true'");
         expect(seedScript).not.toContain("'packages:'");
         expect(seedScript).not.toContain("'  - openssh-server'");
-        expect(seedScript).toContain("'  - [systemctl, enable, --now, ssh]'");
+        expect(seedScript).toContain("'  - [systemctl, enable, ssh]'");
+        expect(seedScript).toContain("'  - [systemctl, restart, ssh]'");
+        expect(seedScript).not.toContain("'  - [systemctl, enable, --now, ssh]'");
         expect(seedScript).toContain("ssh-keygen.exe");
         expect(seedScript).toContain("function New-CccSshKey");
         expect(seedScript).toContain("$StartInfo.Arguments = '-q -t ed25519 -N \"\"");

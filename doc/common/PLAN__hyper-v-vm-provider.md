@@ -112,8 +112,12 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v9`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v10`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
+The v10 Linux seed contract restarts `sshd` after cloud-init installs the
+owner-pinned ed25519 host key. An already-running daemon therefore cannot keep
+presenting the base image's in-memory host key while CCC verifies the newly
+provisioned key from its private `known_hosts` file.
 The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
 partial observation plus bounded allowlisted `diagnosticErrors`. One optional
@@ -681,7 +685,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v9` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v10` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table
@@ -691,6 +695,9 @@ Real-provider tests:
   allowlisted SSH failure class (`timeout`, `refused`, `unreachable`, host-key,
   authentication, missing readiness marker, or unavailable). Raw SSH output
   and the discovered bootstrap address remain outside public diagnostics.
+  Cloud-init explicitly restarts `sshd` after replacing the image host key so
+  bootstrap verification observes the pinned key rather than a stale key held
+  by a service that started before cloud-init completed.
   This revision classifies bootstrap VM-adapter, management-adapter, host-prefix,
   neighbor-table, and address-selection failures independently. The PowerShell
   operation emits only an allowlisted stage code, and the durable diagnostic
