@@ -112,7 +112,7 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v8`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v9`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
@@ -681,12 +681,16 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v8` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v9` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table
   fallback remains fenced to that interface, the VM bootstrap adapter's exact
   MAC address, and allowlisted neighbor states.
+  Bootstrap SSH retries retain only the last numeric process status and an
+  allowlisted SSH failure class (`timeout`, `refused`, `unreachable`, host-key,
+  authentication, missing readiness marker, or unavailable). Raw SSH output
+  and the discovered bootstrap address remain outside public diagnostics.
   This revision classifies bootstrap VM-adapter, management-adapter, host-prefix,
   neighbor-table, and address-selection failures independently. The PowerShell
   operation emits only an allowlisted stage code, and the durable diagnostic

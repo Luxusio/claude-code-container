@@ -225,7 +225,7 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v8";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v9";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
@@ -10747,6 +10747,8 @@ type HyperVLinuxGuestReadyTrace = {
     bootstrapProbeLastError?: string | null;
     bootstrapAddressCount: number;
     bootstrapSshAttempts: number;
+    bootstrapSshLastStatus?: number | null;
+    bootstrapSshLastError?: string | null;
     networkFinalizeAttempts: number;
     networkFinalizeSucceeded: boolean;
     guestSignalObserved: boolean;
@@ -10788,7 +10790,18 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
         return "hyper-v-bootstrap-address-unavailable";
     }
     if (trace.bootstrapSshAttempts > 0 && trace.networkFinalizeAttempts === 0) {
-        return "hyper-v-bootstrap-ssh-unavailable";
+        const bootstrapSshCodes = new Set([
+            "ssh-authentication-failed",
+            "ssh-connection-refused",
+            "ssh-connection-timeout",
+            "ssh-host-key-rejected",
+            "ssh-host-unreachable",
+            "ssh-readiness-marker-missing",
+            "ssh-unavailable",
+        ]);
+        return trace.bootstrapSshLastError && bootstrapSshCodes.has(trace.bootstrapSshLastError)
+            ? trace.bootstrapSshLastError
+            : "hyper-v-bootstrap-ssh-unavailable";
     }
     if (trace.networkFinalizeAttempts > 0 && !trace.networkFinalizeSucceeded) {
         return "hyper-v-bootstrap-network-finalize-failed";
@@ -12647,6 +12660,8 @@ async function lifecycleCommandInvokeUnlocked(
             let bootstrapProbeLastError: string | null = null;
             let bootstrapAddressCount = 0;
             let bootstrapSshAttempts = 0;
+            let bootstrapSshLastStatus: number | null = null;
+            let bootstrapSshLastError: string | null = null;
             let networkFinalizeAttempts = 0;
             let networkFinalizeSucceeded = false;
             let guestSignalObserved = false;
@@ -12733,8 +12748,17 @@ async function lifecycleCommandInvokeUnlocked(
                                 timeoutMs: hyperVRemainingTimeout(deadline, 15000),
                                 outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
                             });
+                            bootstrapSshLastStatus = typeof bootstrapReadyExecution.status === "number"
+                                ? bootstrapReadyExecution.status
+                                : null;
                             if (!commandSucceeded(bootstrapReadyExecution)
-                                || !String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) continue;
+                                || !String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
+                                bootstrapSshLastError = commandSucceeded(bootstrapReadyExecution)
+                                    ? "ssh-readiness-marker-missing"
+                                    : hyperVGuestReadinessFailureCode("linux-vm", bootstrapReadyExecution);
+                                continue;
+                            }
+                            bootstrapSshLastError = null;
                             const finalizeCommand = hyperVLinuxNetworkFinalizeCommand({
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
@@ -12818,6 +12842,8 @@ async function lifecycleCommandInvokeUnlocked(
                     bootstrapProbeLastError,
                     bootstrapAddressCount,
                     bootstrapSshAttempts,
+                    bootstrapSshLastStatus,
+                    bootstrapSshLastError,
                     networkFinalizeAttempts,
                     networkFinalizeSucceeded,
                     guestSignalObserved,

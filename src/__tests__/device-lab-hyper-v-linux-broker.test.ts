@@ -142,8 +142,10 @@ describe("device-lab Hyper-V broker", () => {
             ...trace,
             bootstrapAddressCount: 1,
             bootstrapSshAttempts: 2,
+            bootstrapSshLastStatus: null,
+            bootstrapSshLastError: "ssh-connection-timeout",
             guestSignalObserved: true,
-        }, "ssh-connection-timeout")).toBe("hyper-v-bootstrap-ssh-unavailable");
+        }, "ssh-connection-timeout")).toBe("ssh-connection-timeout");
         expect(hyperVLinuxGuestReadyTraceFailureCode({
             ...trace,
             bootstrapAddressCount: 1,
@@ -2137,6 +2139,8 @@ describe("device-lab Hyper-V broker", () => {
             }));
             expect(bootstrapSshReadiness.bootstrapProbeSuccesses).toBeGreaterThan(0);
             expect(bootstrapSshReadiness.bootstrapSshAttempts).toBeGreaterThan(0);
+            expect(bootstrapSshReadiness.bootstrapSshLastStatus).toBe(255);
+            expect(bootstrapSshReadiness.bootstrapSshLastError).toBe("ssh-unavailable");
             bootstrapSshFailure = false;
 
             networkFinalizeFailure = true;

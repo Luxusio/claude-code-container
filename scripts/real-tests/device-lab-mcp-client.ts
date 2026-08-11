@@ -373,6 +373,8 @@ function boundedHyperVReadiness(value: unknown) {
         bootstrapProbeLastError: boundedBrokerDiagnosticCode(readiness.bootstrapProbeLastError),
         bootstrapAddressCount: safeNonNegativeInteger(readiness.bootstrapAddressCount),
         bootstrapSshAttempts: safeNonNegativeInteger(readiness.bootstrapSshAttempts),
+        bootstrapSshLastStatus: safeNonNegativeInteger(readiness.bootstrapSshLastStatus),
+        bootstrapSshLastError: boundedBrokerDiagnosticCode(readiness.bootstrapSshLastError),
         networkFinalizeAttempts: safeNonNegativeInteger(readiness.networkFinalizeAttempts),
         ...(typeof readiness.networkFinalizeSucceeded === "boolean"
             ? { networkFinalizeSucceeded: readiness.networkFinalizeSucceeded } : {}),

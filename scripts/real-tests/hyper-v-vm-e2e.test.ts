@@ -506,6 +506,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             bootstrapProbeSuccesses: 2,
                             bootstrapAddressCount: 1,
                             bootstrapSshAttempts: 2,
+                            bootstrapSshLastStatus: 255,
+                            bootstrapSshLastError: "ssh-connection-refused",
                             networkFinalizeAttempts: 0,
                             networkFinalizeSucceeded: false,
                             guestSignalObserved: true,
@@ -549,6 +551,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             managedSshAttempts: 1,
                             bootstrapProbeLastStatus: -1,
                             bootstrapProbeLastError: "C:\\Users\\private token=secret",
+                            bootstrapSshLastStatus: -1,
+                            bootstrapSshLastError: "C:\\Users\\private token=secret",
                         },
                     },
                 },
@@ -557,6 +561,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(evidence.boot.readiness).toEqual(expect.objectContaining({ managedSshAttempts: 1 }));
         expect(evidence.boot.readiness.bootstrapProbeLastStatus).toBeUndefined();
         expect(evidence.boot.readiness.bootstrapProbeLastError).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapSshLastStatus).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapSshLastError).toBeUndefined();
         expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastStatus");
         expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastError");
         expect(evidence.boot.readiness).not.toHaveProperty("networkFinalizeSucceeded");
@@ -624,6 +630,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed",
                             bootstrapAddressCount: 1,
                             bootstrapSshAttempts: 4,
+                            bootstrapSshLastStatus: 255,
+                            bootstrapSshLastError: "ssh-connection-timeout",
                             networkFinalizeAttempts: 0,
                             networkFinalizeSucceeded: false,
                             guestSignalObserved: true,
@@ -668,6 +676,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed",
                 bootstrapAddressCount: 1,
                 bootstrapSshAttempts: 4,
+                bootstrapSshLastStatus: 255,
+                bootstrapSshLastError: "ssh-connection-timeout",
                 networkFinalizeAttempts: 0,
                 networkFinalizeSucceeded: false,
                 guestSignalObserved: true,
