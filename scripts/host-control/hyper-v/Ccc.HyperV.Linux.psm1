@@ -50,12 +50,14 @@ function Get-CccLinuxBootstrapNetworkResult {
         [Parameter(Mandatory = $true)] [object] $Vm,
         [scriptblock] $VmAdapterReader = { param($TargetVm) @(Get-VMNetworkAdapter -VM $TargetVm -ErrorAction Stop) },
         [scriptblock] $ManagementAdapterReader = { @(Get-VMNetworkAdapter -ManagementOS -SwitchName 'Default Switch' -ErrorAction Stop) },
-        [scriptblock] $HostPrefixReader = { @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop) }
+        [scriptblock] $HostPrefixReader = { @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop) },
+        [scriptblock] $NeighborReader = { @(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop) }
     )
 
     $BootstrapAdapters = @(& $VmAdapterReader $Vm | Where-Object { $_.Name -eq 'CCC Bootstrap DHCP' })
     if ($BootstrapAdapters.Count -gt 1) { throw 'hyper-v-bootstrap-network-adapter-ambiguous' }
     $Addresses = @()
+    $DiagnosticCode = $null
     if ($BootstrapAdapters.Count -eq 1) {
         if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') {
             throw 'hyper-v-bootstrap-network-adapter-identity-mismatch'
@@ -69,9 +71,31 @@ function Get-CccLinuxBootstrapNetworkResult {
             & $HostPrefixReader |
                 Where-Object { $ManagementAddresses -contains $_.IPAddress -and $_.PrefixLength -ge 8 -and $_.PrefixLength -le 30 }
         )
-        $Addresses = @(Select-CccBootstrapIpv4Address $BootstrapAdapters[0].IPAddresses $HostPrefixes)
+        $HostInterfaceIndexes = @($HostPrefixes | ForEach-Object { $_.InterfaceIndex } | Where-Object { $null -ne $_ })
+        $Candidates = @($BootstrapAdapters[0].IPAddresses)
+        $BootstrapMac = ([string]$BootstrapAdapters[0].MacAddress -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+        if ($BootstrapMac -match '^[0-9A-F]{12}$') {
+            try {
+                $Candidates += @(
+                    & $NeighborReader |
+                        Where-Object {
+                            (([string]$_.LinkLayerAddress -replace '[^0-9A-Fa-f]', '').ToUpperInvariant() -eq $BootstrapMac) -and
+                            ($HostInterfaceIndexes -contains $_.InterfaceIndex) -and
+                            ([string]$_.State -in @('Reachable', 'Stale', 'Delay', 'Probe', 'Permanent'))
+                        } |
+                        ForEach-Object { [string]$_.IPAddress }
+                )
+            } catch {
+                $DiagnosticCode = 'hyper-v-bootstrap-neighbor-inspection-failed'
+            }
+        }
+        $Addresses = @(Select-CccBootstrapIpv4Address $Candidates $HostPrefixes)
     }
-    return [ordered]@{ ok = $true; addresses = $Addresses }
+    return [ordered]@{
+        ok = $true
+        addresses = $Addresses
+        diagnosticCode = $DiagnosticCode
+    }
 }
 
 Export-ModuleMember -Function @(

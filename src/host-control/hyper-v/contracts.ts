@@ -249,6 +249,7 @@ export type HyperVBootstrapNetworkCleanupObservation = {
 export type HyperVBootstrapNetworkObservation = {
     ok: boolean;
     addresses: string[];
+    diagnosticCode?: "hyper-v-bootstrap-neighbor-inspection-failed";
 };
 
 export type HyperVCommandOptions = {

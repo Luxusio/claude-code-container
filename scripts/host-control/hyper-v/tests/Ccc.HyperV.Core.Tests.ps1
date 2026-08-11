@@ -93,19 +93,57 @@ Describe 'CCC Hyper-V Linux bootstrap operation' {
     It 'reads the default switch and returns a bounded result contract' {
         $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
         $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
-            -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; IPAddresses = @('172.20.1.8', '169.254.1.2') }) } `
+            -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @('172.20.1.8', '169.254.1.2') }) } `
             -ManagementAdapterReader { @([pscustomobject]@{ IPAddresses = @('172.20.0.1') }) } `
-            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20 }) }
+            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20; InterfaceIndex = 42 }) } `
+            -NeighborReader { @() }
         $Result.ok | Should -BeTrue
         @($Result.addresses).Count | Should -Be 1
         $Result.addresses[0] | Should -Be '172.20.1.8'
+    }
+
+    It 'falls back to the bounded neighbor table entry matching the bootstrap MAC' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @() }) } `
+            -ManagementAdapterReader { @([pscustomobject]@{ IPAddresses = @('172.20.0.1') }) } `
+            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20; InterfaceIndex = 42 }) } `
+            -NeighborReader { @(
+                [pscustomobject]@{ IPAddress = '172.20.1.9'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 42; State = 'Reachable' },
+                [pscustomobject]@{ IPAddress = '172.20.1.10'; LinkLayerAddress = '00-15-5d-ff-ff-ff'; InterfaceIndex = 42; State = 'Reachable' },
+                [pscustomobject]@{ IPAddress = '172.20.1.11'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 42; State = 'Unreachable' },
+                [pscustomobject]@{ IPAddress = '172.20.1.12'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 99; State = 'Reachable' },
+                [pscustomobject]@{ IPAddress = '172.20.1.13'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 42; State = 'Unknown' },
+                [pscustomobject]@{ IPAddress = '172.20.1.14'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 42; State = $null }
+            ) }
+        @($Result.addresses) | Should -Be @('172.20.1.9')
+        $Result.diagnosticCode | Should -BeNullOrEmpty
+    }
+
+    It 'reports a bounded diagnostic when neighbor inspection fails' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @() }) } `
+            -ManagementAdapterReader { @([pscustomobject]@{ IPAddresses = @('172.20.0.1') }) } `
+            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20; InterfaceIndex = 42 }) } `
+            -NeighborReader { throw 'private failure' }
+        @($Result.addresses).Count | Should -Be 0
+        $Result.diagnosticCode | Should -Be 'hyper-v-bootstrap-neighbor-inspection-failed'
+    }
+
+    It 'returns an empty bounded result when the bootstrap adapter is absent' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm -VmAdapterReader { @() }
+        $Result.ok | Should -BeTrue
+        @($Result.addresses).Count | Should -Be 0
+        $Result.diagnosticCode | Should -BeNullOrEmpty
     }
 
     It 'rejects a bootstrap adapter on a foreign switch' {
         $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
         {
             Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
-                -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Foreign'; IPAddresses = @() }) }
+                -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Foreign'; MacAddress = '00155D010203'; IPAddresses = @() }) }
         } | Should -Throw 'hyper-v-bootstrap-network-adapter-identity-mismatch'
     }
 }

@@ -10743,6 +10743,8 @@ type HyperVLinuxGuestReadyTrace = {
     managedSshAttempts: number;
     bootstrapProbeAttempts: number;
     bootstrapProbeSuccesses: number;
+    bootstrapProbeLastStatus?: number | null;
+    bootstrapProbeLastError?: string | null;
     bootstrapAddressCount: number;
     bootstrapSshAttempts: number;
     networkFinalizeAttempts: number;
@@ -12625,6 +12627,8 @@ async function lifecycleCommandInvokeUnlocked(
             let attempts = 0;
             let bootstrapProbeAttempts = 0;
             let bootstrapProbeSuccesses = 0;
+            let bootstrapProbeLastStatus: number | null = null;
+            let bootstrapProbeLastError: string | null = null;
             let bootstrapAddressCount = 0;
             let bootstrapSshAttempts = 0;
             let networkFinalizeAttempts = 0;
@@ -12681,10 +12685,23 @@ async function lifecycleCommandInvokeUnlocked(
                             timeoutMs: hyperVRemainingTimeout(deadline, 15000),
                             outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
                         });
+                        bootstrapProbeLastStatus = typeof bootstrapExecution.status === "number"
+                            ? bootstrapExecution.status
+                            : null;
                         const bootstrap = commandSucceeded(bootstrapExecution)
                             ? parseHyperVBootstrapNetworkObservation(bootstrapExecution.stdout || "")
                             : null;
-                        if (bootstrap) bootstrapProbeSuccesses += 1;
+                        if (bootstrap) {
+                            bootstrapProbeSuccesses += 1;
+                            bootstrapProbeLastError = bootstrap.diagnosticCode || null;
+                        } else {
+                            bootstrapProbeLastError = commandSucceeded(bootstrapExecution)
+                                ? "hyper-v-bootstrap-network-response-invalid"
+                                : hyperVProviderDiagnosticCode(
+                                    bootstrapExecution,
+                                    "hyper-v-bootstrap-network-probe-failed",
+                                ) || "hyper-v-bootstrap-network-probe-failed";
+                        }
                         bootstrapAddressCount = Math.max(bootstrapAddressCount, bootstrap?.addresses.length || 0);
                         if ((bootstrap?.addresses.length || 0) > 0) guestSignalObserved = true;
                         for (const bootstrapAddress of bootstrap?.addresses || []) {
@@ -12780,6 +12797,8 @@ async function lifecycleCommandInvokeUnlocked(
                     managedSshAttempts: attempts,
                     bootstrapProbeAttempts,
                     bootstrapProbeSuccesses,
+                    bootstrapProbeLastStatus,
+                    bootstrapProbeLastError,
                     bootstrapAddressCount,
                     bootstrapSshAttempts,
                     networkFinalizeAttempts,

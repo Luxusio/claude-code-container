@@ -1475,6 +1475,12 @@ describe("Hyper-V provider adapter", () => {
             ok: true,
             addresses: ["172.20.1.8"],
         });
+        expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":[],"diagnosticCode":"hyper-v-bootstrap-neighbor-inspection-failed"}')).toEqual({
+            ok: true,
+            addresses: [],
+            diagnosticCode: "hyper-v-bootstrap-neighbor-inspection-failed",
+        });
+        expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":[],"diagnosticCode":"C:\\\\private"}')).toBeNull();
         expect(parseHyperVBootstrapNetworkObservation('{"ok":true,"addresses":["169.254.1.8"]}')).toBeNull();
         const finalize = hyperVLinuxNetworkFinalizeCommand({
             ...ssh,

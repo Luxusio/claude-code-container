@@ -545,12 +545,20 @@ describe("Hyper-V E2E zero-config image selection", () => {
                     boot: {
                         provider: "hyper-v-ssh",
                         error: "ssh-unavailable",
-                        readiness: { managedSshAttempts: 1 },
+                        readiness: {
+                            managedSshAttempts: 1,
+                            bootstrapProbeLastStatus: -1,
+                            bootstrapProbeLastError: "C:\\Users\\private token=secret",
+                        },
                     },
                 },
             },
         }) as any;
         expect(evidence.boot.readiness).toEqual(expect.objectContaining({ managedSshAttempts: 1 }));
+        expect(evidence.boot.readiness.bootstrapProbeLastStatus).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapProbeLastError).toBeUndefined();
+        expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastStatus");
+        expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastError");
         expect(evidence.boot.readiness).not.toHaveProperty("networkFinalizeSucceeded");
         expect(evidence.boot.readiness).not.toHaveProperty("guestSignalObserved");
     });
@@ -612,6 +620,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             managedSshAttempts: 4,
                             bootstrapProbeAttempts: 4,
                             bootstrapProbeSuccesses: 4,
+                            bootstrapProbeLastStatus: 0,
+                            bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed",
                             bootstrapAddressCount: 1,
                             bootstrapSshAttempts: 4,
                             networkFinalizeAttempts: 0,
@@ -654,6 +664,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 managedSshAttempts: 4,
                 bootstrapProbeAttempts: 4,
                 bootstrapProbeSuccesses: 4,
+                bootstrapProbeLastStatus: 0,
+                bootstrapProbeLastError: "hyper-v-bootstrap-neighbor-inspection-failed",
                 bootstrapAddressCount: 1,
                 bootstrapSshAttempts: 4,
                 networkFinalizeAttempts: 0,

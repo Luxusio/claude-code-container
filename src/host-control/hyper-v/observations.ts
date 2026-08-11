@@ -224,7 +224,16 @@ export function parseHyperVBootstrapNetworkObservation(stdout: string): HyperVBo
         }
     });
     if (addresses.length !== parsed.addresses.length || addresses.length > 8 || new Set(addresses).size !== addresses.length) return null;
-    return { ok: true, addresses };
+    if (parsed.diagnosticCode !== undefined
+        && parsed.diagnosticCode !== null
+        && parsed.diagnosticCode !== "hyper-v-bootstrap-neighbor-inspection-failed") return null;
+    return {
+        ok: true,
+        addresses,
+        ...(parsed.diagnosticCode === "hyper-v-bootstrap-neighbor-inspection-failed"
+            ? { diagnosticCode: parsed.diagnosticCode }
+            : {}),
+    };
 }
 
 export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | null {

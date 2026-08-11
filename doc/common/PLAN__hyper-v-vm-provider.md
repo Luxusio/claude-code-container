@@ -623,10 +623,16 @@ Real-provider tests:
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   remain bounded at 20 minutes end to end, but Linux boot fails after five
   minutes with `hyper-v-guest-boot-signal-timeout` when neither managed SSH nor
-  a KVP bootstrap address has ever been observed. The bounded failure payload
-  records managed SSH attempts, bootstrap probe and address counts, bootstrap
-  SSH attempts, and static-network finalization state without exposing
-  addresses, paths, command output, or credentials.
+  a bootstrap address has ever been observed. Bootstrap discovery first accepts
+  Hyper-V KVP addresses and also consults the Default Switch neighbor table,
+  matching only the VM's owner-fenced static bootstrap MAC and the host switch
+  prefix and interface index. This permits first boot when the guest DHCP stack
+  is active before the Linux KVP daemon reports addresses without accepting an
+  entry observed on another host interface. The bounded failure payload records
+  managed SSH attempts, bootstrap probe and address counts, the last probe
+  status and allowlisted diagnostic code, bootstrap SSH attempts, and
+  static-network finalization state without exposing addresses, paths, command
+  output, or credentials.
   `hyper-v-provider-image-finalization-v30` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile or whose
   Linux seed blocks SSH activation behind online package updates.
@@ -679,8 +685,9 @@ Real-provider tests:
   Linux readiness failures classify no guest signal, failed bootstrap
   inspection, missing bootstrap addresses, unavailable bootstrap SSH, and
   failed static-network finalization separately. The compact failure and the
-  durable Level 3 diagnostic retain only attempt counters, booleans, and elapsed
-  time; guest addresses and command output remain excluded.
+  durable Level 3 diagnostic retain only attempt counters, status values,
+  allowlisted diagnostic codes, booleans, and elapsed time; guest addresses and
+  command output remain excluded.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

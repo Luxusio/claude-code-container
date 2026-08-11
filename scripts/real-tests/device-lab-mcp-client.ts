@@ -369,6 +369,8 @@ function boundedHyperVReadiness(value: unknown) {
         managedSshAttempts: safeNonNegativeInteger(readiness.managedSshAttempts),
         bootstrapProbeAttempts: safeNonNegativeInteger(readiness.bootstrapProbeAttempts),
         bootstrapProbeSuccesses: safeNonNegativeInteger(readiness.bootstrapProbeSuccesses),
+        bootstrapProbeLastStatus: safeNonNegativeInteger(readiness.bootstrapProbeLastStatus),
+        bootstrapProbeLastError: boundedBrokerDiagnosticCode(readiness.bootstrapProbeLastError),
         bootstrapAddressCount: safeNonNegativeInteger(readiness.bootstrapAddressCount),
         bootstrapSshAttempts: safeNonNegativeInteger(readiness.bootstrapSshAttempts),
         networkFinalizeAttempts: safeNonNegativeInteger(readiness.networkFinalizeAttempts),
