@@ -10761,6 +10761,21 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
     if (!fallback.startsWith("ssh-") && fallback !== "hyper-v-guest-boot-signal-timeout") {
         return fallback;
     }
+    const bootstrapDiagnosticCodes = new Set([
+        "hyper-v-bootstrap-address-selection-failed",
+        "hyper-v-bootstrap-host-prefix-inspection-failed",
+        "hyper-v-bootstrap-management-adapter-inspection-failed",
+        "hyper-v-bootstrap-neighbor-inspection-failed",
+        "hyper-v-bootstrap-network-adapter-ambiguous",
+        "hyper-v-bootstrap-network-adapter-identity-mismatch",
+        "hyper-v-bootstrap-network-probe-failed",
+        "hyper-v-bootstrap-network-response-invalid",
+        "hyper-v-bootstrap-vm-adapter-inspection-failed",
+    ]);
+    if (trace.bootstrapProbeLastError
+        && bootstrapDiagnosticCodes.has(trace.bootstrapProbeLastError)) {
+        return trace.bootstrapProbeLastError;
+    }
     if (!trace.guestSignalObserved
         && trace.elapsedMs >= DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS) {
         return "hyper-v-guest-boot-signal-timeout";
@@ -12691,16 +12706,17 @@ async function lifecycleCommandInvokeUnlocked(
                         const bootstrap = commandSucceeded(bootstrapExecution)
                             ? parseHyperVBootstrapNetworkObservation(bootstrapExecution.stdout || "")
                             : null;
-                        if (bootstrap) {
+                        if (bootstrap && !bootstrap.diagnosticCode) {
                             bootstrapProbeSuccesses += 1;
-                            bootstrapProbeLastError = bootstrap.diagnosticCode || null;
+                            bootstrapProbeLastError = null;
                         } else {
-                            bootstrapProbeLastError = commandSucceeded(bootstrapExecution)
-                                ? "hyper-v-bootstrap-network-response-invalid"
-                                : hyperVProviderDiagnosticCode(
-                                    bootstrapExecution,
-                                    "hyper-v-bootstrap-network-probe-failed",
-                                ) || "hyper-v-bootstrap-network-probe-failed";
+                            bootstrapProbeLastError = bootstrap?.diagnosticCode
+                                || (commandSucceeded(bootstrapExecution)
+                                    ? "hyper-v-bootstrap-network-response-invalid"
+                                    : hyperVProviderDiagnosticCode(
+                                        bootstrapExecution,
+                                        "hyper-v-bootstrap-network-probe-failed",
+                                    ) || "hyper-v-bootstrap-network-probe-failed");
                         }
                         bootstrapAddressCount = Math.max(bootstrapAddressCount, bootstrap?.addresses.length || 0);
                         if ((bootstrap?.addresses.length || 0) > 0) guestSignalObserved = true;

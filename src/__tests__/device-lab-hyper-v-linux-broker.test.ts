@@ -156,6 +156,32 @@ describe("device-lab Hyper-V broker", () => {
         expect(hyperVLinuxGuestReadyTraceFailureCode(trace, "hyper-v-bootstrap-network-containment-failed"))
             .toBe("hyper-v-bootstrap-network-containment-failed");
     });
+
+    it.each([
+        "hyper-v-bootstrap-address-selection-failed",
+        "hyper-v-bootstrap-host-prefix-inspection-failed",
+        "hyper-v-bootstrap-management-adapter-inspection-failed",
+        "hyper-v-bootstrap-neighbor-inspection-failed",
+        "hyper-v-bootstrap-network-adapter-ambiguous",
+        "hyper-v-bootstrap-network-adapter-identity-mismatch",
+        "hyper-v-bootstrap-network-probe-failed",
+        "hyper-v-bootstrap-network-response-invalid",
+        "hyper-v-bootstrap-vm-adapter-inspection-failed",
+    ])("preserves bootstrap stage failure %s after the guest-signal deadline", (diagnosticCode) => {
+        expect(hyperVLinuxGuestReadyTraceFailureCode({
+            managedSshAttempts: 2,
+            bootstrapProbeAttempts: 2,
+            bootstrapProbeSuccesses: 0,
+            bootstrapProbeLastStatus: 0,
+            bootstrapProbeLastError: diagnosticCode,
+            bootstrapAddressCount: 0,
+            bootstrapSshAttempts: 0,
+            networkFinalizeAttempts: 0,
+            networkFinalizeSucceeded: false,
+            guestSignalObserved: false,
+            elapsedMs: DEVICE_BROKER_HYPER_V_GUEST_SIGNAL_TIMEOUT_MS,
+        }, "hyper-v-guest-boot-signal-timeout")).toBe(diagnosticCode);
+    });
     let originalHome: string | undefined;
 
     beforeEach(() => {
