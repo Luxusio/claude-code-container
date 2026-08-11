@@ -5,7 +5,7 @@ import { join } from "path";
 export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-vm-managed-auto-images-v20",
     "hyper-v-setup-network-v10",
-    "hyper-v-guest-readiness-diagnostics-v11",
+    "hyper-v-guest-readiness-diagnostics-v12",
     "hyper-v-windows-boot-contract-v1",
     "hyper-v-linux-create-response-v1",
     "hyper-v-image-acquisition-stage-cache-v1",
@@ -16,7 +16,7 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
 export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v30";
 export const HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT = "hyper-v-setup-network-v10";
 export const HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT = "hyper-v-network-failure-diagnostics-v9";
-export const HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT = "hyper-v-guest-readiness-diagnostics-v11";
+export const HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT = "hyper-v-guest-readiness-diagnostics-v12";
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
 const HOST_BROKER_REPAIR_TIMEOUT_MS = 180000;

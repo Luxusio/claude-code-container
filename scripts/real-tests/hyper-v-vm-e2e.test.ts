@@ -508,6 +508,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             bootstrapSshAttempts: 2,
                             bootstrapSshLastStatus: 0,
                             bootstrapSshLastError: "ssh-readiness-marker-missing",
+                            bootstrapHostKeyProbeStatus: 0,
+                            bootstrapHostKeyObserved: true,
+                            bootstrapHostKeyMatchesExpected: false,
                             networkFinalizeAttempts: 0,
                             networkFinalizeSucceeded: false,
                             guestSignalObserved: true,
@@ -531,9 +534,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).toContain('"error":"ssh-readiness-marker-missing"');
         expect(message).toContain('"bootstrapSshLastStatus":0');
         expect(message).toContain('"bootstrapSshLastError":"ssh-readiness-marker-missing"');
+        expect(message).toContain('"bootstrapHostKeyObserved":true');
+        expect(message).toContain('"bootstrapHostKeyMatchesExpected":false');
         expect(message).toContain('"bootstrapAddressCount":1');
-        expect(message).toContain('"guestSignalObserved":true');
-        expect(message).toContain('"diagnosticError":"hyper-v-guest-boot-diagnostic-');
         expect(message).not.toContain("private-vm-name");
         expect(message).not.toContain("172.16.0.2");
         expect(message).not.toContain("diskPath");
@@ -556,6 +559,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             bootstrapProbeLastError: "C:\\Users\\private token=secret",
                             bootstrapSshLastStatus: -1,
                             bootstrapSshLastError: "C:\\Users\\private token=secret",
+                            bootstrapHostKeyProbeStatus: -1,
+                            bootstrapHostKeyObserved: "yes",
+                            bootstrapHostKeyMatchesExpected: "no",
                         },
                     },
                 },
@@ -566,6 +572,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(evidence.boot.readiness.bootstrapProbeLastError).toBeUndefined();
         expect(evidence.boot.readiness.bootstrapSshLastStatus).toBeUndefined();
         expect(evidence.boot.readiness.bootstrapSshLastError).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapHostKeyProbeStatus).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapHostKeyObserved).toBeUndefined();
+        expect(evidence.boot.readiness.bootstrapHostKeyMatchesExpected).toBeUndefined();
         expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastStatus");
         expect(JSON.stringify(evidence)).not.toContain("bootstrapProbeLastError");
         expect(evidence.boot.readiness).not.toHaveProperty("networkFinalizeSucceeded");
@@ -635,6 +644,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
                             bootstrapSshAttempts: 4,
                             bootstrapSshLastStatus: 255,
                             bootstrapSshLastError: "ssh-connection-timeout",
+                            bootstrapHostKeyProbeStatus: 0,
+                            bootstrapHostKeyObserved: true,
+                            bootstrapHostKeyMatchesExpected: false,
                             networkFinalizeAttempts: 0,
                             networkFinalizeSucceeded: false,
                             guestSignalObserved: true,
@@ -681,6 +693,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 bootstrapSshAttempts: 4,
                 bootstrapSshLastStatus: 255,
                 bootstrapSshLastError: "ssh-connection-timeout",
+                bootstrapHostKeyProbeStatus: 0,
+                bootstrapHostKeyObserved: true,
+                bootstrapHostKeyMatchesExpected: false,
                 networkFinalizeAttempts: 0,
                 networkFinalizeSucceeded: false,
                 guestSignalObserved: true,

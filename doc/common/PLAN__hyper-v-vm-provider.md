@@ -112,15 +112,18 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v11`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v12`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
-The v11 Linux seed contract restarts `sshd` after cloud-init installs the
+The v12 Linux seed contract restarts `sshd` after cloud-init installs the
 owner-pinned ed25519 host key. An already-running daemon therefore cannot keep
 presenting the base image's in-memory host key while CCC verifies the newly
 provisioned key from its private `known_hosts` file. Bootstrap SSH also limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
 when a validated managed-address `HostKeyAlias` is present. Strict verification
 against the owner-private alias entry remains mandatory.
+If that verification still fails, the broker performs one bounded ed25519
+`ssh-keyscan` and records only whether a key was observed and whether it equals
+the expected key. Raw keys, addresses, paths, and command output are discarded.
 The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
 partial observation plus bounded allowlisted `diagnosticErrors`. One optional
@@ -688,7 +691,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v11` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v12` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

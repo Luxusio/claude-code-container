@@ -375,6 +375,11 @@ function boundedHyperVReadiness(value: unknown) {
         bootstrapSshAttempts: safeNonNegativeInteger(readiness.bootstrapSshAttempts),
         bootstrapSshLastStatus: safeNonNegativeInteger(readiness.bootstrapSshLastStatus),
         bootstrapSshLastError: boundedBrokerDiagnosticCode(readiness.bootstrapSshLastError),
+        bootstrapHostKeyProbeStatus: safeNonNegativeInteger(readiness.bootstrapHostKeyProbeStatus),
+        ...(typeof readiness.bootstrapHostKeyObserved === "boolean"
+            ? { bootstrapHostKeyObserved: readiness.bootstrapHostKeyObserved } : {}),
+        ...(typeof readiness.bootstrapHostKeyMatchesExpected === "boolean"
+            ? { bootstrapHostKeyMatchesExpected: readiness.bootstrapHostKeyMatchesExpected } : {}),
         networkFinalizeAttempts: safeNonNegativeInteger(readiness.networkFinalizeAttempts),
         ...(typeof readiness.networkFinalizeSucceeded === "boolean"
             ? { networkFinalizeSucceeded: readiness.networkFinalizeSucceeded } : {}),

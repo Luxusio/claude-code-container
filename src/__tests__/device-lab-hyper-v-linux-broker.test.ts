@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { dirname, join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    compareHyperVLinuxEd25519HostKeyScan,
     createDeviceBrokerServer,
     DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
     DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
@@ -76,6 +77,18 @@ function hyperVNetworkCleanupResult<T extends { args?: string[]; input?: string 
 }
 
 describe("device-lab Hyper-V broker", () => {
+    it("compares bounded ed25519 keyscan output without retaining host data", () => {
+        const expected = "ssh-ed25519 Y2NjLWV4cGVjdGVk host";
+        expect(compareHyperVLinuxEd25519HostKeyScan(expected, "172.20.1.8 ssh-ed25519 Y2NjLWV4cGVjdGVk\n"))
+            .toEqual({ observed: true, matchesExpected: true });
+        expect(compareHyperVLinuxEd25519HostKeyScan(expected, "[172.20.1.8]:22 ssh-ed25519 Y2NjLWFjdHVhbA==\n"))
+            .toEqual({ observed: true, matchesExpected: false });
+        expect(compareHyperVLinuxEd25519HostKeyScan(expected, "# 172.20.1.8:22 SSH-2.0-OpenSSH\n"))
+            .toEqual({ observed: false, matchesExpected: null });
+        expect(compareHyperVLinuxEd25519HostKeyScan("invalid", "172.20.1.8 ssh-ed25519 Y2NjLWV4cGVjdGVk\n"))
+            .toEqual({ observed: false, matchesExpected: null });
+    });
+
     it("reserves containment time for Linux start and reboot deadlines", () => {
         const operationTimeoutMs = 17 * 60 * 1000;
         expect(hyperVLifecycleCleanupTimeoutMs("linux-vm", "device_start", operationTimeoutMs))
@@ -1805,7 +1818,10 @@ describe("device-lab Hyper-V broker", () => {
         let readinessFailure = false;
         let managedReadinessFailure = false;
         let bootstrapAddressAvailable = false;
+        let bootstrapAddresses = ["172.20.1.8"];
         let bootstrapSshFailure = false;
+        let bootstrapHostKeyRejected = false;
+        let bootstrapHostKeyMatchesExpected = false;
         let bootstrapSshMarkerMissing = false;
         let networkFinalizeFailure = false;
         let managedReadinessRemainsFailedAfterFinalize = false;
@@ -1820,6 +1836,11 @@ describe("device-lab Hyper-V broker", () => {
         let providerLifecycleFailure = false;
 
         const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
+            if (command.provider === "hyper-v-ssh-keyscan") {
+                const address = command.args?.at(-1) || "";
+                const key = bootstrapHostKeyMatchesExpected ? hostKeyBase64 : Buffer.from("different-host-key").toString("base64");
+                return { ...command, status: 0, stdout: `${address} ssh-ed25519 ${key}\n`, stderr: "" };
+            }
             if (command.provider === "hyper-v-ssh") {
                 const ready = command.args?.at(-1)?.includes("ccc-hyper-v-linux-ready");
                 const target = command.args?.at(-2) || "";
@@ -1828,7 +1849,7 @@ describe("device-lab Hyper-V broker", () => {
                 const download = guestCommand.includes("head -c") && guestCommand.includes("base64 -w0");
                 if (guestCommand.includes("/etc/netplan/99-ccc-static.yaml")) {
                     expect(command.args).toContain(`HostKeyAlias=${expectedNetworkAddress}`);
-                    expect(target).toMatch(/@172\.20\.1\.8$/);
+                    expect(target).toMatch(/@172\.20\.1\.(?:8|9)$/);
                     expect(guestCommand).toContain("netplan apply");
                     bootstrapNetworkFinalizations += 1;
                     if (networkFinalizeFailure) {
@@ -1838,6 +1859,9 @@ describe("device-lab Hyper-V broker", () => {
                 }
                 if (ready && bootstrapSshMarkerMissing && target.endsWith("@172.20.1.8")) {
                     return { ...command, status: 0, stdout: "unexpected-output\n", stderr: "" };
+                }
+                if (ready && bootstrapHostKeyRejected && target.endsWith("@172.20.1.8")) {
+                    return { ...command, status: 255, stdout: "", stderr: "Host key verification failed." };
                 }
                 if (sshFailure
                     || (ready && readinessFailure)
@@ -1857,7 +1881,7 @@ describe("device-lab Hyper-V broker", () => {
             }
             const script = providerScript(command);
             if (script.includes("Get-CccLinuxBootstrapNetworkResult $Vm")) {
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, addresses: bootstrapAddressAvailable ? ["172.20.1.8"] : [] }), stderr: "" };
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, addresses: bootstrapAddressAvailable ? bootstrapAddresses : [] }), stderr: "" };
             }
             if (script.includes("Remove-VMNetworkAdapter -VMNetworkAdapter $BootstrapAdapters[0]")) {
                 bootstrapNetworkCleanups += 1;
@@ -1944,7 +1968,7 @@ describe("device-lab Hyper-V broker", () => {
             host: "127.0.0.1",
             port: 0,
             platform: "win32",
-            providerPaths: { "powershell.exe": "/fake/powershell.exe", "ssh.exe": "/fake/ssh.exe", "scp.exe": "/fake/scp.exe" },
+            providerPaths: { "powershell.exe": "/fake/powershell.exe", "ssh.exe": "/fake/ssh.exe", "ssh-keyscan.exe": "/fake/ssh-keyscan.exe", "scp.exe": "/fake/scp.exe" },
             commandRunner,
         });
         const baseUrl = await listen(server);
@@ -2147,9 +2171,50 @@ describe("device-lab Hyper-V broker", () => {
             expect(bootstrapSshReadiness.bootstrapSshLastError).toBe("ssh-unavailable");
             bootstrapSshFailure = false;
 
+            bootstrapHostKeyRejected = true;
+            bootstrapAddresses = ["172.20.1.8", "172.20.1.9"];
+            const keyscansBeforeFallback = commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan").length;
+            const bootstrapHostKeyFallback = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            expect(bootstrapHostKeyFallback.status, JSON.stringify(await bootstrapHostKeyFallback.clone().json())).toBe(200);
+            expect(commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan")).toHaveLength(keyscansBeforeFallback + 1);
+
+            bootstrapAddresses = ["172.20.1.8"];
+            managedReadinessFailure = true;
+            const keyscansBeforeMismatch = commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan").length;
+            const mismatchStartedAt = Date.now();
+            const bootstrapHostKeyMismatch = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            expect(Date.now() - mismatchStartedAt).toBeLessThan(5000);
+            expect(bootstrapHostKeyMismatch.status).toBe(502);
+            const bootstrapHostKeyMismatchBoot = (await bootstrapHostKeyMismatch.json()).result.boot;
+            expect(bootstrapHostKeyMismatchBoot.error).toBe("ssh-host-key-mismatch");
+            expect(bootstrapHostKeyMismatchBoot.readiness).toEqual(expect.objectContaining({
+                bootstrapHostKeyProbeStatus: 0,
+                bootstrapHostKeyObserved: true,
+                bootstrapHostKeyMatchesExpected: false,
+            }));
+            expect(commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan")).toHaveLength(keyscansBeforeMismatch + 1);
+
+            bootstrapHostKeyMatchesExpected = true;
+            const keyscansBeforeClientFailure = commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan").length;
+            const clientFailureStartedAt = Date.now();
+            const bootstrapHostKeyClientFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            expect(Date.now() - clientFailureStartedAt).toBeLessThan(5000);
+            expect(bootstrapHostKeyClientFailure.status).toBe(502);
+            const bootstrapHostKeyClientFailureBoot = (await bootstrapHostKeyClientFailure.json()).result.boot;
+            expect(bootstrapHostKeyClientFailureBoot.error).toBe("ssh-host-key-client-verification-failed");
+            expect(bootstrapHostKeyClientFailureBoot.readiness).toEqual(expect.objectContaining({
+                bootstrapHostKeyProbeStatus: 0,
+                bootstrapHostKeyObserved: true,
+                bootstrapHostKeyMatchesExpected: true,
+            }));
+            expect(commandRunner.mock.calls.filter(([command]) => command.provider === "hyper-v-ssh-keyscan")).toHaveLength(keyscansBeforeClientFailure + 1);
+            bootstrapHostKeyRejected = false;
+            bootstrapHostKeyMatchesExpected = false;
+            managedReadinessFailure = true;
+
             bootstrapSshMarkerMissing = true;
             const bootstrapMarkerMissing = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
-            expect(bootstrapMarkerMissing.status).toBe(502);
+            expect(bootstrapMarkerMissing.status, JSON.stringify(await bootstrapMarkerMissing.clone().json())).toBe(502);
             const bootstrapMarkerMissingBoot = (await bootstrapMarkerMissing.json()).result.boot;
             expect(bootstrapMarkerMissingBoot.error).toBe("ssh-readiness-marker-missing");
             expect(bootstrapMarkerMissingBoot.readiness).toEqual(expect.objectContaining({
