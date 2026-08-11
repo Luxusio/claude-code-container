@@ -83,7 +83,7 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "android-recording-signal-fallback-v1",
     "hyper-v-vm-managed-auto-images-v20",
     "hyper-v-setup-network-v10",
-    "hyper-v-guest-readiness-diagnostics-v5",
+    "hyper-v-guest-readiness-diagnostics-v6",
     "hyper-v-azure-ovf-seed-v1",
     "hyper-v-azure-ovf-seed-v2",
     "hyper-v-azure-bootstrap-dhcp-v1",
