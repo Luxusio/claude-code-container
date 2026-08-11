@@ -482,8 +482,12 @@ export function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=yes",
+        "-o", "HostKeyAlgorithms=ssh-ed25519",
         "-o", `UserKnownHostsFile=${knownHostsPath}`,
-        ...(hostKeyAlias ? ["-o", `HostKeyAlias=${hostKeyAlias}`] : []),
+        ...(hostKeyAlias ? [
+            "-o", `HostKeyAlias=${hostKeyAlias}`,
+            "-o", "CheckHostIP=no",
+        ] : []),
         "-o", `ConnectTimeout=${timeoutSec}`,
         "-o", "ConnectionAttempts=1",
         `${username}@${address}`,
