@@ -1096,7 +1096,9 @@ export function prepareCodexConfigForContainer(containerName: string): void {
         codexConfigMutation("test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml"),
     ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
     if (accessCheck.status === 0) return;
-    if ((accessCheck.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    if ((accessCheck.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        || accessCheck.status === 124
+        || accessCheck.status === 137) {
         throw new Error("Codex config access probe timed out");
     }
     if (accessCheck.error || (accessCheck.status !== 0 && accessCheck.status !== 1)) {
@@ -1106,7 +1108,7 @@ export function prepareCodexConfigForContainer(containerName: string): void {
     const repair = spawnSync(runtimeCli(), [
         "exec", "--user", "root", containerName,
         "sh", "-c",
-        codexConfigMutation("if [ -e /home/ccc/.codex/config.toml ]; then (chown ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown ccc:ccc /home/ccc/.codex/config.toml 2>/dev/null) && chmod 600 /home/ccc/.codex/config.toml; fi"),
+        codexConfigMutation("if [ -e /home/ccc/.codex/config.toml ] || [ -L /home/ccc/.codex/config.toml ]; then chown -h ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown -h ccc:ccc /home/ccc/.codex/config.toml; fi"),
     ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
     if ((repair.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
         || repair.status === 124
@@ -1114,6 +1116,24 @@ export function prepareCodexConfigForContainer(containerName: string): void {
         throw new Error("Codex config repair timed out");
     }
     if (repair.error || repair.status !== 0) {
+        throw new Error("Codex config repair failed");
+    }
+
+    // Root may change only the directory entry ownership without following a
+    // symlink. Permission mutation and the final identity/access proof run as
+    // the unprivileged container user, limiting any concurrent path swap to
+    // files that user could already modify.
+    const finalize = spawnSync(runtimeCli(), [
+        "exec", containerName,
+        "sh", "-c",
+        codexConfigMutation("if [ -L /home/ccc/.codex/config.toml ] || { [ -e /home/ccc/.codex/config.toml ] && [ ! -f /home/ccc/.codex/config.toml ]; }; then exit 42; fi; if [ -e /home/ccc/.codex/config.toml ]; then chmod 600 /home/ccc/.codex/config.toml && test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml; fi"),
+    ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
+    if ((finalize.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        || finalize.status === 124
+        || finalize.status === 137) {
+        throw new Error("Codex config repair timed out");
+    }
+    if (finalize.error || finalize.status !== 0) {
         throw new Error("Codex config repair failed");
     }
 }

@@ -1099,19 +1099,25 @@ describe("docker.ts module exports", () => {
         it("prepares mounted Codex config for the in-container ccc user only after access check fails", () => {
             spawnSyncMock
                 .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(0))
                 .mockReturnValueOnce(makeResult(0));
 
             prepareCodexConfigForContainer("ccc-test");
 
-            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 expect.arrayContaining(["exec", "--user", "root", "ccc-test"]),
                 { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS },
             );
             const args = spawnSyncMock.mock.calls[1][1] as string[];
-            expect(args.at(-1)).toContain("chown ccc:docker /home/ccc/.codex/config.toml");
+            expect(args.at(-1)).toContain("chown -h ccc:docker /home/ccc/.codex/config.toml");
+            expect(args.at(-1)).not.toContain("chmod");
             expect(args.at(-1)).toContain("timeout -k 2s 10s");
+            const finalizeArgs = spawnSyncMock.mock.calls[2][1] as string[];
+            expect(finalizeArgs).not.toContain("--user");
+            expect(finalizeArgs.at(-1)).toContain("[ -L /home/ccc/.codex/config.toml ]");
+            expect(finalizeArgs.at(-1)).toContain("chmod 600 /home/ccc/.codex/config.toml");
         });
 
         it("fails immediately when the Codex config access probe times out", () => {
@@ -1120,6 +1126,15 @@ describe("docker.ts module exports", () => {
                 status: null,
                 error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
             });
+
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
+                "Codex config access probe timed out",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([124, 137])("classifies inner Codex config timeout status %s", (status) => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(status));
 
             expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
                 "Codex config access probe timed out",
@@ -1136,6 +1151,18 @@ describe("docker.ts module exports", () => {
                 "Codex config repair failed",
             );
             expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+        });
+
+        it("fails when the unprivileged Codex config finalization rejects the entry", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(0))
+                .mockReturnValueOnce(makeResult(42));
+
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
+                "Codex config repair failed",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(3);
         });
     });
 
