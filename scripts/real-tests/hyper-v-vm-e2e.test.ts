@@ -499,15 +499,15 @@ describe("Hyper-V E2E zero-config image selection", () => {
                     boot: {
                         ready: false,
                         provider: "hyper-v-ssh",
-                        error: "ssh-connection-refused",
+                        error: "ssh-readiness-marker-missing",
                         readiness: {
                             managedSshAttempts: 3,
                             bootstrapProbeAttempts: 2,
                             bootstrapProbeSuccesses: 2,
                             bootstrapAddressCount: 1,
                             bootstrapSshAttempts: 2,
-                            bootstrapSshLastStatus: 255,
-                            bootstrapSshLastError: "ssh-connection-refused",
+                            bootstrapSshLastStatus: 0,
+                            bootstrapSshLastError: "ssh-readiness-marker-missing",
                             networkFinalizeAttempts: 0,
                             networkFinalizeSucceeded: false,
                             guestSignalObserved: true,
@@ -528,11 +528,14 @@ describe("Hyper-V E2E zero-config image selection", () => {
             },
         }, "fallback");
         expect(message).toContain("hyper-v-guest-not-ready");
-        expect(message).toContain('"error":"ssh-connection-refused"');
+        expect(message).toContain('"error":"ssh-readiness-marker-missing"');
+        expect(message).toContain('"bootstrapSshLastStatus":0');
+        expect(message).toContain('"bootstrapSshLastError":"ssh-readiness-marker-missing"');
         expect(message).toContain('"bootstrapAddressCount":1');
         expect(message).toContain('"guestSignalObserved":true');
-        expect(message).toContain('"diagnosticError":"hyper-v-guest-boot-diagnostic-command-failed"');
+        expect(message).toContain('"diagnosticError":"hyper-v-guest-boot-diagnostic-');
         expect(message).not.toContain("private-vm-name");
+        expect(message).not.toContain("172.16.0.2");
         expect(message).not.toContain("diskPath");
         expect(message).not.toContain("token=secret");
         expect(message).not.toContain("C:\\Users");

@@ -1806,6 +1806,7 @@ describe("device-lab Hyper-V broker", () => {
         let managedReadinessFailure = false;
         let bootstrapAddressAvailable = false;
         let bootstrapSshFailure = false;
+        let bootstrapSshMarkerMissing = false;
         let networkFinalizeFailure = false;
         let managedReadinessRemainsFailedAfterFinalize = false;
         let bootstrapNetworkFinalizations = 0;
@@ -1834,6 +1835,9 @@ describe("device-lab Hyper-V broker", () => {
                         return { ...command, status: 1, stdout: "", stderr: "network finalize failed" };
                     }
                     if (!managedReadinessRemainsFailedAfterFinalize) managedReadinessFailure = false;
+                }
+                if (ready && bootstrapSshMarkerMissing && target.endsWith("@172.20.1.8")) {
+                    return { ...command, status: 0, stdout: "unexpected-output\n", stderr: "" };
                 }
                 if (sshFailure
                     || (ready && readinessFailure)
@@ -2142,6 +2146,17 @@ describe("device-lab Hyper-V broker", () => {
             expect(bootstrapSshReadiness.bootstrapSshLastStatus).toBe(255);
             expect(bootstrapSshReadiness.bootstrapSshLastError).toBe("ssh-unavailable");
             bootstrapSshFailure = false;
+
+            bootstrapSshMarkerMissing = true;
+            const bootstrapMarkerMissing = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
+            expect(bootstrapMarkerMissing.status).toBe(502);
+            const bootstrapMarkerMissingBoot = (await bootstrapMarkerMissing.json()).result.boot;
+            expect(bootstrapMarkerMissingBoot.error).toBe("ssh-readiness-marker-missing");
+            expect(bootstrapMarkerMissingBoot.readiness).toEqual(expect.objectContaining({
+                bootstrapSshLastStatus: 0,
+                bootstrapSshLastError: "ssh-readiness-marker-missing",
+            }));
+            bootstrapSshMarkerMissing = false;
 
             networkFinalizeFailure = true;
             const finalizeFailed = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
