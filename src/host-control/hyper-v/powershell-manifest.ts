@@ -12,7 +12,7 @@ export const HYPER_V_POWERSHELL_MANIFEST = {
     assets: {
         "Ccc.HyperV.Core.psm1": { sha256: "1583f389ed07673280edec7dabf149b695eb2cbeb9044c03ca1b6b4cef37db32" },
         "Ccc.HyperV.Diagnostics.psm1": { sha256: "0d7d4cd26eeb1d3af49dd26e97e0380290ce1815be01ada5f3174c1b60581428" },
-        "Ccc.HyperV.Linux.psm1": { sha256: "8f314f264aba57cff5e6f4557a95ebbef00308798fdebba65a9ed216c02fc8df" },
+        "Ccc.HyperV.Linux.psm1": { sha256: "d75836414802f3b9bfec7e4969b594055f6265e76df0a3f8a7b22b5746932a63" },
         "Get-GuestBootDiagnostic.ps1": { sha256: "f17b2ff0e84c52fd6cb4552bd6f63eb3aad89c37a6f50d52a55d07893b44f943" },
         "Get-LinuxBootstrapNetwork.ps1": { sha256: "3639a76b707216ad75645ac4753d2ad4ab5839bd3a6cfb816c49f489e772e8f3" },
     },

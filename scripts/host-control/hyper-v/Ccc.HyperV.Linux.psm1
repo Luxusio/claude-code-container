@@ -68,6 +68,7 @@ function Get-CccLinuxBootstrapNetworkResult {
         if ([string]$BootstrapAdapters[0].SwitchName -ne 'Default Switch') {
             return [ordered]@{ ok = $true; addresses = $Addresses; diagnosticCode = 'hyper-v-bootstrap-network-adapter-identity-mismatch' }
         }
+        $ManagementAdapterInspectionFailed = $false
         try {
             $ManagementAddresses = @(
                 & $ManagementAdapterReader |
@@ -75,16 +76,23 @@ function Get-CccLinuxBootstrapNetworkResult {
                     Where-Object { $_ -match '^\d{1,3}(?:\.\d{1,3}){3}$' }
             )
         } catch {
-            return [ordered]@{ ok = $true; addresses = $Addresses; diagnosticCode = 'hyper-v-bootstrap-management-adapter-inspection-failed' }
+            $ManagementAdapterInspectionFailed = $true
+            $ManagementAddresses = @()
         }
         try {
             $HostPrefixes = @(
                 & $HostPrefixReader |
-                    Where-Object { $ManagementAddresses -contains $_.IPAddress -and $_.PrefixLength -ge 8 -and $_.PrefixLength -le 30 }
+                    Where-Object {
+                        (($ManagementAddresses -contains $_.IPAddress) -or ([string]$_.InterfaceAlias -ceq 'vEthernet (Default Switch)')) -and
+                        $_.PrefixLength -ge 8 -and $_.PrefixLength -le 30
+                    }
             )
             $HostInterfaceIndexes = @($HostPrefixes | ForEach-Object { $_.InterfaceIndex } | Where-Object { $null -ne $_ })
         } catch {
             return [ordered]@{ ok = $true; addresses = $Addresses; diagnosticCode = 'hyper-v-bootstrap-host-prefix-inspection-failed' }
+        }
+        if ($ManagementAdapterInspectionFailed -and $HostPrefixes.Count -eq 0) {
+            return [ordered]@{ ok = $true; addresses = $Addresses; diagnosticCode = 'hyper-v-bootstrap-management-adapter-inspection-failed' }
         }
         try {
             $Candidates = @($BootstrapAdapters[0].IPAddresses)

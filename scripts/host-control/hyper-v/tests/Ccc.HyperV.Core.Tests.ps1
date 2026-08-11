@@ -120,6 +120,30 @@ Describe 'CCC Hyper-V Linux bootstrap operation' {
         $Result.diagnosticCode | Should -BeNullOrEmpty
     }
 
+    It 'falls back to the exact Default Switch host prefix when management adapter inspection fails' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @() }) } `
+            -ManagementAdapterReader { throw 'private path' } `
+            -HostPrefixReader { @(
+                [pscustomobject]@{ IPAddress = '172.20.0.1'; PrefixLength = 20; InterfaceIndex = 42; InterfaceAlias = 'vEthernet (Default Switch)' },
+                [pscustomobject]@{ IPAddress = '10.0.0.1'; PrefixLength = 24; InterfaceIndex = 7; InterfaceAlias = 'Ethernet' }
+            ) } `
+            -NeighborReader { @([pscustomobject]@{ IPAddress = '172.20.1.9'; LinkLayerAddress = '00-15-5d-01-02-03'; InterfaceIndex = 42; State = 'Reachable' }) }
+        @($Result.addresses) | Should -Be @('172.20.1.9')
+        $Result.diagnosticCode | Should -BeNullOrEmpty
+    }
+
+    It 'preserves the management adapter diagnostic when no exact fallback prefix exists' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @() }) } `
+            -ManagementAdapterReader { throw 'private path' } `
+            -HostPrefixReader { @([pscustomobject]@{ IPAddress = '10.0.0.1'; PrefixLength = 24; InterfaceIndex = 7; InterfaceAlias = 'Ethernet' }) }
+        @($Result.addresses).Count | Should -Be 0
+        $Result.diagnosticCode | Should -Be 'hyper-v-bootstrap-management-adapter-inspection-failed'
+    }
+
     It 'reports a bounded diagnostic when neighbor inspection fails' {
         $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
         $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
