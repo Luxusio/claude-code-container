@@ -249,7 +249,14 @@ export type HyperVBootstrapNetworkCleanupObservation = {
 export type HyperVBootstrapNetworkObservation = {
     ok: boolean;
     addresses: string[];
-    diagnosticCode?: "hyper-v-bootstrap-neighbor-inspection-failed";
+    diagnosticCode?:
+        | "hyper-v-bootstrap-address-selection-failed"
+        | "hyper-v-bootstrap-host-prefix-inspection-failed"
+        | "hyper-v-bootstrap-management-adapter-inspection-failed"
+        | "hyper-v-bootstrap-neighbor-inspection-failed"
+        | "hyper-v-bootstrap-network-adapter-ambiguous"
+        | "hyper-v-bootstrap-network-adapter-identity-mismatch"
+        | "hyper-v-bootstrap-vm-adapter-inspection-failed";
 };
 
 export type HyperVCommandOptions = {

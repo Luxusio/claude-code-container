@@ -66,6 +66,23 @@ describe("Hyper-V public response projection", () => {
         })).toBe(diagnosticCode);
     });
 
+    it.each([
+        "hyper-v-bootstrap-address-selection-failed",
+        "hyper-v-bootstrap-host-prefix-inspection-failed",
+        "hyper-v-bootstrap-management-adapter-inspection-failed",
+        "hyper-v-bootstrap-neighbor-inspection-failed",
+        "hyper-v-bootstrap-network-adapter-ambiguous",
+        "hyper-v-bootstrap-network-adapter-identity-mismatch",
+        "hyper-v-bootstrap-network-command-failed",
+        "hyper-v-bootstrap-vm-adapter-inspection-failed",
+    ])("preserves the bounded bootstrap diagnostic %s", (diagnosticCode) => {
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-powershell-execution-failed",
+            stdout: `CCC_HYPER_V_STAGE:${diagnosticCode}`,
+            stderr: "",
+        })).toBe(diagnosticCode);
+    });
+
     it("uses an allowlist for persisted device records", () => {
         const result = redactHyperVDeviceSecrets({
             id: "windows-vm-1",

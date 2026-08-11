@@ -224,14 +224,23 @@ export function parseHyperVBootstrapNetworkObservation(stdout: string): HyperVBo
         }
     });
     if (addresses.length !== parsed.addresses.length || addresses.length > 8 || new Set(addresses).size !== addresses.length) return null;
+    const diagnosticCodes = new Set<NonNullable<HyperVBootstrapNetworkObservation["diagnosticCode"]>>([
+        "hyper-v-bootstrap-address-selection-failed",
+        "hyper-v-bootstrap-host-prefix-inspection-failed",
+        "hyper-v-bootstrap-management-adapter-inspection-failed",
+        "hyper-v-bootstrap-neighbor-inspection-failed",
+        "hyper-v-bootstrap-network-adapter-ambiguous",
+        "hyper-v-bootstrap-network-adapter-identity-mismatch",
+        "hyper-v-bootstrap-vm-adapter-inspection-failed",
+    ]);
     if (parsed.diagnosticCode !== undefined
         && parsed.diagnosticCode !== null
-        && parsed.diagnosticCode !== "hyper-v-bootstrap-neighbor-inspection-failed") return null;
+        && !diagnosticCodes.has(parsed.diagnosticCode as NonNullable<HyperVBootstrapNetworkObservation["diagnosticCode"]>)) return null;
     return {
         ok: true,
         addresses,
-        ...(parsed.diagnosticCode === "hyper-v-bootstrap-neighbor-inspection-failed"
-            ? { diagnosticCode: parsed.diagnosticCode }
+        ...(typeof parsed.diagnosticCode === "string"
+            ? { diagnosticCode: parsed.diagnosticCode as NonNullable<HyperVBootstrapNetworkObservation["diagnosticCode"]> }
             : {}),
     };
 }

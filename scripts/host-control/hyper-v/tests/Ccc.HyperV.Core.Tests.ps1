@@ -139,12 +139,28 @@ Describe 'CCC Hyper-V Linux bootstrap operation' {
         $Result.diagnosticCode | Should -BeNullOrEmpty
     }
 
-    It 'rejects a bootstrap adapter on a foreign switch' {
+    It 'classifies VM adapter inspection failure without exposing the exception' {
         $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
-        {
-            Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
-                -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Foreign'; MacAddress = '00155D010203'; IPAddresses = @() }) }
-        } | Should -Throw 'hyper-v-bootstrap-network-adapter-identity-mismatch'
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm -VmAdapterReader { throw 'private path' }
+        @($Result.addresses).Count | Should -Be 0
+        $Result.diagnosticCode | Should -Be 'hyper-v-bootstrap-vm-adapter-inspection-failed'
+    }
+
+    It 'classifies host prefix inspection failure without exposing the exception' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Default Switch'; MacAddress = '00155D010203'; IPAddresses = @() }) } `
+            -ManagementAdapterReader { @([pscustomobject]@{ IPAddresses = @('172.20.0.1') }) } `
+            -HostPrefixReader { throw 'private path' }
+        @($Result.addresses).Count | Should -Be 0
+        $Result.diagnosticCode | Should -Be 'hyper-v-bootstrap-host-prefix-inspection-failed'
+    }
+
+    It 'classifies a bootstrap adapter on a foreign switch' {
+        $Vm = [pscustomobject]@{ Id = [Guid]'12345678-1234-1234-1234-123456789abc' }
+        $Result = Get-CccLinuxBootstrapNetworkResult -Vm $Vm `
+            -VmAdapterReader { param($TargetVm) @([pscustomobject]@{ Name = 'CCC Bootstrap DHCP'; SwitchName = 'Foreign'; MacAddress = '00155D010203'; IPAddresses = @() }) }
+        $Result.diagnosticCode | Should -Be 'hyper-v-bootstrap-network-adapter-identity-mismatch'
     }
 }
 
