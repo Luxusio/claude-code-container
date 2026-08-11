@@ -1094,6 +1094,17 @@ describe("docker.ts module exports", () => {
             );
             expect((spawnSyncMock.mock.calls[0][1] as string[]).at(-1))
                 .toContain("timeout -k 2s 10s");
+            expect((spawnSyncMock.mock.calls[0][1] as string[]).at(-1))
+                .toContain("[ -L /home/ccc/.codex/config.toml ]");
+        });
+
+        it("rejects an unsafe Codex config entry before root repair", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(42));
+
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
+                "Codex config access probe failed",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
 
         it("prepares mounted Codex config for the in-container ccc user only after access check fails", () => {

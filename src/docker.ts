@@ -1093,7 +1093,7 @@ export function prepareCodexConfigForContainer(containerName: string): void {
     const accessCheck = spawnSync(runtimeCli(), [
         "exec", containerName,
         "sh", "-c",
-        codexConfigMutation("test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml"),
+        codexConfigMutation("if [ -L /home/ccc/.codex/config.toml ] || { [ -e /home/ccc/.codex/config.toml ] && [ ! -f /home/ccc/.codex/config.toml ]; }; then exit 42; fi; test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml"),
     ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
     if (accessCheck.status === 0) return;
     if ((accessCheck.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
