@@ -225,7 +225,7 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v12";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v13";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
@@ -10749,7 +10749,6 @@ type HyperVLinuxGuestReadyTrace = {
     bootstrapSshAttempts: number;
     bootstrapSshLastStatus?: number | null;
     bootstrapSshLastError?: string | null;
-    bootstrapHostKeyProbeStatus?: number | null;
     bootstrapHostKeyObserved?: boolean | null;
     bootstrapHostKeyMatchesExpected?: boolean | null;
     networkFinalizeAttempts: number;
@@ -10814,16 +10813,20 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
     return fallback;
 }
 
-export function compareHyperVLinuxEd25519HostKeyScan(expectedPublicKey: string, scanOutput: string): {
+export function compareHyperVLinuxEd25519HostKeyFingerprint(expectedFingerprint: string, sshDiagnostic: string): {
     observed: boolean;
     matchesExpected: boolean | null;
 } {
-    const expected = /^ssh-ed25519 ([A-Za-z0-9+/=]+)(?: .*)?$/.exec(expectedPublicKey.trim())?.[1];
+    const expected = /^SHA256:[A-Za-z0-9+/]{43}$/.test(expectedFingerprint) ? expectedFingerprint : "";
     if (!expected) return { observed: false, matchesExpected: null };
     const observed = new Set<string>();
-    for (const line of scanOutput.split(/\r?\n/).slice(0, 32)) {
-        const key = /^(?:\[[^\]]{1,255}\](?::\d{1,5})?|\S{1,255})\s+ssh-ed25519\s+([A-Za-z0-9+/=]+)(?:\s.*)?$/.exec(line.trim())?.[1];
-        if (key) observed.add(key);
+    const bounded = sshDiagnostic.slice(0, 64 * 1024);
+    const patterns = [
+        /server host key:\s+ssh-ed25519\s+(SHA256:[A-Za-z0-9+/]{43})=?/gi,
+        /fingerprint for the ED25519 key sent by (?:the )?remote host is\s+(SHA256:[A-Za-z0-9+/]{43})=?/gi,
+    ];
+    for (const pattern of patterns) {
+        for (const match of bounded.matchAll(pattern)) observed.add(match[1]);
     }
     if (observed.size === 0) return { observed: false, matchesExpected: null };
     return { observed: true, matchesExpected: observed.size === 1 && observed.has(expected) };
@@ -12666,7 +12669,6 @@ async function lifecycleCommandInvokeUnlocked(
             ? Math.min(DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(parsed.bootTimeoutMs)))
             : 5 * 60 * 1000;
         const ssh = providerExecutable("ssh.exe", normalized) || providerExecutable("ssh", normalized);
-        const sshKeyscan = providerExecutable("ssh-keyscan.exe", normalized) || providerExecutable("ssh-keyscan", normalized);
         if (!ssh) {
             hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: "missing-provider-command:ssh" };
             success = false;
@@ -12683,7 +12685,6 @@ async function lifecycleCommandInvokeUnlocked(
             let bootstrapSshAttempts = 0;
             let bootstrapSshLastStatus: number | null = null;
             let bootstrapSshLastError: string | null = null;
-            let bootstrapHostKeyProbeStatus: number | null = null;
             let bootstrapHostKeyObserved: boolean | null = null;
             let bootstrapHostKeyMatchesExpected: boolean | null = null;
             const probedBootstrapHostKeyAddresses = new Set<string>();
@@ -12770,6 +12771,7 @@ async function lifecycleCommandInvokeUnlocked(
                                 ...sshOptions,
                                 networkAddress: bootstrapAddress,
                                 hostKeyAlias: networkAddress,
+                                verboseHostKeyDiagnostics: true,
                                 timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
                             });
                             const bootstrapReadyExecution = await hyperVProviderCommandRunner(normalized, bootstrapReadyCommand, {
@@ -12785,27 +12787,11 @@ async function lifecycleCommandInvokeUnlocked(
                                     ? "ssh-readiness-marker-missing"
                                     : hyperVGuestReadinessFailureCode("linux-vm", bootstrapReadyExecution);
                                 if (bootstrapSshLastError === "ssh-host-key-rejected"
-                                    && !probedBootstrapHostKeyAddresses.has(bootstrapAddress)
-                                    && sshKeyscan) {
+                                    && !probedBootstrapHostKeyAddresses.has(bootstrapAddress)) {
                                     probedBootstrapHostKeyAddresses.add(bootstrapAddress);
-                                    const hostKeyProbe = await hyperVProviderCommandRunner(normalized, {
-                                        mode: "exec",
-                                        provider: "hyper-v-ssh-keyscan",
-                                        executable: sshKeyscan,
-                                        args: ["-T", "10", "-t", "ed25519", bootstrapAddress],
-                                    }, {
-                                        timeoutMs: hyperVRemainingTimeout(deadline, 15000),
-                                        outputLimit: 64 * 1024,
-                                    });
-                                    bootstrapHostKeyProbeStatus = typeof hostKeyProbe.status === "number" ? hostKeyProbe.status : null;
-                                    const expectedPublicKey = readDeviceLabTextFile(
-                                        hostPublicKeyPath,
-                                        "hyper-v-linux-ssh-host-public-key",
-                                        64 * 1024,
-                                    ) || "";
-                                    const comparison = compareHyperVLinuxEd25519HostKeyScan(
-                                        expectedPublicKey,
-                                        commandSucceeded(hostKeyProbe) ? String(hostKeyProbe.stdout || "") : "",
+                                    const comparison = compareHyperVLinuxEd25519HostKeyFingerprint(
+                                        fingerprint,
+                                        `${bootstrapReadyExecution.error || ""}\n${bootstrapReadyExecution.stderr || ""}`,
                                     );
                                     if (comparison.observed) {
                                         observedBootstrapHostKeyAddresses.add(bootstrapAddress);
@@ -12914,7 +12900,6 @@ async function lifecycleCommandInvokeUnlocked(
                     bootstrapSshAttempts,
                     bootstrapSshLastStatus,
                     bootstrapSshLastError,
-                    bootstrapHostKeyProbeStatus,
                     bootstrapHostKeyObserved,
                     bootstrapHostKeyMatchesExpected,
                     networkFinalizeAttempts,

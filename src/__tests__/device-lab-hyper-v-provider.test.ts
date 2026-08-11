@@ -1456,8 +1456,10 @@ describe("Hyper-V provider adapter", () => {
         expect(hyperVLinuxSshReadyCommand(ssh)).toMatchObject({ provider: "hyper-v-ssh", executable: "ssh.exe" });
         expect(hyperVLinuxSshReadyCommand(ssh).args).toContain("StrictHostKeyChecking=yes");
         expect(hyperVLinuxSshReadyCommand(ssh).args).toContain("HostKeyAlgorithms=ssh-ed25519");
+        expect(hyperVLinuxSshReadyCommand(ssh).args).not.toContain("-v");
         expect(hyperVLinuxSshReadyCommand(ssh).args).not.toContain("CheckHostIP=no");
-        const bootstrapSshArgs = hyperVLinuxSshReadyCommand({ ...ssh, networkAddress: "172.20.1.8", hostKeyAlias: "172.29.0.10" }).args;
+        const bootstrapSshArgs = hyperVLinuxSshReadyCommand({ ...ssh, networkAddress: "172.20.1.8", hostKeyAlias: "172.29.0.10", verboseHostKeyDiagnostics: true }).args;
+        expect(bootstrapSshArgs).toContain("-v");
         expect(bootstrapSshArgs).toContain("HostKeyAlias=172.29.0.10");
         expect(bootstrapSshArgs).toContain("CheckHostIP=no");
         const bootstrapNetwork = hyperVBootstrapNetworkCommand({

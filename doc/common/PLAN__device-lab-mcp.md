@@ -3374,7 +3374,7 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v12` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v13` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
@@ -3383,10 +3383,13 @@ remain unchanged where they are the behavior under test.
     command output. The same contract restarts `sshd` after cloud-init installs
     the pinned host key, pins host-key negotiation to ed25519, and disables the
     bootstrap DHCP address check only while strict verification uses the
-    validated managed-address alias. A one-shot ed25519 keyscan after rejection
-    records only observed/matches-expected booleans so cloud-init key drift is
-    distinguishable from client verification failure without exposing key or
-    address material. Those counters also select a specific bounded failure code
+    validated managed-address alias. Bootstrap readiness enables bounded
+    OpenSSH verbose diagnostics after rejection and compares the reported
+    ed25519 SHA-256 fingerprint with the owner-pinned fingerprint. This avoids
+    depending on Windows `ssh-keyscan`; only observed/matches-expected booleans
+    are retained so cloud-init key drift is distinguishable from client
+    verification failure without exposing fingerprint or address material.
+    Those counters also select a specific bounded failure code
     for missing guest signals, bootstrap inspection, address discovery,
     bootstrap SSH, or network finalization instead of collapsing every case
     into `ssh-connection-timeout`. The Linux real test writes that safe evidence

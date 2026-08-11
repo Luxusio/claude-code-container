@@ -478,6 +478,7 @@ export function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
     const timeoutSec = Math.min(30, Math.max(1, Math.ceil((options.timeoutMs || 30000) / 1000)));
     return [
         "-F", "NUL",
+        ...(options.verboseHostKeyDiagnostics ? ["-v"] : []),
         "-i", privateKeyPath,
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
