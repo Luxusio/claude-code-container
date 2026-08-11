@@ -10768,6 +10768,7 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
         "hyper-v-bootstrap-neighbor-inspection-failed",
         "hyper-v-bootstrap-network-adapter-ambiguous",
         "hyper-v-bootstrap-network-adapter-identity-mismatch",
+        "hyper-v-bootstrap-network-command-failed",
         "hyper-v-bootstrap-network-probe-failed",
         "hyper-v-bootstrap-network-response-invalid",
         "hyper-v-bootstrap-vm-adapter-inspection-failed",
