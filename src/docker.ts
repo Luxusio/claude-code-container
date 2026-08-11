@@ -73,6 +73,12 @@ const DEVICE_LAB_MOUNT_IDENTITY_LABEL = "ccc.device-lab.mount-identity";
 const PROJECT_MOUNT_IDENTITY_LABEL = "ccc.project.mount-identity";
 const DEVICE_LAB_MOUNT_CONTRACT_VERSION = "2";
 const VERIFICATION_RETRY_DELAYS_MS = [100, 200, 400, 800] as const;
+export const CODEX_CONFIG_PREPARE_TIMEOUT_MS = 15_000;
+const CODEX_CONFIG_MUTATION_INNER_TIMEOUT_SECONDS = 10;
+
+function codexConfigMutation(command: string): string {
+    return `timeout -k 2s ${CODEX_CONFIG_MUTATION_INNER_TIMEOUT_SECONDS}s sh -c '${command.replace(/'/g, `'"'"'`)}'`;
+}
 
 function withBoundedVerificationRetry<T>(
     operation: (finalAttempt: boolean) => T,
@@ -1087,15 +1093,29 @@ export function prepareCodexConfigForContainer(containerName: string): void {
     const accessCheck = spawnSync(runtimeCli(), [
         "exec", containerName,
         "sh", "-c",
-        "test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml",
-    ], { stdio: "ignore" });
+        codexConfigMutation("test ! -e /home/ccc/.codex/config.toml || test -r /home/ccc/.codex/config.toml -a -w /home/ccc/.codex/config.toml"),
+    ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
     if (accessCheck.status === 0) return;
+    if ((accessCheck.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+        throw new Error("Codex config access probe timed out");
+    }
+    if (accessCheck.error || (accessCheck.status !== 0 && accessCheck.status !== 1)) {
+        throw new Error("Codex config access probe failed");
+    }
 
-    spawnSync(runtimeCli(), [
+    const repair = spawnSync(runtimeCli(), [
         "exec", "--user", "root", containerName,
         "sh", "-c",
-        "if [ -e /home/ccc/.codex/config.toml ]; then chown ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown ccc:ccc /home/ccc/.codex/config.toml 2>/dev/null || true; chmod 600 /home/ccc/.codex/config.toml 2>/dev/null || true; fi",
-    ], { stdio: "ignore" });
+        codexConfigMutation("if [ -e /home/ccc/.codex/config.toml ]; then (chown ccc:docker /home/ccc/.codex/config.toml 2>/dev/null || chown ccc:ccc /home/ccc/.codex/config.toml 2>/dev/null) && chmod 600 /home/ccc/.codex/config.toml; fi"),
+    ], { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS });
+    if ((repair.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+        || repair.status === 124
+        || repair.status === 137) {
+        throw new Error("Codex config repair timed out");
+    }
+    if (repair.error || repair.status !== 0) {
+        throw new Error("Codex config repair failed");
+    }
 }
 
 export function isDockerRunning(): boolean {

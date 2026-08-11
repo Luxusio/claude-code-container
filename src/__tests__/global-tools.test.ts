@@ -39,34 +39,29 @@ describe("ensureTools (npm tools)", () => {
         vi.restoreAllMocks();
     });
 
-    it("does nothing when all tools already exist", () => {
-        // Single combined check returns empty stdout (all present)
+    it("does nothing when the selected tool already exists", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested-tool proof
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // Combined check + exact requested-tool proof, no install
+        // Selected-tool check + exact requested-tool proof, no install.
         expect(spawnSyncMock).toHaveBeenCalledTimes(2);
         expect(console.log).not.toHaveBeenCalled();
     });
 
-    it("installs missing tools and creates wrappers", () => {
-        // Combined check returns all 3 missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
+    it("installs the selected missing tool and creates its wrapper", () => {
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper gemini
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper opencode
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested-tool proof
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // 1 check + 2 cleanups + 1 install + 1 reshim + 3 wrappers + proof = 9 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(9);
+        expect(spawnSyncMock).toHaveBeenCalledTimes(7);
 
         // Verify install command uses mise exec node@22 (index 3 after cleanup)
         const installCall = spawnSyncMock.mock.calls[3];
@@ -77,8 +72,8 @@ describe("ensureTools (npm tools)", () => {
         const shCmd = installArgs[installArgs.length - 1];
         expect(shCmd).toContain("mise exec node@22");
         expect(shCmd).toContain("@google/gemini-cli");
-        expect(shCmd).toContain("@openai/codex");
-        expect(shCmd).toContain("opencode-ai");
+        expect(shCmd).not.toContain("@openai/codex");
+        expect(shCmd).not.toContain("opencode-ai");
 
         // Verify wrapper creation
         const wrapperCall = spawnSyncMock.mock.calls[5];
@@ -87,65 +82,45 @@ describe("ensureTools (npm tools)", () => {
         expect(wrapperCmd).toContain("mise exec node@22 -- gemini");
         expect(wrapperCmd).toContain("chmod +x");
 
-        expect(console.log).toHaveBeenCalledWith("Installing gemini, codex, opencode...");
+        expect(console.log).toHaveBeenCalledWith("Installing gemini...");
     });
 
-    it("installs only missing tools (partial)", () => {
-        // Combined check returns only codex missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "codex\n"));
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // npm install success
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // mise reshim
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // wrapper codex
-        spawnSyncMock.mockReturnValueOnce(makeResult(0)); // requested gemini proof
-
+    it("does not inspect missing inactive tools", () => {
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0));
         ensureTools(container, getToolByName("gemini")!);
-
-        // 1 check + 2 cleanups + 1 install + 1 reshim + 1 wrapper + proof = 7 calls
-        expect(spawnSyncMock).toHaveBeenCalledTimes(7);
-
-        // Install only codex (index 3 after cleanup)
-        const installCall = spawnSyncMock.mock.calls[3];
-        const shCmd = (installCall[1] as string[])[
-            (installCall[1] as string[]).length - 1
-        ];
-        expect(shCmd).toContain("@openai/codex");
-        expect(shCmd).not.toContain("@google/gemini-cli");
-
-        expect(console.log).toHaveBeenCalledWith("Installing codex...");
+        expect(spawnSyncMock).toHaveBeenCalledTimes(2);
+        const shCmd = (spawnSyncMock.mock.calls[0][1] as string[]).at(-1) as string;
+        expect(shCmd).toContain("gemini");
+        expect(shCmd).not.toContain("codex");
+        expect(shCmd).not.toContain("opencode");
     });
 
     it("warns, skips wrappers, and fails when install leaves the requested tool absent", () => {
-        // Combined check returns all 3 missing
-        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\ncodex\nopencode\n"));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "gemini\n"));
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale dirs
         spawnSyncMock.mockReturnValueOnce(makeResult(0)); // cleanup stale shims
         spawnSyncMock.mockReturnValueOnce(makeResult(1)); // npm install FAIL
-        spawnSyncMock.mockReturnValueOnce(makeResult(1)); // requested-tool proof FAIL
 
         expect(() => ensureTools(container, getToolByName("gemini")!)).toThrow(
-            "Requested tool gemini is unavailable after setup",
+            "Container gemini installation failed",
         );
 
-        // 1 check + 2 cleanups + 1 install + failed proof (no reshim/wrappers)
-        expect(spawnSyncMock).toHaveBeenCalledTimes(5);
-        expect(console.warn).toHaveBeenCalledWith(
-            "Warning: Failed to install some global npm tools (non-fatal)",
-        );
+        // 1 check + 2 cleanups + failed install; no later mutation or proof.
+        expect(spawnSyncMock).toHaveBeenCalledTimes(4);
     });
 
-    it("checks all tools in single docker exec", () => {
+    it("checks only the selected tool in one docker exec", () => {
         spawnSyncMock.mockReturnValueOnce(makeResult(0, ""));
         spawnSyncMock.mockReturnValueOnce(makeResult(0));
 
         ensureTools(container, getToolByName("gemini")!);
 
-        // Verify the combined check command
         const checkCall = spawnSyncMock.mock.calls[0];
         const checkArgs = checkCall[1] as string[];
         const shCmd = checkArgs[checkArgs.length - 1];
         expect(shCmd).toContain("[ -x /home/ccc/.local/bin/gemini ]");
-        expect(shCmd).toContain("[ -x /home/ccc/.local/bin/codex ]");
+        expect(shCmd).not.toContain("[ -x /home/ccc/.local/bin/codex ]");
+        expect(shCmd).not.toContain("[ -x /home/ccc/.local/bin/opencode ]");
     });
 });

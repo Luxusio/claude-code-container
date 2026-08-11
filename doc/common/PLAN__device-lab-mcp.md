@@ -15,6 +15,17 @@ device definitions may be discoverable, but Windows Sandbox, Android Emulator,
 iOS Simulator, macOS VMs, and other heavy targets should start only after an MCP
 tool call requests them.
 
+Container agent setup follows the same lazy-start rule. `ccc codex`, `ccc
+gemini`, and `ccc opencode` may probe and install only the selected agent tool;
+startup must not inspect or install the other registered agents. Container tool
+and configuration probes have a 15-second deadline so a stalled runtime command
+unwinds the CCC process and its session-lock claim instead of leaving later
+launches blocked behind an apparently live setup process. A selected tool's
+first installation may use a longer bounded mutation deadline. Mutations are
+bounded inside the container first and use a slightly longer host-side deadline;
+every failed stage stops setup immediately so CCC never releases its session
+claim while an abandoned package or shim mutation can still be running.
+
 ## Architecture
 
 Implicit host-broker lifecycle routing preserves the public `device_*` response

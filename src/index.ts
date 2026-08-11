@@ -158,6 +158,10 @@ export function ensureToolsForSetupContainer(
             installer(readyContainerId, setupTool);
             return readyContainerId;
         } catch (error) {
+            // Retry only when setup actually lost its container. Retrying a
+            // package/probe failure against the same live container can double
+            // the mutation deadline and race an in-container cleanup.
+            if (runningProbe(readyContainerId, "id")) throw error;
             lastError = error;
         }
     }

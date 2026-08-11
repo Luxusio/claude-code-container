@@ -233,6 +233,7 @@ const {
     getHostGitIdentityMounts,
     resolveCredentialHostPath,
     prepareCodexConfigForContainer,
+    CODEX_CONFIG_PREPARE_TIMEOUT_MS,
     restoreCodexConfigHostOwnership,
     syncManagedMcpBundles,
     bindSourcePathsEquivalent,
@@ -1089,8 +1090,10 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 expect.arrayContaining(["exec", "ccc-test"]),
-                { stdio: "ignore" },
+                { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS },
             );
+            expect((spawnSyncMock.mock.calls[0][1] as string[]).at(-1))
+                .toContain("timeout -k 2s 10s");
         });
 
         it("prepares mounted Codex config for the in-container ccc user only after access check fails", () => {
@@ -1104,10 +1107,35 @@ describe("docker.ts module exports", () => {
             expect(spawnSyncMock).toHaveBeenCalledWith(
                 "docker",
                 expect.arrayContaining(["exec", "--user", "root", "ccc-test"]),
-                { stdio: "ignore" },
+                { stdio: "ignore", timeout: CODEX_CONFIG_PREPARE_TIMEOUT_MS },
             );
             const args = spawnSyncMock.mock.calls[1][1] as string[];
             expect(args.at(-1)).toContain("chown ccc:docker /home/ccc/.codex/config.toml");
+            expect(args.at(-1)).toContain("timeout -k 2s 10s");
+        });
+
+        it("fails immediately when the Codex config access probe times out", () => {
+            spawnSyncMock.mockReturnValueOnce({
+                ...makeResult(0),
+                status: null,
+                error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }),
+            });
+
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
+                "Codex config access probe timed out",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+        });
+
+        it("fails when Codex config repair fails", () => {
+            spawnSyncMock
+                .mockReturnValueOnce(makeResult(1))
+                .mockReturnValueOnce(makeResult(1));
+
+            expect(() => prepareCodexConfigForContainer("ccc-test")).toThrow(
+                "Codex config repair failed",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(2);
         });
     });
 

@@ -69,6 +69,7 @@ vi.mock("../device-lab-admin.js", () => ({
 vi.mock("../windows-system-powershell.js", () => ({
     canonicalWindowsPowerShellPath: () => "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     canonicalWindowsTasklistPath: () => "C:\\Windows\\System32\\tasklist.exe",
+    hiddenWindowsPowerShellArgs: (args: string[]) => args,
 }));
 
 const mockWithSharedMutationLock = vi.fn((_file: string, operation: () => unknown) => operation());

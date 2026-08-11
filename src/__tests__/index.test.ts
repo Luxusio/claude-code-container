@@ -839,6 +839,23 @@ describe('auto container version-up', () => {
     expect(installer).toHaveBeenCalledWith(replacementId, getToolByName('codex')!)
   })
 
+  it('does not retry a tool failure against the same running container', () => {
+    const containerId = '196c8453339a6b2d2d46126160f53197398a0333b6b41bffd37dd27ada83e068'
+    const runningProbe = vi.fn(() => true)
+    const restart = vi.fn()
+    const installer = vi.fn(() => { throw new Error('codex probe timed out') })
+
+    expect(() => ensureToolsForSetupContainer(
+      containerId,
+      getToolByName('codex')!,
+      restart,
+      runningProbe,
+      installer,
+    )).toThrow('codex probe timed out')
+    expect(installer).toHaveBeenCalledOnce()
+    expect(restart).not.toHaveBeenCalled()
+  })
+
   it('serializes requested-tool readiness for simultaneous container joiners', async () => {
     let releaseFirst!: () => void
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
