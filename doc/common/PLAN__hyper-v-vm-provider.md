@@ -621,7 +621,10 @@ Real-provider tests:
   `network-config`, and `user-data` files. It deliberately omits
   `ovf-env.xml`: advertising the Azure datasource on the generic image can
   preempt NoCloud and leave the CCC user, authorized client key, and pinned
-  host key unapplied. Its first NIC uses Hyper-V's
+  host key unapplied. Cloud-config is emitted as a schema-shaped PowerShell
+  object serialized to JSON (valid YAML syntax), rather than concatenated YAML;
+  in particular it does not emit the invalid scalar top-level `user` field,
+  whose schema requires an object. Its first NIC uses Hyper-V's
   `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
   switch. VM creation assigns that adapter a static `06:*` locally administered
   MAC derived from the collision-fenced managed `02:*` MAC. Initial cloud-init
@@ -662,10 +665,11 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v31` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v32` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
-  Azure OVF datasource into the generic NoCloud seed, or blocks SSH activation
-  behind online package updates.
+  Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
+  `user` cloud-config field, or blocks SSH activation behind online package
+  updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
   disables package updates on the first boot, writes the owner-scoped host
   keys and bootstrap DHCP network, then enables the local SSH service without
