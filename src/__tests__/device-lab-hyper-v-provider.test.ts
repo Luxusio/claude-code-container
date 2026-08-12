@@ -1415,9 +1415,15 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("$UserConfig = [ordered]@{");
         expect(seedScript).toContain("package_update = $false");
         expect(seedScript).toContain("users = @('default', [ordered]@{ name = $GuestUsername");
-        expect(seedScript).toContain("ssh_keys = [ordered]@{ ed25519_private = $HostPrivateKeyText; ed25519_public = $HostPublicKeyText }");
+        expect(seedScript).toContain("path = '/etc/ssh/ssh_host_ed25519_key'");
+        expect(seedScript).toContain("permissions = '0600'; encoding = 'b64'; content = $HostPrivateKeyBase64");
+        expect(seedScript).toContain("path = '/etc/ssh/ssh_host_ed25519_key.pub'");
+        expect(seedScript).toContain("permissions = '0644'; encoding = 'b64'; content = $HostPublicKeyBase64");
+        expect(seedScript).toContain("ssh_deletekeys = $false");
+        expect(seedScript).toContain("ssh_genkeytypes = @()");
+        expect(seedScript).not.toContain("ssh_keys = [ordered]@{");
         expect(seedScript).toContain("ssh_authorized_keys = @($PublicKeyText)");
-        expect(seedScript).toContain("runcmd = @('systemctl enable ssh', 'systemctl restart ssh')");
+        expect(seedScript).toContain("runcmd = @('systemctl enable ssh', '/usr/sbin/sshd -t && systemctl restart ssh')");
         expect(seedScript).toContain("$UserConfig | ConvertTo-Json -Compress -Depth 8");
         expect(seedScript).not.toContain("('user: ' + $GuestUsername)");
         expect(seedScript).not.toContain("packages =");
@@ -1437,8 +1443,8 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("[Console]::Out.WriteLine(('CCC_HYPER_V_STAGE:hyper-v-linux-seed-' + $Stage + '-command-failed'))");
         expect(seedScript).toContain("hyper-v-linux-seed-' + $CccProvisionStage + '-command-failed");
         expect(seedScript).toContain("ssh_host_ed25519_key");
-        expect(seedScript).toContain("ssh_deletekeys = $true");
-        expect(seedScript).toContain("ssh_keys = [ordered]@{");
+        expect(seedScript).toContain("ssh_deletekeys = $false");
+        expect(seedScript).toContain("write_files = @(");
         expect(seedScript).not.toContain("$HostPrivateKeyYaml");
         expect(seedScript).not.toContain("'  - path: /etc/ssh/ssh_host_ed25519_key'");
         expect(seedScript).toContain("sshHostKeyFingerprint");

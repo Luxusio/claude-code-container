@@ -662,7 +662,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v33` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v34` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package
@@ -674,10 +674,13 @@ Real-provider tests:
   disables package updates on the first boot, writes the owner-scoped host
   keys and bootstrap DHCP network, then enables the local SSH service without
   waiting for an archive mirror. The broker applies the static managed network
-  only after bootstrap SSH is reachable. Cloud-init deletes any host keys inherited from the
-  base image, then installs the owner-scoped ED25519 pair through its native
-  `ssh_keys` contract before SSH starts. The same contract rejects brokers
-  that still acquire
+  only after bootstrap SSH is reachable. Cloud-init installs the owner-scoped
+  ED25519 pair with Base64 `write_files` entries, explicit root ownership and
+  `0600`/`0644` modes, validates the resulting daemon configuration, and then
+  restarts SSH. It disables automatic host-key generation instead of deleting
+  keys before replacement, so a cloud-config parsing or key-installation error
+  cannot leave the daemon permanently without a host key. The same contract
+  rejects brokers that still acquire
   an interactive desktop VHDX or report every unexpected VM creation preflight
   failure as the initial generic stage. VM
   creation must update both its public stage marker and loader-visible stage
