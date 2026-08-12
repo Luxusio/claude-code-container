@@ -158,7 +158,9 @@ export function hyperVLinuxSeedCommand(options: HyperVLinuxSeedOptions): HyperVP
         "    'network-config' = [Convert]::FromBase64String($NetworkBase64)",
         "    'user-data' = [Convert]::FromBase64String($UserDataBase64)",
         "  }",
-        ...isoWriterLines(),
+        // NoCloud scans labeled ISO9660/vfat media. Exclude UDF so Linux
+        // identifies this hybrid image as the required ISO9660 datasource.
+        ...isoWriterLines(3),
         "  Write-CccIso $IsoFiles $SeedDisk 'cidata' $MediaSourceRoot",
         "  $IsoFiles = $null",
         "  Set-CccProvisionStage 'media-attach'",

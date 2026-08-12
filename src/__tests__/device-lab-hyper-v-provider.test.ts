@@ -3,7 +3,7 @@ import { createHash } from "crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import {
     hyperVAcquireBaseImageCommand,
     hyperVBootstrapNetworkCleanupCommand,
@@ -57,6 +57,7 @@ import {
     parseHyperVVmObservation,
 } from "../host-control/hyper-v/index.js";
 import { hyperVProviderDiagnosticCode } from "../device-lab/broker/hyper-v/public-response.js";
+import { isoWriterLines } from "../host-control/hyper-v/core.js";
 
 const ownerId = "0123456789abcdef";
 const deviceId = "windows-ci-01";
@@ -88,6 +89,9 @@ function loaderOf(command: { args: string[] }): string {
 }
 
 describe("Hyper-V provider adapter", () => {
+    it("restricts provisioning media filesystem masks at compile time", () => {
+        expectTypeOf<Parameters<typeof isoWriterLines>[0]>().toEqualTypeOf<3 | 7 | undefined>();
+    });
     it("hides every host PowerShell adapter process", () => {
         const command = hyperVReadinessCommand("powershell.exe");
         expect(command.args.slice(0, 2)).toEqual(["-WindowStyle", "Hidden"]);
@@ -1350,8 +1354,9 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("hyper-v-linux-disk-boot-order-mismatch");
         expect(seedScript).toContain("Set-VMBios -VM $Vm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");
         expect(seedScript).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
-        expect(seedScript).toContain("$Image.FileSystemsToCreate = 7");
-        expect(seedScript).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
+        expect(seedScript).toContain("$Image.FileSystemsToCreate = 3");
+        expect(seedScript).not.toContain("$Image.FileSystemsToCreate = 7");
+        expect(seedScript).not.toContain("$Image.ChooseImageDefaultsForMediaType(1)");
         expect(seedScript).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(seedScript).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
         expect(seedScript).toContain("hyper-v-provisioning-media-volume-name-failed");
@@ -2292,6 +2297,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot");
         expect(script).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(script).toContain("$Image.FileSystemsToCreate = 7");
+        expect(script).toContain("$Image.ChooseImageDefaultsForMediaType(1)");
         expect(script).toContain("<settings pass=\"specialize\">");
         expect(script).toContain("<ComputerName>*</ComputerName>");
         expect(script).toContain("Microsoft-Windows-Deployment");

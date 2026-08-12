@@ -662,11 +662,14 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v32` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v33` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package
-  updates.
+  updates. The Linux `CIDATA` medium contains ISO9660 and Joliet only; it omits
+  UDF so cloud-init's NoCloud block-device scan identifies the attached medium
+  as the required ISO9660 datasource. Windows unattend media retains the shared
+  writer's ISO9660, Joliet, and UDF compatibility set.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
   disables package updates on the first boot, writes the owner-scoped host
   keys and bootstrap DHCP network, then enables the local SSH service without

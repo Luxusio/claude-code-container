@@ -48,7 +48,7 @@ export const HYPER_V_NETWORK_MARKER = "ccc-device-lab:hyper-v-network:v1";
 export const HYPER_V_NETWORK_PREFIX = "172.29.0.0/24";
 export const HYPER_V_NETWORK_GATEWAY = "172.29.0.1";
 export const HYPER_V_NETWORK_PREFIX_LENGTH = 24;
-export const HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT = "hyper-v-provider-image-finalization-v32";
+export const HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT = "hyper-v-provider-image-finalization-v33";
 
 export function isHyperVCccNetworkIdentity(marker: unknown, natName: unknown): marker is string {
     if (marker === HYPER_V_NETWORK_MARKER) return natName === HYPER_V_NETWORK_NAT;

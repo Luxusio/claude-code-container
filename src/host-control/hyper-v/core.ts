@@ -133,7 +133,15 @@ export function command(executable: string, script: string, input?: string): Hyp
     };
 }
 
-export function isoWriterLines(): string[] {
+export function isoWriterLines(fileSystems: 3 | 7 = 7): string[] {
+    if (fileSystems !== 3 && fileSystems !== 7) throw new Error("hyper-v-provisioning-media-filesystems-invalid");
+    const fileSystemSelection = fileSystems === 3
+        ? ["    try { $Image.FileSystemsToCreate = 3 } catch { throw 'hyper-v-provisioning-media-filesystem-selection-failed' }"]
+        : [
+            "    try { $Image.FileSystemsToCreate = 7 } catch {",
+            "      try { $Image.ChooseImageDefaultsForMediaType(1) } catch { throw 'hyper-v-provisioning-media-filesystem-selection-failed' }",
+            "    }",
+        ];
     return [
         "if (-not ('CccIsoStreamWriter' -as [type])) {",
         "  Add-Type -TypeDefinition @'",
@@ -223,9 +231,7 @@ export function isoWriterLines(): string[] {
         "    [Console]::Out.WriteLine('hyper-v-provisioning-media-com-unavailable')",
         "    try { $Image = New-Object -ComObject IMAPI2FS.MsftFileSystemImage } catch { throw 'hyper-v-provisioning-media-com-unavailable' }",
         "    [Console]::Out.WriteLine('hyper-v-provisioning-media-filesystem-selection-failed')",
-        "    try { $Image.FileSystemsToCreate = 7 } catch {",
-        "      try { $Image.ChooseImageDefaultsForMediaType(1) } catch { throw 'hyper-v-provisioning-media-filesystem-selection-failed' }",
-        "    }",
+        ...fileSystemSelection,
         "    [Console]::Out.WriteLine('hyper-v-provisioning-media-volume-name-failed')",
         "    try { $Image.VolumeName = $NormalizedVolumeName } catch { throw 'hyper-v-provisioning-media-volume-name-failed' }",
         "    $ImageRoot = $Image.Root",
