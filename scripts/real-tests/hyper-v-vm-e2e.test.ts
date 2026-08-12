@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
-import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
     hyperVWindowsVmE2ECapability,
@@ -219,6 +219,20 @@ describe("Hyper-V E2E zero-config image selection", () => {
             scp: "scp.exe",
             spawnSyncImpl: spawnReady,
         })).toMatchObject({ available: true, sourceImage: "" });
+    });
+
+    it("pre-creates the Linux E2E download destination without replacing an existing path", () => {
+        const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-linux-download-"));
+        const nested = join(root, "results", "device-lab-real");
+        const destination = join(nested, "download.txt");
+        mkdirSync(nested, { recursive: true });
+        try {
+            prepareHyperVLinuxDownloadDestination(destination);
+            expect(readFileSync(destination, "utf8")).toBe("");
+            expect(() => prepareHyperVLinuxDownloadDestination(destination)).toThrow();
+        } finally {
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 
     it("reports the exact missing Hyper-V Linux create response field", () => {

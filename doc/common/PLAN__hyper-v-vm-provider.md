@@ -747,6 +747,10 @@ Real-provider tests:
   durable Level 3 diagnostic retain only attempt counters, status values,
   allowlisted diagnostic codes, booleans, and elapsed time; guest addresses and
   command output remain excluded.
+- Linux guest downloads to nested project directories require the destination
+  file to exist before transfer. The broker opens that file without following
+  links and revalidates its identity and every ancestor before writing; it does
+  not create through caller-controlled intermediate directories.
 - Windows provisioning media contains both `specialize` and `oobeSystem`
   passes. The first pass makes a generalized evaluation VHD accept and cache
   the answer file during its actual first configuration pass and creates the

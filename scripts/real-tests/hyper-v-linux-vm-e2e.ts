@@ -14,6 +14,10 @@ const CAPABILITIES = [
     "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete",
 ];
 
+export function prepareHyperVLinuxDownloadDestination(path: string) {
+    writeFileSync(path, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+}
+
 export function hyperVLinuxToolPayload(result: any) {
     const value = result?.isError === true ? parseToolResult(result) : parseToolPayload(result);
     if (result?.isError === true || value?.ok === false) {
@@ -247,6 +251,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             const downloadPath = join(tempDir, "download.txt");
             const remotePath = "/tmp/ccc-hyper-v-linux-e2e.txt";
             writeFileSync(uploadPath, "ccc-hyper-v-linux-transfer-ok", "utf8");
+            prepareHyperVLinuxDownloadDestination(downloadPath);
             resultValue(hyperVLinuxToolPayload(await callTool("device_upload", { ...direct, localPath: uploadPath, remotePath })));
             resultValue(hyperVLinuxToolPayload(await callTool("device_download", { ...direct, remotePath, localPath: downloadPath })));
             assert.strictEqual(readFileSync(downloadPath, "utf8"), "ccc-hyper-v-linux-transfer-ok");
