@@ -662,7 +662,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v34` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v35` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package
@@ -677,7 +677,9 @@ Real-provider tests:
   only after bootstrap SSH is reachable. Cloud-init installs the owner-scoped
   ED25519 pair with Base64 `write_files` entries, explicit root ownership and
   `0600`/`0644` modes, validates the resulting daemon configuration, and then
-  restarts SSH. It disables automatic host-key generation instead of deleting
+  restarts SSH. Windows-generated OpenSSH private keys are normalized from
+  CRLF to LF before Base64 encoding so Linux OpenSSH can parse the installed
+  key. It disables automatic host-key generation instead of deleting
   keys before replacement, so a cloud-config parsing or key-installation error
   cannot leave the daemon permanently without a host key. The same contract
   rejects brokers that still acquire

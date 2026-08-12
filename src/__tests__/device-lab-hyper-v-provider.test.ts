@@ -1416,6 +1416,10 @@ describe("Hyper-V provider adapter", () => {
         expect(seedScript).toContain("package_update = $false");
         expect(seedScript).toContain("users = @('default', [ordered]@{ name = $GuestUsername");
         expect(seedScript).toContain("path = '/etc/ssh/ssh_host_ed25519_key'");
+        expect(seedScript).toContain("TrimEnd() -replace '\\r\\n?', \"`n\"");
+        expect(seedScript).toContain("GetBytes($HostPrivateKeyText + [char]10)");
+        expect(seedScript).toContain("GetBytes($HostPublicKeyText + [char]10)");
+        expect(seedScript).not.toContain("GetBytes($HostPrivateKeyText + [Environment]::NewLine)");
         expect(seedScript).toContain("permissions = '0600'; encoding = 'b64'; content = $HostPrivateKeyBase64");
         expect(seedScript).toContain("path = '/etc/ssh/ssh_host_ed25519_key.pub'");
         expect(seedScript).toContain("permissions = '0644'; encoding = 'b64'; content = $HostPublicKeyBase64");
