@@ -1830,9 +1830,8 @@ describe("device-lab Hyper-V broker", () => {
         let bootstrapAddressAvailable = false;
         let bootstrapAddresses = ["172.20.1.8"];
         let bootstrapSshFailure = false;
-        let bootstrapHostKeyRejected = false;
-        let bootstrapHostKeyMatchesExpected = false;
-        let bootstrapHostKeyAdoptionFailure = false;
+        let bootstrapHostKeyRejectionsRemaining = 0;
+        let bootstrapHostKeyRejectedPersistently = false;
         let bootstrapObservedHostKey = ed25519PublicKeyBlob(7);
         let bootstrapSshMarkerMissing = false;
         let networkFinalizeFailure = false;
@@ -1851,7 +1850,7 @@ describe("device-lab Hyper-V broker", () => {
             if (command.provider === "hyper-v-ssh") {
                 const ready = command.args?.at(-1)?.includes("ccc-hyper-v-linux-ready");
                 const target = command.args?.at(-2) || "";
-                const acceptNewHostKey = command.args?.includes("StrictHostKeyChecking=accept-new") || false;
+                expect(command.args).not.toContain("StrictHostKeyChecking=accept-new");
                 const encodedCommand = /printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| bash/.exec(command.args?.at(-1) || "")?.[1];
                 const guestCommand = encodedCommand ? Buffer.from(encodedCommand, "base64").toString("utf8") : "";
                 const download = guestCommand.includes("head -c") && guestCommand.includes("base64 -w0");
@@ -1868,24 +1867,12 @@ describe("device-lab Hyper-V broker", () => {
                 if (ready && bootstrapSshMarkerMissing && target.endsWith("@172.20.1.8")) {
                     return { ...command, status: 0, stdout: "unexpected-output\n", stderr: "" };
                 }
-                if (ready && bootstrapHostKeyRejected && target.endsWith("@172.20.1.8") && acceptNewHostKey) {
-                    if (bootstrapHostKeyAdoptionFailure) {
-                        return { ...command, status: 255, stdout: "", stderr: "Permission denied (publickey)." };
-                    }
-                    const knownHostsOption = command.args?.find((arg) => arg.startsWith("UserKnownHostsFile="));
-                    const observedKnownHostsPath = knownHostsOption?.slice("UserKnownHostsFile=".length) || "";
-                    expect(observedKnownHostsPath).toContain("bootstrap_known_hosts");
-                    writeFileSync(
-                        observedKnownHostsPath,
-                        `${expectedNetworkAddress} ssh-ed25519 ${bootstrapObservedHostKey.toString("base64")}\n`,
-                    );
-                    return { ...command, status: 0, stdout: "ccc-hyper-v-linux-ready\n", stderr: "" };
-                }
-                if (ready && bootstrapHostKeyRejected && target.endsWith("@172.20.1.8")) {
+                if (ready
+                    && target.endsWith("@172.20.1.8")
+                    && (bootstrapHostKeyRejectedPersistently || bootstrapHostKeyRejectionsRemaining > 0)) {
+                    bootstrapHostKeyRejectionsRemaining = Math.max(0, bootstrapHostKeyRejectionsRemaining - 1);
                     expect(command.args).toContain("-v");
-                    const observedFingerprint = bootstrapHostKeyMatchesExpected
-                        ? hostKeyFingerprint
-                        : `SHA256:${createHash("sha256").update(bootstrapObservedHostKey).digest("base64").replace(/=+$/, "")}`;
+                    const observedFingerprint = `SHA256:${createHash("sha256").update(bootstrapObservedHostKey).digest("base64").replace(/=+$/, "")}`;
                     return { ...command, status: 255, stdout: "", stderr: `debug1: Server host key: ssh-ed25519 ${observedFingerprint}\nHost key verification failed.` };
                 }
                 if (sshFailure
@@ -2196,8 +2183,7 @@ describe("device-lab Hyper-V broker", () => {
             expect(bootstrapSshReadiness.bootstrapSshLastError).toBe("ssh-unavailable");
             bootstrapSshFailure = false;
 
-            bootstrapHostKeyRejected = true;
-            bootstrapHostKeyAdoptionFailure = true;
+            bootstrapHostKeyRejectedPersistently = true;
             bootstrapAddresses = ["172.20.1.8", "172.20.1.9"];
             managedReadinessFailure = true;
             const staleBootstrapCandidate = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
@@ -2207,46 +2193,48 @@ describe("device-lab Hyper-V broker", () => {
             expect(staleBootstrapCandidateBody.result.boot.readiness).toEqual(expect.objectContaining({
                 bootstrapSshAttempts: 2,
                 bootstrapHostKeyAdopted: false,
+                bootstrapHostKeyObserved: true,
+                bootstrapHostKeyMatchesExpected: true,
                 networkFinalizeSucceeded: true,
             }));
 
-            bootstrapHostKeyAdoptionFailure = false;
+            bootstrapHostKeyRejectedPersistently = false;
             bootstrapAddresses = ["172.20.1.8"];
+            bootstrapHostKeyRejectionsRemaining = 1;
             managedReadinessFailure = true;
-            const adoptionStartedAt = Date.now();
-            const bootstrapHostKeyAdoption = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
-            expect(Date.now() - adoptionStartedAt).toBeLessThan(5000);
-            expect(bootstrapHostKeyAdoption.status, JSON.stringify(await bootstrapHostKeyAdoption.clone().json())).toBe(200);
-            const bootstrapHostKeyAdoptionBody = await bootstrapHostKeyAdoption.json();
-            const adoptedFingerprint = `SHA256:${createHash("sha256").update(bootstrapObservedHostKey).digest("base64").replace(/=+$/, "")}`;
-            expect(bootstrapHostKeyAdoptionBody.result.device.sshHostKeyFingerprint).toBe(adoptedFingerprint);
-            expect(bootstrapHostKeyAdoptionBody.result.boot.readiness).toEqual(expect.objectContaining({
+            const transitionStartedAt = Date.now();
+            const bootstrapHostKeyTransition = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
+            expect(Date.now() - transitionStartedAt).toBeLessThan(5000);
+            expect(bootstrapHostKeyTransition.status, JSON.stringify(await bootstrapHostKeyTransition.clone().json())).toBe(200);
+            const bootstrapHostKeyTransitionBody = await bootstrapHostKeyTransition.json();
+            expect(bootstrapHostKeyTransitionBody.result.device.sshHostKeyFingerprint).toBe(hostKeyFingerprint);
+            expect(bootstrapHostKeyTransitionBody.result.boot.readiness).toEqual(expect.objectContaining({
                 bootstrapHostKeyObserved: true,
                 bootstrapHostKeyMatchesExpected: true,
-                bootstrapHostKeyAdopted: true,
+                bootstrapHostKeyAdopted: false,
+                bootstrapSshAttempts: expect.any(Number),
+                networkFinalizeSucceeded: true,
             }));
-            expect(readFileSync(hostPublicKeyPath, "utf8")).toContain(bootstrapObservedHostKey.toString("base64"));
-            expect(readFileSync(knownHostsPath, "utf8")).toContain(bootstrapObservedHostKey.toString("base64"));
+            expect(bootstrapHostKeyTransitionBody.result.boot.readiness.bootstrapSshAttempts).toBeGreaterThanOrEqual(2);
+            expect(readFileSync(hostPublicKeyPath, "utf8")).toContain(hostKeyBase64);
+            expect(readFileSync(knownHostsPath, "utf8")).toContain(hostKeyBase64);
             expect(existsSync(join(privateRoot, "secrets", "bootstrap_known_hosts"))).toBe(false);
 
             bootstrapObservedHostKey = ed25519PublicKeyBlob(8);
-            bootstrapHostKeyAdoptionFailure = true;
+            bootstrapHostKeyRejectedPersistently = true;
             managedReadinessFailure = true;
-            const clientFailureStartedAt = Date.now();
-            const bootstrapHostKeyClientFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 60000 });
-            expect(Date.now() - clientFailureStartedAt).toBeLessThan(5000);
+            const bootstrapHostKeyClientFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(bootstrapHostKeyClientFailure.status).toBe(502);
             const bootstrapHostKeyClientFailureBoot = (await bootstrapHostKeyClientFailure.json()).result.boot;
-            expect(bootstrapHostKeyClientFailureBoot.error).toBe("ssh-host-key-bootstrap-authentication-failed");
+            expect(bootstrapHostKeyClientFailureBoot.error).toBe("ssh-host-key-rejected");
             expect(bootstrapHostKeyClientFailureBoot.readiness).toEqual(expect.objectContaining({
                 bootstrapHostKeyObserved: true,
                 bootstrapHostKeyMatchesExpected: false,
                 bootstrapHostKeyAdopted: false,
             }));
-            expect(readFileSync(knownHostsPath, "utf8")).toContain(ed25519PublicKeyBlob(7).toString("base64"));
-            bootstrapHostKeyRejected = false;
-            bootstrapHostKeyMatchesExpected = false;
-            bootstrapHostKeyAdoptionFailure = false;
+            expect(readFileSync(hostPublicKeyPath, "utf8")).toContain(hostKeyBase64);
+            expect(readFileSync(knownHostsPath, "utf8")).toContain(hostKeyBase64);
+            bootstrapHostKeyRejectedPersistently = false;
             managedReadinessFailure = true;
 
             bootstrapSshMarkerMissing = true;

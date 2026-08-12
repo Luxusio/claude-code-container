@@ -3379,7 +3379,7 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v15` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v16` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
@@ -3389,22 +3389,19 @@ remain unchanged where they are the behavior under test.
     bootstrap DHCP address check only while strict verification uses the
     validated managed-address alias. Bootstrap readiness enables bounded
     OpenSSH verbose diagnostics after rejection and compares the reported
-    ed25519 SHA-256 fingerprint with the owner-pinned fingerprint. On confirmed
-    drift, one bootstrap-only `accept-new` connection may write a temporary
-    owner-private `known_hosts` file. Adoption requires the exact owner-fenced
-    VM bootstrap address, successful authentication with the VM's unique CCC
-    client key, the readiness marker, a structurally valid single ed25519 key,
-    and the committed managed network allocation. The broker then atomically
-    replaces its authoritative `known_hosts` pin, derives the public-key and
-    device-state fingerprint caches from that pin, deletes the temporary file,
-    and uses `StrictHostKeyChecking=yes` thereafter. Interrupted cache updates
-    are reconciled from `known_hosts` before the next identity validation.
+    ed25519 SHA-256 fingerprint with the owner-pinned fingerprint. Because
+    `sshd` may listen with the image's default key before cloud-init installs
+    the seeded host key, a mismatch is retried until the readiness deadline.
+    Every attempt uses `StrictHostKeyChecking=yes`; CCC never adopts the
+    observed bootstrap key or writes a temporary `known_hosts` file.
+    Interrupted cache updates are reconciled from the authoritative owner pin
+    before the next identity validation.
     Migration ignores OpenSSH key comments and compares only the allocated
     address, ed25519 algorithm, and structurally validated key blob, allowing
-    v13/v14 `ccc-host` entries to converge to the v15 cache format.
-    General exec and transfer
-    paths never enable `accept-new`, and the guest host private key is never
-    transferred. Only observed/matches/adopted booleans are retained so
+    v13/v14 `ccc-host` entries to converge to the v16 cache format.
+    No managed Hyper-V readiness, exec, or transfer path enables `accept-new`,
+    and the guest host private key is never transferred. Only
+    observed/matches/adopted booleans are retained so
     cloud-init key drift is distinguishable from authentication failure without
     exposing key, fingerprint, or address material.
     Those counters also select a specific bounded failure code

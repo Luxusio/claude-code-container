@@ -112,21 +112,18 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v15`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v16`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
-The v15 Linux readiness contract retains the seeded host-key attempt but no
-longer assumes cloud-init made that key authoritative. Bootstrap SSH limits
+The v16 Linux readiness contract retains the seeded host key as the only
+authoritative identity. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
 when a validated managed-address `HostKeyAlias` is present. Strict verification
 against the owner-private alias entry remains mandatory.
-If strict verification reports a different ed25519 key, CCC permits one
-bootstrap-only `accept-new` connection to a temporary owner-private file. The
-connection must target an address discovered from the exact owner-fenced VM
-and must authenticate with that VM's unique CCC client key and return the
-readiness marker. CCC then validates the OpenSSH ed25519 key encoding, binds it
-to the committed managed network allocation, atomically replaces the public
-key and `known_hosts` pin, deletes the temporary file, and returns to
-`StrictHostKeyChecking=yes` for network finalization and every later command.
+An SSH listener can become reachable with the image's default key before
+cloud-init installs the CCC client key and seeded host key. A mismatched host
+key is therefore recorded as a bounded diagnostic and retried with
+`StrictHostKeyChecking=yes` until the readiness deadline. CCC never adopts an
+observed bootstrap key and never writes a secondary `known_hosts` file.
 The owner-private `known_hosts` entry is the single authoritative pin; the
 public-key file and device-state fingerprint are derived caches reconciled from
 it before validation. An interruption between writes is therefore recoverable
@@ -715,7 +712,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v15` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v16` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table
@@ -725,9 +722,9 @@ Real-provider tests:
   allowlisted SSH failure class (`timeout`, `refused`, `unreachable`, host-key,
   authentication, missing readiness marker, or unavailable). Raw SSH output
   and the discovered bootstrap address remain outside public diagnostics.
-  Cloud-init still restarts `sshd` after its seeded host-key attempt. When the
-  running guest instead presents its own generated key, v15 reconciles that
-  drift only after the owner-fenced bootstrap authentication described above.
+  Cloud-init still restarts `sshd` after installing the seeded host key. While
+  the running guest presents the image's earlier key, v16 keeps retrying the
+  strict owner-pinned identity and never adopts the transient key.
   This revision classifies bootstrap VM-adapter, management-adapter, host-prefix,
   neighbor-table, and address-selection failures independently. The PowerShell
   operation emits only an allowlisted stage code, and the durable diagnostic
