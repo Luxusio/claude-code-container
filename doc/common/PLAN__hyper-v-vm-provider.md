@@ -617,9 +617,11 @@ Real-provider tests:
   `.acquire-work` state is removed under the image preparation lock before a
   retry while the checksum-bound QCOW2 cache is retained.
   The catalog fences the generic QCOW2 format and Generation 2 boot contract. The
-  provisioning media retains both
-  generic NoCloud files
-  and `ovf-env.xml` for image compatibility. Its first NIC uses Hyper-V's
+  provisioning media contains only the generic NoCloud `meta-data`,
+  `network-config`, and `user-data` files. It deliberately omits
+  `ovf-env.xml`: advertising the Azure datasource on the generic image can
+  preempt NoCloud and leave the CCC user, authorized client key, and pinned
+  host key unapplied. Its first NIC uses Hyper-V's
   `Default Switch` for bootstrap DHCP discovery. A second NIC uses the CCC NAT
   switch. VM creation assigns that adapter a static `06:*` locally administered
   MAC derived from the collision-fenced managed `02:*` MAC. Initial cloud-init
@@ -641,10 +643,12 @@ Real-provider tests:
   extends the normal provider and boot budget by a separate five-minute
   containment reserve. Cleanup identifies the adapter by its deterministic MAC,
   then verifies that no host adapter retains that MAC.
-  Broker compatibility requires both `hyper-v-azure-ovf-seed-v2` and
-  `hyper-v-azure-bootstrap-dhcp-v1`, `hyper-v-azure-local-ovf-v1`, and
-  `hyper-v-bootstrap-nic-cleanup-v1`,
-  preventing same-version daemons with the old single-NIC startup deadlock or
+  Broker compatibility requires `hyper-v-azure-bootstrap-dhcp-v1`,
+  `hyper-v-bootstrap-nic-cleanup-v1`, and the provider image finalization
+  contract. The latter fences the NoCloud-only seed used by the generic
+  Canonical QCOW2 image; obsolete Azure OVF seed capabilities are not
+  advertised. These compatibility requirements prevent same-version daemons
+  with the old single-NIC startup deadlock or
   managed-NIC `eth0` collision from being reused. First-boot readiness requests
   remain bounded at 20 minutes end to end, but Linux boot fails after five
   minutes with `hyper-v-guest-boot-signal-timeout` when neither managed SSH nor
@@ -658,9 +662,10 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v30` additionally prevents reuse of a
-  broker that enables Secure Boot for the automatic Linux profile or whose
-  Linux seed blocks SSH activation behind online package updates.
+  `hyper-v-provider-image-finalization-v31` additionally prevents reuse of a
+  broker that enables Secure Boot for the automatic Linux profile, mixes an
+  Azure OVF datasource into the generic NoCloud seed, or blocks SSH activation
+  behind online package updates.
   The pinned Ubuntu Server image already contains OpenSSH, so cloud-init
   disables package updates on the first boot, writes the owner-scoped host
   keys and bootstrap DHCP network, then enables the local SSH service without

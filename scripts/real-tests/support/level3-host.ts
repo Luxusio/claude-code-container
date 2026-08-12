@@ -10,10 +10,10 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-linux-create-response-v1",
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
-    "hyper-v-provider-image-finalization-v30",
+    "hyper-v-provider-image-finalization-v31",
     "hyper-v-network-failure-diagnostics-v9",
 ];
-export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v30";
+export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v31";
 export const HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT = "hyper-v-setup-network-v10";
 export const HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT = "hyper-v-network-failure-diagnostics-v9";
 export const HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT = "hyper-v-guest-readiness-diagnostics-v15";

@@ -3347,8 +3347,11 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v30` for this contract, including
+    `hyper-v-provider-image-finalization-v31` for this contract, including
     guest-visible content comparison between the fixed VHD and published VHDX.
+    The same contract requires generic Ubuntu QCOW2 guests to receive only a
+    NoCloud `cidata` seed; an Azure `ovf-env.xml` must not share that medium
+    because it can preempt NoCloud user and SSH-key provisioning.
 71. Worktree discovery does not recursively enumerate untracked `.git` paths.
     Managed nested repositories come from tracked Gitlinks, while direct child
     repositories remain available through the bounded one-directory scan.
