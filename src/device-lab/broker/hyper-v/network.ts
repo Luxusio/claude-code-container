@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { lstatSync, mkdirSync, rmSync } from "fs";
 import { dirname, join } from "path";
 import { readDeviceLabStateFile, readDeviceLabTextFile } from "../../../device-lab-state-file.js";
-import { writeJsonFileAtomically } from "../../../device-lab-shared-state.js";
+import { writeFileAtomically, writeJsonFileAtomically } from "../../../device-lab-shared-state.js";
 import {
     HYPER_V_NETWORK_GATEWAY,
     HYPER_V_NETWORK_MARKER,
@@ -837,4 +837,114 @@ export function validateHyperVLinuxSshHostIdentity(
         return false;
     }
     return actualFingerprint === expectedFingerprint;
+}
+
+function parseEd25519SshPublicKeyBlob(encoded: string): Buffer | null {
+    let blob: Buffer;
+    try {
+        blob = Buffer.from(encoded, "base64");
+    } catch {
+        return null;
+    }
+    if (blob.length !== 51 || blob.toString("base64") !== encoded) return null;
+    const algorithmLength = blob.readUInt32BE(0);
+    if (algorithmLength !== 11 || blob.subarray(4, 15).toString("ascii") !== "ssh-ed25519") return null;
+    const keyLength = blob.readUInt32BE(15);
+    return keyLength === 32 && blob.length === 19 + keyLength ? blob : null;
+}
+
+function readHyperVLinuxSshKnownHostIdentity(
+    knownHostsPath: string,
+    networkAddress: string,
+): { publicKey: string; fingerprint: string } | null {
+    const knownHosts = readDeviceLabTextFile(
+        knownHostsPath,
+        "hyper-v-linux-ssh-known-hosts",
+        64 * 1024,
+    );
+    if (knownHosts === null) return null;
+    const lines = knownHosts.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length !== 1) return null;
+    const match = /^(\S+) ssh-ed25519 ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]{1,256})?$/.exec(lines[0]);
+    if (!match || match[1] !== networkAddress) return null;
+    const blob = parseEd25519SshPublicKeyBlob(match[2]);
+    if (!blob) return null;
+    return {
+        publicKey: `ssh-ed25519 ${match[2]} ccc-hyper-v-guest`,
+        fingerprint: `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`,
+    };
+}
+
+export function reconcileHyperVLinuxSshHostIdentity(
+    runtime: HyperVNetworkStateRuntime,
+    ownerId: string,
+    deviceId: string,
+    hostPublicKeyPath: string,
+    knownHostsPath: string,
+    networkAddress: string,
+    commitFingerprint: (fingerprint: string) => boolean,
+): { fingerprint: string } | null {
+    const allocation = readState(runtime)?.allocations.find(
+        (candidate) => candidate.ownerId === ownerId && candidate.deviceId === deviceId,
+    );
+    if (!allocation || allocation.address !== networkAddress) return null;
+    runtime.assertSafePath(hostPublicKeyPath, "hyper-v-linux-ssh-host-public-key");
+    runtime.assertSafePath(knownHostsPath, "hyper-v-linux-ssh-known-hosts");
+    const identity = readHyperVLinuxSshKnownHostIdentity(knownHostsPath, networkAddress);
+    if (!identity) return null;
+    try {
+        writeFileAtomically(hostPublicKeyPath, `${identity.publicKey}\n`);
+        if (!commitFingerprint(identity.fingerprint)) return null;
+    } catch {
+        return null;
+    }
+    return { fingerprint: identity.fingerprint };
+}
+
+export function adoptHyperVLinuxSshHostIdentity(
+    runtime: HyperVNetworkStateRuntime,
+    ownerId: string,
+    deviceId: string,
+    observedKnownHostsPath: string,
+    hostPublicKeyPath: string,
+    knownHostsPath: string,
+    networkAddress: string,
+    commitFingerprint?: (fingerprint: string) => boolean,
+): { fingerprint: string } | null {
+    const allocation = readState(runtime)?.allocations.find(
+        (candidate) => candidate.ownerId === ownerId && candidate.deviceId === deviceId,
+    );
+    if (!allocation || allocation.address !== networkAddress) return null;
+    runtime.assertSafePath(observedKnownHostsPath, "hyper-v-linux-ssh-observed-known-hosts");
+    runtime.assertSafePath(hostPublicKeyPath, "hyper-v-linux-ssh-host-public-key");
+    runtime.assertSafePath(knownHostsPath, "hyper-v-linux-ssh-known-hosts");
+    const observed = readDeviceLabTextFile(
+        observedKnownHostsPath,
+        "hyper-v-linux-ssh-observed-known-hosts",
+        64 * 1024,
+    );
+    if (observed === null) return null;
+    const lines = observed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (lines.length !== 1) return null;
+    const match = /^(\S+) ssh-ed25519 ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]{1,256})?$/.exec(lines[0]);
+    if (!match || match[1] !== networkAddress) return null;
+    const blob = parseEd25519SshPublicKeyBlob(match[2]);
+    if (!blob) return null;
+    const publicKey = `ssh-ed25519 ${match[2]} ccc-hyper-v-guest`;
+    const fingerprint = `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`;
+    try {
+        writeFileAtomically(knownHostsPath, `${networkAddress} ${publicKey}\n`);
+    } catch {
+        const recovered = commitFingerprint && reconcileHyperVLinuxSshHostIdentity(
+            runtime, ownerId, deviceId, hostPublicKeyPath, knownHostsPath, networkAddress, commitFingerprint,
+        );
+        return recovered || null;
+    }
+    if (!commitFingerprint) {
+        writeFileAtomically(hostPublicKeyPath, `${publicKey}\n`);
+        return { fingerprint };
+    }
+    return reconcileHyperVLinuxSshHostIdentity(
+        runtime, ownerId, deviceId, hostPublicKeyPath, knownHostsPath, networkAddress, commitFingerprint,
+    );
 }

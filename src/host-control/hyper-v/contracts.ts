@@ -379,6 +379,7 @@ export type HyperVLinuxSshOptions = {
     guestUsername: string;
     networkAddress: string;
     hostKeyAlias?: string;
+    strictHostKeyChecking?: "yes" | "accept-new";
     verboseHostKeyDiagnostics?: boolean;
     timeoutMs?: number;
 };

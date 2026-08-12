@@ -4,11 +4,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+    adoptHyperVLinuxSshHostIdentity,
     cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation,
     hyperVDeterministicMacAddress,
     hyperVDeterministicNetworkAddresses,
     hyperVNetworkAllocationReferenced,
+    reconcileHyperVLinuxSshHostIdentity,
     releaseHyperVNetworkAllocationAndCleanup,
     validateHyperVLinuxSshHostIdentity,
     type HyperVNetworkCommandResult,
@@ -32,6 +34,16 @@ function privateRoot(): string {
     const root = mkdtempSync(join(tmpdir(), "ccc-hyper-v-network-"));
     roots.push(root);
     return root;
+}
+
+function ed25519PublicKeyBlob(seed: number): Buffer {
+    const algorithm = Buffer.from("ssh-ed25519", "ascii");
+    const key = Buffer.alloc(32, seed);
+    const algorithmLength = Buffer.alloc(4);
+    const keyLength = Buffer.alloc(4);
+    algorithmLength.writeUInt32BE(algorithm.length);
+    keyLength.writeUInt32BE(key.length);
+    return Buffer.concat([algorithmLength, algorithm, keyLength, key]);
 }
 
 function networkIdentity(root: string) {
@@ -1459,6 +1471,135 @@ describe("Hyper-V network module", () => {
             "172.29.0.250",
             fingerprint,
         )).toBe(false);
+    });
+
+    it("adopts one authenticated ed25519 host key for the committed allocation", async () => {
+        const root = privateRoot();
+        const network = runtime(root);
+        const allocation = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        expect(allocation.ok).toBe(true);
+        if (!allocation.ok) return;
+
+        const blob = ed25519PublicKeyBlob(7);
+        const encoded = blob.toString("base64");
+        const observedPath = join(root, "bootstrap_known_hosts");
+        const publicKeyPath = join(root, "host.pub");
+        const knownHostsPath = join(root, "known_hosts");
+        writeFileSync(observedPath, `${allocation.address} ssh-ed25519 ${encoded}\n`);
+        writeFileSync(publicKeyPath, "previous-public-key\n");
+        writeFileSync(knownHostsPath, "previous-known-hosts\n");
+
+        const adopted = adoptHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            observedPath,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+        );
+        expect(adopted).toEqual({
+            fingerprint: `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`,
+        });
+        expect(readFileSync(publicKeyPath, "utf8")).toBe(`ssh-ed25519 ${encoded} ccc-hyper-v-guest\n`);
+        expect(readFileSync(knownHostsPath, "utf8")).toBe(
+            `${allocation.address} ssh-ed25519 ${encoded} ccc-hyper-v-guest\n`,
+        );
+        expect(validateHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+            adopted!.fingerprint,
+        )).toBe(true);
+    });
+
+    it("recovers derived host-key state after a durable fingerprint commit interruption", async () => {
+        const root = privateRoot();
+        const network = runtime(root);
+        const allocation = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        expect(allocation.ok).toBe(true);
+        if (!allocation.ok) return;
+
+        const encoded = ed25519PublicKeyBlob(8).toString("base64");
+        const observedPath = join(root, "bootstrap_known_hosts");
+        const publicKeyPath = join(root, "host.pub");
+        const knownHostsPath = join(root, "known_hosts");
+        writeFileSync(observedPath, `${allocation.address} ssh-ed25519 ${encoded}\n`);
+        writeFileSync(publicKeyPath, "previous-public-key\n");
+        writeFileSync(knownHostsPath, "previous-known-hosts\n");
+
+        expect(adoptHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            observedPath,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+            () => false,
+        )).toBeNull();
+        expect(readFileSync(knownHostsPath, "utf8")).toContain(encoded);
+        let committedFingerprint = "";
+        const recovered = reconcileHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+            (fingerprint) => {
+                committedFingerprint = fingerprint;
+                return true;
+            },
+        );
+        expect(recovered).toEqual({ fingerprint: committedFingerprint });
+        expect(readFileSync(publicKeyPath, "utf8")).toContain(encoded);
+    });
+
+    it("rejects ambiguous, malformed, and unallocated host-key adoption", async () => {
+        const root = privateRoot();
+        const network = runtime(root);
+        const allocation = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        expect(allocation.ok).toBe(true);
+        if (!allocation.ok) return;
+
+        const encoded = ed25519PublicKeyBlob(9).toString("base64");
+        const observedPath = join(root, "bootstrap_known_hosts");
+        const publicKeyPath = join(root, "host.pub");
+        const knownHostsPath = join(root, "known_hosts");
+        writeFileSync(publicKeyPath, "unchanged\n");
+        writeFileSync(knownHostsPath, "unchanged\n");
+        for (const observed of [
+            `172.29.0.250 ssh-ed25519 ${encoded}\n`,
+            `${allocation.address} ssh-ed25519 ${encoded}\n${allocation.address} ssh-ed25519 ${encoded}\n`,
+            `${allocation.address} ssh-ed25519 AAAATEST\n`,
+        ]) {
+            writeFileSync(observedPath, observed);
+            expect(adoptHyperVLinuxSshHostIdentity(
+                network,
+                OWNER_ID,
+                DEVICE_ID,
+                observedPath,
+                publicKeyPath,
+                knownHostsPath,
+                allocation.address,
+            )).toBeNull();
+            expect(readFileSync(publicKeyPath, "utf8")).toBe("unchanged\n");
+            expect(readFileSync(knownHostsPath, "utf8")).toBe("unchanged\n");
+        }
+        writeFileSync(observedPath, `${allocation.address} ssh-ed25519 ${encoded}\n`);
+        expect(adoptHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            "other-device",
+            observedPath,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+        )).toBeNull();
     });
 
     it("does not import the broker facade", () => {

@@ -475,6 +475,10 @@ export function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
     const hostKeyAlias = options.hostKeyAlias
         ? assertIpv4(options.hostKeyAlias, "linux-host-key-alias")
         : "";
+    const strictHostKeyChecking = options.strictHostKeyChecking || "yes";
+    if (strictHostKeyChecking !== "yes" && strictHostKeyChecking !== "accept-new") {
+        throw new Error("hyper-v-linux-ssh-host-key-policy-invalid");
+    }
     const timeoutSec = Math.min(30, Math.max(1, Math.ceil((options.timeoutMs || 30000) / 1000)));
     return [
         "-F", "NUL",
@@ -482,7 +486,7 @@ export function sshBaseArgs(options: HyperVLinuxSshOptions): string[] {
         "-i", privateKeyPath,
         "-o", "BatchMode=yes",
         "-o", "IdentitiesOnly=yes",
-        "-o", "StrictHostKeyChecking=yes",
+        "-o", `StrictHostKeyChecking=${strictHostKeyChecking}`,
         "-o", "HostKeyAlgorithms=ssh-ed25519",
         "-o", `UserKnownHostsFile=${knownHostsPath}`,
         ...(hostKeyAlias ? [

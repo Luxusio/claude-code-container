@@ -26,9 +26,11 @@ import {
     type HyperVImageProfile,
 } from "./device-lab/broker/hyper-v/image-store.js";
 import {
+    adoptHyperVLinuxSshHostIdentity as adoptHyperVLinuxSshHostIdentityWithRuntime,
     cachedHyperVOwnerDevicesReader,
     ensureHyperVNetworkAllocation as ensureHyperVNetworkAllocationWithRuntime,
     hyperVNetworkAllocationReferenced,
+    reconcileHyperVLinuxSshHostIdentity as reconcileHyperVLinuxSshHostIdentityWithRuntime,
     releaseHyperVNetworkAllocationAndCleanup as releaseHyperVNetworkAllocationAndCleanupWithRuntime,
     validateHyperVLinuxSshHostIdentity as validateHyperVLinuxSshHostIdentityWithRuntime,
     type HyperVNetworkRuntime,
@@ -225,7 +227,7 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v13";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v14";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
@@ -8994,6 +8996,89 @@ function validateHyperVLinuxSshHostIdentity(
     );
 }
 
+function adoptHyperVLinuxSshHostIdentity(
+    ownerId: string,
+    deviceId: string,
+    observedKnownHostsPath: string,
+    hostPublicKeyPath: string,
+    knownHostsPath: string,
+    networkAddress: string,
+    commitFingerprint?: (fingerprint: string) => boolean,
+): { fingerprint: string } | null {
+    return adoptHyperVLinuxSshHostIdentityWithRuntime(
+        hyperVNetworkStateRuntime(),
+        ownerId,
+        deviceId,
+        observedKnownHostsPath,
+        hostPublicKeyPath,
+        knownHostsPath,
+        networkAddress,
+        commitFingerprint,
+    );
+}
+
+function persistHyperVLinuxSshHostIdentity(
+    ownerId: string,
+    stateKey: string,
+    deviceId: string,
+    hostPublicKeyPath: string,
+    knownHostsPath: string,
+    networkAddress: string,
+    fingerprint: string,
+): boolean {
+    let persisted = false;
+    mutateOwnerDevices(ownerId, stateKey, (devices) => devices.map((candidate) => {
+        if (!candidate || typeof candidate !== "object" || (candidate as { id?: unknown }).id !== deviceId) return candidate;
+        const current = candidate as Record<string, unknown>;
+        if (current.sshHostPublicKeyPath !== hostPublicKeyPath
+            || current.sshKnownHostsPath !== knownHostsPath
+            || current.networkAddress !== networkAddress
+            || !validateHyperVLinuxSshHostIdentity(
+                ownerId,
+                deviceId,
+                hostPublicKeyPath,
+                knownHostsPath,
+                networkAddress,
+                fingerprint,
+            )) return candidate;
+        persisted = true;
+        return {
+            ...current,
+            sshHostKeyFingerprint: fingerprint,
+            sshHostKeySource: "authenticated-bootstrap",
+            updatedAt: new Date().toISOString(),
+        };
+    }));
+    return persisted;
+}
+
+function reconcileHyperVLinuxSshHostIdentity(
+    ownerId: string,
+    stateKey: string,
+    deviceId: string,
+    hostPublicKeyPath: string,
+    knownHostsPath: string,
+    networkAddress: string,
+): { fingerprint: string } | null {
+    return reconcileHyperVLinuxSshHostIdentityWithRuntime(
+        hyperVNetworkStateRuntime(),
+        ownerId,
+        deviceId,
+        hostPublicKeyPath,
+        knownHostsPath,
+        networkAddress,
+        (fingerprint) => persistHyperVLinuxSshHostIdentity(
+            ownerId,
+            stateKey,
+            deviceId,
+            hostPublicKeyPath,
+            knownHostsPath,
+            networkAddress,
+            fingerprint,
+        ),
+    );
+}
+
 async function reconcileHyperVCreateResidue(ownerId: string, backend: string, deviceId: string, normalized: NormalizedBrokerOptions, deadlineAt = Number.POSITIVE_INFINITY, incarnationId?: string | null): Promise<
     | { ok: true; recoveredVm: boolean; removedDisk: boolean; releasedAddress: boolean }
     | { ok: false; status: number; error: string; detail?: string }> {
@@ -10751,6 +10836,7 @@ type HyperVLinuxGuestReadyTrace = {
     bootstrapSshLastError?: string | null;
     bootstrapHostKeyObserved?: boolean | null;
     bootstrapHostKeyMatchesExpected?: boolean | null;
+    bootstrapHostKeyAdopted?: boolean;
     networkFinalizeAttempts: number;
     networkFinalizeSucceeded: boolean;
     guestSignalObserved: boolean;
@@ -10796,6 +10882,8 @@ export function hyperVLinuxGuestReadyTraceFailureCode(
             "ssh-authentication-failed",
             "ssh-host-key-client-verification-failed",
             "ssh-host-key-mismatch",
+            "ssh-host-key-adoption-failed",
+            "ssh-host-key-bootstrap-authentication-failed",
             "ssh-connection-refused",
             "ssh-connection-timeout",
             "ssh-host-key-rejected",
@@ -12687,6 +12775,7 @@ async function lifecycleCommandInvokeUnlocked(
             let bootstrapSshLastError: string | null = null;
             let bootstrapHostKeyObserved: boolean | null = null;
             let bootstrapHostKeyMatchesExpected: boolean | null = null;
+            let bootstrapHostKeyAdopted = false;
             const probedBootstrapHostKeyAddresses = new Set<string>();
             const observedBootstrapHostKeyAddresses = new Set<string>();
             const matchingBootstrapHostKeyAddresses = new Set<string>();
@@ -12702,8 +12791,23 @@ async function lifecycleCommandInvokeUnlocked(
                 const managedMacAddress = field(device, "macAddress") || "";
                 const networkGateway = field(device, "networkGateway") || "";
                 const networkPrefix = field(device, "networkPrefix") || "";
-                const fingerprint = field(device, "sshHostKeyFingerprint") || "";
+                let fingerprint = field(device, "sshHostKeyFingerprint") || "";
                 assertHyperVPrivateDeviceRoot(ownerId, "linux-vm", parsed.deviceId, privateRoot);
+                const reconciledIdentity = privateRoot === expectedPrivateRoot
+                    && hostPublicKeyPath === join(expectedPrivateRoot, "secrets", "ssh_host_ed25519_key.pub")
+                    ? reconcileHyperVLinuxSshHostIdentity(
+                        ownerId,
+                        parsed.stateKey,
+                        parsed.deviceId,
+                        hostPublicKeyPath,
+                        knownHostsPath,
+                        networkAddress,
+                    )
+                    : null;
+                if (reconciledIdentity) {
+                    fingerprint = reconciledIdentity.fingerprint;
+                    device.sshHostKeyFingerprint = reconciledIdentity.fingerprint;
+                }
                 if (privateRoot !== expectedPrivateRoot
                     || hostPublicKeyPath !== join(expectedPrivateRoot, "secrets", "ssh_host_ed25519_key.pub")
                     || !validateHyperVLinuxSshHostIdentity(ownerId, parsed.deviceId, hostPublicKeyPath, knownHostsPath, networkAddress, fingerprint)) {
@@ -12781,8 +12885,9 @@ async function lifecycleCommandInvokeUnlocked(
                             bootstrapSshLastStatus = typeof bootstrapReadyExecution.status === "number"
                                 ? bootstrapReadyExecution.status
                                 : null;
-                            if (!commandSucceeded(bootstrapReadyExecution)
-                                || !String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready")) {
+                            let bootstrapAuthenticated = commandSucceeded(bootstrapReadyExecution)
+                                && String(bootstrapReadyExecution.stdout || "").includes("ccc-hyper-v-linux-ready");
+                            if (!bootstrapAuthenticated) {
                                 bootstrapSshLastError = commandSucceeded(bootstrapReadyExecution)
                                     ? "ssh-readiness-marker-missing"
                                     : hyperVGuestReadinessFailureCode("linux-vm", bootstrapReadyExecution);
@@ -12801,8 +12906,73 @@ async function lifecycleCommandInvokeUnlocked(
                                     bootstrapHostKeyMatchesExpected = bootstrapHostKeyObserved
                                         ? matchingBootstrapHostKeyAddresses.size > 0
                                         : null;
+                                    if (comparison.observed && comparison.matchesExpected === false) {
+                                        const observedKnownHostsPath = join(expectedPrivateRoot, "secrets", "bootstrap_known_hosts");
+                                        try {
+                                            unlinkSync(observedKnownHostsPath);
+                                        } catch (error) {
+                                            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+                                        }
+                                        try {
+                                            const adoptionReadyCommand = hyperVLinuxSshReadyCommand({
+                                                ...sshOptions,
+                                                knownHostsPath: observedKnownHostsPath,
+                                                networkAddress: bootstrapAddress,
+                                                hostKeyAlias: networkAddress,
+                                                strictHostKeyChecking: "accept-new",
+                                                timeoutMs: Math.min(10000, Math.max(1000, deadline - Date.now())),
+                                            });
+                                            const adoptionExecution = await hyperVProviderCommandRunner(normalized, adoptionReadyCommand, {
+                                                timeoutMs: hyperVRemainingTimeout(deadline, 15000),
+                                                outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                                            });
+                                            bootstrapSshLastStatus = typeof adoptionExecution.status === "number"
+                                                ? adoptionExecution.status
+                                                : null;
+                                            const adoptionAuthenticated = commandSucceeded(adoptionExecution)
+                                                && String(adoptionExecution.stdout || "").includes("ccc-hyper-v-linux-ready");
+                                            if (!adoptionAuthenticated) {
+                                                bootstrapSshLastError = commandSucceeded(adoptionExecution)
+                                                    ? "ssh-readiness-marker-missing"
+                                                    : "ssh-host-key-bootstrap-authentication-failed";
+                                            } else {
+                                                const adopted = adoptHyperVLinuxSshHostIdentity(
+                                                    ownerId,
+                                                    parsed.deviceId,
+                                                    observedKnownHostsPath,
+                                                    hostPublicKeyPath,
+                                                    knownHostsPath,
+                                                    networkAddress,
+                                                    (candidateFingerprint) => persistHyperVLinuxSshHostIdentity(
+                                                        ownerId,
+                                                        parsed.stateKey,
+                                                        parsed.deviceId,
+                                                        hostPublicKeyPath,
+                                                        knownHostsPath,
+                                                        networkAddress,
+                                                        candidateFingerprint,
+                                                    ),
+                                                );
+                                                if (!adopted) {
+                                                    bootstrapSshLastError = "ssh-host-key-adoption-failed";
+                                                } else {
+                                                    fingerprint = adopted.fingerprint;
+                                                    device.sshHostKeyFingerprint = adopted.fingerprint;
+                                                    bootstrapHostKeyAdopted = true;
+                                                    bootstrapHostKeyMatchesExpected = true;
+                                                    matchingBootstrapHostKeyAddresses.add(bootstrapAddress);
+                                                    bootstrapSshLastError = null;
+                                                    bootstrapAuthenticated = true;
+                                                }
+                                            }
+                                        } finally {
+                                            rmSync(observedKnownHostsPath, { force: true });
+                                        }
+                                    }
                                 }
-                                continue;
+                                if (!bootstrapAuthenticated) {
+                                    continue;
+                                }
                             }
                             bootstrapSshLastError = null;
                             const finalizeCommand = hyperVLinuxNetworkFinalizeCommand({
@@ -12832,12 +13002,16 @@ async function lifecycleCommandInvokeUnlocked(
                             break;
                         }
                         const bootstrapAddresses = bootstrap?.addresses || [];
-                        if (!networkFinalizeSucceeded
+                        if (!definitiveHostKeyFailure
+                            && !networkFinalizeSucceeded
                             && bootstrapAddresses.length > 0
                             && bootstrapAddresses.every((address) => observedBootstrapHostKeyAddresses.has(address))) {
-                            bootstrapSshLastError = bootstrapAddresses.some((address) => matchingBootstrapHostKeyAddresses.has(address))
-                                ? "ssh-host-key-client-verification-failed"
-                                : "ssh-host-key-mismatch";
+                            if (bootstrapSshLastError !== "ssh-host-key-bootstrap-authentication-failed"
+                                && bootstrapSshLastError !== "ssh-host-key-adoption-failed") {
+                                bootstrapSshLastError = bootstrapAddresses.some((address) => matchingBootstrapHostKeyAddresses.has(address))
+                                    ? "ssh-host-key-client-verification-failed"
+                                    : "ssh-host-key-mismatch";
+                            }
                             definitiveHostKeyFailure = true;
                         }
                     }
@@ -12902,6 +13076,7 @@ async function lifecycleCommandInvokeUnlocked(
                     bootstrapSshLastError,
                     bootstrapHostKeyObserved,
                     bootstrapHostKeyMatchesExpected,
+                    bootstrapHostKeyAdopted,
                     networkFinalizeAttempts,
                     networkFinalizeSucceeded,
                     guestSignalObserved,
@@ -13249,7 +13424,13 @@ async function lifecycleCommandInvokeUnlocked(
                 } : {}),
                 ...(hyperVGuestReadyExecution ? {
                     boot: hyperVGuestReady
-                        ? { ready: true, provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct", computerName: hyperVGuestReady.computerName, attempts: hyperVGuestReady.attempts }
+                        ? {
+                            ready: true,
+                            provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
+                            computerName: hyperVGuestReady.computerName,
+                            attempts: hyperVGuestReady.attempts,
+                            ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
+                        }
                         : {
                             ready: false,
                             provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",

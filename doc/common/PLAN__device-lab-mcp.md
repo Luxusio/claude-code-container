@@ -3374,21 +3374,31 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v13` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v14` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
     bootstrap PowerShell stage diagnostics,
     bootstrap SSH, and network-finalization counters without addresses or raw
-    command output. The same contract restarts `sshd` after cloud-init installs
-    the pinned host key, pins host-key negotiation to ed25519, and disables the
+    command output. The same contract pins host-key negotiation to ed25519 and disables the
     bootstrap DHCP address check only while strict verification uses the
     validated managed-address alias. Bootstrap readiness enables bounded
     OpenSSH verbose diagnostics after rejection and compares the reported
-    ed25519 SHA-256 fingerprint with the owner-pinned fingerprint. This avoids
-    depending on Windows `ssh-keyscan`; only observed/matches-expected booleans
-    are retained so cloud-init key drift is distinguishable from client
-    verification failure without exposing fingerprint or address material.
+    ed25519 SHA-256 fingerprint with the owner-pinned fingerprint. On confirmed
+    drift, one bootstrap-only `accept-new` connection may write a temporary
+    owner-private `known_hosts` file. Adoption requires the exact owner-fenced
+    VM bootstrap address, successful authentication with the VM's unique CCC
+    client key, the readiness marker, a structurally valid single ed25519 key,
+    and the committed managed network allocation. The broker then atomically
+    replaces its authoritative `known_hosts` pin, derives the public-key and
+    device-state fingerprint caches from that pin, deletes the temporary file,
+    and uses `StrictHostKeyChecking=yes` thereafter. Interrupted cache updates
+    are reconciled from `known_hosts` before the next identity validation.
+    General exec and transfer
+    paths never enable `accept-new`, and the guest host private key is never
+    transferred. Only observed/matches/adopted booleans are retained so
+    cloud-init key drift is distinguishable from authentication failure without
+    exposing key, fingerprint, or address material.
     Those counters also select a specific bounded failure code
     for missing guest signals, bootstrap inspection, address discovery,
     bootstrap SSH, or network finalization instead of collapsing every case

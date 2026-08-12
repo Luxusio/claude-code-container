@@ -1462,6 +1462,14 @@ describe("Hyper-V provider adapter", () => {
         expect(bootstrapSshArgs).toContain("-v");
         expect(bootstrapSshArgs).toContain("HostKeyAlias=172.29.0.10");
         expect(bootstrapSshArgs).toContain("CheckHostIP=no");
+        const adoptionSshArgs = hyperVLinuxSshReadyCommand({
+            ...ssh,
+            networkAddress: "172.20.1.8",
+            hostKeyAlias: "172.29.0.10",
+            strictHostKeyChecking: "accept-new",
+        }).args;
+        expect(adoptionSshArgs).toContain("StrictHostKeyChecking=accept-new");
+        expect(adoptionSshArgs).not.toContain("StrictHostKeyChecking=yes");
         const bootstrapNetwork = hyperVBootstrapNetworkCommand({
             executable: "powershell.exe",
             ownerId,
