@@ -141,6 +141,8 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-network-switch-type-conflict",
     "hyper-v-network-switch-unavailable",
     "hyper-v-network-stage-invalid",
+    "hyper-v-reboot-command-failed",
+    "hyper-v-reboot-start-failed",
     "hyper-v-vm-configure-failed",
     "hyper-v-vm-create-failed",
     "hyper-v-vm-disk-create-failed",

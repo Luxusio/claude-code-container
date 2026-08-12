@@ -83,6 +83,17 @@ describe("Hyper-V public response projection", () => {
         })).toBe(diagnosticCode);
     });
 
+    it.each([
+        "hyper-v-reboot-command-failed",
+        "hyper-v-reboot-start-failed",
+    ])("preserves the bounded lifecycle diagnostic %s", (diagnosticCode) => {
+        expect(hyperVProviderDiagnosticCode({
+            error: "hyper-v-powershell-execution-failed",
+            stdout: "",
+            stderr: diagnosticCode,
+        })).toBe(diagnosticCode);
+    });
+
     it("uses an allowlist for persisted device records", () => {
         const result = redactHyperVDeviceSecrets({
             id: "windows-vm-1",

@@ -236,7 +236,7 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             assert.match(executed.stdout || "", /ccc-hyper-v-linux-e2e-ok/);
 
             currentStep = "reboot VM and wait for SSH";
-            const rebooted = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_reboot", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_reboot");
+            const rebooted = lifecycleDevice(hyperVLinuxToolPayload(await callTool("device_reboot", { ...direct, force: true, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_reboot");
             assert.strictEqual(rebooted.status, "running");
             assert.strictEqual(rebooted.bootReady, true);
             const afterReboot = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", { ...direct, command: "printf ccc-hyper-v-linux-reboot-ok" })));

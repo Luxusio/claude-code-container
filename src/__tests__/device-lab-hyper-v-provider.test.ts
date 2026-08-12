@@ -1934,6 +1934,14 @@ describe("Hyper-V provider adapter", () => {
         expect(startScript).toContain("hyper-v-host-cpu-capacity-exceeded");
         const rebootScript = scriptOf(hyperVRebootCommand({ ...options, force: true, startIfStopped: true }));
         expect(rebootScript).toContain("Restart-VM -VM $Vm -Force:$Force -Confirm:$false");
+        expect(rebootScript).toContain("$Force = $true");
+        expect(rebootScript).toContain("throw 'hyper-v-reboot-command-failed'");
+        expect(rebootScript).toContain("throw 'hyper-v-reboot-start-failed'");
+
+        const defaultRebootScript = scriptOf(hyperVRebootCommand(options));
+        expect(defaultRebootScript).toContain("$Force = $false");
+        const gracefulRebootScript = scriptOf(hyperVRebootCommand({ ...options, force: false }));
+        expect(gracefulRebootScript).toContain("$Force = $false");
         expect(rebootScript).toContain("hyper-v-reboot-requires-running-vm");
         expect(rebootScript).toContain("Start-VM -VM $Vm");
         const deleteScript = scriptOf(hyperVDeleteCommand({

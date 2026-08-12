@@ -78,6 +78,10 @@ Linux guests without requiring users to operate Hyper-V Manager manually.
   its remaining budget. Create operations reserve the final five minutes for
   identity-fenced rollback instead of allowing provisioning to consume it.
   Start and reboot share one bounded provider-plus-guest-readiness deadline.
+  Hyper-V reboot remains graceful by default. Destructive Linux Level 3 tests
+  request `force=true` explicitly because a cloud image may not expose the
+  shutdown integration service before CCC readiness. Start and restart failures
+  emit distinct allowlisted provider diagnostics before guest polling.
   The outer MCP client deadline must exceed the complete broker transport
   budget: host-lock wait, provider lifecycle execution, guest readiness wait,
   and the broker RPC buffer. Caller-supplied lifecycle timeouts cannot shorten
@@ -662,7 +666,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v35` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v36` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package

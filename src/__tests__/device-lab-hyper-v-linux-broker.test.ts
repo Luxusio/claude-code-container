@@ -1845,6 +1845,7 @@ describe("device-lab Hyper-V broker", () => {
         let bootstrapNetworkCleanups = 0;
         let bootstrapCleanupFailure = false;
         let providerLifecycleFailure = false;
+        const rebootScripts: string[] = [];
 
         const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
             if (command.provider === "hyper-v-ssh") {
@@ -1942,6 +1943,7 @@ describe("device-lab Hyper-V broker", () => {
             if (providerLifecycleFailure && (script.includes("Start-VM") || script.includes("Restart-VM"))) {
                 return { ...command, status: 1, stdout: "", stderr: "provider lifecycle failed" };
             }
+            if (script.includes("Restart-VM")) rebootScripts.push(script);
             if (script.includes("Start-VM") || script.includes("Restart-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
             if (script.includes("Checkpoint-VM")) snapshotExists = true;
@@ -2303,7 +2305,11 @@ describe("device-lab Hyper-V broker", () => {
             const rebooted = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, waitForBoot: true });
             expect(rebooted.status, JSON.stringify(await rebooted.clone().json())).toBe(200);
             expect(await rebooted.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", bootReady: true }), boot: expect.objectContaining({ provider: "hyper-v-ssh", ready: true }) }) }));
+            expect(rebootScripts.at(-1)).toContain("$Force = $false");
             expect(bootstrapNetworkCleanups).toBe(2);
+            const forcedReboot = await invoke({ backend: "linux-vm", command: "device_reboot", deviceId, incarnationId: activeIncarnationId, force: true, waitForBoot: true });
+            expect(forcedReboot.status, JSON.stringify(await forcedReboot.clone().json())).toBe(200);
+            expect(rebootScripts.at(-1)).toContain("$Force = $true");
             const transferRoot = join(privateRoot, "transfers");
             scpFailure = "upload";
             const failedUpload = await tool("device_upload", { localPath: uploadPath, remotePath: "/tmp/upload.txt" });
