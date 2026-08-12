@@ -17,6 +17,16 @@ import {
     type DeviceLabMcpTestContext,
 } from "./helpers/device-lab-mcp-fixture.js";
 
+function ed25519PublicKeyBlob(seed: number): Buffer {
+    const algorithm = Buffer.from("ssh-ed25519", "ascii");
+    const key = Buffer.alloc(32, seed);
+    const algorithmLength = Buffer.alloc(4);
+    const keyLength = Buffer.alloc(4);
+    algorithmLength.writeUInt32BE(algorithm.length);
+    keyLength.writeUInt32BE(key.length);
+    return Buffer.concat([algorithmLength, algorithm, keyLength, key]);
+}
+
 describe("device-lab MCP broker routing", () => {
     let context: DeviceLabMcpTestContext;
     let client: DeviceLabMcpTestContext["client"];
@@ -436,7 +446,7 @@ describe("device-lab MCP broker routing", () => {
         const sshPrivateKeyPath = join(privateRoot, "secrets", "id_ed25519");
         const sshHostPublicKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key.pub");
         const sshKnownHostsPath = join(privateRoot, "secrets", "known_hosts");
-        const hostKeyBytes = Buffer.from("ccc-routing-host-key");
+        const hostKeyBytes = ed25519PublicKeyBlob(5);
         const hostKeyBase64 = hostKeyBytes.toString("base64");
         const hostKeyFingerprint = `SHA256:${createHash("sha256").update(hostKeyBytes).digest("base64").replace(/=+$/, "")}`;
         const incarnationId = "1".repeat(32);
@@ -2542,7 +2552,7 @@ describe("device-lab MCP broker routing", () => {
                             "physical-runtime-cleanup-lease-fencing-v1", "physical-lease-state-write-rollback-v1",
                             "runtime-cleanup-failure-preservation-v1",
                             "appium-runtime-generation-fencing-v1",
-                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v10", "hyper-v-guest-readiness-diagnostics-v14", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1", "hyper-v-linux-create-response-v1", "hyper-v-image-acquisition-stage-cache-v1", "hyper-v-powershell-stage-propagation-v1", "hyper-v-provider-image-finalization-v30", "hyper-v-network-failure-diagnostics-v9",
+                            "windows-sandbox-singleton-fencing-v1", "cross-process-device-operation-serialization-v1", "cross-process-device-runtime-serialization-v1", "direct-recording-generation-fencing-v1", "direct-appium-generation-fencing-v1", "finite-device-operation-serialization-v1", "direct-runtime-process-identity-v1", "host-recording-process-identity-v1", "runtime-process-observation-v1", "host-appium-process-identity-v1", "broker-owned-owner-secret-provisioning-v1", "host-broker-port-process-identity-v1", "host-broker-process-start-token-v1", "owner-generation-hmac-auth-v1", "direct-appium-process-identity-v1", "owner-device-state-validation-v1","shared-device-ownership-state-validation-v1","android-emulator-port-allocation-fencing-v1", "bounded-error-responses-v1", "physical-lease-directory-fencing-v1","owner-auth-directory-fencing-v1", "appium-runtime-installation-fencing-v1", "bounded-no-redirect-appium-http-transport-v1", "windows-provider-launcher-path-fencing-v1", "canonical-owner-device-ids-v1", "ios-simulator-owner-identity-fencing-v1", "ios-simulator-provider-create-v1", "physical-appium-lease-fencing-v1", "physical-device-tool-lease-fencing-v1", "physical-lifecycle-use-lease-refresh-v1", "appium-live-runtime-metadata-fencing-v1", "direct-android-lifecycle-generation-fencing-v1", "direct-ios-lifecycle-generation-fencing-v1", "direct-windows-lifecycle-generation-fencing-v1", "direct-macos-lifecycle-generation-fencing-v1", "direct-macos-snapshot-clone-generation-fencing-v1", "physical-direct-state-transition-fencing-v1", "multi-project-owner-resolve-v1", "stopped-android-status-observation-v1", "stopped-android-boot-metadata-v1", "guest-helper-recording-proxy-v1", "physical-unattached-wireless-routing-v1", "android-recording-signal-fallback-v1", "hyper-v-vm-managed-auto-images-v20", "hyper-v-setup-network-v10", "hyper-v-guest-readiness-diagnostics-v15", "hyper-v-azure-ovf-seed-v1", "hyper-v-azure-ovf-seed-v2", "hyper-v-azure-bootstrap-dhcp-v1", "hyper-v-azure-local-ovf-v1", "hyper-v-bootstrap-nic-cleanup-v1", "hyper-v-bootstrap-ssh-finalize-v2", "hyper-v-windows-specialize-seed-v1", "hyper-v-windows-specialize-account-v1", "hyper-v-windows-boot-contract-v1", "hyper-v-boot-disk-generation-v1", "hyper-v-linux-create-response-v1", "hyper-v-image-acquisition-stage-cache-v1", "hyper-v-powershell-stage-propagation-v1", "hyper-v-provider-image-finalization-v30", "hyper-v-network-failure-diagnostics-v9",
                         ],
                     },
                 }));

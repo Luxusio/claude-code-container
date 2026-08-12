@@ -112,9 +112,9 @@ image acquisition semantics change, even when the package version is unchanged
 during local candidate testing. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v14`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v15`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
-The v14 Linux readiness contract retains the seeded host-key attempt but no
+The v15 Linux readiness contract retains the seeded host-key attempt but no
 longer assumes cloud-init made that key authoritative. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
 when a validated managed-address `HostKeyAlias` is present. Strict verification
@@ -135,6 +135,10 @@ key is never copied to the host. A failed authentication or malformed/ambiguous
 key cannot alter the authoritative pin. Diagnostics retain
 only adoption and comparison booleans plus allowlisted error codes; raw keys,
 fingerprints, addresses, paths, and command output are discarded.
+Host-key comments are metadata, not identity: v15 migration compares the
+allocated address, ed25519 algorithm, and validated binary key blob so pins
+written by v13 with the `ccc-host` comment reconcile without weakening key
+matching.
 The diagnostic operation is total after VM ownership validation: failures
 from firmware, BIOS, integration-service, disk, or DVD inspection produce a
 partial observation plus bounded allowlisted `diagnosticErrors`. One optional
@@ -702,7 +706,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v14` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v15` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table
@@ -713,7 +717,7 @@ Real-provider tests:
   authentication, missing readiness marker, or unavailable). Raw SSH output
   and the discovered bootstrap address remain outside public diagnostics.
   Cloud-init still restarts `sshd` after its seeded host-key attempt. When the
-  running guest instead presents its own generated key, v14 reconciles that
+  running guest instead presents its own generated key, v15 reconciles that
   drift only after the owner-fenced bootstrap authentication described above.
   This revision classifies bootstrap VM-adapter, management-adapter, host-prefix,
   neighbor-table, and address-selection failures independently. The PowerShell

@@ -1810,7 +1810,7 @@ describe("device-lab Hyper-V broker", () => {
         const hostPrivateKeyPath = join(privateRoot, "secrets", "ssh_host_ed25519_key");
         const hostPublicKeyPath = `${hostPrivateKeyPath}.pub`;
         const knownHostsPath = join(privateRoot, "secrets", "known_hosts");
-        const hostKeyBytes = Buffer.from("ccc-test-host-key");
+        const hostKeyBytes = ed25519PublicKeyBlob(5);
         const hostKeyBase64 = hostKeyBytes.toString("base64");
         const hostKeyFingerprint = `SHA256:${createHash("sha256").update(hostKeyBytes).digest("base64").replace(/=+$/, "")}`;
         const imageProfileRoot = join(process.env.HOME!, ".ccc", "device-broker-private", "images", "hyper-v", "ubuntu-lts");

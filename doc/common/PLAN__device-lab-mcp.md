@@ -3374,7 +3374,7 @@ remain unchanged where they are the behavior under test.
     `hyper-v-provider-image-finalization-v28` for this contract.
 73. Hyper-V guest-readiness failures preserve a complete bounded boot
     observation outside the compact terminal summary. The broker's
-    `hyper-v-guest-readiness-diagnostics-v14` contract exposes allowlisted boot
+    `hyper-v-guest-readiness-diagnostics-v15` contract exposes allowlisted boot
     entry types, controller coordinates, VHD format/type/size/sector metadata,
     DVD attachment state, integration-service status, and diagnostic error
     codes. Linux failures also retain bounded managed SSH, bootstrap KVP,
@@ -3394,6 +3394,9 @@ remain unchanged where they are the behavior under test.
     device-state fingerprint caches from that pin, deletes the temporary file,
     and uses `StrictHostKeyChecking=yes` thereafter. Interrupted cache updates
     are reconciled from `known_hosts` before the next identity validation.
+    Migration ignores OpenSSH key comments and compares only the allocated
+    address, ed25519 algorithm, and structurally validated key blob, allowing
+    v13/v14 `ccc-host` entries to converge to the v15 cache format.
     General exec and transfer
     paths never enable `accept-new`, and the guest host private key is never
     transferred. Only observed/matches/adopted booleans are retained so

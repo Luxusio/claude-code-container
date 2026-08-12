@@ -227,7 +227,7 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v14";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v15";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED = "hyper-v-azure-ovf-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_OVF_SEED_V2 = "hyper-v-azure-ovf-seed-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
@@ -13061,7 +13061,11 @@ async function lifecycleCommandInvokeUnlocked(
                     }
                 }
             } catch (error) {
-                hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: error instanceof Error ? error.message : String(error) };
+                const caughtError = error instanceof Error ? error.message : String(error);
+                const readinessError = caughtError === "hyper-v-operation-deadline-exceeded"
+                    ? bootstrapSshLastError || caughtError
+                    : caughtError;
+                hyperVGuestReadyExecution = { mode: "exec", provider: "hyper-v-ssh", status: null, error: readinessError };
                 success = false;
             } finally {
                 hyperVGuestReadyTrace = {

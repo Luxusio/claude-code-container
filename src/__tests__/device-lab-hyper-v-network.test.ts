@@ -1445,7 +1445,7 @@ describe("Hyper-V network module", () => {
         expect(allocation.ok).toBe(true);
         if (!allocation.ok) return;
 
-        const keyBytes = Buffer.from("ccc-hyper-v-host-key");
+        const keyBytes = ed25519PublicKeyBlob(5);
         const publicKey = `ssh-ed25519 ${keyBytes.toString("base64")} ccc`;
         const fingerprint = `SHA256:${createHash("sha256").update(keyBytes).digest("base64").replace(/=+$/, "")}`;
         const publicKeyPath = join(root, "host.pub");
@@ -1514,6 +1514,47 @@ describe("Hyper-V network module", () => {
             allocation.address,
             adopted!.fingerprint,
         )).toBe(true);
+    });
+
+    it("reconciles v13 host-key files whose comments differ", async () => {
+        const root = privateRoot();
+        const network = runtime(root);
+        const allocation = await ensureHyperVNetworkAllocation(network, OWNER_ID, DEVICE_ID, INCARNATION_ID);
+        expect(allocation.ok).toBe(true);
+        if (!allocation.ok) return;
+
+        const blob = ed25519PublicKeyBlob(6);
+        const encoded = blob.toString("base64");
+        const fingerprint = `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`;
+        const publicKeyPath = join(root, "host.pub");
+        const knownHostsPath = join(root, "known_hosts");
+        writeFileSync(publicKeyPath, `ssh-ed25519 ${encoded} ccc-host\n`);
+        writeFileSync(knownHostsPath, `${allocation.address} ssh-ed25519 ${encoded} ccc-host\n`);
+
+        let committedFingerprint = "";
+        expect(reconcileHyperVLinuxSshHostIdentity(
+            network,
+            OWNER_ID,
+            DEVICE_ID,
+            publicKeyPath,
+            knownHostsPath,
+            allocation.address,
+            (candidate) => {
+                committedFingerprint = candidate;
+                return validateHyperVLinuxSshHostIdentity(
+                    network,
+                    OWNER_ID,
+                    DEVICE_ID,
+                    publicKeyPath,
+                    knownHostsPath,
+                    allocation.address,
+                    candidate,
+                );
+            },
+        )).toEqual({ fingerprint });
+        expect(committedFingerprint).toBe(fingerprint);
+        expect(readFileSync(publicKeyPath, "utf8")).toBe(`ssh-ed25519 ${encoded} ccc-hyper-v-guest\n`);
+        expect(readFileSync(knownHostsPath, "utf8")).toBe(`${allocation.address} ssh-ed25519 ${encoded} ccc-host\n`);
     });
 
     it("recovers derived host-key state after a durable fingerprint commit interruption", async () => {

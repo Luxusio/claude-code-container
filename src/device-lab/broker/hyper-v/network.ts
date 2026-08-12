@@ -827,12 +827,14 @@ export function validateHyperVLinuxSshHostIdentity(
     );
     if (!allocation || allocation.address !== networkAddress) return false;
     const publicKey = readDeviceLabTextFile(hostPublicKeyPath, "hyper-v-linux-ssh-host-public-key", 64 * 1024)?.trim() || "";
-    const knownHosts = readDeviceLabTextFile(knownHostsPath, "hyper-v-linux-ssh-known-hosts", 64 * 1024)?.trim() || "";
-    const match = /^ssh-ed25519 ([A-Za-z0-9+/=]+)(?: .*)?$/.exec(publicKey);
-    if (!match || knownHosts !== `${networkAddress} ${publicKey}`) return false;
+    const knownHostIdentity = readHyperVLinuxSshKnownHostIdentity(knownHostsPath, networkAddress);
+    const match = /^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]{1,256})?$/.exec(publicKey);
+    if (!match || !knownHostIdentity) return false;
+    const publicKeyBlob = parseEd25519SshPublicKeyBlob(match[1]);
+    if (!publicKeyBlob || knownHostIdentity.encodedKey !== match[1]) return false;
     let actualFingerprint = "";
     try {
-        actualFingerprint = `SHA256:${createHash("sha256").update(Buffer.from(match[1], "base64")).digest("base64").replace(/=+$/, "")}`;
+        actualFingerprint = `SHA256:${createHash("sha256").update(publicKeyBlob).digest("base64").replace(/=+$/, "")}`;
     } catch {
         return false;
     }
@@ -856,7 +858,7 @@ function parseEd25519SshPublicKeyBlob(encoded: string): Buffer | null {
 function readHyperVLinuxSshKnownHostIdentity(
     knownHostsPath: string,
     networkAddress: string,
-): { publicKey: string; fingerprint: string } | null {
+): { encodedKey: string; publicKey: string; fingerprint: string } | null {
     const knownHosts = readDeviceLabTextFile(
         knownHostsPath,
         "hyper-v-linux-ssh-known-hosts",
@@ -870,6 +872,7 @@ function readHyperVLinuxSshKnownHostIdentity(
     const blob = parseEd25519SshPublicKeyBlob(match[2]);
     if (!blob) return null;
     return {
+        encodedKey: match[2],
         publicKey: `ssh-ed25519 ${match[2]} ccc-hyper-v-guest`,
         fingerprint: `SHA256:${createHash("sha256").update(blob).digest("base64").replace(/=+$/, "")}`,
     };
