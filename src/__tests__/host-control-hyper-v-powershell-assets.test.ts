@@ -3,7 +3,7 @@ import { basename, dirname, join, relative } from "path";
 import { describe, expect, it } from "vitest";
 
 import { hyperVPowerShellAssetPath, hyperVPowerShellFileCommand } from "../host-control/hyper-v/powershell-assets.js";
-import { hyperVOwnedVmContractV1 } from "../host-control/hyper-v/powershell-contracts.js";
+import { hyperVOwnedVmContractV1, hyperVSnapshotCreateContractV1, hyperVSnapshotRepairContractV1 } from "../host-control/hyper-v/powershell-contracts.js";
 import { hyperVVmName } from "../host-control/hyper-v/core.js";
 
 const identityBase = {
@@ -44,12 +44,34 @@ describe("Hyper-V PowerShell assets", () => {
         const diagnostic = hyperVPowerShellAssetPath("guest-boot-diagnostic");
         const root = realpathSync(dirname(bootstrap));
 
-        for (const asset of [bootstrap, diagnostic]) {
+        const snapshot = hyperVPowerShellAssetPath("snapshot-create");
+        const snapshotRepair = hyperVPowerShellAssetPath("snapshot-repair");
+        for (const asset of [bootstrap, diagnostic, snapshot, snapshotRepair]) {
             expect(lstatSync(asset).isFile()).toBe(true);
             expect(relative(root, realpathSync(asset)).startsWith("..")).toBe(false);
             expect(readFileSync(asset, "utf8")).toContain("Read-CccJsonContract");
         }
         expect(readFileSync(join(root, "Ccc.HyperV.Core.psm1"), "utf8")).toContain("Assert-CccOwnedVmContract");
+    });
+
+    it("builds a policy-fenced snapshot repair request", () => {
+        const request = hyperVSnapshotRepairContractV1(identity, "ccc-0123456789abcdef-baseline", "Production");
+        const command = hyperVPowerShellFileCommand("powershell.exe", "snapshot-repair", request);
+
+        expect(basename(command.args.at(-1)!)).toBe("Repair-SnapshotState.ps1");
+        expect(JSON.parse(command.input!)).toEqual(request);
+    });
+
+    it("builds the snapshot request from an owned VM contract", () => {
+        const request = hyperVSnapshotCreateContractV1(identity, "ccc-0123456789abcdef-baseline");
+        const command = hyperVPowerShellFileCommand("powershell.exe", "snapshot-create", request);
+        const script = readFileSync(command.args.at(-1)!, "utf8");
+
+        expect(basename(command.args.at(-1)!)).toBe("New-Snapshot.ps1");
+        expect(JSON.parse(command.input!)).toEqual(request);
+        expect(script).toContain("$OwnedVmContract = [pscustomobject]@{");
+        expect(script).toContain("Get-CccOwnedVm $OwnedVmContract");
+        expect(script).not.toContain("Get-CccOwnedVm $Contract");
     });
 
     it("rejects missing VM identity before spawning PowerShell", () => {

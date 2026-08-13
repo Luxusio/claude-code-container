@@ -15,6 +15,11 @@ import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, 
 
 function providerScript(command: { args: string[]; input?: string }): string {
     if (command.args.at(-1) === "-" && typeof command.input === "string") return command.input;
+    const fileIndex = command.args.indexOf("-File");
+    if (fileIndex >= 0) {
+        const file = command.args[fileIndex + 1];
+        return file ? readFileSync(file, "utf8") : "";
+    }
     const decoded = Buffer.from(command.args.at(-1) || "", "base64").toString("utf16le");
     if (decoded.includes("$E=[Console]::In.ReadToEnd().Trim()")) {
         if (!command.input) throw new Error("missing streamed PowerShell program");
@@ -560,7 +565,7 @@ describe("device-lab host broker lifecycle commands", () => {
         const providerName = `ccc-${ownerId}-rollback`;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
-            if (script.includes("Checkpoint-VM")) {
+            if (script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot")) {
                 const state = JSON.parse(readFileSync(stateFile, "utf8"));
                 writeFileSync(stateFile, JSON.stringify({ devices: state.devices.map((device: Record<string, unknown>) => ({ ...device, concurrentMutation: true })) }));
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, snapshotId, snapshotName: providerName, snapshotType: "Recovery" }), stderr: "" };
@@ -656,14 +661,21 @@ describe("device-lab host broker lifecycle commands", () => {
         let networkCleanupFailure: false | "nonzero" | "invalid" | "in-use" = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
+        let snapshotProviderFailure = false;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
             if (script.includes("Start-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
             const deleting = script.includes("Remove-VM -VM $Vm");
-            const snapshotOperation = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
-            if (script.includes("Checkpoint-VM")) snapshotExists = true;
-            if (script.includes("Remove-VMSnapshot") && !snapshotDeleteConfirmationFailure) snapshotExists = false;
+            const snapshotCreate = script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot");
+            const snapshotRepair = script.includes("Repair-CccVmSnapshotState");
+            const snapshotDelete = script.includes("snapshotId = [string]$Snapshot.Id") && script.includes("deleted = $true");
+            const snapshotOperation = snapshotCreate || script.includes("Restore-VMSnapshot") || snapshotDelete;
+            if (snapshotProviderFailure && snapshotCreate) {
+                return { ...command, status: 1, stdout: "", stderr: "simulated checkpoint provider failure" };
+            }
+            if (snapshotCreate) snapshotExists = true;
+            if (snapshotDelete && !snapshotDeleteConfirmationFailure) snapshotExists = false;
             const imagePrepare = script.includes("hyper-v-base-image-profile-conflict");
             if (imagePrepare) preparedSourcePath = script.match(/\$SourceImage = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
             const networkSetup = script.includes("New-NetNat -Name $NatName");
@@ -744,8 +756,10 @@ describe("device-lab host broker lifecycle commands", () => {
                     ? { ok: true, status: 0, stdout: "guest-ok\r\n", stderr: "" }
                     : guestUpload || guestDownload
                         ? { ok: true, localPath: transferLocalPath, remotePath: guestUpload ? "C:\\ccc\\upload.txt" : "C:\\ccc\\download.txt", bytes: 6 }
+                    : snapshotRepair
+                    ? { ok: true, checkpointPolicy: "ProductionOnly", candidateCount: snapshotExists ? 1 : 0 }
                     : snapshotOperation
-                    ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(script.includes("Remove-VMSnapshot") ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
+                    ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
                     : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
                 stderr: snapshotOperation
                     ? "host path C:\\snapshot-provider-host-secret"
@@ -887,7 +901,14 @@ describe("device-lab host broker lifecycle commands", () => {
                 "snapshot-provider-host-secret",
             );
 
+            snapshotProviderFailure = true;
+            const failedSnapshot = await invokeTool("device_snapshot_create", { snapshotName: "provider-failure" });
+            expect(failedSnapshot.status).toBe(502);
+            expect(await failedSnapshot.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-provider-failed" }));
+            snapshotProviderFailure = false;
+
             const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
+            expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
             const callsBeforeStaleSnapshot = commandRunner.mock.calls.length;
             const staleSnapshotWithJournal = await fetch(endpoint, {
@@ -899,6 +920,9 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await staleSnapshotWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleSnapshot);
+            const execAfterInterruptedSnapshot = await invokeTool("device_exec", { command: "Write-Output guest-ok" });
+            expect(execAfterInterruptedSnapshot.status).toBe(200);
+            expect(existsSync(snapshotOperationPath)).toBe(false);
             const unconfirmedRestore = await invokeTool("device_snapshot_restore", { snapshotId });
             expect(unconfirmedRestore.status).toBe(400);
             expect(await unconfirmedRestore.json()).toEqual(expect.objectContaining({ error: "destructive-confirmation-required", confirmationField: "confirmDestructive" }));
@@ -1010,7 +1034,12 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("hyper-v-orphan-vm-ownership-mismatch"))).toHaveLength(1);
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
             expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
-            expect(commandRunner).toHaveBeenCalledTimes(34);
+            const snapshotRepairCalls = commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("Repair-CccVmSnapshotState"));
+            expect(snapshotRepairCalls).toHaveLength(3);
+            for (const [command] of snapshotRepairCalls) {
+                expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
+            }
+            expect(commandRunner).toHaveBeenCalledTimes(40);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

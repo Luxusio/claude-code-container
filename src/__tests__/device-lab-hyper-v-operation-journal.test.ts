@@ -110,6 +110,26 @@ describe("Hyper-V operation journal persistence", () => {
         ))).toBe(false);
     });
 
+    it("persists the expected checkpoint policy before snapshot creation", () => {
+        const { runtime } = testRuntime();
+        const snapshotName = "production-checkpoint";
+        writeHyperVSnapshotJournal(
+            runtime,
+            OWNER_ID,
+            "linux-vm",
+            DEVICE_ID,
+            INCARNATION_ID,
+            "device_snapshot_create",
+            snapshotName,
+            hyperVSnapshotName(OWNER_ID, snapshotName),
+            undefined,
+            "Production",
+        );
+
+        expect(readHyperVSnapshotJournal(runtime, OWNER_ID, "linux-vm", DEVICE_ID))
+            .toMatchObject({ expectedCheckpointPolicy: "Production" });
+    });
+
     it("rejects forged snapshot provider names and missing destructive ids", () => {
         const { runtime } = testRuntime();
         const path = hyperVSnapshotJournalPath(

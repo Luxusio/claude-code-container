@@ -5,6 +5,7 @@ import {
     type HyperVDeleteObservation,
     type HyperVSnapshotObservation,
     type HyperVSnapshotDeleteObservation,
+    type HyperVSnapshotRepairObservation,
     type HyperVGuestExecObservation,
     type HyperVGuestTransferObservation,
     type HyperVGuestProvisionObservation,
@@ -292,6 +293,14 @@ export function parseHyperVSnapshotDeleteObservation(stdout: string): HyperVSnap
     if (!parsed || parsed.deleted !== true) return null;
     const observation = parseHyperVSnapshotObservation(JSON.stringify(parsed));
     return observation ? { ...observation, deleted: true } : null;
+}
+
+export function parseHyperVSnapshotRepairObservation(stdout: string): HyperVSnapshotRepairObservation | null {
+    const parsed = parseLastJsonObject(stdout);
+    if (!parsed || parsed.ok !== true
+        || (parsed.checkpointPolicy !== "Production" && parsed.checkpointPolicy !== "ProductionOnly")
+        || (parsed.candidateCount !== 0 && parsed.candidateCount !== 1)) return null;
+    return parsed as HyperVSnapshotRepairObservation;
 }
 
 export function parseHyperVGuestExecObservation(stdout: string): HyperVGuestExecObservation | null {

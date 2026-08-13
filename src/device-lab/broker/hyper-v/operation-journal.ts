@@ -22,6 +22,7 @@ export type HyperVSnapshotJournal = {
     snapshotName: string;
     providerName: string;
     snapshotId?: string;
+    expectedCheckpointPolicy?: "Production" | "ProductionOnly";
     startedAt: string;
 };
 
@@ -120,6 +121,9 @@ export function readHyperVSnapshotJournal(
                 || (value.tool !== "device_snapshot_create"
                     && (typeof value.snapshotId !== "string"
                         || !isGuid(value.snapshotId)))
+                || (value.expectedCheckpointPolicy !== undefined
+                    && value.expectedCheckpointPolicy !== "Production"
+                    && value.expectedCheckpointPolicy !== "ProductionOnly")
                 || typeof value.startedAt !== "string") {
                 throw new Error("hyper-v-snapshot-journal-invalid");
             }
@@ -140,6 +144,7 @@ export function writeHyperVSnapshotJournal(
     snapshotName: string,
     providerName: string,
     snapshotId?: string,
+    expectedCheckpointPolicy?: "Production" | "ProductionOnly",
 ): void {
     if (!validHyperVIncarnationId(incarnationId)) {
         throw new Error("hyper-v-incarnation-id-invalid");
@@ -156,6 +161,7 @@ export function writeHyperVSnapshotJournal(
             snapshotName,
             providerName,
             ...(snapshotId ? { snapshotId: snapshotId.toLowerCase() } : {}),
+            ...(expectedCheckpointPolicy ? { expectedCheckpointPolicy } : {}),
             startedAt: new Date().toISOString(),
         } satisfies HyperVSnapshotJournal,
     );

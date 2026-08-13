@@ -3287,7 +3287,7 @@ remain unchanged where they are the behavior under test.
     the network configuration, normalizes Windows-generated private-key line
     endings to LF, validates the SSH daemon configuration, and
     enables that local service directly. Brokers advertise
-    `hyper-v-provider-image-finalization-v38`, preventing an Azure-only image,
+    `hyper-v-provider-image-finalization-v39`, preventing an Azure-only image,
     direct-QEMU-VHDX, Linux-Secure-Boot, or package-update-blocking broker from
     being reused by Level 3.
 66. Hyper-V device deletion treats `hyper-v-network-switch-in-use` as deferred
@@ -3349,7 +3349,7 @@ remain unchanged where they are the behavior under test.
     publication transition, and records the profile's fixed generation. The
     destructive Level 3 boot and guest-readiness checks remain the authoritative
     compatibility proof. Brokers advertise and Level 3 requires
-    `hyper-v-provider-image-finalization-v38` for this contract, including
+    `hyper-v-provider-image-finalization-v39` for this contract, including
     guest-visible content comparison between the fixed VHD and published VHDX.
     The same contract requires generic Ubuntu QCOW2 guests to receive only a
     NoCloud `cidata` seed; an Azure `ovf-env.xml` must not share that medium

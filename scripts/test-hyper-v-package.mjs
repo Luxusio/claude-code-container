@@ -38,7 +38,7 @@ try {
     const resolverUrl = pathToFileURL(join(packageRoot, "dist", "host-control", "hyper-v", "powershell-assets.js"));
     const { hyperVPowerShellAssetPath } = await import(resolverUrl.href);
 
-    for (const operation of ["linux-bootstrap-network", "guest-boot-diagnostic"]) {
+    for (const operation of ["linux-bootstrap-network", "guest-boot-diagnostic", "snapshot-create", "snapshot-repair"]) {
         const asset = hyperVPowerShellAssetPath(operation);
         if (!existsSync(asset)) throw new Error(`packaged Hyper-V asset missing: ${operation}`);
         if (relative(packageRoot, asset).startsWith("..")) throw new Error(`packaged Hyper-V asset escaped package: ${operation}`);

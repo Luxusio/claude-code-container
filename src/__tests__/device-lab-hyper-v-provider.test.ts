@@ -31,6 +31,7 @@ import {
     hyperVSnapshotCreateCommand,
     hyperVSnapshotDeleteCommand,
     hyperVSnapshotName,
+    hyperVSnapshotRepairCommand,
     hyperVSnapshotRestoreCommand,
     hyperVSetupCommand,
     hyperVStartCommand,
@@ -53,11 +54,13 @@ import {
     parseHyperVNetworkCleanupObservation,
     parseHyperVSnapshotObservation,
     parseHyperVSnapshotDeleteObservation,
+    parseHyperVSnapshotRepairObservation,
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
 } from "../host-control/hyper-v/index.js";
 import { hyperVProviderDiagnosticCode } from "../device-lab/broker/hyper-v/public-response.js";
 import { isoWriterLines } from "../host-control/hyper-v/core.js";
+import { hyperVPowerShellAssetPath } from "../host-control/hyper-v/powershell-assets.js";
 
 const ownerId = "0123456789abcdef";
 const deviceId = "windows-ci-01";
@@ -1054,6 +1057,10 @@ describe("Hyper-V provider adapter", () => {
             "hyper-v-network-subnet-conflict",
             "hyper-v-network-gateway-conflict",
             "hyper-v-network-nat-prefix-conflict",
+            "hyper-v-snapshot-policy-restore-failed",
+            "hyper-v-snapshot-policy-invalid",
+            "hyper-v-snapshot-policy-quarantine-failed",
+            "hyper-v-snapshot-standard-fallback-failed",
         ]) {
             expect(hyperVProviderDiagnosticCode({
                 error: "hyper-v-powershell-execution-failed",
@@ -2057,9 +2064,13 @@ describe("Hyper-V provider adapter", () => {
         const snapshotName = "before-install";
         const options = { executable: "powershell.exe", ownerId, deviceId, incarnationId, vmName, vmId, snapshotName };
         const createScript = scriptOf(hyperVSnapshotCreateCommand(options));
+        const snapshotModule = readFileSync(hyperVPowerShellAssetPath("snapshot-create").replace(/New-Snapshot\.ps1$/, "Ccc.HyperV.Snapshots.psm1"), "utf8");
         expect(hyperVSnapshotName(ownerId, snapshotName)).toBe(`ccc-${ownerId}-${snapshotName}`);
-        expect(createScript).toContain("Checkpoint-VM -VM $Vm");
-        expect(createScript).toContain(`ccc-${ownerId}-${snapshotName}`);
+        expect(createScript).toContain("New-CccVmSnapshot");
+        expect(JSON.parse(hyperVSnapshotCreateCommand(options).input!)).toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}` });
+        expect(snapshotModule).toContain("Checkpoint-VM -VM $TargetVm");
+        expect(snapshotModule).toContain("hyper-v-snapshot-policy-quarantine-failed");
+        expect(snapshotModule).toContain("hyper-v-snapshot-reconciliation-failed");
         for (const command of [
             hyperVSnapshotRestoreCommand({ ...options, snapshotId }),
             hyperVSnapshotDeleteCommand({ ...options, snapshotId }),
@@ -2072,6 +2083,11 @@ describe("Hyper-V provider adapter", () => {
         expect(() => hyperVSnapshotName(ownerId, "../foreign")).toThrow("hyper-v-snapshot-name-invalid");
         expect(parseHyperVSnapshotObservation(JSON.stringify({ ok: true, snapshotId, snapshotName: hyperVSnapshotName(ownerId, snapshotName), snapshotType: "Recovery" })))
             .toMatchObject({ ok: true, snapshotId, snapshotType: "Recovery" });
+        expect(JSON.parse(hyperVSnapshotRepairCommand(options, "Production").input!))
+            .toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}`, expectedCheckpointPolicy: "Production" });
+        expect(parseHyperVSnapshotRepairObservation(JSON.stringify({ ok: true, checkpointPolicy: "Production", candidateCount: 1 })))
+            .toEqual({ ok: true, checkpointPolicy: "Production", candidateCount: 1 });
+        expect(parseHyperVSnapshotRepairObservation(JSON.stringify({ ok: true, checkpointPolicy: "Standard", candidateCount: 1 }))).toBeNull();
     });
 
     it("uses owner-fenced PowerShell Direct sessions for guest exec and transfer", () => {

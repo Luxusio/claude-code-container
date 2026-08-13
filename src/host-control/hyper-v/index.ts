@@ -33,6 +33,7 @@ export {
     type HyperVSnapshotDeleteObservation,
     type HyperVSnapshotObservation,
     type HyperVVmObservation,
+    type HyperVSnapshotRepairObservation,
 } from "./contracts.js";
 export { hyperVSnapshotName, hyperVVmName } from "./core.js";
 export { hyperVReadinessCommand, hyperVRebootCommand, hyperVSetupCommand, hyperVEnsureNetworkCommand, hyperVCleanupNetworkCommand } from "./host.js";
@@ -41,7 +42,7 @@ export { hyperVCreateCommand } from "./vm-create.js";
 export { hyperVLinuxSeedCommand, hyperVLinuxSshReadyCommand, hyperVBootstrapNetworkCommand, hyperVLinuxNetworkFinalizeCommand, hyperVBootstrapNetworkCleanupCommand, hyperVLinuxSshExecCommand, hyperVLinuxScpUploadCommand, hyperVLinuxScpDownloadCommand } from "./linux-guest.js";
 export { hyperVPrepareBaseImageCommand, hyperVAcquireBaseImageCommand } from "./images.js";
 export { hyperVStatusCommand, hyperVStartCommand, hyperVGuestReadyCommand, hyperVGuestBootDiagnosticCommand, hyperVStopCommand, hyperVDeleteCommand, hyperVRecoverOrphanCommand } from "./lifecycle.js";
-export { hyperVSnapshotCreateCommand, hyperVSnapshotRestoreCommand, hyperVSnapshotDeleteCommand } from "./snapshots.js";
+export { hyperVSnapshotCreateCommand, hyperVSnapshotRepairCommand, hyperVSnapshotRestoreCommand, hyperVSnapshotDeleteCommand } from "./snapshots.js";
 export { hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestUploadCommand, hyperVGuestDownloadCommand } from "./windows-guest.js";
 export { HYPER_V_UBUNTU_IMAGE_CATALOG_ID, HYPER_V_UBUNTU_IMAGE_SHA256, HYPER_V_UBUNTU_IMAGE_URL, HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES } from "./ubuntu-image.js";
 export * from "./observations.js";

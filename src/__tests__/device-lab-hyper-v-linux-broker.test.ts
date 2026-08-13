@@ -1938,7 +1938,10 @@ describe("device-lab Hyper-V broker", () => {
                 return { ...command, status: 0, stdout: "{}", stderr: "" };
             }
             const networkAddress = expectedNetworkAddress;
-            const snapshot = script.includes("Checkpoint-VM") || script.includes("Restore-VMSnapshot") || script.includes("Remove-VMSnapshot");
+            const snapshotCreate = script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot");
+            const snapshotRepair = script.includes("Repair-CccVmSnapshotState");
+            const snapshotDelete = script.includes("snapshotId = [string]$Snapshot.Id") && script.includes("deleted = $true");
+            const snapshot = snapshotCreate || script.includes("Restore-VMSnapshot") || snapshotDelete;
             const deleting = script.includes("Remove-VM -VM $Vm");
             if (providerLifecycleFailure && (script.includes("Start-VM") || script.includes("Restart-VM"))) {
                 return { ...command, status: 1, stdout: "", stderr: "provider lifecycle failed" };
@@ -1946,8 +1949,8 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("Restart-VM")) rebootScripts.push(script);
             if (script.includes("Start-VM") || script.includes("Restart-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
-            if (script.includes("Checkpoint-VM")) snapshotExists = true;
-            if (script.includes("Remove-VMSnapshot")) snapshotExists = false;
+            if (snapshotCreate) snapshotExists = true;
+            if (snapshotDelete) snapshotExists = false;
             if (imageSetup) {
                 mkdirSync(imageProfileRoot, { recursive: true });
                 writeFileSync(imagePath, "fake-vhdx");
@@ -1972,8 +1975,10 @@ describe("device-lab Hyper-V broker", () => {
                         ? { ok: true, recoveredVm: false, removedDisk: false }
                         : seed
                             ? { ok: true, vmId, vmName, seedDiskPath, sshPrivateKeyPath: privateKeyPath, sshPublicKeyPath: publicKeyPath, sshHostPublicKeyPath: hostPublicKeyPath, sshHostKeyFingerprint: hostKeyFingerprint, knownHostsPath, guestUsername: `ccc${ownerId.slice(0, 8)}`, networkAddress }
+                            : snapshotRepair
+                                ? { ok: true, checkpointPolicy: "Production", candidateCount: snapshotExists ? 1 : 0 }
                             : snapshot
-                                ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(script.includes("Remove-VMSnapshot") ? { deleted: true } : {}) }
+                                ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: true } : {}) }
                                 : { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
             return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
         });

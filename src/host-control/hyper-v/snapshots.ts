@@ -3,28 +3,36 @@ import {
     type HyperVSnapshotOptions,
 } from "./contracts.js";
 import {
-    psQuote,
     jsonScript,
     command,
-    ownedVmPrelude,
     ownedSnapshotPrelude,
     hyperVSnapshotName,
 } from "./core.js";
+import { hyperVPowerShellFileCommand } from "./powershell-assets.js";
+import { hyperVSnapshotCreateContractV1, hyperVSnapshotRepairContractV1 } from "./powershell-contracts.js";
 
 export function hyperVSnapshotCreateCommand(options: HyperVSnapshotOptions): HyperVProviderCommand {
-    const lines = ownedVmPrelude(options);
     const providerName = hyperVSnapshotName(options.ownerId, options.snapshotName);
-    return command(options.executable, jsonScript([
-        ...lines,
-        `$SnapshotName = ${psQuote(providerName)}`,
-        "if (@(Get-VMSnapshot -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $SnapshotName }).Count -ne 0) { throw 'hyper-v-snapshot-already-exists' }",
-        "Checkpoint-VM -VM $Vm -SnapshotName $SnapshotName -ErrorAction Stop",
-        "$Snapshot = @(Get-VMSnapshot -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq $SnapshotName })",
-        "if ($Snapshot.Count -ne 1) { throw 'hyper-v-snapshot-create-invalid-result' }",
-        "$Snapshot = $Snapshot[0]",
-        "$Result = [ordered]@{ ok = $true; snapshotId = [string]$Snapshot.Id; snapshotName = [string]$Snapshot.Name; snapshotType = [string]$Snapshot.SnapshotType }",
-        "$Result | ConvertTo-Json -Compress -Depth 5",
-    ]));
+    return hyperVPowerShellFileCommand(
+        options.executable,
+        "snapshot-create",
+        hyperVSnapshotCreateContractV1(options, providerName),
+    );
+}
+
+export function hyperVSnapshotRepairCommand(
+    options: HyperVSnapshotOptions,
+    expectedCheckpointPolicy: "Production" | "ProductionOnly",
+): HyperVProviderCommand {
+    return hyperVPowerShellFileCommand(
+        options.executable,
+        "snapshot-repair",
+        hyperVSnapshotRepairContractV1(
+            options,
+            hyperVSnapshotName(options.ownerId, options.snapshotName),
+            expectedCheckpointPolicy,
+        ),
+    );
 }
 
 export function hyperVSnapshotRestoreCommand(options: HyperVSnapshotOptions): HyperVProviderCommand {

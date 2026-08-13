@@ -450,7 +450,23 @@ and verify guest identity before executing commands.
 
 - Windows guests use production-only checkpoints. Linux guests use Hyper-V's
   production-first policy with standard-checkpoint fallback because generic
-  Ubuntu images do not guarantee a running Hyper-V VSS daemon.
+  Ubuntu images do not guarantee a running Hyper-V VSS daemon. If Hyper-V does
+  not perform that fallback itself, CCC removes any partial checkpoint, retries
+  once with `Standard`, and restores the VM's `Production` policy. A failed
+  retry or policy restoration removes the candidate checkpoint and fails the
+  operation. Snapshot creation rejects any VM already outside the managed
+  `Production` or `ProductionOnly` policy, and policy restoration is confirmed
+  by re-reading the VM before success is returned. If restoration cannot be
+  confirmed, CCC sets and confirms `Disabled` as a fail-closed quarantine;
+  inability to quarantine is reported as a distinct bounded failure.
+  Before snapshot mutation the broker durably records the expected checkpoint
+  policy. Provider timeout or termination triggers a separate owner-fenced
+  repair command; the journal is retained until `Production`/`ProductionOnly`
+  restoration is confirmed, or `Disabled` quarantine is confirmed. Ambiguous
+  exact-name checkpoint candidates are removed and verified absent during
+  reconciliation. Every subsequent Hyper-V device command checks and reconciles
+  this journal before touching the VM, rather than waiting for another snapshot
+  command.
 - Make create, start, stop, and delete idempotent.
 - Treat a provider exit code of zero as insufficient for destructive cleanup:
   VM and snapshot deletion must return a structured `deleted: true` observation
@@ -669,7 +685,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v38` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v39` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package

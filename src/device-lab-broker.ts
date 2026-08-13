@@ -51,7 +51,7 @@ import {
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { assertHyperVPrivateDeviceRoot, cleanupHyperVDeviceArtifacts, ensureHyperVPrivateDeviceRoot, hyperVDeviceIncarnationId, hyperVDeviceRoot, hyperVPrivateDeviceRoot, readHyperVIncarnationRecord, validHyperVIncarnationId, writeHyperVIncarnationRecord } from "./device-lab/broker/hyper-v/state.js";
-import { HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVVmObservation } from "./host-control/hyper-v/index.js";
+import { HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT, hyperVBootstrapNetworkCleanupCommand, hyperVBootstrapNetworkCommand, hyperVCreateCommand, hyperVDeleteCommand, hyperVGuestBootDiagnosticCommand, hyperVGuestDownloadCommand, hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestReadyCommand, hyperVGuestUploadCommand, hyperVLinuxNetworkFinalizeCommand, hyperVLinuxScpUploadCommand, hyperVLinuxSeedCommand, hyperVLinuxSshExecCommand, hyperVLinuxSshReadyCommand, hyperVReadinessCommand, hyperVRebootCommand, hyperVRecoverOrphanCommand, hyperVSnapshotCreateCommand, hyperVSnapshotDeleteCommand, hyperVSnapshotName, hyperVSnapshotRepairCommand, hyperVSnapshotRestoreCommand, hyperVStartCommand, hyperVStatusCommand, hyperVStopCommand, hyperVVmName, parseHyperVBootstrapNetworkCleanupObservation, parseHyperVBootstrapNetworkObservation, parseHyperVDeleteObservation, parseHyperVGuestBootDiagnosticObservation, parseHyperVGuestExecObservation, parseHyperVGuestProvisionObservation, parseHyperVGuestReadyFailureObservation, parseHyperVGuestReadyObservation, parseHyperVGuestTransferObservation, parseHyperVReadiness, parseHyperVRecoveryObservation, parseHyperVSnapshotDeleteObservation, parseHyperVSnapshotObservation, parseHyperVSnapshotRepairObservation, parseHyperVVmObservation } from "./host-control/hyper-v/index.js";
 import { iosSimulatorCreateCommand, iosSimulatorCreatedUdid, iosSimulatorDeleteCommand } from "./device-lab/providers/ios-simulator.js";
 import { CLI_VERSION } from "./utils.js";
 
@@ -4335,7 +4335,7 @@ function readHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: s
     );
 }
 
-function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, incarnationId: string, tool: HyperVSnapshotJournal["tool"], snapshotName: string, providerName: string, snapshotId?: string): void {
+function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, incarnationId: string, tool: HyperVSnapshotJournal["tool"], snapshotName: string, providerName: string, snapshotId?: string, expectedCheckpointPolicy?: "Production" | "ProductionOnly"): void {
     writeHyperVSnapshotJournalFile(
         hyperVJournalPersistenceRuntime(),
         ownerId,
@@ -4346,6 +4346,7 @@ function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: 
         snapshotName,
         providerName,
         snapshotId,
+        expectedCheckpointPolicy,
     );
 }
 
@@ -4369,6 +4370,12 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     const diskPath = field(device, "diskPath");
     const incarnationId = hyperVDeviceIncarnationId(device);
     if (!vmId || !vmName || !diskPath || !incarnationId || incarnationId !== journal.incarnationId) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
+    const expectedCheckpointPolicy = journal.expectedCheckpointPolicy
+        || (backend === "linux-vm" ? "Production" : "ProductionOnly");
+    const repair = await hyperVProviderCommandRunner(normalized, hyperVSnapshotRepairCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath, snapshotName: journal.snapshotName }, expectedCheckpointPolicy), { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+    if (!commandSucceeded(repair)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: hyperVProviderDiagnosticCode(repair, "hyper-v-snapshot-reconciliation-failed") };
+    const repairObservation = parseHyperVSnapshotRepairObservation(repair.stdout || "");
+    if (!repairObservation || repairObservation.checkpointPolicy !== expectedCheckpointPolicy) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
     const execution = await hyperVProviderCommandRunner(normalized, hyperVStatusCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath }), { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     if (!commandSucceeded(execution)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: hyperVProviderDiagnosticCode(execution, "hyper-v-snapshot-reconciliation-failed") };
     const observation = parseHyperVVmObservation(execution.stdout || "");
@@ -4481,11 +4488,9 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
             return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool } };
         }
     }
-    if (parsed.tool === "device_snapshot_list" || parsed.tool === "device_snapshot_create" || parsed.tool === "device_snapshot_restore" || parsed.tool === "device_snapshot_delete") {
-        const reconciliation = await reconcileHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, normalized);
-        if (!reconciliation.ok) return { status: reconciliation.status, payload: { ok: false, error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) } };
-        device = reconciliation.device;
-    }
+    const reconciliation = await reconcileHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, normalized);
+    if (!reconciliation.ok) return { status: reconciliation.status, payload: { ok: false, error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) } };
+    device = reconciliation.device;
     const vmId = typeof device.vmId === "string" ? device.vmId : null;
     const vmName = typeof device.vmName === "string" ? device.vmName : null;
     const diskPath = typeof device.diskPath === "string" ? device.diskPath : null;
@@ -4829,7 +4834,7 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         };
     }
     try {
-        writeHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool as HyperVSnapshotJournal["tool"], snapshotName, expectedProviderName, tracked?.id);
+        writeHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool as HyperVSnapshotJournal["tool"], snapshotName, expectedProviderName, tracked?.id, match.backend === "linux-vm" ? "Production" : "ProductionOnly");
     } catch (error) {
         return {
             status: 409,
@@ -4848,11 +4853,12 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
     }
     const execution = await hyperVProviderCommandRunner(normalized, providerCommand, { timeoutMs: 120000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     if (!commandSucceeded(execution)) {
+        const reconciliation = await reconcileHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, normalized);
         return {
-            status: 502,
+            status: reconciliation.ok ? 502 : reconciliation.status,
             payload: {
                 ok: false,
-                error: "hyper-v-snapshot-provider-failed",
+                error: reconciliation.ok ? "hyper-v-snapshot-provider-failed" : reconciliation.error,
                 ownerId,
                 backend: match.backend,
                 deviceId,
@@ -4861,6 +4867,7 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                     true,
                     "hyper-v-snapshot-provider-failed",
                 ),
+                ...(!reconciliation.ok && reconciliation.detail ? { detail: reconciliation.detail } : {}),
             },
         };
     }

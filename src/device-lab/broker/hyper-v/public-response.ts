@@ -217,6 +217,10 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-network-setup-failed",
     "hyper-v-recovery-failed",
     "hyper-v-snapshot-reconciliation-failed",
+    "hyper-v-snapshot-policy-restore-failed",
+    "hyper-v-snapshot-policy-invalid",
+    "hyper-v-snapshot-policy-quarantine-failed",
+    "hyper-v-snapshot-standard-fallback-failed",
     "hyper-v-state-reconciliation-failed",
 ]);
 
