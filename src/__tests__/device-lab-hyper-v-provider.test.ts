@@ -2063,11 +2063,11 @@ describe("Hyper-V provider adapter", () => {
         const snapshotId = "87654321-4321-4321-4321-cba987654321";
         const snapshotName = "before-install";
         const options = { executable: "powershell.exe", ownerId, deviceId, incarnationId, vmName, vmId, snapshotName };
-        const createScript = scriptOf(hyperVSnapshotCreateCommand(options));
+        const createScript = scriptOf(hyperVSnapshotCreateCommand(options, "Production"));
         const snapshotModule = readFileSync(hyperVPowerShellAssetPath("snapshot-create").replace(/New-Snapshot\.ps1$/, "Ccc.HyperV.Snapshots.psm1"), "utf8");
         expect(hyperVSnapshotName(ownerId, snapshotName)).toBe(`ccc-${ownerId}-${snapshotName}`);
         expect(createScript).toContain("New-CccVmSnapshot");
-        expect(JSON.parse(hyperVSnapshotCreateCommand(options).input!)).toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}` });
+        expect(JSON.parse(hyperVSnapshotCreateCommand(options, "Production").input!)).toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}`, expectedCheckpointPolicy: "Production" });
         expect(snapshotModule).toContain("Checkpoint-VM -VM $TargetVm");
         expect(snapshotModule).toContain("hyper-v-snapshot-policy-quarantine-failed");
         expect(snapshotModule).toContain("hyper-v-snapshot-reconciliation-failed");

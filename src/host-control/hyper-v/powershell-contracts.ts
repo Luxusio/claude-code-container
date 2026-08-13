@@ -10,6 +10,7 @@ export type HyperVOwnedVmContractV1 = {
 
 export type HyperVSnapshotCreateContractV1 = HyperVOwnedVmContractV1 & {
     snapshotName: string;
+    expectedCheckpointPolicy: "Production" | "ProductionOnly";
 };
 
 export type HyperVSnapshotRepairContractV1 = HyperVSnapshotCreateContractV1 & {
@@ -30,8 +31,9 @@ export function hyperVOwnedVmContractV1(options: HyperVCommandOptions): HyperVOw
 export function hyperVSnapshotCreateContractV1(
     options: HyperVCommandOptions,
     snapshotName: string,
+    expectedCheckpointPolicy: "Production" | "ProductionOnly",
 ): HyperVSnapshotCreateContractV1 {
-    return { ...hyperVOwnedVmContractV1(options), snapshotName };
+    return { ...hyperVOwnedVmContractV1(options), snapshotName, expectedCheckpointPolicy };
 }
 
 export function hyperVSnapshotRepairContractV1(
@@ -39,5 +41,5 @@ export function hyperVSnapshotRepairContractV1(
     snapshotName: string,
     expectedCheckpointPolicy: "Production" | "ProductionOnly",
 ): HyperVSnapshotRepairContractV1 {
-    return { ...hyperVSnapshotCreateContractV1(options, snapshotName), expectedCheckpointPolicy };
+    return { ...hyperVSnapshotCreateContractV1(options, snapshotName, expectedCheckpointPolicy) };
 }

@@ -463,8 +463,8 @@ and verify guest identity before executing commands.
   policy. Provider timeout or termination triggers a separate owner-fenced
   repair command; the journal is retained until `Production`/`ProductionOnly`
   restoration is confirmed, or `Disabled` quarantine is confirmed. Ambiguous
-  exact-name checkpoint candidates are removed and verified absent during
-  reconciliation. Every subsequent Hyper-V device command checks and reconciles
+  exact-name checkpoint candidates are preserved and block reconciliation for
+  operator diagnosis. Every subsequent Hyper-V device command checks and reconciles
   this journal before touching the VM, rather than waiting for another snapshot
   command.
 - Make create, start, stop, and delete idempotent.

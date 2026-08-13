@@ -11,12 +11,15 @@ import {
 import { hyperVPowerShellFileCommand } from "./powershell-assets.js";
 import { hyperVSnapshotCreateContractV1, hyperVSnapshotRepairContractV1 } from "./powershell-contracts.js";
 
-export function hyperVSnapshotCreateCommand(options: HyperVSnapshotOptions): HyperVProviderCommand {
+export function hyperVSnapshotCreateCommand(
+    options: HyperVSnapshotOptions,
+    expectedCheckpointPolicy: "Production" | "ProductionOnly",
+): HyperVProviderCommand {
     const providerName = hyperVSnapshotName(options.ownerId, options.snapshotName);
     return hyperVPowerShellFileCommand(
         options.executable,
         "snapshot-create",
-        hyperVSnapshotCreateContractV1(options, providerName),
+        hyperVSnapshotCreateContractV1(options, providerName, expectedCheckpointPolicy),
     );
 }
 

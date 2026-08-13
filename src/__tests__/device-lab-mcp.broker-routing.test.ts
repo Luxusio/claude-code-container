@@ -182,6 +182,44 @@ describe("device-lab MCP broker routing", () => {
                 startIfStopped: true,
                 waitForBoot: false,
             }));
+
+            const status = await client.callTool({
+                name: "device_status",
+                arguments: {
+                    backend: "windows-vm",
+                    deviceId: "hyper-v-create-routing",
+                    incarnationId: "22222222222222222222222222222222",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(status.isError).not.toBe(true);
+            expect(receivedParams).toEqual(expect.objectContaining({
+                backend: "windows-vm",
+                command: "device_status",
+                deviceId: "hyper-v-create-routing",
+                incarnationId: "22222222222222222222222222222222",
+            }));
+
+            const snapshots = await client.callTool({
+                name: "device_snapshot_list",
+                arguments: {
+                    backend: "windows-vm",
+                    deviceId: "hyper-v-create-routing",
+                    incarnationId: "33333333333333333333333333333333",
+                    viaBroker: true,
+                    hostCandidates: ["127.0.0.1"],
+                    port: address.port,
+                },
+            });
+            expect(snapshots.isError).not.toBe(true);
+            expect(receivedParams).toEqual(expect.objectContaining({
+                backend: "windows-vm",
+                tool: "device_snapshot_list",
+                deviceId: "hyper-v-create-routing",
+                incarnationId: "33333333333333333333333333333333",
+            }));
         } finally {
             rmSync(authFile, { force: true });
             await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

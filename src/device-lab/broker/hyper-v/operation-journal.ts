@@ -124,6 +124,9 @@ export function readHyperVSnapshotJournal(
                 || (value.expectedCheckpointPolicy !== undefined
                     && value.expectedCheckpointPolicy !== "Production"
                     && value.expectedCheckpointPolicy !== "ProductionOnly")
+                || (value.expectedCheckpointPolicy !== undefined
+                    && value.expectedCheckpointPolicy
+                        !== (backend === "linux-vm" ? "Production" : "ProductionOnly"))
                 || typeof value.startedAt !== "string") {
                 throw new Error("hyper-v-snapshot-journal-invalid");
             }

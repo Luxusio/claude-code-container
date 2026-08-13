@@ -475,6 +475,11 @@ describe("device-lab MCP foundation and definitions", () => {
             expectBackendProperty(routedLifecycleProperties, expectedDeviceToolBackends(name));
             expectRoutingProperties(routedLifecycleProperties);
         }
+        for (const name of ["device_status", "device_snapshot_list"]) {
+            expect(toolProperties(result.tools.find((tool) => tool.name === name))).toEqual(expect.objectContaining({
+                incarnationId: expect.objectContaining({ type: "string", pattern: "^[a-f0-9]{32}$" }),
+            }));
+        }
         const inventoryTool = result.tools.find((tool) => tool.name === "device_inventory");
         const inventoryProperties = toolProperties(inventoryTool);
         expectBackendProperty(inventoryProperties, DEVICE_BACKEND_ENUM);

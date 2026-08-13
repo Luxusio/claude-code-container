@@ -48,7 +48,7 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
             if ($script:CreateCalls -eq 1) { throw 'production-failed' }
             [pscustomobject]@{ unexpectedProviderOutput = $true }
         }
-        $Result = New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader
+        $Result = New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader
         @($Result).Count | Should -Be 1
         $Result.ok | Should -BeTrue
         $script:CreateCalls | Should -Be 2
@@ -59,24 +59,31 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
     It 'cleans a partial ProductionOnly checkpoint before returning the provider failure' {
         $script:Vm.CheckpointType = 'ProductionOnly'
         $Creator = { param($TargetVm, $Name) $script:Snapshots = @([pscustomobject]@{ Name = $Name }); throw 'provider-failed' }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'provider-failed'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'ProductionOnly' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'provider-failed'
         $script:Snapshots.Count | Should -Be 0
+    }
+
+    It 'rejects a VM whose live checkpoint policy differs from the backend contract' {
+        $script:Vm.CheckpointType = 'ProductionOnly'
+        $Creator = { $script:CreateCalls++ }
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-policy-invalid'
+        $script:CreateCalls | Should -Be 0
     }
 
     It 'fails reconciliation when a partial checkpoint cannot be removed' {
         $Creator = { param($TargetVm, $Name) $script:Snapshots = @([pscustomobject]@{ Name = $Name }); throw 'production-failed' }
         $BrokenRemover = { throw 'remove-failed' }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $BrokenRemover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-reconciliation-failed'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $BrokenRemover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-reconciliation-failed'
     }
 
     It 'removes the fallback candidate when standard checkpoint creation fails' {
         $Creator = { param($TargetVm, $Name) $script:Snapshots = @([pscustomobject]@{ Name = $Name }); throw 'create-failed' }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-standard-fallback-failed'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-standard-fallback-failed'
         $script:Snapshots.Count | Should -Be 0
         $script:Vm.CheckpointType | Should -Be 'Production'
     }
 
-    It 'removes all exact-name candidates when the final observation is ambiguous' {
+    It 'preserves all exact-name candidates when the final observation is ambiguous' {
         $Creator = {
             param($TargetVm, $Name)
             $script:Snapshots = @(
@@ -84,8 +91,8 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
                 [pscustomobject]@{ Id = [Guid]::NewGuid(); Name = $Name; SnapshotType = 'Standard' }
             )
         }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-create-invalid-result'
-        $script:Snapshots.Count | Should -Be 0
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-reconciliation-ambiguous'
+        $script:Snapshots.Count | Should -Be 2
     }
 
     It 'removes the candidate when the final observation cannot be read' {
@@ -100,7 +107,7 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
             $script:Snapshots = @([pscustomobject]@{ Id = [Guid]::NewGuid(); Name = $Name; SnapshotType = 'Standard' })
         }
 
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-create-invalid-result'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-create-invalid-result'
         $script:Snapshots.Count | Should -Be 0
     }
 
@@ -110,7 +117,7 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
             $script:Snapshots = @([pscustomobject]@{ Id = 'not-a-guid'; Name = $Name; SnapshotType = 'Standard' })
         }
 
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-create-invalid-result'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $script:Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-create-invalid-result'
         $script:Snapshots.Count | Should -Be 0
     }
 
@@ -122,7 +129,7 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
             if ($script:CreateCalls -eq 1) { throw 'production-failed' }
         }
         $Writer = { param($TargetVm, $Policy) if ($Policy -eq 'Production') { throw 'restore-failed' }; $TargetVm.CheckpointType = $Policy }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-policy-restore-failed'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-policy-restore-failed'
         $script:Vm.CheckpointType | Should -Be 'Disabled'
         $script:Snapshots.Count | Should -Be 0
     }
@@ -135,7 +142,7 @@ Describe 'CCC Hyper-V snapshot fallback state machine' {
             if ($script:CreateCalls -eq 1) { throw 'production-failed' }
         }
         $Writer = { param($TargetVm, $Policy) if ($Policy -in @('Production', 'Disabled')) { throw 'policy-failed' }; $TargetVm.CheckpointType = $Policy }
-        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' $script:Reader $Creator $script:Remover $Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-policy-quarantine-failed'
+        { New-CccVmSnapshot $script:Vm 'ccc-0123456789abcdef-baseline' 'Production' $script:Reader $Creator $script:Remover $Writer $script:VmReader } | Should -Throw 'hyper-v-snapshot-policy-quarantine-failed'
         $script:Snapshots.Count | Should -Be 0
     }
 }
@@ -157,14 +164,14 @@ Describe 'CCC Hyper-V snapshot journal repair' {
             $Result.candidateCount | Should -Be 1
         }
 
-        It 'removes ambiguous candidates after policy restoration' {
+        It 'preserves ambiguous candidates for fail-closed reconciliation' {
             $script:RepairSnapshots = @(
                 [pscustomobject]@{ Name = 'ccc-0123456789abcdef-baseline' },
                 [pscustomobject]@{ Name = 'ccc-0123456789abcdef-baseline' }
             )
-            $Result = Repair-CccVmSnapshotState $script:RepairVm 'ccc-0123456789abcdef-baseline' 'Production'
-            $Result.candidateCount | Should -Be 0
-            $script:RepairSnapshots.Count | Should -Be 0
+            { Repair-CccVmSnapshotState $script:RepairVm 'ccc-0123456789abcdef-baseline' 'Production' } | Should -Throw 'hyper-v-snapshot-reconciliation-ambiguous'
+            $script:RepairSnapshots.Count | Should -Be 2
+            Should -Invoke Remove-VMSnapshot -Times 0
         }
 
         It 'confirms Disabled quarantine when policy restoration fails' {
@@ -175,6 +182,13 @@ Describe 'CCC Hyper-V snapshot journal repair' {
             }
             { Repair-CccVmSnapshotState $script:RepairVm 'ccc-0123456789abcdef-baseline' 'Production' } | Should -Throw 'hyper-v-snapshot-policy-restore-failed'
             $script:RepairVm.CheckpointType | Should -Be 'Disabled'
+        }
+
+        It 'does not automatically remove a pre-existing Disabled quarantine' {
+            $script:RepairVm.CheckpointType = 'Disabled'
+            { Repair-CccVmSnapshotState $script:RepairVm 'ccc-0123456789abcdef-baseline' 'Production' } | Should -Throw 'hyper-v-snapshot-policy-quarantined'
+            $script:RepairVm.CheckpointType | Should -Be 'Disabled'
+            Should -Invoke Set-VM -Times 0
         }
     }
 }

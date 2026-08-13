@@ -4350,7 +4350,7 @@ function writeHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: 
     );
 }
 
-async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions): Promise<
+async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, deviceId: string, device: Record<string, unknown>, powershell: string, normalized: NormalizedBrokerOptions, retryRestoreSnapshotId?: string): Promise<
     | { ok: true; device: Record<string, unknown>; reconciled: boolean }
     | { ok: false; status: number; error: string; detail?: string }> {
     let journal: HyperVSnapshotJournal | null;
@@ -4370,8 +4370,7 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     const diskPath = field(device, "diskPath");
     const incarnationId = hyperVDeviceIncarnationId(device);
     if (!vmId || !vmName || !diskPath || !incarnationId || incarnationId !== journal.incarnationId) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
-    const expectedCheckpointPolicy = journal.expectedCheckpointPolicy
-        || (backend === "linux-vm" ? "Production" : "ProductionOnly");
+    const expectedCheckpointPolicy = backend === "linux-vm" ? "Production" : "ProductionOnly";
     const repair = await hyperVProviderCommandRunner(normalized, hyperVSnapshotRepairCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath, snapshotName: journal.snapshotName }, expectedCheckpointPolicy), { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
     if (!commandSucceeded(repair)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-failed", detail: hyperVProviderDiagnosticCode(repair, "hyper-v-snapshot-reconciliation-failed") };
     const repairObservation = parseHyperVSnapshotRepairObservation(repair.stdout || "");
@@ -4382,6 +4381,17 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     if (!observation || observation.vmId !== vmId.toLowerCase() || observation.vmName !== vmName || resolve(observation.diskPath || "") !== resolve(diskPath)) return { ok: false, status: 502, error: "hyper-v-snapshot-reconciliation-invalid-result" };
     const live = (observation.snapshots || []).filter((snapshot) => snapshot.snapshotName === journal!.providerName);
     if (live.length > 1) return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-ambiguous" };
+    let preserveJournalForRestoreRetry = false;
+    if (journal.tool === "device_snapshot_restore") {
+        const snapshotId = journal.snapshotId!.toLowerCase();
+        if (live.length !== 1 || live[0].snapshotId.toLowerCase() !== snapshotId) {
+            return { ok: false, status: 409, error: "hyper-v-snapshot-reconciliation-metadata-invalid" };
+        }
+        if (retryRestoreSnapshotId?.toLowerCase() !== snapshotId) {
+            return { ok: false, status: 409, error: "hyper-v-snapshot-restore-outcome-indeterminate" };
+        }
+        preserveJournalForRestoreRetry = true;
+    }
     const tracked = trackedHyperVSnapshots(device);
     let snapshots = tracked;
     let activeSnapshotId = typeof device.activeSnapshotId === "string" ? device.activeSnapshotId : null;
@@ -4397,8 +4407,6 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
     } else if (journal.tool === "device_snapshot_delete" && live.length === 0) {
         snapshots = tracked.filter((snapshot) => snapshot.id.toLowerCase() !== journal!.snapshotId!.toLowerCase());
         if (activeSnapshotId?.toLowerCase() === journal.snapshotId!.toLowerCase()) activeSnapshotId = null;
-    } else if (journal.tool === "device_snapshot_restore" && live.length === 1 && live[0].snapshotId.toLowerCase() === journal.snapshotId!.toLowerCase()) {
-        activeSnapshotId = journal.snapshotId!.toLowerCase();
     }
     let updated = device;
     mutateOwnerDevices(ownerId, backend, (devices) => devices.map((candidate) => {
@@ -4406,7 +4414,9 @@ async function reconcileHyperVSnapshotJournal(ownerId: string, backend: string, 
         updated = { ...(candidate as Record<string, unknown>), snapshots, activeSnapshotId, runtimeState: observation.state, status: observation.state.toLowerCase() === "running" ? "running" : "stopped", updatedAt: new Date().toISOString() };
         return updated;
     }));
-    rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true });
+    if (!preserveJournalForRestoreRetry) {
+        rmSync(hyperVSnapshotJournalPath(ownerId, backend, deviceId), { force: true });
+    }
     return { ok: true, device: updated, reconciled: true };
 }
 
@@ -4479,7 +4489,8 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         };
     }
     const initialIncarnationId = hyperVDeviceIncarnationId(device);
-    if (!DEVICE_BROKER_READ_ONLY_TOOL_METHODS.has(parsed.tool)) {
+    const pendingSnapshotJournal = existsSync(hyperVSnapshotJournalPath(ownerId, match.stateKey, deviceId));
+    if (!DEVICE_BROKER_READ_ONLY_TOOL_METHODS.has(parsed.tool) || pendingSnapshotJournal) {
         const expectedIncarnationId = parsed.params.incarnationId;
         if (!validHyperVIncarnationId(expectedIncarnationId)) {
             return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-required", ownerId, backend: match.backend, deviceId, tool: parsed.tool } };
@@ -4488,7 +4499,17 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
             return { status: 409, payload: { ok: false, error: "hyper-v-incarnation-conflict", ownerId, backend: match.backend, deviceId, tool: parsed.tool } };
         }
     }
-    const reconciliation = await reconcileHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, device, powershell, normalized);
+    const reconciliation = await reconcileHyperVSnapshotJournal(
+        ownerId,
+        match.stateKey,
+        deviceId,
+        device,
+        powershell,
+        normalized,
+        parsed.tool === "device_snapshot_restore" && typeof parsed.params.snapshotId === "string"
+            ? parsed.params.snapshotId
+            : undefined,
+    );
     if (!reconciliation.ok) return { status: reconciliation.status, payload: { ok: false, error: reconciliation.error, ownerId, backend: match.backend, deviceId, ...(reconciliation.detail ? { detail: reconciliation.detail } : {}) } };
     device = reconciliation.device;
     const vmId = typeof device.vmId === "string" ? device.vmId : null;
@@ -4810,11 +4831,25 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
     }
     const snapshotName = parsed.tool === "device_snapshot_create" ? String(requestedName) : String(tracked?.name);
     const expectedProviderName = hyperVSnapshotName(ownerId, snapshotName);
+    const expectedCheckpointPolicy = match.backend === "linux-vm" ? "Production" : "ProductionOnly";
+    if (parsed.tool === "device_snapshot_create") {
+        const statusExecution = await hyperVProviderCommandRunner(normalized, hyperVStatusCommand({ executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath }), { timeoutMs: 30000, outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT });
+        const statusObservation = commandSucceeded(statusExecution) ? parseHyperVVmObservation(statusExecution.stdout || "") : null;
+        if (!statusObservation
+            || statusObservation.vmId !== vmId.toLowerCase()
+            || statusObservation.vmName !== vmName
+            || resolve(statusObservation.diskPath || "") !== resolve(diskPath)) {
+            return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-preflight-failed", ownerId, backend: match.backend, deviceId, detail: hyperVProviderDiagnosticCode(statusExecution, "hyper-v-snapshot-preflight-failed") } };
+        }
+        if (statusObservation.checkpointPolicy !== expectedCheckpointPolicy) {
+            return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-policy-invalid", ownerId, backend: match.backend, deviceId } };
+        }
+    }
     let providerCommand: ProviderCommand;
     try {
         const options = { executable: powershell, ownerId, deviceId, incarnationId, vmName, vmId, diskPath, snapshotName, snapshotId: tracked?.id || null, force: parsed.params.force === true };
         providerCommand = parsed.tool === "device_snapshot_create"
-            ? hyperVSnapshotCreateCommand(options)
+            ? hyperVSnapshotCreateCommand(options, expectedCheckpointPolicy)
             : parsed.tool === "device_snapshot_restore"
                 ? hyperVSnapshotRestoreCommand(options)
                 : hyperVSnapshotDeleteCommand(options);
@@ -5016,12 +5051,14 @@ async function invokeDeviceTool(ownerId: string, params: unknown, normalized: No
         }
     }
     if (DEVICE_BROKER_BACKEND_TOOL_METHODS.has(parsed.tool)) {
-        if (isHyperVBackend(parsed.backend)) {
+        const match = findOwnerDeviceForTool(ownerId, parsed);
+        if ("status" in match) return match;
+        if (isHyperVBackend(match.backend)) {
             try {
-                return await withOwnerDeviceOperation(ownerId, String(parsed.stateKey), String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
+                return await withOwnerDeviceOperation(ownerId, match.stateKey, String(parsed.deviceId), () => invokeBackendDeviceTool(ownerId, parsed, normalized));
             } catch (error) {
                 if (!isDeviceOperationLockTimeout(error)) throw error;
-                return deviceOperationLockFailure(ownerId, String(parsed.backend), String(parsed.deviceId), error);
+                return deviceOperationLockFailure(ownerId, String(match.backend), String(parsed.deviceId), error);
             }
         }
         return await invokeBackendDeviceTool(ownerId, parsed, normalized);
@@ -13554,7 +13591,8 @@ async function lifecycleHyperVCommandInvokeLocked(
 ): Promise<BrokerRpcResult> {
     assertHyperVOperationDeadline(deadlineAt);
     if (parsed.command !== "device_create") {
-        if (!parsed.dryRun && parsed.command !== "device_status") {
+        if (!parsed.dryRun && (parsed.command !== "device_status"
+            || existsSync(hyperVSnapshotJournalPath(ownerId, parsed.backend, parsed.deviceId)))) {
             let expectedIncarnationId: string | null = null;
             try {
                 const current = readOwnerDevices(ownerId, parsed.stateKey).find((candidate) => candidate
@@ -13596,6 +13634,25 @@ async function lifecycleHyperVCommandInvokeLocked(
             && !readOwnerDevices(ownerId, parsed.stateKey).some((candidate) => candidate && typeof candidate === "object" && (candidate as Record<string, unknown>).id === parsed.deviceId)) {
             return { status: 200, payload: { ok: true, result: { ownerId, backend: parsed.backend, deviceId: parsed.deviceId, command: parsed.command, reconciled: true, device: null, invoked: true, dryRun: false } } };
         }
+        if (!parsed.dryRun) {
+            let snapshotJournal: HyperVSnapshotJournal | null;
+            try {
+                snapshotJournal = readHyperVSnapshotJournal(ownerId, parsed.backend, parsed.deviceId);
+            } catch (error) {
+                return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-journal-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId, detail: hyperVBoundedErrorCode(error, "hyper-v-snapshot-journal-invalid") } };
+            }
+            if (snapshotJournal) {
+                const current = readOwnerDevices(ownerId, parsed.stateKey).find((candidate) => candidate
+                    && typeof candidate === "object"
+                    && !Array.isArray(candidate)
+                    && (candidate as Record<string, unknown>).id === parsed.deviceId) as Record<string, unknown> | undefined;
+                if (!current) return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+                const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
+                if (!powershell) return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId } };
+                const snapshotReconciliation = await reconcileHyperVSnapshotJournal(ownerId, parsed.backend, parsed.deviceId, current, powershell, normalized);
+                if (!snapshotReconciliation.ok) return { status: snapshotReconciliation.status, payload: { ok: false, error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {}) } };
+            }
+        }
         const quotaFailure = hyperVOwnerQuotaFailure(ownerId, parsed);
         if (quotaFailure) return quotaFailure;
         if (parsed.dryRun || parsed.command === "device_status") return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt);
@@ -13621,6 +13678,24 @@ async function lifecycleHyperVCommandInvokeLocked(
         existing = readOwnerDevices(ownerId, parsed.stateKey);
     } catch (error) {
         return ownerDeviceStateFailure(error, { backend: parsed.backend, stateKey: parsed.stateKey });
+    }
+    if (!parsed.dryRun && (existing.some((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId)
+        || existsSync(hyperVOperationJournalPath(ownerId, parsed.backend, parsed.deviceId)))) {
+        const operationReconciliation = await reconcileHyperVOperation(ownerId, parsed.backend, parsed.deviceId, normalized, deadlineAt);
+        if (!operationReconciliation.ok) return { status: operationReconciliation.status, payload: { ok: false, error: operationReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(operationReconciliation.detail ? { detail: operationReconciliation.detail } : {}) } };
+        existing = readOwnerDevices(ownerId, parsed.stateKey);
+    }
+    if (!parsed.dryRun && existsSync(hyperVSnapshotJournalPath(ownerId, parsed.backend, parsed.deviceId))) {
+        const current = existing.find((candidate) => candidate
+            && typeof candidate === "object"
+            && !Array.isArray(candidate)
+            && (candidate as Record<string, unknown>).id === parsed.deviceId) as Record<string, unknown> | undefined;
+        if (!current) return { status: 409, payload: { ok: false, error: "hyper-v-snapshot-reconciliation-metadata-invalid", ownerId, backend: parsed.backend, deviceId: parsed.deviceId } };
+        const powershell = providerExecutable("powershell.exe", normalized) || providerExecutable("pwsh", normalized) || providerExecutable("powershell", normalized);
+        if (!powershell) return { status: 400, payload: { ok: false, error: "missing-provider-command", missing: ["powershell"], backend: parsed.backend, deviceId: parsed.deviceId } };
+        const snapshotReconciliation = await reconcileHyperVSnapshotJournal(ownerId, parsed.backend, parsed.deviceId, current, powershell, normalized);
+        if (!snapshotReconciliation.ok) return { status: snapshotReconciliation.status, payload: { ok: false, error: snapshotReconciliation.error, ownerId, backend: parsed.backend, deviceId: parsed.deviceId, ...(snapshotReconciliation.detail ? { detail: snapshotReconciliation.detail } : {}) } };
+        existing = readOwnerDevices(ownerId, parsed.stateKey);
     }
     if (existing.some((candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === parsed.deviceId)) {
         return await lifecycleCommandInvokeUnlocked(ownerId, params, normalized, undefined, deadlineAt, cleanupDeadlineAt);
@@ -13785,7 +13860,8 @@ async function lifecycleCommandInvoke(ownerId: string, params: unknown, normaliz
         return await withOwnerDeviceOperation(ownerId, parsed.stateKey, parsed.deviceId, async () => {
             const hyperVJournalPending = isHyperVBackend(parsed.backend)
                 && parsed.command === "device_status"
-                && existsSync(hyperVOperationJournalPath(ownerId, parsed.backend, parsed.deviceId));
+                && (existsSync(hyperVOperationJournalPath(ownerId, parsed.backend, parsed.deviceId))
+                    || existsSync(hyperVSnapshotJournalPath(ownerId, parsed.backend, parsed.deviceId)));
             if (isHyperVBackend(parsed.backend) && (parsed.command !== "device_status" || hyperVJournalPending)) {
                 try {
                     return await withSharedMutationLockAsync(
@@ -14924,9 +15000,11 @@ function brokerRpcMutatesOwnerState(body: unknown): boolean {
     if (DEVICE_BROKER_MUTATING_RPC_METHODS.has(rpc.method)) return true;
     if (rpc.method !== "broker.device.tool.invoke") return false;
     const params = rpc.params && typeof rpc.params === "object" && !Array.isArray(rpc.params)
-        ? rpc.params as { tool?: unknown }
+        ? rpc.params as { tool?: unknown; backend?: unknown }
         : {};
-    return typeof params.tool !== "string" || !DEVICE_BROKER_READ_ONLY_TOOL_METHODS.has(params.tool);
+    if (params.backend === undefined || params.backend === null || params.backend === "windows-vm" || params.backend === "linux-vm") return true;
+    return typeof params.tool !== "string"
+        || !DEVICE_BROKER_READ_ONLY_TOOL_METHODS.has(params.tool);
 }
 
 async function serializeBrokerOwnerMutation(ownerId: string, task: () => Promise<BrokerRpcResult>): Promise<BrokerRpcResult> {

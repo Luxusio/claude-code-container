@@ -67,6 +67,7 @@ export type HyperVVmObservation = {
     diskPath?: string;
     switchName?: string;
     generation?: 1 | 2;
+    checkpointPolicy?: "Disabled" | "Production" | "ProductionOnly" | "Standard";
     snapshots?: HyperVSnapshotObservation[];
 };
 

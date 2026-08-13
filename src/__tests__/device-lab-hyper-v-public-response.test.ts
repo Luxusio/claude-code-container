@@ -86,6 +86,8 @@ describe("Hyper-V public response projection", () => {
     it.each([
         "hyper-v-reboot-command-failed",
         "hyper-v-reboot-start-failed",
+        "hyper-v-snapshot-reconciliation-ambiguous",
+        "hyper-v-snapshot-policy-quarantined",
     ])("preserves the bounded lifecycle diagnostic %s", (diagnosticCode) => {
         expect(hyperVProviderDiagnosticCode({
             error: "hyper-v-powershell-execution-failed",

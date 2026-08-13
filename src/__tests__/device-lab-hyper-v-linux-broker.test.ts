@@ -1979,7 +1979,7 @@ describe("device-lab Hyper-V broker", () => {
                                 ? { ok: true, checkpointPolicy: "Production", candidateCount: snapshotExists ? 1 : 0 }
                             : snapshot
                                 ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: true } : {}) }
-                                : { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: vmState, status: "Operating normally", diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
+                                : { ok: true, vmId, vmName, generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation, state: vmState, status: "Operating normally", diskPath, checkpointPolicy: "Production", snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-baseline`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: true } : {}) };
             return { ...command, status: 0, stdout: JSON.stringify(result), stderr: "" };
         });
         const server = createDeviceBrokerServer({

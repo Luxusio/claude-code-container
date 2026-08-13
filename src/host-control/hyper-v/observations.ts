@@ -259,6 +259,12 @@ export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | 
         ...(typeof parsed.diskPath === "string" ? { diskPath: parsed.diskPath } : {}),
         ...(typeof parsed.switchName === "string" ? { switchName: parsed.switchName } : {}),
         ...((parsed.generation === 1 || parsed.generation === 2) ? { generation: parsed.generation } : {}),
+        ...((parsed.checkpointPolicy === "Disabled"
+            || parsed.checkpointPolicy === "Production"
+            || parsed.checkpointPolicy === "ProductionOnly"
+            || parsed.checkpointPolicy === "Standard")
+            ? { checkpointPolicy: parsed.checkpointPolicy }
+            : {}),
         ...(Array.isArray(parsed.snapshots) ? {
             snapshots: parsed.snapshots.flatMap((snapshot) => {
                 if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) return [];

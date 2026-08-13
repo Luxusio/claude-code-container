@@ -79,6 +79,7 @@ describe("Hyper-V operation journal persistence", () => {
             snapshotName,
             providerName,
             SNAPSHOT_ID.toUpperCase(),
+            "ProductionOnly",
         );
 
         expect(readHyperVSnapshotJournal(
@@ -94,6 +95,7 @@ describe("Hyper-V operation journal persistence", () => {
             snapshotName,
             providerName,
             snapshotId: SNAPSHOT_ID,
+            expectedCheckpointPolicy: "ProductionOnly",
         });
 
         clearHyperVSnapshotJournal(
@@ -128,6 +130,26 @@ describe("Hyper-V operation journal persistence", () => {
 
         expect(readHyperVSnapshotJournal(runtime, OWNER_ID, "linux-vm", DEVICE_ID))
             .toMatchObject({ expectedCheckpointPolicy: "Production" });
+    });
+
+    it("rejects a checkpoint policy that does not match the backend", () => {
+        const { runtime } = testRuntime();
+        const path = hyperVSnapshotJournalPath(runtime, OWNER_ID, "windows-vm", DEVICE_ID);
+        writeFileSync(path, JSON.stringify({
+            version: 1,
+            operationId: VM_ID,
+            ownerId: OWNER_ID,
+            deviceId: DEVICE_ID,
+            incarnationId: INCARNATION_ID,
+            tool: "device_snapshot_create",
+            snapshotName: "policy-mismatch",
+            providerName: hyperVSnapshotName(OWNER_ID, "policy-mismatch"),
+            expectedCheckpointPolicy: "Production",
+            startedAt: new Date().toISOString(),
+        }));
+
+        expect(() => readHyperVSnapshotJournal(runtime, OWNER_ID, "windows-vm", DEVICE_ID))
+            .toThrow("hyper-v-snapshot-journal-state-invalid");
     });
 
     it("rejects forged snapshot provider names and missing destructive ids", () => {

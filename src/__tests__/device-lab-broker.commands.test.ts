@@ -565,6 +565,9 @@ describe("device-lab host broker lifecycle commands", () => {
         const providerName = `ccc-${ownerId}-rollback`;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
+            if (script.includes("$Snapshots = @(Get-VMSnapshot")) {
+                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, checkpointPolicy: "ProductionOnly", snapshots: [] }), stderr: "" };
+            }
             if (script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot")) {
                 const state = JSON.parse(readFileSync(stateFile, "utf8"));
                 writeFileSync(stateFile, JSON.stringify({ devices: state.devices.map((device: Record<string, unknown>) => ({ ...device, concurrentMutation: true })) }));
@@ -662,6 +665,9 @@ describe("device-lab host broker lifecycle commands", () => {
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
+        let snapshotRestoreProviderFailure = false;
+        let restoreRetryJournalObserved = false;
+        let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
             if (script.includes("Start-VM")) vmState = "Running";
@@ -671,6 +677,13 @@ describe("device-lab host broker lifecycle commands", () => {
             const snapshotRepair = script.includes("Repair-CccVmSnapshotState");
             const snapshotDelete = script.includes("snapshotId = [string]$Snapshot.Id") && script.includes("deleted = $true");
             const snapshotOperation = snapshotCreate || script.includes("Restore-VMSnapshot") || snapshotDelete;
+            if (snapshotRestoreProviderFailure && script.includes("Restore-VMSnapshot")) {
+                snapshotRestoreProviderFailure = false;
+                return { ...command, status: 1, stdout: "", stderr: "simulated restore provider failure" };
+            }
+            if (script.includes("Restore-VMSnapshot") && existsSync(join(deviceRoot, "snapshot-operation.json"))) {
+                restoreRetryJournalObserved = true;
+            }
             if (snapshotProviderFailure && snapshotCreate) {
                 return { ...command, status: 1, stdout: "", stderr: "simulated checkpoint provider failure" };
             }
@@ -760,7 +773,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     ? { ok: true, checkpointPolicy: "ProductionOnly", candidateCount: snapshotExists ? 1 : 0 }
                     : snapshotOperation
                     ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
-                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
+                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, checkpointPolicy, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
                 stderr: snapshotOperation
                     ? "host path C:\\snapshot-provider-host-secret"
                     : "",
@@ -881,6 +894,12 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(stopped.status).toBe(200);
             expect(await stopped.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "stopped", runtimeState: "Off" }) }) }));
 
+            checkpointPolicy = "Disabled";
+            const quarantinedSnapshot = await invokeTool("device_snapshot_create", { snapshotName: "quarantined" });
+            expect(quarantinedSnapshot.status).toBe(409);
+            expect(await quarantinedSnapshot.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-policy-invalid" }));
+            expect(existsSync(join(deviceRoot, "snapshot-operation.json"))).toBe(false);
+            checkpointPolicy = "ProductionOnly";
             const snapshotCreated = await invokeTool("device_snapshot_create", { snapshotName: "before-install" });
             expect(snapshotCreated.status).toBe(200);
             const snapshotCreatedBody = await snapshotCreated.json();
@@ -901,6 +920,17 @@ describe("device-lab host broker lifecycle commands", () => {
                 "snapshot-provider-host-secret",
             );
 
+            snapshotRestoreProviderFailure = true;
+            const failedRestore = await invokeTool("device_snapshot_restore", { snapshotId, confirmDestructive: true });
+            expect(failedRestore.status).toBe(409);
+            expect(await failedRestore.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-restore-outcome-indeterminate" }));
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ activeSnapshotId?: string | null }> }).devices[0].activeSnapshotId ?? null).toBeNull();
+            expect(existsSync(join(deviceRoot, "snapshot-operation.json"))).toBe(true);
+            const retriedRestore = await invokeTool("device_snapshot_restore", { snapshotId, confirmDestructive: true });
+            expect(retriedRestore.status).toBe(200);
+            expect(await retriedRestore.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ activeSnapshotId: snapshotId }) }) }));
+            expect(restoreRetryJournalObserved).toBe(true);
+
             snapshotProviderFailure = true;
             const failedSnapshot = await invokeTool("device_snapshot_create", { snapshotName: "provider-failure" });
             expect(failedSnapshot.status).toBe(502);
@@ -910,6 +940,11 @@ describe("device-lab host broker lifecycle commands", () => {
             const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
             expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
+            const callsBeforeDryRunCreate = commandRunner.mock.calls.length;
+            const dryRunCreateWithJournal = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2, dryRun: true });
+            expect(dryRunCreateWithJournal.status).toBe(200);
+            expect(existsSync(snapshotOperationPath)).toBe(true);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeDryRunCreate);
             const callsBeforeStaleSnapshot = commandRunner.mock.calls.length;
             const staleSnapshotWithJournal = await fetch(endpoint, {
                 method: "POST",
@@ -920,8 +955,12 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await staleSnapshotWithJournal.json()).toEqual(expect.objectContaining({ error: "hyper-v-incarnation-conflict" }));
             expect(existsSync(snapshotOperationPath)).toBe(true);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleSnapshot);
-            const execAfterInterruptedSnapshot = await invokeTool("device_exec", { command: "Write-Output guest-ok" });
-            expect(execAfterInterruptedSnapshot.status).toBe(200);
+            const createAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E", profile: "windows-11", memoryMb: 4096, cpus: 2 });
+            expect(createAfterInterruptedSnapshot.status).toBe(200);
+            expect(existsSync(snapshotOperationPath)).toBe(false);
+            writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
+            const statusAfterInterruptedSnapshot = await invoke({ backend: "windows-vm", command: "device_status", deviceId, incarnationId });
+            expect(statusAfterInterruptedSnapshot.status).toBe(200);
             expect(existsSync(snapshotOperationPath)).toBe(false);
             const unconfirmedRestore = await invokeTool("device_snapshot_restore", { snapshotId });
             expect(unconfirmedRestore.status).toBe(400);
@@ -1035,11 +1074,11 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
             expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
             const snapshotRepairCalls = commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("Repair-CccVmSnapshotState"));
-            expect(snapshotRepairCalls).toHaveLength(3);
+            expect(snapshotRepairCalls).toHaveLength(6);
             for (const [command] of snapshotRepairCalls) {
                 expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
-            expect(commandRunner).toHaveBeenCalledTimes(40);
+            expect(commandRunner).toHaveBeenCalledTimes(51);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
@@ -2120,6 +2159,92 @@ describe("device-lab host broker lifecycle commands", () => {
             completeTool({ status: 200, payload: { ok: true } });
             expect((await toolRequest).status).toBe(200);
         } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("serializes backend-less device tool requests until backend inference completes", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-inferred-backend-serialization-test");
+        const completions: Array<(result: { status: number; payload: unknown }) => void> = [];
+        const deviceToolRunner = vi.fn(() => new Promise<{ status: number; payload: unknown }>((resolve) => {
+            completions.push(resolve);
+        }));
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-inferred-backend-serialization-test",
+            host: "127.0.0.1",
+            port: 0,
+            deviceToolRunner,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const invoke = () => fetch(endpoint, {
+            method: "POST",
+            headers: ownerRpcHeaders(ownerId),
+            body: JSON.stringify({
+                method: "broker.device.tool.invoke",
+                params: { tool: "device_screenshot", deviceId: "inferred-backend" },
+            }),
+        });
+        try {
+            writeBrokerDevices(ownerId, "windows", [{ id: "inferred-backend", status: "running", backend: "windows-sandbox" }]);
+            const first = invoke();
+            await vi.waitFor(() => expect(deviceToolRunner).toHaveBeenCalledTimes(1));
+            const second = invoke();
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            expect(deviceToolRunner).toHaveBeenCalledTimes(1);
+
+            completions[0]({ status: 200, payload: { ok: true, request: 1 } });
+            expect((await first).status).toBe(200);
+            await vi.waitFor(() => expect(deviceToolRunner).toHaveBeenCalledTimes(2));
+            completions[1]({ status: 200, payload: { ok: true, request: 2 } });
+            expect((await second).status).toBe(200);
+        } finally {
+            await close(server);
+            cleanupOwner(ownerId);
+        }
+    });
+
+    it("locks an inferred Hyper-V device before invoking a backend-less tool", async () => {
+        const ownerId = deviceLabOwnerId("/project/broker-inferred-hyper-v-lock-test");
+        const deviceId = "inferred-linux-vm";
+        const server = createDeviceBrokerServer({
+            cwd: "/project/broker-inferred-hyper-v-lock-test",
+            host: "127.0.0.1",
+            port: 0,
+        });
+        const baseUrl = await listen(server);
+        const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
+        const operationLock = join(
+            backendRoot(ownerId, "linux-vm"),
+            "operations",
+            `${createHash("sha256").update(deviceId).digest("hex").slice(0, 32)}.lock`,
+        );
+        let releaseLock!: () => void;
+        const held = withSharedMutationLockAsync(operationLock, () => new Promise<void>((resolve) => {
+            releaseLock = resolve;
+        }), { waitMs: 1000, staleMs: 60_000, heartbeatMs: 50 });
+        try {
+            writeBrokerDevices(ownerId, "linux-vm", [{ id: deviceId, status: "running", backend: "linux-vm" }]);
+            await vi.waitFor(() => expect(releaseLock).toBeTypeOf("function"));
+            let requestSettled = false;
+            const request = fetch(endpoint, {
+                method: "POST",
+                headers: ownerRpcHeaders(ownerId),
+                body: JSON.stringify({
+                    method: "broker.device.tool.invoke",
+                    params: { tool: "device_snapshot_list", deviceId },
+                }),
+            }).finally(() => { requestSettled = true; });
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            expect(requestSettled).toBe(false);
+
+            releaseLock();
+            await held;
+            expect([400, 501]).toContain((await request).status);
+        } finally {
+            if (releaseLock) releaseLock();
+            await held;
             await close(server);
             cleanupOwner(ownerId);
         }

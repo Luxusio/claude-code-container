@@ -27,7 +27,7 @@ export function hyperVStatusCommand(options: HyperVCommandOptions): HyperVProvid
         ...ownedVmPrelude(options),
         "$Disk = Get-VMHardDiskDrive -VM $Vm -ErrorAction SilentlyContinue | Select-Object -First 1",
         "$Snapshots = @(Get-VMSnapshot -VM $Vm -ErrorAction SilentlyContinue | Where-Object { $_.Name -like ('ccc-' + $ExpectedMarker.Split(':')[1] + '-*') } | ForEach-Object { [ordered]@{ snapshotId = [string]$_.Id; snapshotName = [string]$_.Name; snapshotType = [string]$_.SnapshotType } })",
-        "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; state = [string]$Vm.State; status = [string]$Vm.Status; uptimeMs = [Math]::Floor($Vm.Uptime.TotalMilliseconds); diskPath = if ($Disk) { $Disk.Path } else { $null }; snapshots = $Snapshots }",
+        "$Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; state = [string]$Vm.State; status = [string]$Vm.Status; uptimeMs = [Math]::Floor($Vm.Uptime.TotalMilliseconds); diskPath = if ($Disk) { $Disk.Path } else { $null }; checkpointPolicy = [string]$Vm.CheckpointType; snapshots = $Snapshots }",
         "$Result | ConvertTo-Json -Compress -Depth 5",
     ]));
 }

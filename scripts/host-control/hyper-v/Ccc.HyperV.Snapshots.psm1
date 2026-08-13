@@ -5,6 +5,7 @@ function New-CccVmSnapshot {
     param(
         [Parameter(Mandatory = $true)] [object] $Vm,
         [Parameter(Mandatory = $true)] [string] $SnapshotName,
+        [Parameter(Mandatory = $true)] [ValidateSet('Production', 'ProductionOnly')] [string] $ExpectedPolicy,
         [scriptblock] $SnapshotReader = { param($TargetVm) @(Get-VMSnapshot -VM $TargetVm -ErrorAction Stop) },
         [scriptblock] $SnapshotCreator = { param($TargetVm, $Name) Checkpoint-VM -VM $TargetVm -SnapshotName $Name -ErrorAction Stop },
         [scriptblock] $SnapshotRemover = { param($Candidates) $Candidates | Remove-VMSnapshot -Confirm:$false -ErrorAction Stop },
@@ -13,15 +14,19 @@ function New-CccVmSnapshot {
     )
 
     $CheckpointType = [string]$Vm.CheckpointType
-    if ($CheckpointType -ne 'Production' -and $CheckpointType -ne 'ProductionOnly') { throw 'hyper-v-snapshot-policy-invalid' }
+    if ($CheckpointType -ne $ExpectedPolicy) { throw 'hyper-v-snapshot-policy-invalid' }
     if (@(& $SnapshotReader $Vm | Where-Object { $_.Name -eq $SnapshotName }).Count -ne 0) { throw 'hyper-v-snapshot-already-exists' }
 
     function Remove-Candidate {
         try {
             $Candidates = @(& $SnapshotReader $Vm | Where-Object { $_.Name -eq $SnapshotName })
+            if ($Candidates.Count -gt 1) { throw 'hyper-v-snapshot-reconciliation-ambiguous' }
             if ($Candidates.Count -gt 0) { $null = & $SnapshotRemover $Candidates }
             if (@(& $SnapshotReader $Vm | Where-Object { $_.Name -eq $SnapshotName }).Count -ne 0) { throw 'candidate-remains' }
-        } catch { throw 'hyper-v-snapshot-reconciliation-failed' }
+        } catch {
+            if ([string]$_.Exception.Message -eq 'hyper-v-snapshot-reconciliation-ambiguous') { throw }
+            throw 'hyper-v-snapshot-reconciliation-failed'
+        }
     }
 
     $CheckpointFailure = $null
@@ -84,6 +89,7 @@ function Repair-CccVmSnapshotState {
         [Parameter(Mandatory = $true)] [ValidateSet('Production', 'ProductionOnly')] [string] $ExpectedPolicy
     )
 
+    if ([string]$Vm.CheckpointType -eq 'Disabled') { throw 'hyper-v-snapshot-policy-quarantined' }
     if ([string]$Vm.CheckpointType -ne $ExpectedPolicy) {
         try {
             Set-VM -VM $Vm -CheckpointType $ExpectedPolicy -ErrorAction Stop
@@ -100,11 +106,7 @@ function Repair-CccVmSnapshotState {
     }
 
     $Candidates = @(Get-VMSnapshot -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq $SnapshotName })
-    if ($Candidates.Count -gt 1) {
-        $Candidates | Remove-VMSnapshot -Confirm:$false -ErrorAction Stop
-        $Candidates = @(Get-VMSnapshot -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq $SnapshotName })
-        if ($Candidates.Count -ne 0) { throw 'hyper-v-snapshot-reconciliation-failed' }
-    }
+    if ($Candidates.Count -gt 1) { throw 'hyper-v-snapshot-reconciliation-ambiguous' }
     return [ordered]@{ ok = $true; checkpointPolicy = [string]$Vm.CheckpointType; candidateCount = $Candidates.Count }
 }
 
