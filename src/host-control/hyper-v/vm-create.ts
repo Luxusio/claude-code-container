@@ -36,6 +36,8 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
     if (macAddress && !/^02(?::[0-9A-F]{2}){5}$/.test(macAddress)) throw new Error("hyper-v-mac-address-invalid");
     const bootstrapMacAddress = macAddress ? `06${macAddress.slice(2)}` : "";
     if (options.bootstrapDhcp === true && !bootstrapMacAddress) throw new Error("hyper-v-bootstrap-mac-address-missing");
+    const checkpointType = options.checkpointType || "ProductionOnly";
+    if (checkpointType !== "Production" && checkpointType !== "ProductionOnly") throw new Error("hyper-v-checkpoint-type-invalid");
     const lines = [
         `$VmName = ${psQuote(options.vmName)}`,
         `$Marker = ${psQuote(marker)}`,
@@ -220,7 +222,7 @@ export function hyperVCreateCommand(options: HyperVCreateOptions): HyperVProvide
         "  }",
         `  Set-VMProcessor -VM $CreatedVm -Count ${cpus} -ErrorAction Stop`,
         "  Set-VMMemory -VM $CreatedVm -DynamicMemoryEnabled $false -ErrorAction Stop",
-        "  Set-VM -VM $CreatedVm -AutomaticCheckpointsEnabled $false -CheckpointType ProductionOnly -Notes $Marker -ErrorAction Stop",
+        `  Set-VM -VM $CreatedVm -AutomaticCheckpointsEnabled $false -CheckpointType ${checkpointType} -Notes $Marker -ErrorAction Stop`,
         "  $CreatedOsDisks = @(Get-VMHardDiskDrive -VM $CreatedVm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",
         "  if ($CreatedOsDisks.Count -ne 1) { throw 'hyper-v-created-disk-attachment-mismatch' }",
         "  if ($VmGeneration -eq 2) {",

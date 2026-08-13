@@ -1097,6 +1097,24 @@ describe("Hyper-V provider adapter", () => {
         expect(() => hyperVCreateCommand({
             executable: "powershell.exe",
             ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            baseImagePath: "/state/images/hyper-v/windows-11.vhdx",
+            baseImageSha256,
+            baseImageGeneration: 2,
+            baseImageRoot: "/state/images/hyper-v",
+            deviceRoot: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01",
+            diskPath: "/state/owners/0123456789abcdef/windows-vm/windows-ci-01/disks/root.vhdx",
+            diskMaxBytes: 64 * 1024 * 1024 * 1024,
+            memoryMb: 4096,
+            cpus: 2,
+            checkpointType: "Production; Remove-VM" as "ProductionOnly",
+        })).toThrow("hyper-v-checkpoint-type-invalid");
+
+        expect(() => hyperVCreateCommand({
+            executable: "powershell.exe",
+            ownerId,
             deviceId: "linux-ci-01",
             incarnationId,
             vmName: hyperVVmName(ownerId, "linux-ci-01", incarnationId),
@@ -1132,10 +1150,13 @@ describe("Hyper-V provider adapter", () => {
             switchName: "CCC Device Lab",
             macAddress: "02:11:22:33:44:66",
             bootstrapDhcp: true,
+            checkpointType: "Production",
             secureBootEnabled: false,
             secureBootTemplate: "MicrosoftUEFICertificateAuthority",
         }));
         expect(linuxScript).toContain("$ExpectedVmGeneration = 2");
+        expect(linuxScript).toContain("CheckpointType Production");
+        expect(linuxScript).not.toContain("CheckpointType ProductionOnly");
         expect(linuxScript).toContain("Generation = $VmGeneration");
         expect(linuxScript).toContain("if ($VmGeneration -eq 2)");
         expect(linuxScript).toContain("Set-VMBios -VM $CreatedVm -StartupOrder @('IDE','CD','LegacyNetworkAdapter','Floppy')");

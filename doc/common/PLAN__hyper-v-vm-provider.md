@@ -448,8 +448,9 @@ and verify guest identity before executing commands.
 
 ## Checkpoints And Recovery
 
-- Use production checkpoints by default.
-- Permit standard checkpoints only through an explicit diagnostic override.
+- Windows guests use production-only checkpoints. Linux guests use Hyper-V's
+  production-first policy with standard-checkpoint fallback because generic
+  Ubuntu images do not guarantee a running Hyper-V VSS daemon.
 - Make create, start, stop, and delete idempotent.
 - Treat a provider exit code of zero as insufficient for destructive cleanup:
   VM and snapshot deletion must return a structured `deleted: true` observation
@@ -668,7 +669,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v37` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v38` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package

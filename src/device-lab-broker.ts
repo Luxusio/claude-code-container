@@ -9322,6 +9322,7 @@ function providerCommandForCreate(ownerId: string, parsed: CommandParamSuccess, 
                 macAddress: typeof create.macAddress === "string" ? create.macAddress : null,
                 networking: create.networking !== false,
                 bootstrapDhcp: linuxGuest,
+                checkpointType: linuxGuest ? "Production" : "ProductionOnly",
                 ...hyperVSecureBootConfiguration(parsed.backend),
             });
         } catch (error) {
