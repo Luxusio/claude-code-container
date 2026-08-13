@@ -1522,7 +1522,10 @@ describe("Hyper-V provider adapter", () => {
         expect(finalize.args).toContain("HostKeyAlias=172.29.0.10");
         const finalizePayload = finalize.args.at(-1)?.match(/^printf %s ([A-Za-z0-9+/=]+) \| base64 -d \| bash$/)?.[1];
         expect(finalizePayload).toBeTruthy();
-        expect(Buffer.from(finalizePayload || "", "base64").toString("utf8")).toContain("netplan apply");
+        const finalizeCommand = Buffer.from(finalizePayload || "", "base64").toString("utf8");
+        expect(finalizeCommand).toContain("sudo netplan generate");
+        expect(finalizeCommand).toContain("sudo sync");
+        expect(finalizeCommand.indexOf("sudo sync")).toBeLessThan(finalizeCommand.indexOf("netplan apply"));
         expect(hyperVLinuxSshExecCommand({ ...ssh, guestCommand: "uname -a" }).args.at(-1)).toContain("base64 -d | bash");
         expect(hyperVLinuxScpUploadCommand({ ...ssh, executable: "scp.exe", localPath: `${deviceRoot}/uploads/in.txt`, remotePath: "/tmp/in.txt" }).args.at(-1)).toBe("ccc01234567@172.29.0.10:/tmp/in.txt");
         expect(hyperVLinuxScpDownloadCommand({ ...ssh, executable: "scp.exe", remotePath: "/tmp/out.txt", localPath: `${deviceRoot}/downloads/out.txt` }).args.at(-2)).toBe("ccc01234567@172.29.0.10:/tmp/out.txt");

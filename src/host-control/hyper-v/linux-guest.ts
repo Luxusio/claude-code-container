@@ -231,6 +231,8 @@ export function hyperVLinuxNetworkFinalizeCommand(options: HyperVLinuxNetworkFin
     const guestCommand = [
         `printf %s ${encoded} | base64 -d | sudo tee /etc/netplan/99-ccc-static.yaml >/dev/null`,
         "sudo chmod 600 /etc/netplan/99-ccc-static.yaml",
+        "sudo netplan generate",
+        "sudo sync",
         "nohup sudo sh -c 'sleep 1; netplan apply; systemctl restart ssh' >/tmp/ccc-netplan.log 2>&1 &",
     ].join(" && ");
     return hyperVLinuxSshExecCommand({ ...options, guestCommand });

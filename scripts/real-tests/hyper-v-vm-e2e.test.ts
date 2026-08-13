@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
-import { assertHyperVLinuxCreateContract, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
+import { assertHyperVLinuxCreateContract, HYPER_V_LINUX_PRE_REBOOT_COMMAND, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
     hyperVWindowsVmE2ECapability,
@@ -233,6 +233,12 @@ describe("Hyper-V E2E zero-config image selection", () => {
         } finally {
             rmSync(root, { recursive: true, force: true });
         }
+    });
+
+    it("flushes the validated managed network before the destructive reboot probe", () => {
+        expect(HYPER_V_LINUX_PRE_REBOOT_COMMAND).toContain("sudo test -s /etc/netplan/99-ccc-static.yaml");
+        expect(HYPER_V_LINUX_PRE_REBOOT_COMMAND).toContain("sudo netplan generate");
+        expect(HYPER_V_LINUX_PRE_REBOOT_COMMAND).toContain("sudo sync");
     });
 
     it("reports the exact missing Hyper-V Linux create response field", () => {

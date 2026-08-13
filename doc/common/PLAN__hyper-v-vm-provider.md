@@ -635,7 +635,9 @@ Real-provider tests:
   It enables DHCP on that adapter and deliberately
   leaves the managed NIC unconfigured. After SSH succeeds through the bootstrap
   address, the broker writes the deterministic static `ccc0` netplan for the
-  owner-assigned managed MAC, waits for that address, and removes the named
+  owner-assigned managed MAC, validates the generated netplan, flushes the
+  configuration file to durable storage before applying it, waits for that
+  address, and removes the named
   `Default Switch` adapter using the owner-fenced VM identity. This ordering
   prevents an explicit managed-only cloud-init network document from disabling
   DHCP on the very adapter needed to bootstrap SSH. Any readiness or transition
@@ -666,7 +668,7 @@ Real-provider tests:
   status and allowlisted diagnostic code, bootstrap SSH attempts, and
   static-network finalization state without exposing addresses, paths, command
   output, or credentials.
-  `hyper-v-provider-image-finalization-v36` additionally prevents reuse of a
+  `hyper-v-provider-image-finalization-v37` additionally prevents reuse of a
   broker that enables Secure Boot for the automatic Linux profile, mixes an
   Azure OVF datasource into the generic NoCloud seed, emits the invalid scalar
   `user` cloud-config field, or blocks SSH activation behind online package

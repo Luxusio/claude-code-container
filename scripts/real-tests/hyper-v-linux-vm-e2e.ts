@@ -13,6 +13,7 @@ const CAPABILITIES = [
     "device_exec", "device_upload", "device_download",
     "device_snapshot_list", "device_snapshot_create", "device_snapshot_restore", "device_snapshot_delete",
 ];
+export const HYPER_V_LINUX_PRE_REBOOT_COMMAND = "uname -sr && sudo test -s /etc/netplan/99-ccc-static.yaml && sudo netplan generate && sudo sync && printf ccc-hyper-v-linux-e2e-ok";
 
 export function prepareHyperVLinuxDownloadDestination(path: string) {
     writeFileSync(path, "", { encoding: "utf8", flag: "wx", mode: 0o600 });
@@ -235,7 +236,10 @@ export async function runHyperVLinuxVmE2E(options: any = {}) {
             assert.strictEqual(status.status, "running");
 
             currentStep = "execute guest command";
-            const executed = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", { ...direct, command: "uname -sr && printf ccc-hyper-v-linux-e2e-ok" })));
+            const executed = resultValue(hyperVLinuxToolPayload(await callTool("device_exec", {
+                ...direct,
+                command: HYPER_V_LINUX_PRE_REBOOT_COMMAND,
+            })));
             assert.strictEqual(executed.provider, "hyper-v-ssh");
             assert.match(executed.stdout || "", /ccc-hyper-v-linux-e2e-ok/);
 
