@@ -171,6 +171,10 @@ describe("buildMcpConfig", () => {
         expect(entry.command).toBe("mise");
         expect(entry.args.slice(0, 3)).toEqual(["--no-config", "exec", "node@22"]);
         expect(entry.args).toContain("--executablePath=/usr/bin/chromium");
+        expect(entry.args).toContain("--chromeArg=--no-sandbox");
+        expect(entry.args).toContain("--chromeArg=--disable-setuid-sandbox");
+        expect(entry.args).toContain("--chromeArg=--disable-dev-shm-usage");
+        expect(entry.args.some((arg) => arg.startsWith("--chromeArg=--host-resolver-rules="))).toBe(false);
     });
 
     it("does not include the retired standalone x11-display server", () => {
@@ -215,6 +219,7 @@ describe("buildMcpConfig", () => {
         expect(codexConfig).toContain('command = "mise"');
         expect(codexConfig).toContain('"--no-config"');
         expect(codexConfig).toContain('"--executablePath=/usr/bin/chromium"');
+        expect(codexConfig).not.toContain("--host-resolver-rules");
         expect(codexConfig).not.toContain("[mcp_servers.x11-display]");
         expect(codexConfig).not.toContain('"/opt/ccc/x11-mcp/server.mjs"');
         expect(codexConfig).toContain("[mcp_servers.device-lab]");

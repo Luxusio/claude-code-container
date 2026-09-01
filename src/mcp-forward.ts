@@ -20,7 +20,6 @@ const CHROME_DEVTOOLS_CONFIG: McpServerConfig = {
         "--chromeArg=--no-sandbox",
         "--chromeArg=--disable-setuid-sandbox",
         "--chromeArg=--disable-dev-shm-usage",
-        "--chromeArg=--host-resolver-rules=MAP localhost host.docker.internal",
     ],
 };
 
