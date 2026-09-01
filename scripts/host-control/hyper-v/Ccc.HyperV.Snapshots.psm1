@@ -65,14 +65,23 @@ function New-CccVmSnapshot {
         }
     }
 
+    # Get-VMSnapshot can lag behind Checkpoint-VM: the just-created checkpoint is not always
+    # visible on the first read. Re-fetch the VM and bounded-retry until it appears (do NOT create
+    # a second checkpoint on a transiently-empty read — that would duplicate the snapshot).
     try {
-        $Snapshots = @(& $SnapshotReader $Vm | Where-Object { $_.Name -eq $SnapshotName })
-        if ($Snapshots.Count -ne 1
-            -or $Snapshots[0].Id -isnot [Guid]
-            -or [string]$Snapshots[0].Name -ne $SnapshotName
-            -or [string]::IsNullOrWhiteSpace([string]$Snapshots[0].SnapshotType)) {
-            throw 'invalid-observation'
+        $Snapshots = @()
+        $AllSnapshots = @()
+        for ($ObsAttempt = 1; $ObsAttempt -le 10; $ObsAttempt++) {
+            $Vm = & $VmReader $Vm.Id
+            $AllSnapshots = @(& $SnapshotReader $Vm)
+            $Snapshots = @($AllSnapshots | Where-Object { $_.Name -eq $SnapshotName })
+            if ($Snapshots.Count -ge 1) { break }
+            Start-Sleep -Milliseconds 500
         }
+        if ($Snapshots.Count -ne 1) { throw 'invalid-observation' }
+        if ($Snapshots[0].Id -isnot [Guid]) { throw 'invalid-observation' }
+        if ([string]$Snapshots[0].Name -ne $SnapshotName) { throw 'invalid-observation' }
+        if ([string]::IsNullOrWhiteSpace([string]$Snapshots[0].SnapshotType)) { throw 'invalid-observation' }
     } catch {
         Remove-Candidate
         throw 'hyper-v-snapshot-create-invalid-result'

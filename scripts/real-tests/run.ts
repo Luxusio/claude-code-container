@@ -7,6 +7,7 @@ import { TOOLS as DEVICE_LAB_MCP_TOOLS } from "../../device-lab-mcp/src/tools.mj
 import { consumeDeviceLabMcpToolCalls, consumeDeviceLabMcpToolSessions } from "./device-lab-mcp-client.ts";
 import { normalizeProviderConcurrency, partitionProviderFiles, runResourceAware } from "./provider-parallelism.ts";
 import { aggregateStepResult } from "./result-status.ts";
+import { compactMessage } from "./compact-message.ts";
 
 let failed = false;
 const counts = { PASS: 0, SKIP: 0, FAIL: 0 };
@@ -14,11 +15,6 @@ let strictSkipFailures = 0;
 const records: any[] = [];
 const toolCallRecords: any[] = [];
 const toolSessionRecords: any[] = [];
-
-function compactMessage(value, limit = 300) {
-    const normalized = String(value || "unknown error").replace(/\s+/g, " ").trim() || "unknown error";
-    return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
-}
 
 const hiddenCompatibilityTools = new Set([
     "device_broker_shutdown",

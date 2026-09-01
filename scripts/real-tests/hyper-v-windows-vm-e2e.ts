@@ -9,8 +9,39 @@ import { isHyperVWindowsEvaluationReceipt } from "../../src/device-lab/hyper-v-i
 import { hiddenSpawnSync, repoRoot } from "./helpers.ts";
 import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceLabMcp } from "./device-lab-mcp-client.ts";
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
+import { cachedImageManifests, selectHyperVWindowsProfile } from "./select-windows-profile.ts";
+import { captureHyperVWindowsConsole, type HyperVWindowsConsoleCaptureResult } from "./hyper-v-windows-console-capture.ts";
+import { captureHyperVWindowsSetupDiagnostics, type HyperVWindowsSetupDiagnosticsResult } from "./hyper-v-windows-setup-diagnostics.ts";
 
 const DEVICE_PREFIX = "windows-vm-real-e2e-";
+export const HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS = [120000, 300000, 600000, 900000] as const;
+
+export function scheduleHyperVWindowsConsoleTimeline(input: {
+    captureInput: Parameters<typeof captureHyperVWindowsConsole>[0];
+    captureImpl?: typeof captureHyperVWindowsConsole;
+    setTimeoutImpl?: (callback: () => void, delayMs: number) => unknown;
+    clearTimeoutImpl?: (handle: unknown) => void;
+}): () => void {
+    const capture = input.captureImpl || captureHyperVWindowsConsole;
+    const schedule = input.setTimeoutImpl || ((callback, delayMs) => setTimeout(callback, delayMs));
+    const clear = input.clearTimeoutImpl || ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
+    let active = true;
+    const handles = HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS.map((delayMs) => {
+        const handle = schedule(() => {
+            if (!active) return;
+            try { capture(input.captureInput); } catch { /* timeline evidence is best effort */ }
+        }, delayMs);
+        if (handle && typeof (handle as { unref?: unknown }).unref === "function") {
+            (handle as { unref: () => void }).unref();
+        }
+        return handle;
+    });
+    return () => {
+        if (!active) return;
+        active = false;
+        for (const handle of handles) clear(handle);
+    };
+}
 
 function readHyperVWindowsEvaluationReceipt(setupRoot = join(homedir(), ".ccc", "device-broker-private", "setup")) {
     const receiptPath = join(setupRoot, "hyper-v-windows-evaluation-license.json");
@@ -34,6 +65,58 @@ function resultValue(value: any) {
     return value?.result && typeof value.result === "object" ? value.result : value;
 }
 
+export function hyperVWindowsFailureReason(input: {
+    profile: string;
+    sourceImage?: string;
+    step: string;
+    error: unknown;
+    created: boolean;
+    deviceId: string;
+    incarnationId?: string;
+    vmId?: string;
+    powershell?: string;
+    ownerId?: string;
+    platform?: string;
+    captureImpl?: typeof captureHyperVWindowsConsole;
+    setupDiagnosticsImpl?: typeof captureHyperVWindowsSetupDiagnostics;
+}): string {
+    const profileTag = `profile=${input.profile}${input.sourceImage ? " sourceImage=set" : ""}`;
+    const originalReason = `${input.step}: ${(input.error as any)?.message || String(input.error)}`;
+    if (!input.created || !input.incarnationId) return `${profileTag}; ${originalReason}`;
+    let capture: HyperVWindowsConsoleCaptureResult;
+    try {
+        capture = (input.captureImpl || captureHyperVWindowsConsole)({
+            ownerId: input.ownerId || ownerId(process.env, repoRoot),
+            deviceId: input.deviceId,
+            incarnationId: input.incarnationId,
+            powershell: input.powershell,
+            platform: input.platform || process.platform,
+        });
+    } catch {
+        capture = { ok: false, code: "hyper-v-console-unexpected-failure" };
+    }
+    const guestConsole = capture.ok === true
+        ? capture.latestRelativePath
+        : `unavailable(${capture.code})`;
+    let setupDiagnostics: HyperVWindowsSetupDiagnosticsResult;
+    try {
+        setupDiagnostics = (input.setupDiagnosticsImpl || captureHyperVWindowsSetupDiagnostics)({
+            ownerId: input.ownerId || ownerId(process.env, repoRoot),
+            deviceId: input.deviceId,
+            incarnationId: input.incarnationId,
+            vmId: input.vmId || "",
+            powershell: input.powershell,
+            platform: input.platform || process.platform,
+        });
+    } catch {
+        setupDiagnostics = { ok: false, code: "hyper-v-setup-diagnostics-unexpected-failure" };
+    }
+    const guestSetupDiagnostics = setupDiagnostics.ok === true
+        ? setupDiagnostics.latestRelativePath
+        : `unavailable(${setupDiagnostics.code})`;
+    return `${profileTag}; guestConsole=${guestConsole}; guestSetupDiagnostics=${guestSetupDiagnostics}; ${originalReason}`;
+}
+
 export function resolveNpmCliPath(options: any = {}) {
     const nodePath = String(options.nodePath || process.execPath);
     const nodeDir = dirname(nodePath);
@@ -51,6 +134,19 @@ export function resolveNpmCliPath(options: any = {}) {
                 return false;
             }
         }) || "";
+}
+
+function extractPackFilename(report: any): string {
+    const entries = Array.isArray(report)
+        ? report
+        : (report && typeof report === "object" ? [report, ...Object.values(report)] : []);
+    for (const entry of entries) {
+        if (entry && typeof entry === "object" && typeof (entry as any).filename === "string") {
+            const candidate = String((entry as any).filename).trim();
+            if (candidate) return candidate;
+        }
+    }
+    return "";
 }
 
 export function createPackagedCccCandidate(outputDir: string, options: any = {}) {
@@ -77,9 +173,23 @@ export function createPackagedCccCandidate(outputDir: string, options: any = {})
     } catch (error: any) {
         throw new Error(`npm pack returned invalid JSON: ${error?.message || String(error)}`);
     }
-    const filename = Array.isArray(report) && typeof report[0]?.filename === "string" ? report[0].filename : "";
+    const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+    const version = String(packageJson.version || "");
+    // `npm pack --json` returns an array of { filename, ... } on most npm builds, but some
+    // (observed on Windows) emit a single object or an object map — or omit the report from
+    // stdout entirely. Resolve the filename shape-agnostically, then fall back to the
+    // deterministic tarball name (npm already exited 0 above, so --pack-destination wrote it).
+    const reportedFilename = extractPackFilename(report);
+    let filename = reportedFilename;
+    if (!filename) {
+        const sanitizedName = String(packageJson.name || "").replace(/^@/, "").replace(/\//g, "-");
+        if (sanitizedName && version) filename = `${sanitizedName}-${version}.tgz`;
+    }
     if (!filename || basename(filename) !== filename || !filename.endsWith(".tgz")) {
-        throw new Error("npm pack reported an unsafe package artifact filename");
+        const reportShape = Array.isArray(report)
+            ? `array(len=${report.length}, entry0Filename=${JSON.stringify(report[0]?.filename)})`
+            : `type=${report === null ? "null" : typeof report}, keys=${report && typeof report === "object" ? JSON.stringify(Object.keys(report)) : "n/a"}`;
+        throw new Error(`npm pack reported an unsafe package artifact filename: ${JSON.stringify(reportedFilename)} [report ${reportShape}]`);
     }
     const resolvedOutputDir = resolve(outputDir);
     const packagePath = resolve(resolvedOutputDir, filename);
@@ -93,39 +203,13 @@ export function createPackagedCccCandidate(outputDir: string, options: any = {})
     if (!packageStat.isFile() || packageStat.isSymbolicLink()) {
         throw new Error("npm pack did not produce a regular package artifact");
     }
-    const packageJson = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-    return { packagePath, version: String(packageJson.version || "") };
+    return { packagePath, version };
 }
 
-function cachedImageManifests(options: any = {}) {
-    const currentOwner = String(options.ownerId || ownerId());
-    return [
-        join(homedir(), ".ccc", "device-broker-private", "owners", currentOwner, "images", "hyper-v", "windows-11", "manifest.json"),
-        join(homedir(), ".ccc", "device-broker-private", "images", "hyper-v", "windows-11", "manifest.json"),
-    ];
-}
-
-export function selectHyperVWindowsProfile(options: any = {}) {
-    const sourceImage = String(options.sourceImage || process.env.CCC_REAL_HYPER_V_WINDOWS_SOURCE_IMAGE || "").trim();
-    const manifestPaths = options.cachedManifestPaths || (options.cachedManifestPath ? [options.cachedManifestPath] : cachedImageManifests(options));
-    const manifestExists = options.existsSyncImpl || existsSync;
-    let cachedWindows11 = false;
-    for (const manifestPath of manifestPaths) {
-        if (!manifestExists(manifestPath)) continue;
-        try {
-            const manifest = JSON.parse(String((options.readFileSyncImpl || readFileSync)(manifestPath, "utf8")));
-            cachedWindows11 = manifest?.version === 3
-                && manifest?.profile === "windows-11"
-                && typeof manifest?.imagePath === "string"
-                && manifest.imagePath.length > 0
-                && manifestExists(manifest.imagePath);
-        } catch {
-            // Invalid or stale manifests are ignored so official automatic acquisition remains available.
-        }
-        if (cachedWindows11) break;
-    }
-    return sourceImage || cachedWindows11 ? "windows-11" : "windows-server";
-}
+// selectHyperVWindowsProfile / cachedImageManifests now live in the loader-free leaf
+// ./select-windows-profile.ts (so the launcher can import them without the source loader).
+// Re-exported here to keep existing importers of this module working unchanged.
+export { selectHyperVWindowsProfile };
 
 export function hyperVWindowsVmE2ECapability(options: any = {}) {
     if ((options.platform || process.platform) !== "win32") return { available: false, reason: "not a Windows host" };
@@ -187,6 +271,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
     const verifyPackagedCandidate = options.verifyPackagedCandidate !== false && process.env.CCC_DEVICE_LAB_DURABILITY !== "1";
     let packagedCandidate: ReturnType<typeof createPackagedCccCandidate> | null = null;
     let created = false;
+    let createdVmId = "";
     let currentStep = "start MCP session";
 
     return withDeviceLabMcp(async ({ callTool: rawCallTool }) => {
@@ -215,6 +300,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             };
             const createdDevice = lifecycleDevice(payload(await callTool("device_create", createArgs)), "device_create");
             direct.incarnationId = createdDevice.incarnationId;
+            createdVmId = String(createdDevice.vmId || "");
             created = true;
             assert.strictEqual(createdDevice.id, deviceId);
             assert.strictEqual(createdDevice.guestProvisioned, true);
@@ -231,7 +317,25 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             assert.ok(Array.isArray(inventory.devices) && inventory.devices.some((device: any) => device.id === deviceId));
 
             currentStep = "start and wait for PowerShell Direct";
-            const started = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
+            const stopConsoleTimeline = scheduleHyperVWindowsConsoleTimeline({
+                captureInput: {
+                    ownerId: ownerId(process.env, repoRoot),
+                    deviceId,
+                    incarnationId: String(direct.incarnationId),
+                    powershell: (capability as any).powershell,
+                    platform: options.platform || process.platform,
+                },
+                captureImpl: options.captureConsoleImpl,
+                setTimeoutImpl: options.consoleTimelineSetTimeoutImpl,
+                clearTimeoutImpl: options.consoleTimelineClearTimeoutImpl,
+            });
+            let startResult: any;
+            try {
+                startResult = await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 });
+            } finally {
+                stopConsoleTimeline();
+            }
+            const started = lifecycleDevice(payload(startResult), "device_start");
             assert.strictEqual(started.status, "running");
             assert.strictEqual(started.bootReady, true);
             const startedAgain = lifecycleDevice(payload(await callTool("device_start", { ...direct, waitForBoot: true, bootTimeoutMs: 1200000 })), "device_start");
@@ -342,7 +446,23 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
             assert.deepStrictEqual(advertisedCapabilities.filter((tool) => !calledCapabilities.has(tool)), []);
             return { status: "PASS", deviceId, verifiedCapabilities: [...calledCapabilities].sort() };
         } catch (error: any) {
-            return { status: "FAIL", reason: `${currentStep}: ${error?.message || String(error)}` };
+            return {
+                status: "FAIL",
+                reason: hyperVWindowsFailureReason({
+                    profile: capability.profile,
+                    sourceImage: (capability as any).sourceImage,
+                    step: currentStep,
+                    error,
+                    created,
+                    deviceId,
+                    incarnationId: typeof direct.incarnationId === "string" ? direct.incarnationId : undefined,
+                    vmId: createdVmId || undefined,
+                    powershell: (capability as any).powershell,
+                    platform: options.platform || process.platform,
+                    captureImpl: options.captureConsoleImpl,
+                    setupDiagnosticsImpl: options.captureSetupDiagnosticsImpl,
+                }),
+            };
         } finally {
             if (created) {
                 try { await callTool("device_stop", { ...direct, force: true }); } catch { /* best effort */ }

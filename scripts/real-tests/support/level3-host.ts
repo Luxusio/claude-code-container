@@ -2,11 +2,17 @@ import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
+export const HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT = "hyper-v-windows-unattend-oobe-schema-v1";
+export const HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT = "hyper-v-powershell-direct-bounded-probe-v1";
+export const HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT = "hyper-v-windows-library-v1";
 export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-vm-managed-auto-images-v20",
     "hyper-v-setup-network-v10",
     "hyper-v-guest-readiness-diagnostics-v16",
     "hyper-v-windows-boot-contract-v1",
+    HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT,
+    HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT,
+    HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT,
     "hyper-v-linux-create-response-v1",
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
@@ -190,7 +196,7 @@ export async function ensureHostBrokerReady(repoRoot, options: any = {}) {
             && confirmedPid === observed.pid
             && verifiedStartedAt === observed.startedAt
             && confirmedStartedAt === observed.startedAt) {
-            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt} providerContract=${HYPER_V_LEVEL3_PROVIDER_CONTRACT} networkOwnership=${HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT} networkDiagnostics=${HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT} guestDiagnostics=${HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT}\n`);
+            process.stdout.write(`ATTEST Hyper-V broker pid=${observed.pid} startedAt=${observed.startedAt}\n`);
             return 0;
         }
         process.stderr.write([

@@ -2,13 +2,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 import { assertHyperVLinuxCreateContract, HYPER_V_LINUX_PRE_REBOOT_COMMAND, hyperVLinuxBrokerArgs, hyperVLinuxToolPayload, hyperVLinuxVmE2ECapability, prepareHyperVLinuxDownloadDestination, writeHyperVLinuxFailureDiagnostic } from "./hyper-v-linux-vm-e2e.ts";
 import {
     createPackagedCccCandidate,
+    HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS,
+    hyperVWindowsFailureReason,
     hyperVWindowsVmE2ECapability,
     resolveNpmCliPath,
+    scheduleHyperVWindowsConsoleTimeline,
     selectHyperVWindowsProfile,
 } from "./hyper-v-windows-vm-e2e.ts";
+import { captureHyperVWindowsSetupDiagnostics } from "./hyper-v-windows-setup-diagnostics.ts";
 import { brokerToolFailureEvidence, formatBrokerToolFailure } from "./device-lab-mcp-client.ts";
 import {
     HYPER_V_WINDOWS_EVALUATION_LICENSE_ID,
@@ -75,6 +80,32 @@ describe("Hyper-V E2E zero-config image selection", () => {
             });
             expect(candidate.packagePath).toBe(join(outputDir, "claude-code-container-test.tgz"));
             expect(candidate.version).toMatch(/^\d+\.\d+\.\d+$/);
+        } finally {
+            rmSync(outputDir, { recursive: true, force: true });
+        }
+    });
+
+    it("resolves the pack artifact when npm --json returns an object (Windows) via the deterministic tarball name", () => {
+        const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+        const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+        const sanitizedName = String(pkg.name).replace(/^@/, "").replace(/\//g, "-");
+        const expectedFilename = `${sanitizedName}-${pkg.version}.tgz`;
+        const outputDir = mkdtempSync(join(tmpdir(), "ccc-hyper-v-package-object-test-"));
+        const npmExecPath = join(outputDir, "node_modules", "npm", "bin", "npm-cli.js");
+        mkdirSync(dirname(npmExecPath), { recursive: true });
+        writeFileSync(npmExecPath, "// test npm cli");
+        try {
+            const candidate = createPackagedCccCandidate(outputDir, {
+                nodePath: join(outputDir, "node.exe"),
+                spawnSyncImpl: () => {
+                    // Windows npm emits `--json` as an object (no top-level filename) and still
+                    // writes the tarball to --pack-destination under the deterministic name.
+                    writeFileSync(join(outputDir, expectedFilename), "package");
+                    return { status: 0, stdout: "{}", stderr: "" };
+                },
+            });
+            expect(candidate.packagePath).toBe(join(outputDir, expectedFilename));
+            expect(candidate.version).toBe(String(pkg.version));
         } finally {
             rmSync(outputDir, { recursive: true, force: true });
         }
@@ -598,6 +629,31 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(evidence.boot.readiness).not.toHaveProperty("guestSignalObserved");
     });
 
+    it("surfaces the bounded broker detail code so masked reconciliation failures stay distinguishable", () => {
+        const evidence = brokerToolFailureEvidence({
+            error: "hyper-v-delete-reconciliation-failed",
+            body: {
+                error: "hyper-v-delete-reconciliation-failed",
+                detail: "hyper-v-vm-identity-conflict",
+            },
+        }) as any;
+        expect(evidence.error).toBe("hyper-v-delete-reconciliation-failed");
+        expect(evidence.bodyError).toBe("hyper-v-delete-reconciliation-failed");
+        expect(evidence.detail).toBe("hyper-v-vm-identity-conflict");
+    });
+
+    it("omits broker detail that is not a bounded diagnostic code", () => {
+        const evidence = brokerToolFailureEvidence({
+            error: "hyper-v-delete-reconciliation-failed",
+            body: {
+                error: "hyper-v-delete-reconciliation-failed",
+                detail: "C:\\Users\\private token=secret",
+            },
+        }) as any;
+        expect(evidence).not.toHaveProperty("detail");
+        expect(JSON.stringify(evidence)).not.toContain("C:\\Users");
+    });
+
     it("keeps Hyper-V boot diagnostics ahead of long nested wrapper details", () => {
         const message = formatBrokerToolFailure({
             error: "broker-operation-failed",
@@ -638,6 +694,46 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(message).not.toContain("outerouter");
         expect(message).not.toContain("innerinner");
         expect(message.length).toBeLessThan(600);
+    });
+
+    it("keeps guest-readiness diagnosticErrors within the 511-char cap for a large boot observation", () => {
+        const services = Array.from({ length: 8 }, (_, index) => ({
+            name: `Integration Service Number ${index} With A Fairly Long Name`,
+            enabled: index % 2 === 0,
+            primaryStatus: 2,
+            secondaryStatus: 0,
+        }));
+        const message = formatBrokerToolFailure({
+            error: "broker-operation-failed",
+            body: {
+                error: "hyper-v-guest-not-ready",
+                result: {
+                    boot: {
+                        provider: "hyper-v-powershell-direct",
+                        error: "powershell-direct-session-unavailable",
+                        diagnostic: {
+                            state: "Running",
+                            uptimeMs: 1202182,
+                            generation: 2,
+                            secureBootEnabled: true,
+                            heartbeatEnabled: false,
+                            heartbeatPrimaryStatus: null,
+                            heartbeatSecondaryStatus: null,
+                            integrationServices: services,
+                            hardDiskCount: 1,
+                            dvdCount: 1,
+                            hardDiskControllers: ["scsi", "ide", "scsi"],
+                            bootDeviceTypes: ["hard-disk", "dvd", "network", "unknown", "hard-disk", "dvd", "network", "unknown"],
+                            diagnosticComplete: false,
+                            diagnosticErrors: ["hyper-v-diagnostic-integration-services-unavailable"],
+                        },
+                    },
+                },
+            },
+        }, "fallback");
+        // With a large topology payload the actionable guest-readiness codes must still survive the cap.
+        expect(message.slice(0, 511)).toContain('"diagnosticComplete":false');
+        expect(message.slice(0, 511)).toContain('"diagnosticErrors":["hyper-v-diagnostic-integration-services-unavailable"]');
     });
 
     it("preserves full safe Hyper-V boot topology in a durable failure diagnostic", () => {
@@ -739,5 +835,403 @@ describe("Hyper-V E2E zero-config image selection", () => {
         const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
         expect(source).toContain("hyper-v-image-contracts.ts");
         expect(source).not.toContain("hyper-v-images.ts");
+    });
+
+    it("captures the Windows guest console before cleanup while preserving the original failure", () => {
+        const calls: any[] = [];
+        const base = {
+            profile: "windows-server",
+            step: "start and wait for PowerShell Direct",
+            error: new Error("hyper-v-guest-not-ready: diagnosticErrors=integration-services-incomplete"),
+            created: true,
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            ownerId: "0123456789abcdef",
+            platform: "win32",
+        };
+        const success = hyperVWindowsFailureReason({
+            ...base,
+            captureImpl: (input: any) => {
+                calls.push(input);
+                return {
+                    ok: true,
+                    latestRelativePath: "results/device-lab-real/hyper-v-windows-console-latest.png",
+                    latestPath: "ignored",
+                    timestampedPath: "ignored",
+                };
+            },
+            setupDiagnosticsImpl: () => ({
+                ok: true,
+                latestRelativePath: "results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json",
+                latestPath: "ignored",
+                timestampedPath: "ignored",
+            }),
+        });
+        expect(calls).toEqual([expect.objectContaining({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            powershell: "powershell.exe",
+            platform: "win32",
+        })]);
+        expect(success).toBe("profile=windows-server; guestConsole=results/device-lab-real/hyper-v-windows-console-latest.png; guestSetupDiagnostics=results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json; start and wait for PowerShell Direct: hyper-v-guest-not-ready: diagnosticErrors=integration-services-incomplete");
+
+        const unavailable = hyperVWindowsFailureReason({
+            ...base,
+            sourceImage: "C:\\images\\windows.vhdx",
+            captureImpl: () => ({ ok: false, code: "hyper-v-console-wmi-access-denied" }),
+            setupDiagnosticsImpl: () => ({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }),
+        });
+        expect(unavailable).toContain("profile=windows-server sourceImage=set; guestConsole=unavailable(hyper-v-console-wmi-access-denied);");
+        expect(unavailable).toContain("guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-mount-failed);");
+        expect(unavailable).toContain("hyper-v-guest-not-ready: diagnosticErrors=integration-services-incomplete");
+
+        const unexpected = hyperVWindowsFailureReason({
+            ...base,
+            captureImpl: () => { throw new Error("C:\\Users\\private token=secret"); },
+            setupDiagnosticsImpl: () => { throw new Error("C:\\Users\\private token=secret"); },
+        });
+        expect(unexpected).toContain("guestConsole=unavailable(hyper-v-console-unexpected-failure)");
+        expect(unexpected).toContain("guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-unexpected-failure)");
+        expect(unexpected).not.toContain("token=secret");
+        expect(unexpected).toContain("hyper-v-guest-not-ready");
+    });
+
+    it("captures bounded, redacted Windows Setup diagnostics from an exact read-only VHD mount", () => {
+        const outputRoot = mkdtempSync(join(tmpdir(), "ccc-hyper-v-windows-setup-diagnostics-"));
+        const decodedPrograms: string[] = [];
+        let calls = 0;
+        try {
+            const captured = captureHyperVWindowsSetupDiagnostics({
+                ownerId: "0123456789abcdef",
+                deviceId: "windows-vm-real-e2e-123",
+                incarnationId: "0123456789abcdef0123456789abcdef",
+                vmId: "12345678-1234-4123-8123-123456789abc",
+                powershell: "powershell.exe",
+                platform: "win32",
+                outputRoot,
+                now: () => new Date("2026-08-30T00:00:00.000Z"),
+                spawnSyncImpl: (_command, args) => {
+                    decodedPrograms.push(Buffer.from(args.at(-1) || "", "base64").toString("utf16le"));
+                    calls += 1;
+                    if (calls === 1) {
+                        return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                    }
+                    return {
+                        status: 0,
+                        stdout: JSON.stringify({
+                            ok: true,
+                            logs: [{
+                                path: "Windows\\Panther\\UnattendGC\\setuperr.log",
+                                lines: [
+                                    "Error processing <Value>SuperSecret!</Value> password=AnotherSecret C:\\Users\\Luxus\\private",
+                                    "Error password=\"my secret phrase\" token=still-secret HRESULT=0x1",
+                                    "Error reading C:\\Users\\Luxus\\private\\unattend.xml",
+                                    "Shell-Setup oobeSystem rejected setting 0x8007000d",
+                                ],
+                            }],
+                        }),
+                    };
+                },
+            });
+            expect(captured).toMatchObject({
+                ok: true,
+                latestRelativePath: "results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json",
+            });
+            expect(decodedPrograms).toHaveLength(2);
+            const [preflightProgram, diagnosticProgram] = decodedPrograms;
+            expect(preflightProgram).toContain("Get-VM -Id $ExpectedId -ErrorAction Stop");
+            expect(preflightProgram).toContain("$Drives.Count -ne 1");
+            expect(preflightProgram).toContain("[string]::IsNullOrWhiteSpace([string]$Drives[0].Path)");
+            expect(preflightProgram).not.toContain("Where-Object");
+            expect(preflightProgram).not.toContain("Stop-VM");
+            expect(preflightProgram).not.toContain("Remove-VMHardDiskDrive");
+            expect(diagnosticProgram).toContain("Get-VM -Id $ExpectedId -ErrorAction Stop");
+            expect(diagnosticProgram).toContain("$Vm.Name -cne $VmName");
+            expect(diagnosticProgram).toContain("[string]$Vm.Notes -cne $ExpectedMarker");
+            expect(diagnosticProgram).toContain("ccc-device-lab:0123456789abcdef:windows-vm-real-e2e-123:0123456789abcdef0123456789abcdef");
+            expect(diagnosticProgram).toContain("$ExpectedDisk = 'C:\\state\\root.vhdx'");
+            expect(diagnosticProgram).toContain("$Drives.Count -ne 1");
+            expect(diagnosticProgram).toContain("Stop-VM -VM $Vm -TurnOff -Force");
+            expect(diagnosticProgram).toContain("Remove-VMHardDiskDrive -VMHardDiskDrive $Drives[0] -ErrorAction Stop");
+            expect(diagnosticProgram).toContain("$RemainingDrives.Count -ne 0");
+            expect(diagnosticProgram).toContain("Mount-VHD -Path $DiskPath -ReadOnly -PassThru");
+            expect(diagnosticProgram).toContain("for ($Attempt = 1; $Attempt -le 10; $Attempt++)");
+            expect(diagnosticProgram).toContain("if ($Attempt -lt 10) { Start-Sleep -Milliseconds 1000 }");
+            expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
+            expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
+            const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
+            const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);
+            const detachTimeQueryIndex = diagnosticProgram.indexOf("$Drives = @(Get-VMHardDiskDrive", stopVerificationIndex);
+            const detachIndex = diagnosticProgram.indexOf("Remove-VMHardDiskDrive");
+            const detachPathIndex = diagnosticProgram.indexOf("$DetachPath = [IO.Path]::GetFullPath", detachTimeQueryIndex);
+            const detachPathComparisonIndex = diagnosticProgram.indexOf("[string]::Equals($DetachPath", detachTimeQueryIndex);
+            expect(stopVerificationIndex).toBeGreaterThan(stopCommandIndex);
+            expect(detachTimeQueryIndex).toBeGreaterThan(stopVerificationIndex);
+            expect(detachPathIndex).toBeGreaterThan(detachTimeQueryIndex);
+            expect(detachPathComparisonIndex).toBeGreaterThan(detachPathIndex);
+            expect(detachPathComparisonIndex).toBeLessThan(detachIndex);
+            expect(detachTimeQueryIndex).toBeLessThan(detachIndex);
+            expect(diagnosticProgram.indexOf("Remove-VMHardDiskDrive")).toBeLessThan(diagnosticProgram.indexOf("Mount-VHD"));
+            expect(diagnosticProgram.indexOf("$Mounted = $true")).toBeLessThan(diagnosticProgram.indexOf("Get-Disk -ErrorAction Stop"));
+            expect(diagnosticProgram).toContain("Dismount-VHD -Path $DiskPath -ErrorAction Stop");
+            expect(diagnosticProgram.indexOf("Dismount-VHD")).toBeLessThan(diagnosticProgram.indexOf("$Result | ConvertTo-Json"));
+            expect(diagnosticProgram).not.toContain("Add-VMHardDiskDrive");
+            expect(diagnosticProgram).not.toMatch(/Get-VMHardDiskDrive[^\n]*Where-Object/);
+            const content = readFileSync((captured as any).latestPath, "utf8");
+            expect(content).toContain("Shell-Setup oobeSystem rejected setting 0x8007000d");
+            expect(content).toContain("<Value>[redacted]</Value>");
+            expect(content).toContain("password=[redacted]");
+            expect(content).toContain("[user-profile]");
+            expect(content).not.toContain("SuperSecret");
+            expect(content).not.toContain("AnotherSecret");
+            expect(content).not.toContain("my secret phrase");
+            expect(content).not.toContain("still-secret");
+            expect(content).not.toContain("Luxus");
+        } finally {
+            rmSync(outputRoot, { recursive: true, force: true });
+        }
+    });
+
+    it("contains Windows Setup diagnostic failures and rejects unrestricted log paths", () => {
+        const base = {
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+        };
+        const run = (mainResult: object) => {
+            let calls = 0;
+            const result = captureHyperVWindowsSetupDiagnostics({
+                ...base,
+                spawnSyncImpl: () => {
+                    calls += 1;
+                    if (calls === 1) return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                    if (calls === 2) return { status: 0, stdout: JSON.stringify(mainResult) };
+                    return { status: 0, stdout: JSON.stringify({ ok: true, detached: true }) };
+                },
+            });
+            expect(calls).toBe(3);
+            return result;
+        };
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891 },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891]",
+        });
+        expect(run({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }))
+            .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 11, category: "Private C:\\Users\\Luxus", hresult: -1 },
+        })).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
+        expect(run({ ok: true, logs: [{ path: "Windows\\System32\\config\\SAM", lines: ["secret"] }] }))
+            .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
+    });
+
+    it("does not mutate the VM when the Windows Setup diagnostic preflight cannot prove one exact VHD", () => {
+        const programs: string[] = [];
+        let calls = 0;
+        const result = captureHyperVWindowsSetupDiagnostics({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: (_command, args) => {
+                calls += 1;
+                programs.push(Buffer.from(args.at(-1) || "", "base64").toString("utf16le"));
+                return { status: 0, stdout: JSON.stringify({ ok: false, code: "hyper-v-setup-diagnostics-disk-not-exact" }) };
+            },
+        });
+        expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-disk-not-exact" });
+        expect(calls).toBe(1);
+        expect(programs[0]).not.toContain("Stop-VM");
+        expect(programs[0]).not.toContain("Remove-VMHardDiskDrive");
+        expect(programs[0]).not.toContain("Mount-VHD");
+    });
+
+    it("runs an exact-identity bounded dismount recovery after a diagnostic process timeout", () => {
+        const programs: string[] = [];
+        let calls = 0;
+        const result = captureHyperVWindowsSetupDiagnostics({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: (_command, args, options) => {
+                programs.push(Buffer.from(args.at(-1) || "", "base64").toString("utf16le"));
+                calls += 1;
+                if (calls === 1) {
+                    expect(options.timeout).toBe(30000);
+                    return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                }
+                if (calls === 2) {
+                    expect(options.timeout).toBe(120000);
+                    return { status: null, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) };
+                }
+                expect(options.timeout).toBe(30000);
+                return { status: 0, stdout: JSON.stringify({ ok: true, detached: true }) };
+            },
+        });
+        expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-process-timeout" });
+        expect(programs).toHaveLength(3);
+        expect(programs[2]).toContain("Get-VM -Id $ExpectedId -ErrorAction Stop");
+        expect(programs[2]).toContain("[string]$Vm.Notes -cne $ExpectedMarker");
+        expect(programs[2]).toContain("$ExpectedDisk = 'C:\\state\\root.vhdx'");
+        expect(programs[2]).toContain("if ($Drives.Count -eq 1)");
+        expect(programs[2]).toContain("exit 0");
+        expect(programs[2]).toContain("Get-DiskImage -ImagePath $ExpectedDisk -ErrorAction Stop");
+        expect(programs[2]).toContain("$DiskImages.Count -ne 1");
+        expect(programs[2]).toContain("Dismount-VHD -Path $ExpectedDisk -ErrorAction Stop");
+        expect(programs[2]).toContain("$VerifiedImages.Count -ne 1 -or [bool]$VerifiedImages[0].Attached");
+        expect(programs[2]).not.toContain("Get-DiskImage -ImagePath $ExpectedDisk -ErrorAction SilentlyContinue");
+        expect(programs[2]).not.toContain("Stop-VM");
+        expect(programs[2]).not.toContain("Add-VMHardDiskDrive");
+        expect(programs[2]).not.toMatch(/Get-VMHardDiskDrive[^\n]*Where-Object/);
+    });
+
+    it("fails closed when timeout recovery cannot confirm the owned VHD is dismounted", () => {
+        let calls = 0;
+        const result = captureHyperVWindowsSetupDiagnostics({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: () => {
+                calls += 1;
+                if (calls === 1) return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                return calls === 2
+                    ? { status: null, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) }
+                    : { status: 1, stderr: "private failure detail" };
+            },
+        });
+        expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-cleanup-failed" });
+    });
+
+    it("reconciles an in-process dismount failure before returning its bounded code", () => {
+        let calls = 0;
+        const result = captureHyperVWindowsSetupDiagnostics({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: () => {
+                calls += 1;
+                if (calls === 1) return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                return calls === 2
+                    ? { status: 0, stdout: JSON.stringify({ ok: false, code: "hyper-v-setup-diagnostics-dismount-failed" }) }
+                    : { status: 0, stdout: JSON.stringify({ ok: true, detached: true }) };
+            },
+        });
+        expect(calls).toBe(3);
+        expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-dismount-failed" });
+    });
+
+    it("fails closed when in-process dismount recovery cannot prove detachment", () => {
+        let calls = 0;
+        const result = captureHyperVWindowsSetupDiagnostics({
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: () => {
+                calls += 1;
+                if (calls === 1) return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                return calls === 2
+                    ? { status: 0, stdout: JSON.stringify({ ok: false, code: "hyper-v-setup-diagnostics-dismount-failed" }) }
+                    : { status: 0, stdout: JSON.stringify({ ok: false, code: "hyper-v-setup-diagnostics-cleanup-failed" }) };
+            },
+        });
+        expect(calls).toBe(3);
+        expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-cleanup-failed" });
+    });
+
+    it("schedules bounded Windows boot timeline captures and clears every timer", () => {
+        const scheduled: Array<{ callback: () => void; delayMs: number; handle: object }> = [];
+        const cleared: object[] = [];
+        const captures: any[] = [];
+        const captureInput = {
+            ownerId: "0123456789abcdef",
+            deviceId: "windows-vm-real-e2e-123",
+            incarnationId: "0123456789abcdef0123456789abcdef",
+            powershell: "powershell.exe",
+            platform: "win32",
+        };
+        const cancel = scheduleHyperVWindowsConsoleTimeline({
+            captureInput,
+            captureImpl: (input: any) => {
+                captures.push(input);
+                if (captures.length === 1) throw new Error("contained timeline capture failure");
+                return { ok: false, code: "hyper-v-console-wmi-unavailable" };
+            },
+            setTimeoutImpl: (callback, delayMs) => {
+                const handle = { delayMs };
+                scheduled.push({ callback, delayMs, handle });
+                return handle;
+            },
+            clearTimeoutImpl: (handle) => { cleared.push(handle as object); },
+        });
+
+        expect(HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS).toEqual([120000, 300000, 600000, 900000]);
+        expect(scheduled.map((entry) => entry.delayMs)).toEqual(HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS);
+        expect(() => scheduled.forEach((entry) => entry.callback())).not.toThrow();
+        expect(captures).toEqual(Array.from({ length: 4 }, () => captureInput));
+        cancel();
+        cancel();
+        expect(cleared).toEqual(scheduled.map((entry) => entry.handle));
+    });
+
+    it("skips console capture before Windows VM creation and keeps catch-before-finally ordering", () => {
+        let invoked = false;
+        const reason = hyperVWindowsFailureReason({
+            profile: "windows-server",
+            step: "create VM",
+            error: new Error("hyper-v-create-failed"),
+            created: false,
+            deviceId: "windows-vm-real-e2e-123",
+            captureImpl: () => {
+                invoked = true;
+                return { ok: false, code: "hyper-v-console-process-failed" };
+            },
+            setupDiagnosticsImpl: () => {
+                invoked = true;
+                return { ok: false, code: "hyper-v-setup-diagnostics-process-failed" };
+            },
+        });
+        expect(invoked).toBe(false);
+        expect(reason).toBe("profile=windows-server; create VM: hyper-v-create-failed");
+
+        const source = readFileSync(new URL("hyper-v-windows-vm-e2e.ts", import.meta.url), "utf8");
+        const functionIndex = source.indexOf("export async function runHyperVWindowsVmE2E");
+        const functionSource = source.slice(functionIndex);
+        expect(functionSource).toContain("scheduleHyperVWindowsConsoleTimeline");
+        expect(functionSource).toContain("stopConsoleTimeline");
+        const catchIndex = functionSource.indexOf("} catch (error: any) {");
+        const captureIndex = functionSource.indexOf("reason: hyperVWindowsFailureReason", catchIndex);
+        const finallyIndex = functionSource.indexOf("} finally {", captureIndex);
+        const stopIndex = functionSource.indexOf('callTool("device_stop"', finallyIndex);
+        expect(functionIndex).toBeGreaterThan(-1);
+        expect(catchIndex).toBeGreaterThan(-1);
+        expect(captureIndex).toBeGreaterThan(catchIndex);
+        expect(finallyIndex).toBeGreaterThan(captureIndex);
+        expect(stopIndex).toBeGreaterThan(finallyIndex);
     });
 });

@@ -213,6 +213,10 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-linux-ssh-keygen-unavailable",
     "hyper-v-linux-ssh-public-key-invalid",
     "hyper-v-delete-reconciliation-failed",
+    "hyper-v-vm-identity-conflict",
+    "hyper-v-vm-disk-ownership-mismatch",
+    "hyper-v-vm-media-ownership-mismatch",
+    "hyper-v-vm-delete-stop-timeout",
     "hyper-v-network-cleanup-failed",
     "hyper-v-network-setup-failed",
     "hyper-v-recovery-failed",
@@ -223,6 +227,20 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-snapshot-policy-quarantine-failed",
     "hyper-v-snapshot-policy-quarantined",
     "hyper-v-snapshot-standard-fallback-failed",
+    "hyper-v-snapshot-already-exists",
+    "hyper-v-snapshot-create-invalid-result",
+    "hyper-v-snapshot-observed-count-invalid",
+    "hyper-v-snapshot-observed-none-created",
+    "hyper-v-snapshot-observed-name-mismatch",
+    "hyper-v-snapshot-observed-duplicate",
+    "hyper-v-snapshot-observed-id-invalid",
+    "hyper-v-snapshot-observed-name-invalid",
+    "hyper-v-snapshot-observed-type-invalid",
+    "hyper-v-snapshot-name-invalid",
+    "hyper-v-vm-identity-ambiguous",
+    "hyper-v-vm-not-found",
+    "hyper-v-powershell-contract-invalid",
+    "hyper-v-powershell-contract-version-unsupported",
     "hyper-v-state-reconciliation-failed",
 ]);
 
@@ -268,8 +286,23 @@ export function hyperVProviderDiagnosticCode(
         .at(-1);
     return specificReportedDiagnosticCode
         || stageDiagnosticCode
+        || boundedPowerShellErrorId(result.error, result.stderr)
         || reportedDiagnosticCodes.at(-1)
         || fallbackDiagnosticCode;
+}
+
+// Last-resort diagnostic when no ccc `hyper-v-*` code is present: surface the PowerShell
+// FullyQualifiedErrorId (a cmdlet-author identifier such as
+// "ObjectNotFound,Microsoft.HyperV.PowerShell.Commands.NewVMSnapshot") as a bounded code.
+// The capture charset excludes path separators (\ / :) and whitespace, so host paths,
+// credentials, VM names, and command output can never leak; the result is capped and matches
+// the client's bounded diagnostic pattern /^[a-z0-9-]{1,80}$/.
+export function boundedPowerShellErrorId(error?: string | null, stderr?: string | null): string | undefined {
+    const match = /FullyQualifiedErrorId\s*:\s*([A-Za-z0-9._,+-]+)/.exec(`${error || ""}\n${stderr || ""}`);
+    if (!match) return undefined;
+    const sanitized = match[1].toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!sanitized) return undefined;
+    return `hyper-v-ps-${sanitized}`.slice(0, 80).replace(/-+$/, "");
 }
 
 export function redactProviderCommandInput(

@@ -359,7 +359,7 @@ export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVG
         || parsed.error !== "hyper-v-guest-ready-timeout"
         || typeof parsed.reason !== "string"
         || parsed.reason.length > 128
-        || !/^(?:hyper-v-[a-z0-9-]{3,120}|powershell-direct-(?:authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
+        || !/^(?:hyper-v-[a-z0-9-]{3,120}|powershell-direct-(?:attempt-timeout|authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
         || typeof parsed.attempts !== "number"
         || !Number.isSafeInteger(parsed.attempts)
         || parsed.attempts < 1) return null;

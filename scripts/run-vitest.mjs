@@ -16,9 +16,15 @@ function hiddenChildProcessEnv() {
 }
 
 function buildBeforeRun(env) {
-    if (!vitestArgs.includes("run")) return env;
-    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-    const built = spawnSync(npm, ["run", "build"], {
+    if (!vitestArgs.includes("run") || process.env.CCC_E2E_SKIP_BUILD === "1") return env;
+    const npmCli = process.env.npm_execpath;
+    if (process.platform === "win32" && !npmCli) {
+        console.error("Unable to build test artifacts: npm_execpath is unavailable on Windows");
+        process.exit(1);
+    }
+    const executable = process.platform === "win32" ? process.execPath : "npm";
+    const args = process.platform === "win32" ? [npmCli, "run", "build"] : ["run", "build"];
+    const built = spawnSync(executable, args, {
         cwd: repoRoot,
         env,
         stdio: "inherit",

@@ -24,6 +24,10 @@ describe("Windows test child-process policy", () => {
         expect(level3Host).toContain("brokerReady:\\s*true");
         expect(vitestRunner).toContain("hidden-child-processes.cjs");
         expect(vitestRunner).toContain("windowsHide: true");
+        expect(vitestRunner).toContain("process.env.npm_execpath");
+        expect(vitestRunner).toContain('process.env.CCC_E2E_SKIP_BUILD === "1"');
+        expect(vitestRunner).toContain('process.platform === "win32" ? process.execPath : "npm"');
+        expect(vitestRunner).not.toContain('process.platform === "win32" ? "npm.cmd" : "npm"');
         expect(level3Config).toContain("setupFiles: [\"./scripts/real-tests/hidden-child-processes.cjs\"]");
         expect(vitestConfig).toContain("setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs']");
         expect(vitestConfig).toContain("Math.min(8, Math.floor(availableParallelism() / 2))");

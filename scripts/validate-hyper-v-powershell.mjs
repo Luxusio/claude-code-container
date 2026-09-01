@@ -8,6 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assetRoot = join(repoRoot, "scripts", "host-control", "hyper-v");
 const requireParser = process.argv.includes("--require-parser");
 const runPester = process.argv.includes("--pester");
+const libraryFixtureOnly = process.argv.includes("--library-fixture-only");
 
 function validationPowerShellArgs(args) {
     return process.platform === "win32" ? hiddenWindowsPowerShellArgs(args) : [...args];
@@ -48,7 +49,11 @@ if (!executable) {
     process.exit(0);
 }
 
-const files = filesUnder(assetRoot).filter((candidate) => /\.ps(?:1|m1)$/i.test(candidate));
+const libraryFixture = join(repoRoot, "scripts", "real-tests", "hyper-v-windows-library-fixture.ps1");
+const files = (libraryFixtureOnly ? [libraryFixture] : [
+    ...filesUnder(assetRoot),
+    libraryFixture,
+]).filter((candidate) => /\.ps(?:1|m1)$/i.test(candidate));
 const parser = [
     "$ErrorActionPreference = 'Stop'",
     "$Files = [Console]::In.ReadToEnd() | ConvertFrom-Json",

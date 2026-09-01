@@ -1571,7 +1571,7 @@ describe("Hyper-V provider adapter", () => {
             auxiliaryMediaPaths: [seedDiskPath],
         }));
         expect(deleteScript).toContain("$ExpectedDisks");
-        expect(deleteScript).toContain("Compare-Object");
+        expect(deleteScript).toContain("$ExpectedDiskPaths -notcontains $_");
         expect(deleteScript).toContain(seedDiskPath);
         expect(deleteScript).toContain("Assert-NoReparsePath $OwnedPath");
 
@@ -1793,6 +1793,11 @@ describe("Hyper-V provider adapter", () => {
         expect(cleanupScript).toContain(`$ExpectedSwitchId = '${vmId}'`);
         expect(cleanupScript).toContain("hyper-v-network-nat-identity-conflict");
         expect(cleanupScript).toContain("hyper-v-network-switch-ownership-conflict");
+        // Teardown trusts the switch GUID (identity, verified above at $ExpectedSwitchId): the Notes marker
+        // legitimately drifts between recognized stable/token forms via setup adoption, so the exact-marker
+        // check is enforced only when no $ExpectedSwitchId is available.
+        expect(cleanupScript).toContain("if ([string]$Switch.SwitchType -ne 'Internal') { throw 'hyper-v-network-switch-ownership-conflict' }");
+        expect(cleanupScript).toContain("if (-not $ExpectedSwitchId -and [string]$Switch.Notes -cne $Marker) { throw 'hyper-v-network-switch-ownership-conflict' }");
         expect(cleanupScript).toContain("$DeferredReason = 'hyper-v-network-switch-in-use'");
         expect(cleanupScript).toContain("deferred = $true; reason = $DeferredReason");
         expect(cleanupScript).toContain("Get-VMNetworkAdapter -All -ErrorAction Stop");
@@ -1983,9 +1988,60 @@ describe("Hyper-V provider adapter", () => {
         expect(deleteScript).toContain("hyper-v-vm-disk-ownership-mismatch");
         expect(deleteScript).toContain("hyper-v-vm-media-ownership-mismatch");
         expect(deleteScript).toContain("$ExpectedMedia = @('/state/autounattend.iso')");
+        // Disk/media ownership comparison must normalize both sides (mirrors hyperVRecoverOrphanCommand),
+        // otherwise a slash-format difference between the journal path and Get-VM*.Path throws a false mismatch.
+        expect(deleteScript).toContain("$ExpectedDiskPaths = @($ExpectedDisks | ForEach-Object { [IO.Path]::GetFullPath([string]$_) })");
+        expect(deleteScript).toContain("$ExpectedMediaPaths = @($ExpectedMedia | ForEach-Object { [IO.Path]::GetFullPath([string]$_) })");
+        // Disk guard is a SUBSET check (mirrors orphan-recovery line 231 and the media guard below):
+        // ownership is already proven by the Notes marker, and residue from a partial create may have
+        // fewer attached disks than expected — exact set-equality would falsely reject that residue.
+        // Disk guard tolerates checkpoint differencing disks (.avhdx) that Hyper-V places next to root.vhdx:
+        // ownership is proven by the Notes marker, and the owned disks directory is owner+device scoped,
+        // so any disk under it is ours. A disk attached from OUTSIDE that directory still trips the guard.
+        expect(deleteScript).toContain("$OwnedDiskDir = [IO.Path]::GetFullPath((Split-Path -Parent $ExpectedDisk))");
+        expect(deleteScript).toContain("if (@($Attached | Where-Object { $ExpectedDiskPaths -notcontains $_ -and -not $_.StartsWith($OwnedDiskDir, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 0) { throw 'hyper-v-vm-disk-ownership-mismatch' }");
+        // Leftover checkpoint differencing disks are cleaned after Remove-VM.
+        expect(deleteScript).toContain("Get-ChildItem -LiteralPath $OwnedDiskDir -Filter *.avhdx -File");
+        expect(deleteScript).toContain("$ExpectedMediaPaths -notcontains $_");
+        expect(deleteScript).toMatch(/Get-VMHardDiskDrive -VM \$Vm[^\n]*\[IO\.Path\]::GetFullPath\(\[string\]\$_\.Path\)/);
+        // No exact-equality disk comparison — neither Compare-Object nor an $Attached.Count vs $ExpectedDiskPaths.Count gate.
+        expect(deleteScript).not.toContain("Compare-Object");
+        expect(deleteScript).not.toMatch(/\$Attached\.Count -ne \$ExpectedDiskPaths\.Count/);
         expect(deleteScript).toContain("alreadyMissing = $true");
         expect(deleteScript).toContain("hyper-v-vm-identity-conflict");
         expect(deleteScript).toContain("Remove-VM -VM $Vm -Force");
+    });
+
+    it("bounded-retries the delete mutation against transient locks with zero configuration", () => {
+        const script = scriptOf(hyperVDeleteCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName: hyperVVmName(ownerId, deviceId, incarnationId),
+            vmId,
+            diskPath: "/state/root.vhdx",
+            auxiliaryMediaPaths: ["/state/autounattend.iso"],
+        }));
+        // AC-002: ownership/identity/disk/media verification stays before any mutation and is never retried.
+        const ownershipAt = script.indexOf("throw 'hyper-v-vm-ownership-mismatch'");
+        const stopLoopAt = script.indexOf("$StopAttempts");
+        expect(ownershipAt).toBeGreaterThan(-1);
+        expect(stopLoopAt).toBeGreaterThan(ownershipAt);
+        expect(script).toContain("throw 'hyper-v-vm-disk-ownership-mismatch'");
+        expect(script).toContain("throw 'hyper-v-vm-media-ownership-mismatch'");
+        // AC-001: bounded Stop-VM settle, Remove-VM retry, and artifact Remove-Item retry with Start-Sleep backoff.
+        expect(script).toContain("throw 'hyper-v-vm-delete-stop-timeout'");
+        expect(script).toContain("if ($StopAttempts -ge 20)");
+        expect(script).toContain("if ($RemoveAttempts -ge 10)");
+        expect(script).toContain("Remove-OwnedItemWithRetry");
+        expect(script).toContain("for ($ItemAttempts = 1; $ItemAttempts -le 10; $ItemAttempts++)");
+        expect(script).toContain("Start-Sleep -Milliseconds 500");
+        // AC-003: retry bounds are deterministic numeric literals (20/10/10) — no config surface drives them.
+        expect(script).not.toMatch(/RetryLimit|RetryCount|MaxAttempts|Get-Content|Import-Csv/);
+        // AC-005: idempotent already-missing branch and success observation contract are unchanged.
+        expect(script).toContain("alreadyMissing = $true");
+        expect(script).toContain("deleted = $true");
     });
 
     it("requires an exact VM incarnation marker and rejects stale generation scripts", () => {
@@ -2139,8 +2195,15 @@ describe("Hyper-V provider adapter", () => {
         });
         const script = scriptOf(command);
         expect(script).toContain("[DateTime]::UtcNow.AddMilliseconds(300000)");
-        expect(script).toContain("New-PSSession -VMId $ExpectedId -Credential $Credential");
-        expect(script).toContain("Invoke-Command -Session $Session");
+        expect(script).toContain("Invoke-Command -VMId $ExpectedId -Credential $Credential");
+        expect(script).toContain("-AsJob -ErrorAction Stop");
+        expect(script).toContain("Wait-Job -Job $AttemptJob -Timeout 15");
+        expect(script).toContain("Receive-Job -Job $AttemptJob -ErrorAction Stop");
+        expect(script).toContain("Remove-Job -Job $AttemptJob -Force -ErrorAction SilentlyContinue");
+        expect(script).toContain("powershell-direct-attempt-timeout");
+        expect(script).toContain("$Candidate -eq 'powershell-direct-attempt-timeout'");
+        expect(script).toContain("$LastFailure = $Candidate");
+        expect(script).not.toContain("New-PSSession -VMId $ExpectedId");
         expect(script).toContain("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
         expect(script).toContain("Remove-Item -LiteralPath $ProvisioningMedia");
         expect(script).toContain("hyper-v-guest-ready-timeout");
@@ -2152,6 +2215,8 @@ describe("Hyper-V provider adapter", () => {
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 })))
             .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 })))
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "C:\\secret", attempts: 150 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: `hyper-v-${"x".repeat(121)}`, attempts: 150 }))).toBeNull();
         const cappedCommand = hyperVGuestReadyCommand({
@@ -2356,13 +2421,28 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("$NormalizedVolumeName = ([string]$VolumeName).ToUpperInvariant()");
         expect(script).toContain("$Image.FileSystemsToCreate = 7");
         expect(script).toContain("$Image.ChooseImageDefaultsForMediaType(1)");
-        expect(script).toContain("<settings pass=\"specialize\">");
-        expect(script).toContain("<ComputerName>*</ComputerName>");
-        expect(script).toContain("Microsoft-Windows-Deployment");
-        expect(script).toContain("Create CCC PowerShell Direct account");
-        expect(script).toContain("Get-LocalGroup -SID 'S-1-5-32-544'");
-        expect(script).not.toContain("<UserAccounts>");
-        expect(script.indexOf("<settings pass=\"specialize\">")).toBeLessThan(script.indexOf("<settings pass=\"oobeSystem\">"));
+        // The CCC account is created in the oobeSystem pass so provisioning works on the specialized
+        // Microsoft evaluation VHD (whose specialize pass never re-runs) as well as generalized VHDX.
+        expect(script).toContain("<settings pass=\"oobeSystem\">");
+        expect(script).not.toContain("<settings pass=\"specialize\">");
+        expect(script).not.toContain("Microsoft-Windows-Deployment");
+        expect(script).not.toContain("Create CCC PowerShell Direct account");
+        expect(script).toContain("<UserAccounts><LocalAccounts><LocalAccount wcm:action=\"add\">");
+        expect(script).toContain("<Group>Administrators</Group>");
+        expect(script).toContain("<HideLocalAccountScreen>true</HideLocalAccountScreen>");
+        expect(script).toContain("<SynchronousCommand wcm:action=\"add\"><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $FirstLogonEncoded</CommandLine><Description>Remove CCC bootstrap secrets</Description><Order>1</Order></SynchronousCommand>");
+        expect(script).not.toContain("<SynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Remove CCC bootstrap secrets</Description><CommandLine>");
+        expect(script).toContain("<OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><ProtectYourPC>3</ProtectYourPC></OOBE>");
+        expect(script).not.toContain("SkipMachineOOBE");
+        expect(script).not.toContain("SkipUserOOBE");
+        expect(script).toContain("$PasswordXml = [Security.SecurityElement]::Escape($PlainPassword)");
+        expect(script).toContain("$UsernameXml = [Security.SecurityElement]::Escape($ExpectedUsername)");
+        expect(script).toContain("<LocalAccount wcm:action=\"add\"><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><DisplayName>$UsernameXml</DisplayName><Group>Administrators</Group><Name>$UsernameXml</Name></LocalAccount>");
+        expect(script).not.toContain("<LocalAccount wcm:action=\"add\"><Name>$UsernameXml</Name><DisplayName>$UsernameXml</DisplayName><Group>Administrators</Group><Password>");
+        expect(script.indexOf("<AutoLogon>")).toBeLessThan(script.indexOf("<FirstLogonCommands>"));
+        expect(script.indexOf("<FirstLogonCommands>")).toBeLessThan(script.indexOf("<OOBE>"));
+        expect(script.indexOf("<OOBE>")).toBeLessThan(script.indexOf("<UserAccounts>"));
+        expect(script).toContain("$IsoFiles = [ordered]@{ 'Autounattend.xml' = $UnattendBytes; 'unattend.xml' = $UnattendBytes }");
         expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(script).toContain("hyper-v-provisioning-media-filesystem-selection-failed");

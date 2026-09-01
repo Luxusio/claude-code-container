@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
-import { hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
+import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
 import { repoRoot } from "./helpers.ts";
 import {
     buildLevel3Artifacts,
@@ -13,6 +13,9 @@ import {
     HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES,
     HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT,
     HYPER_V_LEVEL3_PROVIDER_CONTRACT,
+    HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT,
+    HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT,
+    HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT,
     probeHostBrokerCapabilities,
 } from "./support/level3-host.ts";
 
@@ -33,6 +36,9 @@ describe("Hyper-V Level 3 launcher", () => {
     it("requires the current Hyper-V network ownership contract", () => {
         expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT);
         expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT);
+        expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT);
+        expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT);
+        expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT);
     });
 
     it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {
@@ -355,6 +361,78 @@ describe("Hyper-V Level 3 launcher", () => {
         }
     });
 
+    it("rejects a broker that predates the Windows unattend oobe schema contract", async () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: brokerStatusOutput(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES
+                        .filter((capability) => capability !== HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT)),
+                    stderr: "",
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain(HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
+    it("rejects a broker that predates bounded PowerShell Direct probes", async () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: brokerStatusOutput(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES
+                        .filter((capability) => capability !== HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT)),
+                    stderr: "",
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain(HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
+    it("rejects a broker that predates the internal Hyper-V Windows library", async () => {
+        let diagnostic = "";
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => {
+            diagnostic += String(chunk);
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            const status = await ensureHostBrokerReady("/repo", {
+                spawn: () => ({
+                    status: 0,
+                    stdout: brokerStatusOutput(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES
+                        .filter((capability) => capability !== HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT)),
+                    stderr: "",
+                }),
+            });
+
+            expect(status).toBe(1);
+            expect(diagnostic).toContain(HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+    });
+
     it("rejects a stale broker observed after CLI repair attestation", async () => {
         let diagnostic = "";
         const originalWrite = process.stderr.write;
@@ -496,5 +574,79 @@ describe("Hyper-V Level 3 launcher", () => {
         });
 
         expect(status).toBe(1);
+    });
+});
+
+describe("Windows Server evaluation license prompt", () => {
+    const baseDeps = (overrides: any = {}) => ({
+        platform: "win32",
+        selectHyperVWindowsProfileImpl: () => "windows-server",
+        readReceiptImpl: () => null,
+        acceptLicenseImpl: vi.fn(),
+        stdout: { write: vi.fn() },
+        isInteractive: true,
+        promptYesNoImpl: async () => true,
+        ...overrides,
+    });
+
+    it("is a no-op off Windows without prompting or accepting", async () => {
+        const deps = baseDeps({ platform: "linux", promptYesNoImpl: vi.fn(async () => true) });
+        const result = await ensureWindowsServerEvaluationLicense("windows", deps);
+        expect(result).toEqual({ ok: true, reason: "non-windows-host" });
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+        expect(deps.promptYesNoImpl).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op for a linux-only target on Windows", async () => {
+        const deps = baseDeps();
+        expect(await ensureWindowsServerEvaluationLicense("linux", deps)).toEqual({ ok: true, reason: "linux-target" });
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when the selected profile is not windows-server", async () => {
+        const deps = baseDeps({ selectHyperVWindowsProfileImpl: () => "windows-11" });
+        expect(await ensureWindowsServerEvaluationLicense("windows", deps)).toEqual({ ok: true, reason: "not-windows-server-profile" });
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+    });
+
+    it("is a no-op when the evaluation receipt already exists (no prompt)", async () => {
+        const deps = baseDeps({ readReceiptImpl: () => ({ version: 2 }), promptYesNoImpl: vi.fn(async () => true) });
+        expect(await ensureWindowsServerEvaluationLicense("all", deps)).toEqual({ ok: true, reason: "already-accepted" });
+        expect(deps.promptYesNoImpl).not.toHaveBeenCalled();
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+    });
+
+    it("does not hang when acceptance is missing on a non-interactive run", async () => {
+        const deps = baseDeps({ isInteractive: false, promptYesNoImpl: vi.fn(async () => true) });
+        const result = await ensureWindowsServerEvaluationLicense("windows", deps);
+        expect(result).toEqual({ ok: false, reason: "license-required-non-interactive" });
+        expect(deps.promptYesNoImpl).not.toHaveBeenCalled();
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+    });
+
+    it("records acceptance once when the user answers yes interactively", async () => {
+        const deps = baseDeps({ promptYesNoImpl: async () => true });
+        const result = await ensureWindowsServerEvaluationLicense("windows", deps);
+        expect(result).toEqual({ ok: true, reason: "accepted-now" });
+        expect(deps.acceptLicenseImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it("declines without recording acceptance when the user answers no", async () => {
+        const deps = baseDeps({ promptYesNoImpl: async () => false });
+        const result = await ensureWindowsServerEvaluationLicense("windows", deps);
+        expect(result).toEqual({ ok: false, reason: "license-declined" });
+        expect(deps.acceptLicenseImpl).not.toHaveBeenCalled();
+    });
+
+    it("stops runHyperVTests before the provider run when the license gate is not ok", async () => {
+        const runSupervisedProcessImpl = vi.fn(async () => ({ status: 0 }));
+        const status = await runHyperVTests("windows", {
+            buildLevel3ArtifactsImpl: () => 0,
+            ensureWindowsEvaluationLicenseImpl: async () => ({ ok: false, reason: "license-declined" }),
+            ensureHostBrokerReadyImpl: async () => 0,
+            runSupervisedProcessImpl,
+        });
+        expect(status).toBe(1);
+        expect(runSupervisedProcessImpl).not.toHaveBeenCalled();
     });
 });

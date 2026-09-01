@@ -310,6 +310,7 @@ export type HyperVSnapshotOptions = HyperVCommandOptions & {
     snapshotName: string;
     snapshotId?: string | null;
     force?: boolean;
+    startAfterRestore?: boolean;
 };
 
 export type HyperVGuestOptions = HyperVCommandOptions & {

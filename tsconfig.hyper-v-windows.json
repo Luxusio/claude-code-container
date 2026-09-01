@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/hyper-v-windows/**/*.ts"],
+  "exclude": []
+}

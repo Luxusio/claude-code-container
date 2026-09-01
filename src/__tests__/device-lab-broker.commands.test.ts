@@ -658,6 +658,10 @@ describe("device-lab host broker lifecycle commands", () => {
             createdAt: new Date().toISOString(),
         }));
         let vmState = "Off";
+        let vmExists = false;
+        let sameNameReplacementVmId: string | null = null;
+        let observedNativeDiskPath: string | null = diskPath;
+        let observedPassThroughDiskNumber: number | null = null;
         let snapshotExists = false;
         let orphanRecoveryCalls = 0;
         let preparedSourcePath = "";
@@ -670,6 +674,47 @@ describe("device-lab host broker lifecycle commands", () => {
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
+            const nativeRequest = script.includes("Write-HyperVWindowsSuccess") && command.input
+                ? JSON.parse(command.input) as { operation: string; selector?: { kind: string } }
+                : null;
+            if (nativeRequest) {
+                if (nativeRequest.operation === "Start-VM") vmState = "Running";
+                if (nativeRequest.operation === "Stop-VM") vmState = "Off";
+                if (nativeRequest.operation === "Remove-VM" && !deleteConfirmationFailure) vmExists = false;
+                const observedVmId = vmExists
+                    ? vmId
+                    : nativeRequest.operation === "Get-VM" && nativeRequest.selector?.kind === "name"
+                        ? sameNameReplacementVmId
+                        : null;
+                const items = nativeRequest.operation === "Get-VM"
+                    ? observedVmId ? [{
+                        id: observedVmId,
+                        name: vmName,
+                        state: vmState,
+                        status: "Operating normally",
+                        notes: `ccc-device-lab:${ownerId}:${deviceId}:${activeIncarnationId}`,
+                        uptimeMilliseconds: 42,
+                        generation: 2,
+                        checkpointType: checkpointPolicy,
+                    }] : []
+                    : nativeRequest.operation === "Get-VMHardDiskDrive"
+                    ? vmExists && (observedNativeDiskPath !== null || observedPassThroughDiskNumber !== null) ? [{
+                        vmId,
+                        vmName,
+                        path: observedNativeDiskPath,
+                        controllerType: "SCSI",
+                        controllerNumber: 0,
+                        controllerLocation: 0,
+                        diskNumber: observedPassThroughDiskNumber,
+                    }] : []
+                    : [];
+                return {
+                    ...command,
+                    status: 0,
+                    stdout: JSON.stringify({ schemaVersion: 1, operation: nativeRequest.operation, ok: true, items }),
+                    stderr: "",
+                };
+            }
             if (script.includes("Start-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
             const deleting = script.includes("Remove-VM -VM $Vm");
@@ -722,7 +767,11 @@ describe("device-lab host broker lifecycle commands", () => {
             }
             const orphanRecovery = script.includes("hyper-v-orphan-vm-ownership-mismatch");
             const vmCreate = script.includes("New-VM");
-            if (vmCreate) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+            if (vmCreate) {
+                vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+                vmExists = true;
+                observedNativeDiskPath = diskPath;
+            }
             if (orphanRecovery) orphanRecoveryCalls += 1;
             const guestProvision = script.includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'");
             const guestReady = script.includes("hyper-v-guest-ready-timeout");
@@ -747,6 +796,7 @@ describe("device-lab host broker lifecycle commands", () => {
                 mkdirSync(dirname(credentialPath), { recursive: true });
                 writeFileSync(credentialPath, "fake-dpapi-credential");
             }
+            if (deleting && !deleteConfirmationFailure) vmExists = false;
             return {
                 mode: command.mode,
                 provider: command.provider,
@@ -870,8 +920,57 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeStaleLifecycle);
             const status = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
             expect(status.status, JSON.stringify(await status.clone().json())).toBe(200);
-            expect(await status.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ vmId, runtimeState: "Running" }) }) }));
+            expect(await status.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ vmId, runtimeState: "Off" }) }) }));
+            expect(commandRunner.mock.calls.slice(callsBeforeStaleLifecycle).some(([command]) => {
+                if (!command.input) return false;
+                try {
+                    return JSON.parse(command.input).operation === "Stop-VM";
+                } catch {
+                    return false;
+                }
+            })).toBe(true);
             expect(existsSync(operationPath)).toBe(false);
+
+            observedNativeDiskPath = null;
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const zeroDiskResidue = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
+            expect(zeroDiskResidue.status, JSON.stringify(await zeroDiskResidue.clone().json())).toBe(200);
+            expect(existsSync(operationPath)).toBe(false);
+
+            observedNativeDiskPath = join(cwd, "foreign-attached.vhdx");
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_stop", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const foreignDiskResidue = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
+            expect(foreignDiskResidue.status).toBe(502);
+            expect(await foreignDiskResidue.json()).toEqual(expect.objectContaining({ error: "hyper-v-state-reconciliation-invalid-result" }));
+            expect(existsSync(operationPath)).toBe(true);
+            rmSync(operationPath, { force: true });
+
+            observedNativeDiskPath = null;
+            observedPassThroughDiskNumber = 7;
+            writeFileSync(operationPath, JSON.stringify({ version: 1, operationId: snapshotId, ownerId, deviceId, incarnationId, command: "device_delete", vmId, vmName, diskPath, startedAt: new Date().toISOString() }));
+            const removeCallsBeforePassThroughConflict = commandRunner.mock.calls.filter(([command]) => {
+                if (!command.input) return false;
+                try {
+                    return JSON.parse(command.input).operation === "Remove-VM";
+                } catch {
+                    return false;
+                }
+            }).length;
+            const passThroughDiskResidue = await invoke({ backend: "windows-vm", command: "device_status", deviceId });
+            expect(passThroughDiskResidue.status).toBe(502);
+            expect(await passThroughDiskResidue.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-invalid-result" }));
+            expect(existsSync(operationPath)).toBe(true);
+            expect(commandRunner.mock.calls.filter(([command]) => {
+                if (!command.input) return false;
+                try {
+                    return JSON.parse(command.input).operation === "Remove-VM";
+                } catch {
+                    return false;
+                }
+            })).toHaveLength(removeCallsBeforePassThroughConflict);
+            rmSync(operationPath, { force: true });
+            observedPassThroughDiskNumber = null;
+            observedNativeDiskPath = diskPath;
 
             const guestExec = await invokeTool("device_exec", { command: "Write-Output guest-ok" });
             expect(guestExec.status).toBe(200);
@@ -1001,6 +1100,22 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(privateRoot)).toBe(true);
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ id: string }> }).devices).toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
 
+            sameNameReplacementVmId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+            const cleanupCallsBeforeIdentityConflict = commandRunner.mock.calls.filter(
+                ([command]) => isHyperVNetworkCleanupScript(providerScript(command)),
+            ).length;
+            const sameNameIdentityConflict = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
+            expect(sameNameIdentityConflict.status).toBe(502);
+            expect(await sameNameIdentityConflict.json()).toEqual(expect.objectContaining({ error: "hyper-v-delete-reconciliation-invalid-result" }));
+            expect(existsSync(operationPath)).toBe(true);
+            expect(existsSync(privateRoot)).toBe(true);
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ id: string }> }).devices)
+                .toEqual(expect.arrayContaining([expect.objectContaining({ id: deviceId })]));
+            expect(commandRunner.mock.calls.filter(
+                ([command]) => isHyperVNetworkCleanupScript(providerScript(command)),
+            )).toHaveLength(cleanupCallsBeforeIdentityConflict);
+            sameNameReplacementVmId = null;
+
             writeFileSync(networkStatePath, validNetworkState);
             networkCleanupFailure = "nonzero";
             const providerCleanupFailed = await invoke({ backend: "windows-vm", command: "device_delete", deviceId, incarnationId });
@@ -1047,6 +1162,7 @@ describe("device-lab host broker lifecycle commands", () => {
             const recreated = await invoke({ backend: "windows-vm", command: "device_create", deviceId, name: "Windows VM E2E cached", profile: "windows-11", memoryMb: 4096, cpus: 2 });
             expect(recreated.status).toBe(200);
             const recreatedIncarnationId = (await recreated.clone().json()).result.device.incarnationId as string;
+            activeIncarnationId = recreatedIncarnationId;
             const stateFile = join(backendRoot(ownerId, "windows-vm"), "devices.json");
             const canonicalState = JSON.parse(readFileSync(stateFile, "utf8"));
             writeFileSync(stateFile, JSON.stringify({ devices: canonicalState.devices.map((device) => ({ ...device, diskPath: join(cwd, "foreign.vhdx") })) }));
@@ -1078,7 +1194,7 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const [command] of snapshotRepairCalls) {
                 expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
-            expect(commandRunner).toHaveBeenCalledTimes(51);
+            expect(commandRunner).toHaveBeenCalledTimes(90);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

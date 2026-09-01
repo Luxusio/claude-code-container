@@ -410,9 +410,11 @@ export function brokerToolFailureEvidence(value: any) {
         ? boot.diagnostic
         : null;
     const sanitizeController = (candidate: unknown) => ["ide", "scsi", ""].includes(String(candidate)) ? String(candidate) : undefined;
+    const detail = boundedBrokerDiagnosticCode(body?.detail) || boundedBrokerDiagnosticCode(value?.detail);
     const evidence: Record<string, unknown> = {
         error: boundedBrokerDiagnosticCode(value?.error),
         bodyError: boundedBrokerDiagnosticCode(body?.error),
+        ...(detail ? { detail } : {}),
     };
     if (lastAttempt && typeof lastAttempt === "object") {
         evidence.transport = {
@@ -625,13 +627,11 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
                 Number.isSafeInteger(bootObservation.heartbeatPrimaryStatus) ? bootObservation.heartbeatPrimaryStatus : null,
                 Number.isSafeInteger(bootObservation.heartbeatSecondaryStatus) ? bootObservation.heartbeatSecondaryStatus : null,
             ] : undefined,
-            disks: bootObservation && Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
-            dvds: bootObservation && Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
-            controllers: bootObservation && Array.isArray(bootObservation.hardDiskControllers)
-                ? bootObservation.hardDiskControllers.filter((candidate: unknown) => ["ide", "scsi"].includes(String(candidate))).slice(0, 3)
-                : undefined,
-            boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
-                ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
+            // Actionable guest-readiness fields first so they survive the 511-char message cap
+            // (bulky disk/boot topology arrays follow and may be truncated without losing the cause).
+            diagnosticComplete: bootObservation && typeof bootObservation.diagnosticComplete === "boolean" ? bootObservation.diagnosticComplete : undefined,
+            diagnosticErrors: bootObservation && Array.isArray(bootObservation.diagnosticErrors)
+                ? bootObservation.diagnosticErrors.map(boundedBrokerDiagnosticCode).filter(Boolean).slice(0, 8)
                 : undefined,
             services: bootObservation && Array.isArray(bootObservation.integrationServices)
                 ? bootObservation.integrationServices.slice(0, 8).map((candidate: unknown) => {
@@ -643,9 +643,13 @@ export function formatBrokerToolFailure(value: any, fallback: string) {
                         : null;
                 }).filter(Boolean)
                 : undefined,
-            diagnosticComplete: bootObservation && typeof bootObservation.diagnosticComplete === "boolean" ? bootObservation.diagnosticComplete : undefined,
-            diagnosticErrors: bootObservation && Array.isArray(bootObservation.diagnosticErrors)
-                ? bootObservation.diagnosticErrors.map(boundedBrokerDiagnosticCode).filter(Boolean).slice(0, 8)
+            disks: bootObservation && Number.isSafeInteger(bootObservation.hardDiskCount) ? bootObservation.hardDiskCount : undefined,
+            dvds: bootObservation && Number.isSafeInteger(bootObservation.dvdCount) ? bootObservation.dvdCount : undefined,
+            controllers: bootObservation && Array.isArray(bootObservation.hardDiskControllers)
+                ? bootObservation.hardDiskControllers.filter((candidate: unknown) => ["ide", "scsi"].includes(String(candidate))).slice(0, 3)
+                : undefined,
+            boot: bootObservation && Array.isArray(bootObservation.bootDeviceTypes)
+                ? bootObservation.bootDeviceTypes.filter((candidate: unknown) => ["hard-disk", "dvd", "network", "unknown"].includes(String(candidate))).slice(0, 3)
                 : undefined,
         })
         : "";
