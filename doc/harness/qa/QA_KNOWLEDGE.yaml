@@ -1,0 +1,60 @@
+- area: hyper-v-command-builders
+  discovered: 2026-08-25
+  notes: >
+    hyperVDeleteCommand/hyperVRecoverOrphanCommand return { executable, args }
+    where args[8] is a base64 utf16le PowerShell -EncodedCommand payload. To
+    inspect the generated script: Buffer.from(args[args.length-1],'base64').toString('utf16le').
+    Identity guards (src/host-control/hyper-v/core.ts:14-16) must be satisfied to
+    render: OWNER_ID_PATTERN=^[a-f0-9]{16}$, DEVICE_ID_PATTERN=[A-Za-z0-9._:-]{1,128},
+    INCARNATION_ID_PATTERN=^[a-f0-9]{32}$, and vmName MUST equal
+    hyperVVmName(ownerId,deviceId,incarnationId). Valid test fixtures:
+    ownerId=0123456789abcdef deviceId=windows-ci-01 incarnation=1111...(x32).
+  commands:
+    - "npm run test:hyper-v:static  # contracts PASS; pwsh parser SKIPs when PowerShell absent (exit 0)"
+    - "npx vitest run src/__tests__/device-lab-hyper-v-provider.test.ts src/__tests__/device-lab-hyper-v-public-response.test.ts src/__tests__/device-lab-hyper-v-linux-broker.test.ts"
+  env_notes: >
+    No pwsh/Hyper-V in Linux container: native PowerShell parser SKIPs, and real
+    VM delete/residue E2E is hardware-gated (Windows Hyper-V host / Windows CI only).
+
+# --- appended by qa-cli 2026-08-25 (TASK__fix-hyper-v-network-switch-teardown-identity) ---
+- topic: hyper-v-powershell-validation-skips-in-container
+  note: 'npm run build runs test:hyper-v:powershell which prints "SKIP Hyper-V PowerShell parser: PowerShell unavailable" in the Linux container; test:hyper-v:contracts (validate-hyper-v-contracts.ts) still runs and must PASS. Real Hyper-V E2E is Windows-hardware only.'
+  discovered: 2026-08-25
+- topic: cli-version-stamp
+  note: "dist/utils.js ships __CLI_VERSION__ placeholder replaced by package.json version during npm run build; verify with grep -o CLI_VERSION and confirm no leftover __CLI_VERSION__."
+  discovered: 2026-08-25
+- topic: dist-guard-grep-escaping
+  note: "Compiled dist/host-control/hyper-v/host.js keeps PowerShell as JS string literals; use grep -F fixed-string with literal $ for guard assertions. Plain grep patterns with $ can miscount."
+  discovered: 2026-08-25
+- discovered: 2026-08-26
+  area: hyper-v-diagnostics
+  note: >
+    `npm run build` runs test:hyper-v:powershell which SKIPs when PowerShell is
+    unavailable ("SKIP Hyper-V PowerShell parser: PowerShell unavailable"); this
+    is expected on Linux hosts and does not fail the build (exit 0).
+  fixture: scripts/validate-hyper-v-powershell.mjs
+- discovered: 2026-08-26
+  area: hyper-v-diagnostics
+  note: >
+    Provider diagnostic allow-list completeness check: enumerate thrown codes with
+    `grep -rhoE "throw [\"'](hyper-v-[a-z0-9-]+)" scripts --include=*.ps1 --include=*.psm1`
+    and cross-check against REDACTED_PROVIDER_DIAGNOSTIC_CODES in
+    src/device-lab/broker/hyper-v/public-response.ts. 15 codes thrown across scripts.
+- discovered: 2026-08-27
+  topic: hyper-v-powershell-parser-available-on-this-host
+  note: >-
+    A real pwsh (PowerShell 7.4.6) binary is available at
+    /tmp/claude-1001/-project-claude-code-container-e60025dac1cf/f689d932-7aa7-4cd6-97da-48cc085c31e9/scratchpad/ps/pwsh.
+    Prepend its dir to PATH to make `npm run test:hyper-v:powershell` actually PARSE
+    (PASS files=10) instead of SKIP. Assembled Hyper-V commands are base64 UTF-16LE
+    in args after -EncodedCommand; decode with Buffer.from(x,'base64').toString('utf16le')
+    then [System.Management.Automation.Language.Parser]::ParseFile to get AST error count.
+    Building command objects needs valid identities: ownerId hex, incarnationId 32-hex,
+    vmName === hyperVVmName(ownerId,deviceId,incarnationId), vmId a GUID.
+- discovered: 2026-08-27
+  topic: linux-vm-device_snapshot_restore-has-no-unit-coverage
+  note: >-
+    device-lab-hyper-v-linux-broker.test.ts exercises device_snapshot_create/delete but
+    never invokes device_snapshot_restore for linux-vm, so the broker post-restore SSH
+    readiness-poll branch (records status "running"/bootReady) is not dynamically tested.
+    Windows restore (status "stopped") is covered in device-lab-broker.commands.test.ts:968-970.
