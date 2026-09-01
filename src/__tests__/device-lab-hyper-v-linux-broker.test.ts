@@ -17,6 +17,10 @@ import {
 } from "../device-lab-broker.js";
 import { deviceLabOwnerId } from "../device-lab-owner.js";
 import { HYPER_V_IMAGE_CATALOG } from "../device-lab/hyper-v-images.js";
+import {
+    HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP,
+    type HyperVWindowsExecutionRequest,
+} from "../hyper-v-windows/index.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 
 function providerScript(command: { args?: string[]; input?: string }): string {
@@ -36,6 +40,22 @@ function providerScript(command: { args?: string[]; input?: string }): string {
         return Buffer.from(command.input.trim(), "base64").toString("utf8");
     }
     return encodedCommand;
+}
+
+function hyperVWindowsOperationRequest(command: { args?: string[]; input?: string }): HyperVWindowsExecutionRequest | null {
+    if (command.args?.at(-1) !== HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP || typeof command.input !== "string") return null;
+    const envelope = JSON.parse(Buffer.from(command.input, "base64").toString("utf8")) as { script?: unknown; input?: unknown };
+    expect(envelope.script).toEqual(expect.stringContaining("$global:CccHyperVJsonInput"));
+    expect(typeof envelope.input).toBe("string");
+    return JSON.parse(String(envelope.input)) as HyperVWindowsExecutionRequest;
+}
+
+function hyperVWindowsOperationSuccess(operation: HyperVWindowsExecutionRequest["operation"], items: readonly unknown[] = []) {
+    return {
+        status: 0,
+        stdout: JSON.stringify({ schemaVersion: 1, operation, ok: true, items }),
+        stderr: "",
+    };
 }
 
 function powerShellString(script: string, variable: string): string {
@@ -1821,6 +1841,8 @@ describe("device-lab Hyper-V broker", () => {
         const expectedNetworkAddress = `172.29.0.${10 + (createHash("sha256").update(`${ownerId}\0${deviceId}\0address`).digest().readUInt32BE(0) % 241)}`;
         writeFileSync(uploadPath, "upload");
         let vmState = "Off";
+        let vmExists = false;
+        let activeIncarnationId: string | undefined;
         let bootDiagnosticState: string | null = null;
         let bootDiagnosticFailure: "command" | "invalid" | "identity" | null = null;
         let snapshotExists = false;
@@ -1847,7 +1869,7 @@ describe("device-lab Hyper-V broker", () => {
         let providerLifecycleFailure = false;
         const rebootScripts: string[] = [];
 
-        const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[] }) => {
+        const commandRunner = vi.fn((command: { mode: string; provider: string; executable?: string; args?: string[]; input?: string }) => {
             if (command.provider === "hyper-v-ssh") {
                 const ready = command.args?.at(-1)?.includes("ccc-hyper-v-linux-ready");
                 const target = command.args?.at(-2) || "";
@@ -1892,6 +1914,50 @@ describe("device-lab Hyper-V broker", () => {
                 if (scpFailure === (download ? "download" : "upload")) return { ...command, status: 1, stdout: "", stderr: "scp failed" };
                 return { ...command, status: 0, stdout: "", stderr: "" };
             }
+            const operationRequest = hyperVWindowsOperationRequest(command);
+            if (operationRequest) {
+                const virtualMachine = {
+                    id: vmId,
+                    name: vmName,
+                    state: vmState,
+                    status: "Operating normally",
+                    notes: `ccc-device-lab:${ownerId}:${deviceId}:${activeIncarnationId || "missing-incarnation"}`,
+                    uptimeMilliseconds: vmState === "Running" ? 1000 : 0,
+                    generation: HYPER_V_IMAGE_CATALOG["ubuntu-lts"].generation,
+                    checkpointType: "ProductionOnly",
+                };
+                if (operationRequest.operation === "Get-VM") {
+                    const selectorMatches = operationRequest.selector.kind === "id"
+                        ? operationRequest.selector.id.toLowerCase() === vmId
+                        : operationRequest.selector.name === vmName;
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists && selectorMatches ? [virtualMachine] : []) };
+                }
+                if (operationRequest.operation === "Get-VMHardDiskDrive") {
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists ? [{
+                        vmId,
+                        vmName,
+                        path: diskPath,
+                        controllerType: "SCSI",
+                        controllerNumber: 0,
+                        controllerLocation: 0,
+                        diskNumber: null,
+                    }] : []) };
+                }
+                if (operationRequest.operation === "Get-VMDvdDrive") {
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, vmExists ? [{
+                        vmId,
+                        vmName,
+                        path: seedDiskPath,
+                        controllerType: "SCSI",
+                        controllerNumber: 0,
+                        controllerLocation: 1,
+                    }] : []) };
+                }
+                if (operationRequest.operation === "Start-VM") vmState = "Running";
+                if (operationRequest.operation === "Stop-VM") vmState = "Off";
+                if (operationRequest.operation === "Remove-VM") vmExists = false;
+                return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation) };
+            }
             const script = providerScript(command);
             if (script.includes("Get-CccLinuxBootstrapNetworkResult $Vm")) {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, addresses: bootstrapAddressAvailable ? bootstrapAddresses : [] }), stderr: "" };
@@ -1917,7 +1983,10 @@ describe("device-lab Hyper-V broker", () => {
                 pendingElevatedNetwork = "cleanup";
                 return { ...command, status: 1, stdout: "", stderr: "hyper-v-network-elevation-required" };
             }
-            if (script.includes("New-VM @VmArgs")) vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+            if (script.includes("New-VM @VmArgs")) {
+                vmName = script.match(/\$VmName = '((?:''|[^'])*)'/)?.[1]?.replaceAll("''", "'") || "";
+                vmExists = true;
+            }
             const imagePrepare = script.includes("hyper-v-base-image-profile-conflict");
             const imageAcquire = script.includes("function Save-BoundedDownload");
             const imageSetup = imagePrepare || imageAcquire;
@@ -1949,6 +2018,7 @@ describe("device-lab Hyper-V broker", () => {
             if (script.includes("Restart-VM")) rebootScripts.push(script);
             if (script.includes("Start-VM") || script.includes("Restart-VM")) vmState = "Running";
             if (script.includes("Stop-VM")) vmState = "Off";
+            if (deleting) vmExists = false;
             if (snapshotCreate) snapshotExists = true;
             if (snapshotDelete) snapshotExists = false;
             if (imageSetup) {
@@ -1994,7 +2064,6 @@ describe("device-lab Hyper-V broker", () => {
         const endpoint = ownerRpcEndpoint(baseUrl, ownerId);
         const headers = ownerRpcHeaders(ownerId);
         const invoke = (params: Record<string, unknown>) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.command.invoke", params }) });
-        let activeIncarnationId: string | undefined;
         const tool = (name: string, params: Record<string, unknown> = {}) => fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.device.tool.invoke", params: { tool: name, backend: "linux-vm", deviceId, ...(activeIncarnationId ? { incarnationId: activeIncarnationId } : {}), ...params } }) });
         try {
             const backends = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify({ method: "broker.backends" }) });
@@ -2078,6 +2147,7 @@ describe("device-lab Hyper-V broker", () => {
             const diagnosticFailure = await invoke({ backend: "linux-vm", command: "device_start", deviceId, incarnationId: activeIncarnationId, waitForBoot: true, bootTimeoutMs: 1000 });
             expect(diagnosticFailure.status).toBe(502);
             const diagnosticFailureBody = await diagnosticFailure.json();
+            expect(diagnosticFailureBody.result, JSON.stringify(diagnosticFailureBody)).toBeDefined();
             expect(diagnosticFailureBody.result.boot).toEqual(expect.objectContaining({
                 ready: false,
                 provider: "hyper-v-ssh",
