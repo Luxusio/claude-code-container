@@ -134,9 +134,12 @@ it reconciles checkpoint state across several cmdlets rather than issuing one
 native primitive, so it does not fit the low-level contract.
 
 Each slice moves consumer policy into the Device Lab adapter rather than into the
-library. Slice 1 moved owner-scoped checkpoint naming, ownership fencing,
-checkpoint-policy assertions, and restore stop/start sequencing out of generated
-PowerShell and into `src/device-lab/broker/hyper-v/snapshots.ts`.
+library. Slice 1 moved ownership fencing, delete confirmation by observation, and
+restore stop/start sequencing out of generated PowerShell and into
+`src/device-lab/broker/hyper-v/snapshots.ts`. Owner-scoped checkpoint naming
+(`hyperVSnapshotName`) and the checkpoint-policy assertion stay in the broker
+preflight in `src/device-lab-broker.ts`, where they already were; the adapter
+receives the resolved provider name and never derives it.
 
 Each slice also costs provider round trips, because the library issues one
 primitive per call where a generated script could batch several. Slice 1 raised
