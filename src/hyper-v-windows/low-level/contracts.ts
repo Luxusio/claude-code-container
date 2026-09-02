@@ -2,14 +2,24 @@ export const HYPER_V_WINDOWS_OPERATIONS = [
     "Get-VM",
     "Get-VMHardDiskDrive",
     "Get-VMDvdDrive",
+    "Get-VMSnapshot",
     "Start-VM",
     "Stop-VM",
     "Remove-VM",
+    "Checkpoint-VM",
+    "Remove-VMSnapshot",
+    "Restore-VMSnapshot",
 ] as const;
 
 export type HyperVWindowsOperation = typeof HYPER_V_WINDOWS_OPERATIONS[number];
 
 export type HyperVVirtualMachineSelector =
+    | { readonly kind: "id"; readonly id: string }
+    | { readonly kind: "name"; readonly name: string };
+
+// Snapshots are addressed the same way virtual machines are: by native id or by native name.
+// Consumer naming conventions stay outside this library.
+export type HyperVSnapshotSelector =
     | { readonly kind: "id"; readonly id: string }
     | { readonly kind: "name"; readonly name: string };
 
@@ -43,6 +53,17 @@ export type HyperVDvdDrive = {
     readonly controllerLocation: number;
 };
 
+export type HyperVVirtualMachineSnapshot = {
+    readonly id: string;
+    readonly name: string;
+    readonly vmId: string;
+    readonly vmName: string;
+    readonly snapshotType: string;
+    readonly parentSnapshotId: string | null;
+    readonly parentSnapshotName: string | null;
+    readonly creationTimeMilliseconds: number;
+};
+
 type HyperVWindowsExecutionRequestBase<Operation extends HyperVWindowsOperation> = {
     readonly schemaVersion: 1;
     readonly operation: Operation;
@@ -53,6 +74,7 @@ export type HyperVWindowsExecutionRequest =
     | HyperVWindowsExecutionRequestBase<"Get-VM">
     | HyperVWindowsExecutionRequestBase<"Get-VMHardDiskDrive">
     | HyperVWindowsExecutionRequestBase<"Get-VMDvdDrive">
+    | HyperVWindowsExecutionRequestBase<"Get-VMSnapshot">
     | HyperVWindowsExecutionRequestBase<"Start-VM">
     | (HyperVWindowsExecutionRequestBase<"Stop-VM"> & {
         readonly mode: "shutdown" | "turn-off";
@@ -60,6 +82,16 @@ export type HyperVWindowsExecutionRequest =
     })
     | (HyperVWindowsExecutionRequestBase<"Remove-VM"> & {
         readonly force: boolean;
+    })
+    | (HyperVWindowsExecutionRequestBase<"Checkpoint-VM"> & {
+        readonly snapshotName: string;
+    })
+    | (HyperVWindowsExecutionRequestBase<"Remove-VMSnapshot"> & {
+        readonly snapshot: HyperVSnapshotSelector;
+        readonly includeDescendants: boolean;
+    })
+    | (HyperVWindowsExecutionRequestBase<"Restore-VMSnapshot"> & {
+        readonly snapshot: HyperVSnapshotSelector;
     });
 
 export type HyperVWindowsExecutionResult = {
@@ -104,6 +136,23 @@ export type HyperVRemoveVirtualMachineRequest = {
     readonly force?: boolean;
 };
 
+export type HyperVCheckpointVirtualMachineRequest = {
+    readonly selector: HyperVVirtualMachineSelector;
+    readonly snapshotName: string;
+};
+
+export type HyperVRemoveSnapshotRequest = {
+    readonly selector: HyperVVirtualMachineSelector;
+    readonly snapshot: HyperVSnapshotSelector;
+    // Native Remove-VMSnapshot removes only the named checkpoint unless -IncludeAllChildSnapshots.
+    readonly includeDescendants?: boolean;
+};
+
+export type HyperVRestoreSnapshotRequest = {
+    readonly selector: HyperVVirtualMachineSelector;
+    readonly snapshot: HyperVSnapshotSelector;
+};
+
 export type HyperVWindowsClient = {
     getVM(
         selector: HyperVVirtualMachineSelector,
@@ -127,6 +176,23 @@ export type HyperVWindowsClient = {
     ): Promise<void>;
     removeVM(
         request: HyperVRemoveVirtualMachineRequest,
+        options?: HyperVWindowsCallOptions,
+    ): Promise<void>;
+    getVMSnapshots(
+        selector: HyperVVirtualMachineSelector,
+        options?: HyperVWindowsCallOptions,
+    ): Promise<readonly HyperVVirtualMachineSnapshot[]>;
+    // Returns the checkpoint the host actually created, so the caller never has to re-read by name.
+    checkpointVM(
+        request: HyperVCheckpointVirtualMachineRequest,
+        options?: HyperVWindowsCallOptions,
+    ): Promise<HyperVVirtualMachineSnapshot>;
+    removeVMSnapshot(
+        request: HyperVRemoveSnapshotRequest,
+        options?: HyperVWindowsCallOptions,
+    ): Promise<void>;
+    restoreVMSnapshot(
+        request: HyperVRestoreSnapshotRequest,
         options?: HyperVWindowsCallOptions,
     ): Promise<void>;
 };

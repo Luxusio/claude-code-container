@@ -281,8 +281,18 @@ describe("Hyper-V Windows PowerShell transport", () => {
         expect(source).not.toContain("CommandNotFoundException");
         expect(source).toContain("Get-VMHardDiskDrive -VM $VirtualMachine -ErrorAction Stop");
         expect(source).toContain("Get-VMDvdDrive -VM $VirtualMachine -ErrorAction Stop");
+        // Every operation except Get-VM itself resolves exactly one virtual machine first.
         expect(source.match(/\$VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine \$VirtualMachines/g))
-            .toHaveLength(5);
+            .toHaveLength(9);
+        expect(source).toContain("Get-VMSnapshot -VM $VirtualMachine -ErrorAction Stop");
+        expect(source).toContain("Checkpoint-VM -VM $VirtualMachine -SnapshotName $SnapshotName -Passthru -ErrorAction Stop");
+        expect(source).toContain("Remove-VMSnapshot -VMSnapshot $Snapshot -Confirm:$false -ErrorAction Stop");
+        expect(source).toContain("Remove-VMSnapshot -VMSnapshot $Snapshot -IncludeAllChildSnapshots -Confirm:$false -ErrorAction Stop");
+        expect(source).toContain("Restore-VMSnapshot -VMSnapshot $Snapshot -Confirm:$false -ErrorAction Stop");
+        // Snapshot resolution is exact-match only, with no consumer naming convention baked in.
+        expect(source).toContain('if ($Matched.Count -eq 0) { throw "snapshot-not-found" }');
+        expect(source).toContain('if ($Matched.Count -ne 1) { throw "snapshot-selector-ambiguous" }');
+        expect(source).not.toContain("ccc-");
         expect(HYPER_V_POWERSHELL_MANIFEST.operations["windows-operation"].script).toBe(basename(fileRequest.scriptPath));
         expect(HYPER_V_POWERSHELL_MANIFEST.assets[HYPER_V_WINDOWS_POWERSHELL_ASSET.name].sha256)
             .toBe(HYPER_V_WINDOWS_POWERSHELL_ASSET.sha256);

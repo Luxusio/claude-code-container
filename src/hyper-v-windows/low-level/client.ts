@@ -1,11 +1,16 @@
 import type {
+    HyperVCheckpointVirtualMachineRequest,
     HyperVDvdDrive,
     HyperVHardDiskDrive,
+    HyperVRemoveSnapshotRequest,
     HyperVRemoveVirtualMachineRequest,
+    HyperVRestoreSnapshotRequest,
+    HyperVSnapshotSelector,
     HyperVStartVirtualMachineRequest,
     HyperVStopVirtualMachineRequest,
     HyperVVirtualMachine,
     HyperVVirtualMachineSelector,
+    HyperVVirtualMachineSnapshot,
     HyperVWindowsCallOptions,
     HyperVWindowsClient,
     HyperVWindowsExecutionRequest,
@@ -21,6 +26,8 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const EXECUTION_TIMEOUT_MILLISECONDS = 120 * 1000;
 const MAX_NAME_LENGTH = 100;
 const MAX_NATIVE_STRING_LENGTH = 32 * 1024;
+// The wildcard characters the Hyper-V cmdlets treat as patterns rather than literals.
+const NATIVE_NAME_WILDCARDS = ["*", "?", "[", "]"];
 
 type SuccessEnvelope = {
     schemaVersion: 1;
@@ -168,6 +175,69 @@ function parseDvdDrive(value: unknown): HyperVDvdDrive | null {
     };
 }
 
+function parseSnapshot(value: unknown): HyperVVirtualMachineSnapshot | null {
+    const item = record(value);
+    if (!item || !hasExactKeys(item, [
+        "id", "name", "vmId", "vmName", "snapshotType",
+        "parentSnapshotId", "parentSnapshotName", "creationTimeMilliseconds",
+    ])) return null;
+    const id = canonicalGuid(item.id);
+    const vmId = canonicalGuid(item.vmId);
+    // A root checkpoint has no parent, so null is a real value here rather than a decode failure.
+    const parentSnapshotId = item.parentSnapshotId === null ? null : canonicalGuid(item.parentSnapshotId);
+    if (!id
+        || !vmId
+        || !boundedString(item.name, false)
+        || !boundedString(item.vmName, false)
+        || !boundedString(item.snapshotType, false)
+        || (item.parentSnapshotId !== null && !parentSnapshotId)
+        || (item.parentSnapshotName !== null && !boundedString(item.parentSnapshotName, false))
+        || !safeInteger(item.creationTimeMilliseconds)) return null;
+    return {
+        id,
+        name: item.name,
+        vmId,
+        vmName: item.vmName,
+        snapshotType: item.snapshotType,
+        parentSnapshotId,
+        parentSnapshotName: item.parentSnapshotName as string | null,
+        creationTimeMilliseconds: item.creationTimeMilliseconds,
+    };
+}
+
+// Snapshot names carry the same native restrictions as virtual machine names: non-empty, bounded,
+// no control characters, and no cmdlet wildcard characters.
+function validNativeName(value: unknown): value is string {
+    if (typeof value !== "string" || value.length === 0 || value.length > MAX_NAME_LENGTH) return false;
+    for (const character of value) {
+        const codePoint = character.codePointAt(0) ?? 0;
+        if (codePoint < 0x20) return false;
+        if (NATIVE_NAME_WILDCARDS.includes(character)) return false;
+    }
+    return true;
+}
+
+function normalizeSnapshotSelector(
+    operation: HyperVWindowsOperation,
+    selector: HyperVSnapshotSelector,
+): HyperVSnapshotSelector {
+    const candidate = record(selector);
+    if (!candidate) throw error("validation", operation, "snapshot-selector-invalid");
+    if (candidate.kind === "id") {
+        if (!hasExactKeys(candidate, ["kind", "id"])) throw error("validation", operation, "snapshot-selector-invalid");
+        if (typeof candidate.id !== "string" || !GUID_PATTERN.test(candidate.id)) {
+            throw error("validation", operation, "snapshot-selector-id-invalid");
+        }
+        return { kind: "id", id: candidate.id.toLowerCase() };
+    }
+    if (candidate.kind === "name") {
+        if (!hasExactKeys(candidate, ["kind", "name"])) throw error("validation", operation, "snapshot-selector-invalid");
+        if (!validNativeName(candidate.name)) throw error("validation", operation, "snapshot-selector-name-invalid");
+        return { kind: "name", name: candidate.name };
+    }
+    throw error("validation", operation, "snapshot-selector-kind-invalid");
+}
+
 function decodeEnvelope(
     operation: HyperVWindowsOperation,
     execution: HyperVWindowsExecutionResult,
@@ -244,6 +314,17 @@ function expectNoItems(operation: HyperVWindowsOperation, envelope: SuccessEnvel
     if (envelope.items.length !== 0) throw error("protocol", operation, "result-ambiguous");
 }
 
+function decodeSingleItem<T>(
+    operation: HyperVWindowsOperation,
+    envelope: SuccessEnvelope,
+    decoder: (value: unknown) => T | null,
+): T {
+    if (envelope.items.length !== 1) throw error("protocol", operation, "result-ambiguous");
+    const decoded = decoder(envelope.items[0]);
+    if (decoded === null) throw error("protocol", operation, "result-shape-invalid");
+    return decoded;
+}
+
 export function createHyperVWindowsClient(executor: HyperVWindowsExecutor): HyperVWindowsClient {
     return {
         async getVM(selector, options) {
@@ -309,6 +390,52 @@ export function createHyperVWindowsClient(executor: HyperVWindowsExecutor): Hype
                 operation,
                 selector: normalizeSelector(operation, request?.selector),
                 force: request.force ?? false,
+            }, options);
+            expectNoItems(operation, envelope);
+        },
+        async getVMSnapshots(selector, options) {
+            const operation = "Get-VMSnapshot";
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, selector),
+            }, options);
+            return decodeItems(operation, envelope, parseSnapshot);
+        },
+        async checkpointVM(request: HyperVCheckpointVirtualMachineRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Checkpoint-VM";
+            if (!request || !validNativeName(request.snapshotName)) {
+                throw error("validation", operation, "snapshot-name-invalid");
+            }
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, request.selector),
+                snapshotName: request.snapshotName,
+            }, options);
+            return decodeSingleItem(operation, envelope, parseSnapshot);
+        },
+        async removeVMSnapshot(request: HyperVRemoveSnapshotRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Remove-VMSnapshot";
+            if (request?.includeDescendants !== undefined && typeof request.includeDescendants !== "boolean") {
+                throw error("validation", operation, "include-descendants-invalid");
+            }
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, request?.selector),
+                snapshot: normalizeSnapshotSelector(operation, request.snapshot),
+                includeDescendants: request.includeDescendants ?? false,
+            }, options);
+            expectNoItems(operation, envelope);
+        },
+        async restoreVMSnapshot(request: HyperVRestoreSnapshotRequest, options?: HyperVWindowsCallOptions) {
+            const operation = "Restore-VMSnapshot";
+            const envelope = await execute(executor, {
+                schemaVersion: 1,
+                operation,
+                selector: normalizeSelector(operation, request?.selector),
+                snapshot: normalizeSnapshotSelector(operation, request?.snapshot),
             }, options);
             expectNoItems(operation, envelope);
         },

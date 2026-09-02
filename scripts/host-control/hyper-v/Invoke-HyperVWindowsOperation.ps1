@@ -96,6 +96,35 @@ function Assert-HyperVWindowsSingleVirtualMachine([object[]]$VirtualMachines) {
     return $VirtualMachines[0]
 }
 
+function Convert-HyperVWindowsSnapshot([object]$Snapshot) {
+    [ordered]@{
+        id = ([Guid]$Snapshot.Id).ToString("D").ToLowerInvariant()
+        name = [string]$Snapshot.Name
+        vmId = ([Guid]$Snapshot.VMId).ToString("D").ToLowerInvariant()
+        vmName = [string]$Snapshot.VMName
+        snapshotType = [string]$Snapshot.SnapshotType
+        parentSnapshotId = if ($null -eq $Snapshot.ParentSnapshotId) { $null } else { ([Guid]$Snapshot.ParentSnapshotId).ToString("D").ToLowerInvariant() }
+        parentSnapshotName = if ([string]::IsNullOrEmpty([string]$Snapshot.ParentSnapshotName)) { $null } else { [string]$Snapshot.ParentSnapshotName }
+        creationTimeMilliseconds = [long][Math]::Floor(([DateTimeOffset]$Snapshot.CreationTime).ToUnixTimeMilliseconds())
+    }
+}
+
+# Selector resolution for a checkpoint, mirroring the virtual machine selector: exact id or exact
+# name within the already-resolved VM. Consumer naming conventions stay outside this script.
+function Get-HyperVWindowsSnapshot([object]$VirtualMachine, [object]$Selector) {
+    $Snapshots = @(Hyper-V\Get-VMSnapshot -VM $VirtualMachine -ErrorAction Stop)
+    if ([string]$Selector.kind -eq "id") {
+        $ExpectedId = [Guid][string]$Selector.id
+        $Matched = @($Snapshots | Where-Object { [Guid]$_.Id -eq $ExpectedId })
+    } else {
+        $ExpectedName = [string]$Selector.name
+        $Matched = @($Snapshots | Where-Object { [string]$_.Name -eq $ExpectedName })
+    }
+    if ($Matched.Count -eq 0) { throw "snapshot-not-found" }
+    if ($Matched.Count -ne 1) { throw "snapshot-selector-ambiguous" }
+    return $Matched[0]
+}
+
 $Operation = "Get-VM"
 try {
     $RawRequest = [string]$global:CccHyperVJsonInput
@@ -103,11 +132,20 @@ try {
     $Request = $RawRequest | ConvertFrom-Json -ErrorAction Stop
     if ([int]$Request.schemaVersion -ne 1) { throw "request-schema-invalid" }
     $Operation = [string]$Request.operation
-    if ($Operation -notin @("Get-VM", "Get-VMHardDiskDrive", "Get-VMDvdDrive", "Start-VM", "Stop-VM", "Remove-VM")) {
+    if ($Operation -notin @(
+        "Get-VM", "Get-VMHardDiskDrive", "Get-VMDvdDrive", "Get-VMSnapshot",
+        "Start-VM", "Stop-VM", "Remove-VM",
+        "Checkpoint-VM", "Remove-VMSnapshot", "Restore-VMSnapshot"
+    )) {
         throw "operation-invalid"
     }
     if ($null -eq $Request.selector -or [string]$Request.selector.kind -notin @("id", "name")) {
         throw "selector-invalid"
+    }
+    if ($Operation -in @("Remove-VMSnapshot", "Restore-VMSnapshot")) {
+        if ($null -eq $Request.snapshot -or [string]$Request.snapshot.kind -notin @("id", "name")) {
+            throw "snapshot-selector-invalid"
+        }
     }
     Import-HyperVWindowsTrustedModule
 
@@ -165,6 +203,37 @@ try {
         "Remove-VM" {
             $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
             Hyper-V\Remove-VM -VM $VirtualMachine -Force:([bool]$Request.force) -ErrorAction Stop
+            Write-HyperVWindowsSuccess $Operation @()
+        }
+        "Get-VMSnapshot" {
+            $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+            $Items = @(Hyper-V\Get-VMSnapshot -VM $VirtualMachine -ErrorAction Stop | ForEach-Object {
+                Convert-HyperVWindowsSnapshot $_
+            })
+            Write-HyperVWindowsSuccess $Operation $Items
+        }
+        "Checkpoint-VM" {
+            $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+            $SnapshotName = [string]$Request.snapshotName
+            if ([string]::IsNullOrEmpty($SnapshotName)) { throw "snapshot-name-invalid" }
+            $Created = @(Hyper-V\Checkpoint-VM -VM $VirtualMachine -SnapshotName $SnapshotName -Passthru -ErrorAction Stop)
+            if ($Created.Count -ne 1) { throw "checkpoint-result-ambiguous" }
+            Write-HyperVWindowsSuccess $Operation @(Convert-HyperVWindowsSnapshot $Created[0])
+        }
+        "Remove-VMSnapshot" {
+            $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+            $Snapshot = Get-HyperVWindowsSnapshot $VirtualMachine $Request.snapshot
+            if ([bool]$Request.includeDescendants) {
+                Hyper-V\Remove-VMSnapshot -VMSnapshot $Snapshot -IncludeAllChildSnapshots -Confirm:$false -ErrorAction Stop
+            } else {
+                Hyper-V\Remove-VMSnapshot -VMSnapshot $Snapshot -Confirm:$false -ErrorAction Stop
+            }
+            Write-HyperVWindowsSuccess $Operation @()
+        }
+        "Restore-VMSnapshot" {
+            $VirtualMachine = Assert-HyperVWindowsSingleVirtualMachine $VirtualMachines
+            $Snapshot = Get-HyperVWindowsSnapshot $VirtualMachine $Request.snapshot
+            Hyper-V\Restore-VMSnapshot -VMSnapshot $Snapshot -Confirm:$false -ErrorAction Stop
             Write-HyperVWindowsSuccess $Operation @()
         }
     }
