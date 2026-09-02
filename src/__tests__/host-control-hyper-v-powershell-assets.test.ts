@@ -44,9 +44,8 @@ describe("Hyper-V PowerShell assets", () => {
         const diagnostic = hyperVPowerShellAssetPath("guest-boot-diagnostic");
         const root = realpathSync(dirname(bootstrap));
 
-        const snapshot = hyperVPowerShellAssetPath("snapshot-create");
         const snapshotRepair = hyperVPowerShellAssetPath("snapshot-repair");
-        for (const asset of [bootstrap, diagnostic, snapshot, snapshotRepair]) {
+        for (const asset of [bootstrap, diagnostic, snapshotRepair]) {
             expect(lstatSync(asset).isFile()).toBe(true);
             expect(relative(root, realpathSync(asset)).startsWith("..")).toBe(false);
             expect(readFileSync(asset, "utf8")).toContain("Read-CccJsonContract");
@@ -62,12 +61,13 @@ describe("Hyper-V PowerShell assets", () => {
         expect(JSON.parse(command.input!)).toEqual(request);
     });
 
-    it("builds the snapshot request from an owned VM contract", () => {
-        const request = hyperVSnapshotCreateContractV1(identity, "ccc-0123456789abcdef-baseline");
-        const command = hyperVPowerShellFileCommand("powershell.exe", "snapshot-create", request);
+    it("builds the snapshot repair request from an owned VM contract", () => {
+        // Checkpoint creation moved to the typed library, so New-Snapshot.ps1 is retired and
+        // snapshot-repair is the only remaining snapshot PowerShell asset.
+        const request = hyperVSnapshotRepairContractV1(identity, "ccc-0123456789abcdef-baseline", "Production");
+        const command = hyperVPowerShellFileCommand("powershell.exe", "snapshot-repair", request);
         const script = readFileSync(command.args.at(-1)!, "utf8");
 
-        expect(basename(command.args.at(-1)!)).toBe("New-Snapshot.ps1");
         expect(JSON.parse(command.input!)).toEqual(request);
         expect(script).toContain("$OwnedVmContract = [pscustomobject]@{");
         expect(script).toContain("Get-CccOwnedVm $OwnedVmContract");

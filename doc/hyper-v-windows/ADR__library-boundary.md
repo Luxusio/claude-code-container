@@ -47,9 +47,10 @@ in an adapter outside the library.
 
 ### Low-level responsibility
 
-Low-level maps one typed call to one target Hyper-V primitive for the initial VM
-lifecycle slice: `Get-VM`, `Get-VMHardDiskDrive`, `Get-VMDvdDrive`, `Start-VM`,
-`Stop-VM`, and `Remove-VM`. It owns request validation, a single transport
+Low-level maps one typed call to one target Hyper-V primitive. The initial VM
+lifecycle slice was `Get-VM`, `Get-VMHardDiskDrive`, `Get-VMDvdDrive`,
+`Start-VM`, `Stop-VM`, and `Remove-VM`; migration slice 1 added `Get-VMSnapshot`,
+`Checkpoint-VM`, `Remove-VMSnapshot`, and `Restore-VMSnapshot`. It owns request validation, a single transport
 invocation, strict bounded response decoding, native-faithful result types, and
 stable typed validation/transport/protocol/native errors. The PowerShell
 transport may perform one `Get-VM` selector-resolution read before exactly one
@@ -112,6 +113,34 @@ reconciliation, including delete reconciliation and the zero-attached-disk
 residue case, moves through the new boundary. Create, image, networking,
 snapshot, guest setup/transport, and ordinary lifecycle call sites may remain
 on legacy host-control helpers until migrated one native operation at a time.
+
+## Migration roadmap
+
+`src/host-control/hyper-v` is migrated into the library one slice at a time. The
+agreed scope is Hyper-V primitives plus VHD manipulation; image download/hash
+acquisition and the Linux SSH/cloud-init paths stay in host-control because they
+are not Hyper-V operations and would contradict this boundary.
+
+| Slice | Legacy commands retired | Low-level operations added |
+|---|---|---|
+| 1. Snapshots (done) | `hyperVSnapshotCreateCommand`, `hyperVSnapshotDeleteCommand`, `hyperVSnapshotRestoreCommand` | `Get-VMSnapshot`, `Checkpoint-VM`, `Remove-VMSnapshot`, `Restore-VMSnapshot` |
+| 2. Networking | `hyperVEnsureNetworkCommand`, `hyperVCleanupNetworkCommand`, `hyperVBootstrapNetworkCommand`, `hyperVBootstrapNetworkCleanupCommand`, `hyperVInspectNetworkAllocationsCommand` | `Get-VMSwitch`, `New-VMSwitch`, `Remove-VMSwitch`, NAT/IP reads |
+| 3. Creation and VHD | `hyperVCreateCommand`, the VHD portion of `hyperVPrepareBaseImageCommand` | `New-VM`, `Set-VMMemory`, `Set-VMProcessor`, `Set-VMFirmware`, `Add-VMHardDiskDrive`, `Add-VMDvdDrive`, `New-VHD`, `Convert-VHD`, `Optimize-VHD` |
+| 4. Guest PowerShell Direct | `hyperVGuestExecCommand`, `hyperVGuestUploadCommand`, `hyperVGuestDownloadCommand`, `hyperVGuestReadyCommand`, `hyperVGuestBootDiagnosticCommand`, `hyperVGuestProvisionCommand` | PowerShell Direct session primitives |
+| 5. Lifecycle residue | `hyperVStatusCommand`, `hyperVRebootCommand`, `hyperVDeleteCommand`, `hyperVRecoverOrphanCommand` | `Restart-VM`, plus adapter migration onto the existing operations |
+
+`hyperVSnapshotRepairCommand` deliberately stays a host-control PowerShell asset:
+it reconciles checkpoint state across several cmdlets rather than issuing one
+native primitive, so it does not fit the low-level contract.
+
+Each slice moves consumer policy into the Device Lab adapter rather than into the
+library. Slice 1 moved owner-scoped checkpoint naming, ownership fencing,
+checkpoint-policy assertions, and restore stop/start sequencing out of generated
+PowerShell and into `src/device-lab/broker/hyper-v/snapshots.ts`.
+
+Each slice also costs provider round trips, because the library issues one
+primitive per call where a generated script could batch several. Slice 1 raised
+the Windows lifecycle test's provider call count from 90 to 102.
 
 ## Packaging decision
 

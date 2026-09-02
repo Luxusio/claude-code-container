@@ -31,11 +31,8 @@ import {
     hyperVReadinessCommand,
     hyperVRebootCommand,
     hyperVRecoverOrphanCommand,
-    hyperVSnapshotCreateCommand,
-    hyperVSnapshotDeleteCommand,
     hyperVSnapshotName,
     hyperVSnapshotRepairCommand,
-    hyperVSnapshotRestoreCommand,
     hyperVSetupCommand,
     hyperVStartCommand,
     hyperVStatusCommand,
@@ -55,8 +52,6 @@ import {
     parseHyperVGuestTransferObservation,
     parseHyperVNetworkObservation,
     parseHyperVNetworkCleanupObservation,
-    parseHyperVSnapshotObservation,
-    parseHyperVSnapshotDeleteObservation,
     parseHyperVSnapshotRepairObservation,
     parseHyperVSetupObservation,
     parseHyperVVmObservation,
@@ -2122,26 +2117,14 @@ describe("Hyper-V provider adapter", () => {
         const snapshotId = "87654321-4321-4321-4321-cba987654321";
         const snapshotName = "before-install";
         const options = { executable: "powershell.exe", ownerId, deviceId, incarnationId, vmName, vmId, snapshotName };
-        const createScript = scriptOf(hyperVSnapshotCreateCommand(options, "Production"));
-        const snapshotModule = readFileSync(hyperVPowerShellAssetPath("snapshot-create").replace(/New-Snapshot\.ps1$/, "Ccc.HyperV.Snapshots.psm1"), "utf8");
+        const snapshotModule = readFileSync(hyperVPowerShellAssetPath("snapshot-repair").replace(/Repair-SnapshotState\.ps1$/, "Ccc.HyperV.Snapshots.psm1"), "utf8");
+        // Owner-scoped naming stays a host-control concept even though create/delete/restore now run
+        // through the typed library; the adapter feeds this name to Checkpoint-VM.
         expect(hyperVSnapshotName(ownerId, snapshotName)).toBe(`ccc-${ownerId}-${snapshotName}`);
-        expect(createScript).toContain("New-CccVmSnapshot");
-        expect(JSON.parse(hyperVSnapshotCreateCommand(options, "Production").input!)).toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}`, expectedCheckpointPolicy: "Production" });
         expect(snapshotModule).toContain("Checkpoint-VM -VM $TargetVm");
         expect(snapshotModule).toContain("hyper-v-snapshot-policy-quarantine-failed");
         expect(snapshotModule).toContain("hyper-v-snapshot-reconciliation-failed");
-        for (const command of [
-            hyperVSnapshotRestoreCommand({ ...options, snapshotId }),
-            hyperVSnapshotDeleteCommand({ ...options, snapshotId }),
-        ]) {
-            const script = scriptOf(command);
-            expect(script).toContain("Get-VM -Id $ExpectedId");
-            expect(script).toContain("$_.Id -eq $ExpectedSnapshotId");
-            expect(script).toContain("hyper-v-snapshot-ownership-mismatch");
-        }
         expect(() => hyperVSnapshotName(ownerId, "../foreign")).toThrow("hyper-v-snapshot-name-invalid");
-        expect(parseHyperVSnapshotObservation(JSON.stringify({ ok: true, snapshotId, snapshotName: hyperVSnapshotName(ownerId, snapshotName), snapshotType: "Recovery" })))
-            .toMatchObject({ ok: true, snapshotId, snapshotType: "Recovery" });
         expect(JSON.parse(hyperVSnapshotRepairCommand(options, "Production").input!))
             .toMatchObject({ snapshotName: `ccc-${ownerId}-${snapshotName}`, expectedCheckpointPolicy: "Production" });
         expect(parseHyperVSnapshotRepairObservation(JSON.stringify({ ok: true, checkpointPolicy: "Production", candidateCount: 1 })))
@@ -2664,9 +2647,5 @@ describe("Hyper-V provider adapter", () => {
             .toMatchObject({ ok: true, vmId, deleted: true, diskPath: "/state/root.vhdx" });
         expect(parseHyperVDeleteObservation(JSON.stringify({ ok: true, vmId, vmName: hyperVVmName(ownerId, deviceId, incarnationId), deleted: false }))).toBeNull();
         expect(parseHyperVDeleteObservation(JSON.stringify({ ok: true, vmId, vmName: hyperVVmName(ownerId, deviceId, incarnationId) }))).toBeNull();
-        expect(parseHyperVSnapshotDeleteObservation(JSON.stringify({ ok: true, snapshotId: vmId, snapshotName: "ccc-owner-baseline", deleted: true })))
-            .toMatchObject({ ok: true, snapshotId: vmId, snapshotName: "ccc-owner-baseline", deleted: true });
-        expect(parseHyperVSnapshotDeleteObservation(JSON.stringify({ ok: true, snapshotId: vmId, snapshotName: "ccc-owner-baseline", deleted: false }))).toBeNull();
-        expect(parseHyperVSnapshotDeleteObservation(JSON.stringify({ ok: true, snapshotId: vmId, snapshotName: "ccc-owner-baseline" }))).toBeNull();
     });
 });

@@ -42,7 +42,7 @@ export { hyperVCreateCommand } from "./vm-create.js";
 export { hyperVLinuxSeedCommand, hyperVLinuxSshReadyCommand, hyperVBootstrapNetworkCommand, hyperVLinuxNetworkFinalizeCommand, hyperVBootstrapNetworkCleanupCommand, hyperVLinuxSshExecCommand, hyperVLinuxScpUploadCommand, hyperVLinuxScpDownloadCommand } from "./linux-guest.js";
 export { hyperVPrepareBaseImageCommand, hyperVAcquireBaseImageCommand } from "./images.js";
 export { hyperVStatusCommand, hyperVStartCommand, hyperVGuestReadyCommand, hyperVGuestBootDiagnosticCommand, hyperVStopCommand, hyperVDeleteCommand, hyperVRecoverOrphanCommand } from "./lifecycle.js";
-export { hyperVSnapshotCreateCommand, hyperVSnapshotRepairCommand, hyperVSnapshotRestoreCommand, hyperVSnapshotDeleteCommand } from "./snapshots.js";
+export { hyperVSnapshotRepairCommand } from "./snapshots.js";
 export {
     hyperVGuestExecCommand,
     hyperVGuestProvisionCommand,

@@ -542,11 +542,28 @@ type Outcome = {
     readonly unexpectedAttachments?: readonly { path: string | null }[];
 };
 
+type Snapshot = {
+    readonly id: string;
+    readonly name: string;
+    readonly vmId: string;
+    readonly vmName: string;
+    readonly snapshotType: string;
+    readonly parentSnapshotId: string | null;
+    readonly parentSnapshotName: string | null;
+    readonly creationTimeMilliseconds: number;
+};
+
+type SnapshotSelector = { kind: "id"; id: string } | { kind: "name"; name: string };
+
 type HyperVClient = {
     getVM(selector: Selector, options?: { signal?: AbortSignal }): Promise<readonly VM[]>;
     startVM(request: { selector: Selector }, options?: { signal?: AbortSignal }): Promise<void>;
     stopVM(request: { selector: Selector; mode: "turn-off"; force: boolean }, options?: { signal?: AbortSignal }): Promise<void>;
     removeVM(request: { selector: Selector; force: boolean }, options?: { signal?: AbortSignal }): Promise<void>;
+    getVMSnapshots(selector: Selector, options?: { signal?: AbortSignal }): Promise<readonly Snapshot[]>;
+    checkpointVM(request: { selector: Selector; snapshotName: string }, options?: { signal?: AbortSignal }): Promise<Snapshot>;
+    removeVMSnapshot(request: { selector: Selector; snapshot: SnapshotSelector }, options?: { signal?: AbortSignal }): Promise<void>;
+    restoreVMSnapshot(request: { selector: Selector; snapshot: SnapshotSelector }, options?: { signal?: AbortSignal }): Promise<void>;
 };
 
 export type HyperVLibraryScenarioDependencies = {
@@ -762,6 +779,27 @@ export async function runHyperVWindowsLibraryScenario(
         assert(wrongNotes.kind === "identity-conflict" && wrongNotes.reason === "notes-mismatch",
             "hyper-v-library-wrong-notes-not-conflict");
         step("lifecycle safe / attachment-conflict / identity-conflict outcomes");
+
+        // Snapshot primitives, exercised while the VM is Off so a production checkpoint is valid.
+        const noSnapshots = await client.getVMSnapshots(selector, { signal: controller.signal });
+        assert(noSnapshots.length === 0, "hyper-v-library-unexpected-existing-snapshots");
+        const checkpointName = `ccc-library-real-${token}`;
+        const checkpoint = await client.checkpointVM({ selector, snapshotName: checkpointName }, { signal: controller.signal });
+        assert(checkpoint.name === checkpointName, "hyper-v-library-checkpoint-name-mismatch");
+        assert(checkpoint.vmId === fixture.vmId, "hyper-v-library-checkpoint-vm-mismatch");
+        assert(checkpoint.parentSnapshotId === null, "hyper-v-library-checkpoint-parent-invalid");
+        const listed = await client.getVMSnapshots(selector, { signal: controller.signal });
+        assert(listed.length === 1 && listed[0]?.id === checkpoint.id, "hyper-v-library-checkpoint-not-listed");
+        step("compiled library created and observed exactly one checkpoint");
+
+        await client.restoreVMSnapshot({ selector, snapshot: { kind: "id", id: checkpoint.id } }, { signal: controller.signal });
+        const afterRestore = await library.inspectHyperVVirtualMachine(client, selector, { signal: controller.signal });
+        assertInspectionIdentity(afterRestore, fixture);
+        assert(afterRestore.hardDiskDrives.length === 2, "hyper-v-library-restore-lost-attachments");
+        await client.removeVMSnapshot({ selector, snapshot: { kind: "name", name: checkpointName } }, { signal: controller.signal });
+        const afterDelete = await client.getVMSnapshots(selector, { signal: controller.signal });
+        assert(afterDelete.length === 0, "hyper-v-library-checkpoint-not-removed");
+        step("compiled library restored and removed the checkpoint by id and by name");
 
         const remove = library.reconcileHyperVVirtualMachine(stoppedInspection, safeExpectation, "remove");
         assert(remove.kind === "pending" && remove.action === "remove", "hyper-v-library-remove-not-pending");

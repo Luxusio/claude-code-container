@@ -407,6 +407,10 @@ function fakeScenario(options: {
     let targetState: string | null = null;
     let remainingTransitionInspections = 0;
     let removed = false;
+    let checkpoint: {
+        id: string; name: string; vmId: string; vmName: string; snapshotType: string;
+        parentSnapshotId: string | null; parentSnapshotName: string | null; creationTimeMilliseconds: number;
+    } | null = null;
     let publicRunner: ((request: any, context: any) => Promise<any>) | null = null;
     const token = "0123456789abcdef0123456789abcdef";
     const vmId = "01234567-89ab-cdef-0123-456789abcdef";
@@ -488,6 +492,26 @@ function fakeScenario(options: {
             remainingTransitionInspections = options.transitionDelayInspections ?? 0;
         }),
         removeVM: vi.fn(async () => { calls.push("client:remove"); removed = true; }),
+        getVMSnapshots: vi.fn(async () => {
+            calls.push("client:snapshots");
+            return checkpoint ? [checkpoint] : [];
+        }),
+        checkpointVM: vi.fn(async (request: { snapshotName: string }) => {
+            calls.push("client:checkpoint");
+            checkpoint = {
+                id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                name: request.snapshotName,
+                vmId,
+                vmName: inspection().virtualMachines[0]?.name ?? "",
+                snapshotType: "Production",
+                parentSnapshotId: null,
+                parentSnapshotName: null,
+                creationTimeMilliseconds: 1_700_000_000_000,
+            };
+            return checkpoint;
+        }),
+        restoreVMSnapshot: vi.fn(async () => { calls.push("client:snapshot-restore"); }),
+        removeVMSnapshot: vi.fn(async () => { calls.push("client:snapshot-remove"); checkpoint = null; }),
     };
     const library = {
         createHyperVWindowsPowerShellExecutor: vi.fn((executorOptions: { run: typeof publicRunner }) => {
@@ -574,7 +598,7 @@ describe("standalone compiled-library scenario", () => {
             sleeper: async () => undefined,
         });
 
-        expect(steps).toHaveLength(8);
+        expect(steps).toHaveLength(10);
         expect(fake.calls.filter((call) => call.startsWith("fixture:"))).toEqual([
             "fixture:preflight",
             "fixture:create",
@@ -584,6 +608,12 @@ describe("standalone compiled-library scenario", () => {
         expect(fake.calls.filter((call) => call.startsWith("client:"))).toEqual([
             "client:start",
             "client:stop",
+            "client:snapshots",
+            "client:checkpoint",
+            "client:snapshots",
+            "client:snapshot-restore",
+            "client:snapshot-remove",
+            "client:snapshots",
             "client:remove",
             "client:get:id",
             "client:get:name",

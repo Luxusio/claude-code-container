@@ -37,9 +37,35 @@ Hyper-V operations:
 | get VM | `Get-VM` | exact VM result array |
 | get VM hard disks | `Get-VMHardDiskDrive` | exact hard-disk result array |
 | get VM DVD drives | `Get-VMDvdDrive` | exact DVD-drive result array |
+| get VM snapshots | `Get-VMSnapshot` | exact checkpoint result array |
 | start VM | `Start-VM` | typed success result |
 | stop VM | `Stop-VM` | typed success result |
 | remove VM | `Remove-VM` | typed success/void; VM only |
+| checkpoint VM | `Checkpoint-VM` | the created checkpoint, exactly one |
+| remove VM snapshot | `Remove-VMSnapshot` | typed success/void |
+| restore VM snapshot | `Restore-VMSnapshot` | typed success/void |
+
+### Snapshot selector and result contract
+
+A checkpoint is addressed by a VM selector plus a snapshot selector shaped like
+the VM selector — `{kind:"id"}` or `{kind:"name"}` — and validated by the same
+rules: a canonical GUID, or a non-empty bounded name free of control characters
+and the cmdlet wildcard characters `*`, `?`, `[`, `]`.
+
+The snapshot result carries native fields only: `id`, `name`, `vmId`, `vmName`,
+`snapshotType`, `parentSnapshotId`, `parentSnapshotName`, and
+`creationTimeMilliseconds`. A root checkpoint reports `parentSnapshotId` and
+`parentSnapshotName` as `null`; that is a value, not a decode failure.
+
+`Checkpoint-VM` returns the checkpoint the host actually created, via
+`-Passthru`, so a caller never re-reads it by name. Exactly one item is
+required; zero or many is `result-ambiguous`.
+
+Snapshot resolution inside the transport is exact-match only: the requested
+checkpoint MUST match exactly one record, otherwise `snapshot-not-found` or
+`snapshot-selector-ambiguous`. The library never applies a consumer naming
+convention, and MUST NOT contain any CCC owner, device, or incarnation
+identifier.
 
 Each low-level call MUST validate one typed request, make exactly one transport
 attempt, strictly decode its bounded response, and then return or throw. The

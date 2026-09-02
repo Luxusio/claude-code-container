@@ -3,8 +3,6 @@ import {
     type HyperVSetupObservation,
     type HyperVVmObservation,
     type HyperVDeleteObservation,
-    type HyperVSnapshotObservation,
-    type HyperVSnapshotDeleteObservation,
     type HyperVSnapshotRepairObservation,
     type HyperVGuestExecObservation,
     type HyperVGuestTransferObservation,
@@ -281,25 +279,8 @@ export function parseHyperVVmObservation(stdout: string): HyperVVmObservation | 
     };
 }
 
-export function parseHyperVSnapshotObservation(stdout: string): HyperVSnapshotObservation | null {
-    const parsed = parseLastJsonObject(stdout);
-    if (!parsed || parsed.ok !== true || typeof parsed.snapshotId !== "string" || typeof parsed.snapshotName !== "string") return null;
-    if (!VM_ID_PATTERN.test(parsed.snapshotId)) return null;
-    return {
-        ok: true,
-        snapshotId: parsed.snapshotId,
-        snapshotName: parsed.snapshotName,
-        ...(typeof parsed.state === "string" ? { state: parsed.state } : {}),
-        ...(typeof parsed.snapshotType === "string" ? { snapshotType: parsed.snapshotType } : {}),
-    };
-}
-
-export function parseHyperVSnapshotDeleteObservation(stdout: string): HyperVSnapshotDeleteObservation | null {
-    const parsed = parseLastJsonObject(stdout);
-    if (!parsed || parsed.deleted !== true) return null;
-    const observation = parseHyperVSnapshotObservation(JSON.stringify(parsed));
-    return observation ? { ...observation, deleted: true } : null;
-}
+// Snapshot create/delete/restore observations retired with the typed-library migration: those
+// operations now return decoded native results, so there is no provider stdout left to parse.
 
 export function parseHyperVSnapshotRepairObservation(stdout: string): HyperVSnapshotRepairObservation | null {
     const parsed = parseLastJsonObject(stdout);
