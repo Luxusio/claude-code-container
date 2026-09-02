@@ -969,6 +969,12 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(diagnosticProgram).toContain("$MountDeadline = [DateTime]::UtcNow.AddMilliseconds(60000)");
             expect(diagnosticProgram).toContain("elseif ($Attempt -lt 10) { break }");
             expect(diagnosticProgram).toContain("$MountMessage = [string]$_.Exception.Message");
+            // Redaction happens on the reading side only. A guest-side user-profile rule split
+            // `C:\Users\<name with space>\...` at the first space, so the reader's whole-path rule
+            // saw a fragment with no drive letter and the name survived beside a marker that read
+            // as complete. This also keeps the fixtures below honest: they feed the reader exactly
+            // what the guest emits, so a passing assertion describes the real pipeline.
+            expect(diagnosticProgram).not.toContain("$MountMessage = [regex]::Replace");
             expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);

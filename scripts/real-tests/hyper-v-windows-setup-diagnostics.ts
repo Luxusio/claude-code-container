@@ -166,10 +166,16 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "      $MountCategory = [string]$_.CategoryInfo.Category",
         "      $MountHResult = [Math]::Abs([long]$_.Exception.HResult)",
         // The category and HRESULT alone came back as NotSpecified/0x80131500 on a real host, which
-        // names no cause. The message is host text, so it is redacted and bounded here and again on
-        // the reading side.
+        // names no cause. The message is host text; it is bounded here and redacted on the reading
+        // side by mountFailureMessage, which is the only path by which this field reaches output.
+        //
+        // Redaction is deliberately NOT attempted here. A user-profile rule at this stage stopped at
+        // the first space, so `C:\Users\Kyeong Jae\disk.vhdx` arrived at the reader already split
+        // into `[user-profile] Jae\disk.vhdx` — a fragment with no drive letter for the reader's
+        // whole-path rule to match, leaving the surname beside a marker that read as though
+        // redaction had completed. Splitting the work across two stages is what made a partial
+        // redaction look like a finished one; one stage that sees the raw message cannot.
         "      $MountMessage = [string]$_.Exception.Message",
-        "      $MountMessage = [regex]::Replace($MountMessage, '(?i)[A-Z]:\\\\Users\\\\[^\\\\\\s]+', '[user-profile]')",
         `      if ($MountMessage.Length -gt ${MOUNT_MESSAGE_MAX_CHARS}) { $MountMessage = $MountMessage.Substring(0, ${MOUNT_MESSAGE_MAX_CHARS}) }`,
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
