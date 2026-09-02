@@ -72,13 +72,14 @@ diagnostic lines:
   name and ownership Notes, and fixes the exact single attached OS VHD path before any mutation;
 - re-verify the same identity and path, turn off only that VM, remove only the exact
   `VMHardDiskDrive`, prove no hard disks remain attached, then make at most ten attempts to mount the
-  fixed path with `Mount-VHD -ReadOnly -PassThru`, with at most nine one-second waits between failed
-  attempts; after a successful or possibly partial host mount, locate exactly one volume containing
-  `Windows\Panther` and attempt `Dismount-VHD` before emitting a result;
+  fixed path with `Mount-VHD -ReadOnly -PassThru`, backing off between failed attempts to a 15-second
+  ceiling and stopping once the next wait would cross a 60-second retry deadline; after a successful
+  or possibly partial host mount, locate exactly one volume containing `Windows\Panther` and attempt
+  `Dismount-VHD` before emitting a result;
 - inspect only bounded tails of `Panther` and `Panther\UnattendGC` `setupact.log` / `setuperr.log`;
 - retain only bounded lines related to unattend, OOBE, Shell-Setup, errors, failures, or HRESULTs;
-- redact XML `Value` contents, password/token/secret assignments, and user-profile paths in both
-  PowerShell and Node before atomic mode-0600 publication; and
+- redact XML `Value` contents, password/token/secret assignments, and host paths before atomic
+  mode-0600 publication; and
 - publish a versioned timestamped JSON plus
   `results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json`.
 
@@ -93,9 +94,28 @@ MUST remain secondary, MUST NOT replace the original E2E error, and MUST compose
 idempotent stop/delete cleanup. The compact reason reports either
 `guestSetupDiagnostics=<stable-relative-path>` or an allowlisted bounded `unavailable(...)` code.
 If every mount attempt fails, that code MAY contain only a Node-validated attempt count from 1 to 10,
-an allowlisted PowerShell `ErrorCategory`, and an absolute .NET HResult from 0 to 2147483648. Raw
-exception messages, paths, identities, and arbitrary category strings MUST remain private. Missing,
-unknown, out-of-range, or inconsistent mount observations MUST fail closed as output-invalid.
+an allowlisted PowerShell `ErrorCategory`, an absolute .NET HResult from 0 to 2147483648, and a
+redacted bounded exception message. Raw exception messages, paths, identities, and arbitrary category
+strings MUST remain private. Missing, unknown, out-of-range, or inconsistent mount observations MUST
+fail closed as output-invalid.
+
+The mount message earns its place because category and HResult alone proved useless in practice: a
+real host reported `NotSpecified` / `0x80131500`, which names no cause. It carries a hard constraint —
+**exactly one stage may transform it, and that stage MUST redact before it truncates.** Splitting the
+work is what makes a partial redaction look like a finished one: a guest-side rule that stopped at the
+first space, and later a guest-side length cap, each handed the reader a path fragment with no drive
+letter, leaving a user's name beside a marker reading as though redaction had completed. The guest
+therefore performs no substitution and no truncation on this field; Node redacts, then bounds.
+
+### Known gap — the log-line path still redacts in two stages
+
+The `Panther` log lines have the same structural defect and it is not yet fixed. PowerShell applies a
+user-profile rule to each line and Node applies the identical rule again, with no whole-path rule
+between them, so `C:\Users\<first> <last>\...` reaches the artifact as `[user-profile] <last>\...`.
+The blast radius is larger than the mount message, because these lines are written to a persisted
+file under `results/device-lab-real/` rather than appearing once in a failure line. Fixing it means
+giving the log-line path the same single-stage treatment; it was left out of the diagnostics-restoration
+task deliberately, as pre-existing and out of that task's scope.
 
 ## Privacy and retention
 
