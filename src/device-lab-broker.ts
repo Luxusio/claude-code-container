@@ -10999,7 +10999,10 @@ function providerFailureDetail(result: ProviderCommandResult): string {
 }
 
 type HyperVGuestReadinessFailureDetail = {
-    readonly structured: boolean;
+    // windows-vm only: whether the readiness script's structured failure JSON parsed. There is no
+    // equivalent on the linux lane, and reporting a constant `false` there would read as "the
+    // readiness output failed to parse" in the one field whose job is to disambiguate.
+    readonly structured?: boolean;
     readonly status: number | null;
     readonly timedOut: boolean;
     readonly stdoutBytes: number;
@@ -11018,9 +11021,9 @@ function hyperVGuestReadinessFailureDetail(
 ): HyperVGuestReadinessFailureDetail {
     const diagnosticCode = hyperVProviderDiagnosticCode(result);
     return {
-        structured: backend === "windows-vm"
-            ? Boolean(parseHyperVGuestReadyFailureObservation(result.stdout || ""))
-            : false,
+        ...(backend === "windows-vm"
+            ? { structured: Boolean(parseHyperVGuestReadyFailureObservation(result.stdout || "")) }
+            : {}),
         status: typeof result.status === "number" ? result.status : null,
         timedOut: result.timedOut === true,
         stdoutBytes: Buffer.byteLength(String(result.stdout || ""), "utf8"),

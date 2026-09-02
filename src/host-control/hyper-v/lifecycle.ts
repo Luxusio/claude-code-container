@@ -70,6 +70,11 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // checks and the ownership prelude threw bare PowerShell exceptions onto stderr, which the
         // broker cannot parse, so it fell back to a bare `powershell-direct-unavailable` and the
         // real cause was lost. Only the deadline path was ever explicable.
+        //
+        // The boundary is this function's own lines. `jsonScript` emits the module import and the
+        // helper definitions before this `try`, so a broken or absent Hyper-V module still dies as
+        // a bare stderr exception — the broker now names that case through the bounded
+        // `errorDetail.diagnosticCode` instead, so it is no longer silent either.
         "$Attempts = 0",
         "$LastFailure = 'powershell-direct-unavailable'",
         "try {",

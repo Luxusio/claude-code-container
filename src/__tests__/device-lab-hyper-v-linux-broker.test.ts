@@ -2211,9 +2211,9 @@ describe("device-lab Hyper-V broker", () => {
                         provider: "hyper-v-ssh",
                         error: readinessError,
                         // Additive detail that discriminates a readiness failure the bare code
-                        // cannot explain. Byte counts, never the output itself.
+                        // cannot explain. Byte counts, never the output itself. `structured` is a
+                        // windows-vm signal and must not appear on this lane.
                         errorDetail: expect.objectContaining({
-                            structured: false,
                             timedOut: expect.any(Boolean),
                             stdoutBytes: expect.any(Number),
                             stderrBytes: expect.any(Number),
@@ -2244,6 +2244,7 @@ describe("device-lab Hyper-V broker", () => {
                     },
                 }),
             }));
+            expect(exhaustedBody.result.boot.errorDetail).not.toHaveProperty("structured");
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmId");
             expect(exhaustedBody.result.boot.diagnostic).not.toHaveProperty("vmName");
             expect(exhaustedBody.result.device).toEqual(expect.objectContaining({ status: "stopped", runtimeState: "Off", bootReady: false }));
@@ -2252,7 +2253,6 @@ describe("device-lab Hyper-V broker", () => {
                     provider: "hyper-v-ssh",
                     error: readinessError,
                     errorDetail: expect.objectContaining({
-                        structured: false,
                         stdoutBytes: expect.any(Number),
                         stderrBytes: expect.any(Number),
                     }),

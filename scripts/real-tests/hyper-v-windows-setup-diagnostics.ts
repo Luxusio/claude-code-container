@@ -11,9 +11,16 @@ const MAX_LINE_CHARS = 768;
 const MOUNT_MAX_ATTEMPTS = 10;
 // A flat 1000 ms between attempts gave the VHD handle 10 seconds total to be released after the
 // disk was detached, which a real host exhausted on every attempt. Backing off to a 15 s ceiling
-// spends about 90 s instead, without unbounding the diagnostic.
+// spends longer without unbounding the diagnostic.
 const MOUNT_BACKOFF_CEILING_MS = 15000;
+// The retry budget must stay a known share of the process budget below. Unbounded, ten backed-off
+// attempts sleep 90 s, leaving under 30 s for module autoload, the identity reads, a Stop-VM on a
+// VM that is hung — the exact case being diagnosed — the detach, and the mount latency itself.
+// Overrunning kills the process, and then the attempts/category/message this whole change exists to
+// capture are never read: the result degrades to hyper-v-setup-diagnostics-process-timeout.
+const MOUNT_RETRY_BUDGET_MS = 60000;
 const MOUNT_MESSAGE_MAX_CHARS = 200;
+const DIAGNOSTICS_PROCESS_TIMEOUT_MS = 180000;
 const MOUNT_ERROR_CATEGORIES = new Set([
     "NotSpecified", "OpenError", "CloseError", "DeviceError", "DeadlockDetected",
     "InvalidArgument", "InvalidData", "InvalidOperation", "InvalidResult", "InvalidType",
@@ -148,6 +155,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "  if ($RemainingDrives.Count -ne 0) { throw 'hyper-v-setup-diagnostics-detach-failed' }",
         "  $Stage = 'hyper-v-setup-diagnostics-mount-failed'",
         "  $MountedImage = $null",
+        `  $MountDeadline = [DateTime]::UtcNow.AddMilliseconds(${MOUNT_RETRY_BUDGET_MS})`,
         `  for ($Attempt = 1; $Attempt -le ${MOUNT_MAX_ATTEMPTS}; $Attempt++) {`,
         "    $MountAttempts = $Attempt",
         "    try {",
@@ -163,7 +171,10 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "      $MountMessage = [string]$_.Exception.Message",
         "      $MountMessage = [regex]::Replace($MountMessage, '(?i)[A-Z]:\\\\Users\\\\[^\\\\\\s]+', '[user-profile]')",
         `      if ($MountMessage.Length -gt ${MOUNT_MESSAGE_MAX_CHARS}) { $MountMessage = $MountMessage.Substring(0, ${MOUNT_MESSAGE_MAX_CHARS}) }`,
-        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS}) { Start-Sleep -Milliseconds ([Math]::Min(${MOUNT_BACKOFF_CEILING_MS}, 1000 * [Math]::Pow(2, $Attempt - 1))) }`,
+        // The deadline, not the attempt count, is what keeps the retry budget inside the process
+        // budget: a slow mount failure costs wall-clock the sleeps do not account for.
+        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS} -and [DateTime]::UtcNow -lt $MountDeadline) { Start-Sleep -Milliseconds ([Math]::Min(${MOUNT_BACKOFF_CEILING_MS}, 1000 * [Math]::Pow(2, $Attempt - 1))) }`,
+        "      elseif ($Attempt -lt " + String(MOUNT_MAX_ATTEMPTS) + ") { break }",
         "    }",
         "  }",
         "  if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }",
@@ -261,16 +272,27 @@ function mountFailureCode(value: unknown): string | null {
     // Additive: the bracketed a/c/h shape stays exactly as before so existing parsing keeps working,
     // and the message — the only field that ever names the actual cause — is appended when the host
     // supplied one that survives redaction to printable single-line text.
+    //
+    // `m` is always last and its value may contain `,` and `=`, so read it greedily to the closing
+    // `]` rather than splitting the bracket body on `,`.
     const message = mountFailureMessage((value as { message?: unknown }).message);
     return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
 }
 
 function mountFailureMessage(value: unknown): string | null {
     if (typeof value !== "string") return null;
+    // Newlines collapse FIRST. `redactLine`'s secret rule is anchored with `$` and no `m` flag, so
+    // on a multi-line message it only ever fired on the last line — a secret on any earlier line
+    // passed through verbatim.
+    //
+    // Then any absolute host path, not just the user-profile segment `redactLine` knows about: the
+    // likeliest real message here is "cannot access the file 'D:\...\disk.vhdx'", and the disk path
+    // is already published as its own field, so nothing is lost by dropping it.
+    //
     // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
     // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.
-    const redacted = redactLine(value)
-        ?.replace(/[\r\n\t]+/g, " ")
+    const redacted = redactLine(String(value).replace(/[\r\n\t]+/g, " "))
+        ?.replace(/[A-Za-z]:\\[^\s'"]*/g, "[host-path]")
         .replace(/\[/g, "(")
         .replace(/\]/g, ")")
         .trim()
@@ -408,7 +430,7 @@ export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDi
             encodedPowerShell(diagnosticsProgram(vmName, input.vmId, marker, diskPath)),
         ], {
             encoding: "utf8",
-            timeout: 120000,
+            timeout: DIAGNOSTICS_PROCESS_TIMEOUT_MS,
             maxBuffer: MAX_OUTPUT_BYTES,
             windowsHide: true,
         });

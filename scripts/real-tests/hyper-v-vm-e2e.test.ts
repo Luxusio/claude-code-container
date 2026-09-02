@@ -961,7 +961,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(diagnosticProgram).toContain("for ($Attempt = 1; $Attempt -le 10; $Attempt++)");
             // Backoff to a 15 s ceiling: a flat 1 s gave the detached VHD handle only 10 s to be
             // released, which a real host exhausted on every attempt.
-            expect(diagnosticProgram).toContain("if ($Attempt -lt 10) { Start-Sleep -Milliseconds ([Math]::Min(15000, 1000 * [Math]::Pow(2, $Attempt - 1))) }");
+            expect(diagnosticProgram).toContain("if ($Attempt -lt 10 -and [DateTime]::UtcNow -lt $MountDeadline) { Start-Sleep -Milliseconds ([Math]::Min(15000, 1000 * [Math]::Pow(2, $Attempt - 1))) }");
+            // The retry budget must stay a known share of the process budget, or overrunning kills
+            // the process and the mount detail is never read at all.
+            expect(diagnosticProgram).toContain("$MountDeadline = [DateTime]::UtcNow.AddMilliseconds(60000)");
+            expect(diagnosticProgram).toContain("elseif ($Attempt -lt 10) { break }");
             expect(diagnosticProgram).toContain("$MountMessage = [string]$_.Exception.Message");
             expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
@@ -1040,6 +1044,8 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=The process cannot access the file]",
         });
+        // Both orderings: the secret rule is anchored at end-of-input with no multiline flag, so
+        // redacting before collapsing newlines would only ever catch a secret on the last line.
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
@@ -1047,6 +1053,24 @@ describe("Hyper-V E2E zero-config image selection", () => {
         })).toEqual({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=denied for (user-profile)\\disk.vhdx password=(redacted)]",
+        });
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "password: hunter2\ndenied for C:\\Users\\Luxus\\disk.vhdx" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=password=(redacted)]",
+        });
+        // The likeliest real message names the disk by absolute path, which is not under Users and
+        // so was invisible to the user-profile rule alone.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "The process cannot access the file 'D:\\device-lab\\owner-9f2\\disk.vhdx' because it is being used." },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=The process cannot access the file '(host-path)' because it is being used.]",
         });
         expect(run({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }))
             .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
@@ -1100,7 +1124,10 @@ describe("Hyper-V E2E zero-config image selection", () => {
                     return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
                 }
                 if (calls === 2) {
-                    expect(options.timeout).toBe(120000);
+                    // Raised from 120 s: the mount retry budget alone is 60 s, and the rest of the
+                    // program has to fit alongside it — a Stop-VM on the hung VM being diagnosed
+                    // most of all. Overrunning kills the process and discards the mount detail.
+                    expect(options.timeout).toBe(180000);
                     return { status: null, error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) };
                 }
                 expect(options.timeout).toBe(30000);
