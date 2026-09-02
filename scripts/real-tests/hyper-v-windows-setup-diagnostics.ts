@@ -9,6 +9,11 @@ const MAX_LOGS = 4;
 const MAX_LINES_PER_LOG = 120;
 const MAX_LINE_CHARS = 768;
 const MOUNT_MAX_ATTEMPTS = 10;
+// A flat 1000 ms between attempts gave the VHD handle 10 seconds total to be released after the
+// disk was detached, which a real host exhausted on every attempt. Backing off to a 15 s ceiling
+// spends about 90 s instead, without unbounding the diagnostic.
+const MOUNT_BACKOFF_CEILING_MS = 15000;
+const MOUNT_MESSAGE_MAX_CHARS = 200;
 const MOUNT_ERROR_CATEGORIES = new Set([
     "NotSpecified", "OpenError", "CloseError", "DeviceError", "DeadlockDetected",
     "InvalidArgument", "InvalidData", "InvalidOperation", "InvalidResult", "InvalidType",
@@ -119,6 +124,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "$MountAttempts = 0",
         "$MountCategory = $null",
         "$MountHResult = $null",
+        "$MountMessage = $null",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "  if ($Vm.Name -cne $VmName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-setup-diagnostics-vm-not-exact' }",
@@ -151,7 +157,13 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "    } catch {",
         "      $MountCategory = [string]$_.CategoryInfo.Category",
         "      $MountHResult = [Math]::Abs([long]$_.Exception.HResult)",
-        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS}) { Start-Sleep -Milliseconds 1000 }`,
+        // The category and HRESULT alone came back as NotSpecified/0x80131500 on a real host, which
+        // names no cause. The message is host text, so it is redacted and bounded here and again on
+        // the reading side.
+        "      $MountMessage = [string]$_.Exception.Message",
+        "      $MountMessage = [regex]::Replace($MountMessage, '(?i)[A-Z]:\\\\Users\\\\[^\\\\\\s]+', '[user-profile]')",
+        `      if ($MountMessage.Length -gt ${MOUNT_MESSAGE_MAX_CHARS}) { $MountMessage = $MountMessage.Substring(0, ${MOUNT_MESSAGE_MAX_CHARS}) }`,
+        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS}) { Start-Sleep -Milliseconds ([Math]::Min(${MOUNT_BACKOFF_CEILING_MS}, 1000 * [Math]::Pow(2, $Attempt - 1))) }`,
         "    }",
         "  }",
         "  if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }",
@@ -189,7 +201,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "} catch {",
         "  $Message = [string]$_.Exception.Message",
         "  if ($Message -eq 'hyper-v-setup-diagnostics-mount-failed' -and $MountAttempts -gt 0) {",
-        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult } }",
+        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult; message = $MountMessage } }",
         "  } else {",
         "    if ($Message -match '^hyper-v-setup-diagnostics-[a-z-]+$') { $Code = $Message } else { $Code = $Stage }",
         "    $Result = [ordered]@{ ok = $false; code = $Code }",
@@ -246,7 +258,24 @@ function mountFailureCode(value: unknown): string | null {
     if (typeof attempts !== "number" || !Number.isSafeInteger(attempts) || attempts < 1 || attempts > MOUNT_MAX_ATTEMPTS) return null;
     if (typeof category !== "string" || !MOUNT_ERROR_CATEGORIES.has(category)) return null;
     if (typeof hresult !== "number" || !Number.isSafeInteger(hresult) || hresult < 0 || hresult > 2147483648) return null;
-    return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}]`;
+    // Additive: the bracketed a/c/h shape stays exactly as before so existing parsing keeps working,
+    // and the message — the only field that ever names the actual cause — is appended when the host
+    // supplied one that survives redaction to printable single-line text.
+    const message = mountFailureMessage((value as { message?: unknown }).message);
+    return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
+}
+
+function mountFailureMessage(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
+    // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.
+    const redacted = redactLine(value)
+        ?.replace(/[\r\n\t]+/g, " ")
+        .replace(/\[/g, "(")
+        .replace(/\]/g, ")")
+        .trim()
+        .slice(0, MOUNT_MESSAGE_MAX_CHARS);
+    return redacted || null;
 }
 
 function redactLine(value: unknown): string | null {

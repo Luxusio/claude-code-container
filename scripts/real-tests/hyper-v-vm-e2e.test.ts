@@ -959,7 +959,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(diagnosticProgram).toContain("$RemainingDrives.Count -ne 0");
             expect(diagnosticProgram).toContain("Mount-VHD -Path $DiskPath -ReadOnly -PassThru");
             expect(diagnosticProgram).toContain("for ($Attempt = 1; $Attempt -le 10; $Attempt++)");
-            expect(diagnosticProgram).toContain("if ($Attempt -lt 10) { Start-Sleep -Milliseconds 1000 }");
+            // Backoff to a 15 s ceiling: a flat 1 s gave the detached VHD handle only 10 s to be
+            // released, which a real host exhausted on every attempt.
+            expect(diagnosticProgram).toContain("if ($Attempt -lt 10) { Start-Sleep -Milliseconds ([Math]::Min(15000, 1000 * [Math]::Pow(2, $Attempt - 1))) }");
+            expect(diagnosticProgram).toContain("$MountMessage = [string]$_.Exception.Message");
+            expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
@@ -1025,6 +1029,24 @@ describe("Hyper-V E2E zero-config image selection", () => {
         })).toEqual({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891]",
+        });
+        // The message is the only field that ever names the cause: a real host reported
+        // NotSpecified/0x80131500, which says nothing. It is appended, and it is redacted.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "The process cannot access the file" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=The process cannot access the file]",
+        });
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "denied for C:\\Users\\Luxus\\disk.vhdx\npassword: hunter2" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=denied for (user-profile)\\disk.vhdx password=(redacted)]",
         });
         expect(run({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }))
             .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });

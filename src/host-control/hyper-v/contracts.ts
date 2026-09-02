@@ -125,9 +125,12 @@ export type HyperVGuestReadyObservation = {
     networkAddress?: string;
 };
 
+// `hyper-v-guest-ready-timeout` is the readiness loop exhausting its deadline, which always made at
+// least one attempt. `hyper-v-guest-ready-failed` is a precondition failing before or during the
+// loop — ownership, credentials, a host error — and can carry zero attempts.
 export type HyperVGuestReadyFailureObservation = {
     ok: false;
-    error: "hyper-v-guest-ready-timeout";
+    error: "hyper-v-guest-ready-timeout" | "hyper-v-guest-ready-failed";
     reason: string;
     attempts: number;
 };

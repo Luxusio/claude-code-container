@@ -2210,6 +2210,14 @@ describe("device-lab Hyper-V broker", () => {
                         ready: false,
                         provider: "hyper-v-ssh",
                         error: readinessError,
+                        // Additive detail that discriminates a readiness failure the bare code
+                        // cannot explain. Byte counts, never the output itself.
+                        errorDetail: expect.objectContaining({
+                            structured: false,
+                            timedOut: expect.any(Boolean),
+                            stdoutBytes: expect.any(Number),
+                            stderrBytes: expect.any(Number),
+                        }),
                         readiness: expect.objectContaining({
                             managedSshAttempts: expect.any(Number),
                             bootstrapProbeAttempts: expect.any(Number),
@@ -2243,6 +2251,11 @@ describe("device-lab Hyper-V broker", () => {
                 guestReadiness: {
                     provider: "hyper-v-ssh",
                     error: readinessError,
+                    errorDetail: expect.objectContaining({
+                        structured: false,
+                        stdoutBytes: expect.any(Number),
+                        stderrBytes: expect.any(Number),
+                    }),
                     readiness: expect.objectContaining({
                         guestSignalObserved: false,
                         bootstrapAddressCount: 0,

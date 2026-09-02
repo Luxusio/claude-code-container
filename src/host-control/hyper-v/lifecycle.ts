@@ -66,16 +66,21 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
     const expectedNetworkAddress = options.expectedNetworkAddress ? String(options.expectedNetworkAddress) : "";
     if (expectedNetworkAddress && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(expectedNetworkAddress)) throw new Error("hyper-v-guest-network-address-invalid");
     return command(options.executable, jsonScript([
-        ...ownedVmPrelude(options),
-        `$CredentialPath = ${psQuote(credentialPath)}`,
-        `$ProvisioningMedia = ${psQuote(provisioningMediaPath)}`,
-        `$ExpectedNetworkAddress = ${psQuote(expectedNetworkAddress)}`,
-        `$Deadline = [DateTime]::UtcNow.AddMilliseconds(${timeoutMs})`,
+        // Every exit path emits the same structured failure on stdout. Previously the pre-loop
+        // checks and the ownership prelude threw bare PowerShell exceptions onto stderr, which the
+        // broker cannot parse, so it fell back to a bare `powershell-direct-unavailable` and the
+        // real cause was lost. Only the deadline path was ever explicable.
         "$Attempts = 0",
         "$LastFailure = 'powershell-direct-unavailable'",
-        "if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) { throw 'hyper-v-guest-credential-unavailable' }",
-        "$Credential = Import-Clixml -LiteralPath $CredentialPath -ErrorAction Stop",
-        "if ($Credential -isnot [System.Management.Automation.PSCredential]) { throw 'hyper-v-guest-credential-invalid' }",
+        "try {",
+        ...ownedVmPrelude(options).map((line) => `  ${line}`),
+        `  $CredentialPath = ${psQuote(credentialPath)}`,
+        `  $ProvisioningMedia = ${psQuote(provisioningMediaPath)}`,
+        `  $ExpectedNetworkAddress = ${psQuote(expectedNetworkAddress)}`,
+        `  $Deadline = [DateTime]::UtcNow.AddMilliseconds(${timeoutMs})`,
+        "  if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) { throw 'hyper-v-guest-credential-unavailable' }",
+        "  $Credential = Import-Clixml -LiteralPath $CredentialPath -ErrorAction Stop",
+        "  if ($Credential -isnot [System.Management.Automation.PSCredential]) { throw 'hyper-v-guest-credential-invalid' }",
         "while ([DateTime]::UtcNow -lt $Deadline) {",
         "  $Attempts++",
         "  $AttemptJob = $null",
@@ -112,9 +117,18 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "  }",
         "  Start-Sleep -Seconds 2",
         "}",
-        "$Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts }",
-        "$Failure | ConvertTo-Json -Compress -Depth 4",
-        "exit 1",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts }",
+        "  $Failure | ConvertTo-Json -Compress -Depth 4",
+        "  exit 1",
+        "} catch {",
+        // The message is only trusted when it already is one of our own bounded codes; anything
+        // else is host text and is replaced by a constant that still says which phase failed.
+        "  $Reason = [string]$_.Exception.Message",
+        "  if ($Reason -notmatch '^hyper-v-[a-z0-9-]{3,120}$') { $Reason = 'hyper-v-guest-ready-precondition-failed' }",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-failed'; reason = $Reason; attempts = $Attempts }",
+        "  $Failure | ConvertTo-Json -Compress -Depth 4",
+        "  exit 1",
+        "}",
     ]));
 }
 

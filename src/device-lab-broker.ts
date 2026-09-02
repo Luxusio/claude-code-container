@@ -10998,6 +10998,37 @@ function providerFailureDetail(result: ProviderCommandResult): string {
     return truncateOutput(parts.join("\n") || `provider exited with status ${String(result.status)}`, 8192);
 }
 
+type HyperVGuestReadinessFailureDetail = {
+    readonly structured: boolean;
+    readonly status: number | null;
+    readonly timedOut: boolean;
+    readonly stdoutBytes: number;
+    readonly stderrBytes: number;
+    readonly diagnosticCode?: string;
+};
+
+// The readiness failure code collapses to a bare `powershell-direct-unavailable` whenever the
+// script did not emit its structured failure JSON — which is exactly the case where the cause is
+// unknown and most needed. These facts discriminate those cases without carrying host text: byte
+// counts instead of the output itself, and only allowlisted hyper-v-* codes lifted from the raw
+// streams by the same helper the boot diagnostic already trusts.
+function hyperVGuestReadinessFailureDetail(
+    backend: "windows-vm" | "linux-vm",
+    result: ProviderCommandResult,
+): HyperVGuestReadinessFailureDetail {
+    const diagnosticCode = hyperVProviderDiagnosticCode(result);
+    return {
+        structured: backend === "windows-vm"
+            ? Boolean(parseHyperVGuestReadyFailureObservation(result.stdout || ""))
+            : false,
+        status: typeof result.status === "number" ? result.status : null,
+        timedOut: result.timedOut === true,
+        stdoutBytes: Buffer.byteLength(String(result.stdout || ""), "utf8"),
+        stderrBytes: Buffer.byteLength(String(result.stderr || ""), "utf8"),
+        ...(diagnosticCode ? { diagnosticCode } : {}),
+    };
+}
+
 function hyperVGuestReadinessFailureCode(backend: "windows-vm" | "linux-vm", result: ProviderCommandResult): string {
     if (backend === "windows-vm") {
         const observation = parseHyperVGuestReadyFailureObservation(result.stdout || "");
@@ -12831,6 +12862,7 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestBootDiagnosticPublic: Record<string, unknown> | null = null;
     let hyperVGuestBootDiagnosticFailureCode: string | null = null;
     let hyperVGuestReadyFailureCode: string | null = null;
+    let hyperVGuestReadyFailureDetail: HyperVGuestReadinessFailureDetail | null = null;
     let hyperVGuestReadyTrace: HyperVLinuxGuestReadyTrace | null = null;
     let hyperVContainedRuntimeState: "Off" | null = null;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
@@ -13267,6 +13299,10 @@ async function lifecycleCommandInvokeUnlocked(
         && isHyperVBackend(parsed.backend)
         && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
         hyperVGuestReadyFailureCode = hyperVGuestReadinessFailureCode(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
+        hyperVGuestReadyFailureDetail = hyperVGuestReadinessFailureDetail(
+            parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm",
+            hyperVGuestReadyExecution,
+        );
         if (parsed.backend === "linux-vm") {
             hyperVGuestReadyFailureCode = hyperVLinuxGuestReadyTraceFailureCode(
                 hyperVGuestReadyTrace,
@@ -13555,6 +13591,7 @@ async function lifecycleCommandInvokeUnlocked(
                             ready: false,
                             provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
                             error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                            ...(hyperVGuestReadyFailureDetail ? { errorDetail: hyperVGuestReadyFailureDetail } : {}),
                             ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
                             ...(hyperVGuestBootDiagnosticPublic ? { diagnostic: hyperVGuestBootDiagnosticPublic } : {}),
                             diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
@@ -13594,6 +13631,7 @@ async function lifecycleCommandInvokeUnlocked(
                                         : "hyper-v-powershell-direct",
                                     error: hyperVGuestReadyFailureCode
                                         || "guest-not-ready",
+                                    ...(hyperVGuestReadyFailureDetail ? { errorDetail: hyperVGuestReadyFailureDetail } : {}),
                                     ...(hyperVGuestReadyTrace ? { readiness: hyperVGuestReadyTrace } : {}),
                                     diagnosticAvailable: Boolean(
                                         hyperVGuestBootDiagnosticPublic,
@@ -13611,6 +13649,7 @@ async function lifecycleCommandInvokeUnlocked(
                             guestReadiness: {
                                 provider: parsed.backend === "linux-vm" ? "hyper-v-ssh" : "hyper-v-powershell-direct",
                                 error: hyperVGuestReadyFailureCode || "guest-not-ready",
+                                ...(hyperVGuestReadyFailureDetail ? { errorDetail: hyperVGuestReadyFailureDetail } : {}),
                                 diagnosticAvailable: Boolean(hyperVGuestBootDiagnosticPublic),
                                 ...(hyperVGuestBootDiagnosticFailureCode ? { diagnosticError: hyperVGuestBootDiagnosticFailureCode } : {}),
                             },

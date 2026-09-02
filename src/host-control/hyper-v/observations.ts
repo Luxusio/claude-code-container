@@ -335,18 +335,22 @@ export function parseHyperVGuestReadyObservation(stdout: string): HyperVGuestRea
 
 export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVGuestReadyFailureObservation | null {
     const parsed = parseLastJsonObject(stdout);
+    // A precondition failure can legitimately report zero attempts; the deadline path cannot,
+    // because reaching it means the loop ran.
+    const timedOut = parsed?.error === "hyper-v-guest-ready-timeout";
+    const failed = parsed?.error === "hyper-v-guest-ready-failed";
     if (!parsed
         || parsed.ok !== false
-        || parsed.error !== "hyper-v-guest-ready-timeout"
+        || (!timedOut && !failed)
         || typeof parsed.reason !== "string"
         || parsed.reason.length > 128
         || !/^(?:hyper-v-[a-z0-9-]{3,120}|powershell-direct-(?:attempt-timeout|authentication-failed|session-unavailable|unavailable))$/.test(parsed.reason)
         || typeof parsed.attempts !== "number"
         || !Number.isSafeInteger(parsed.attempts)
-        || parsed.attempts < 1) return null;
+        || parsed.attempts < (timedOut ? 1 : 0)) return null;
     return {
         ok: false,
-        error: "hyper-v-guest-ready-timeout",
+        error: timedOut ? "hyper-v-guest-ready-timeout" : "hyper-v-guest-ready-failed",
         reason: parsed.reason,
         attempts: parsed.attempts,
     };

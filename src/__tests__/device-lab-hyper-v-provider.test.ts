@@ -2196,6 +2196,11 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("powershell-direct-authentication-failed");
         expect(script).toContain("$Failure | ConvertTo-Json");
         expect(script).toContain("hyper-v-vm-ownership-mismatch");
+        // Every exit path emits the structured failure, including the preconditions that used to
+        // throw onto stderr where the broker could not read them.
+        expect(script).toContain("error = 'hyper-v-guest-ready-failed'");
+        expect(script).toContain("if ($Reason -notmatch '^hyper-v-[a-z0-9-]{3,120}$') { $Reason = 'hyper-v-guest-ready-precondition-failed' }");
+        expect(script.match(/\$Failure \| ConvertTo-Json/g)).toHaveLength(2);
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId: vmId.toUpperCase(), vmName, computerName: "CCC-WIN", attempts: 4 })))
             .toEqual({ ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 4 });
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
@@ -2203,6 +2208,16 @@ describe("Hyper-V provider adapter", () => {
             .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 })))
             .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 });
+        // A precondition failure now round-trips its real reason instead of dying on stderr as an
+        // unparseable PowerShell exception, which is what collapsed every early exit to a bare
+        // powershell-direct-unavailable. Zero attempts is legitimate here and only here.
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0 })))
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0 });
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3 })))
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3 });
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-unavailable", attempts: 0 }))).toBeNull();
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-elsewhere", reason: "hyper-v-guest-credential-unavailable", attempts: 1 }))).toBeNull();
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "C:\\secret", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "C:\\secret", attempts: 150 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: `hyper-v-${"x".repeat(121)}`, attempts: 150 }))).toBeNull();
         const cappedCommand = hyperVGuestReadyCommand({
