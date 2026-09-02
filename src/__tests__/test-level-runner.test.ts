@@ -653,6 +653,11 @@ function realTestFilesWithCallTool() {
     const root = join(repoRoot, "scripts", "real-tests");
     return readdirSync(root)
         .filter((file) => file.endsWith(".ts"))
+        // Vitest specs are not runner call sites: the level 3 node runner never imports them, so
+        // they can never be reachable. They also quote `callTool(` as source-inspection text
+        // (hyper-v-vm-e2e.test.ts asserts on `callTool("device_stop"` appearing in a function
+        // body), which this text match would otherwise read as a real MCP call.
+        .filter((file) => !file.endsWith(".test.ts"))
         .filter((file) => /callTool\(/.test(readFileSync(join(root, file), "utf-8")))
         .sort();
 }
@@ -1130,6 +1135,7 @@ describe("test level runner", () => {
             "test:level3",
             "test:level3:hyper-v",
             "test:level3:hyper-v:windows",
+            "test:level3:hyper-v:windows:library",
             "test:level3:hyper-v:linux",
         ]);
     });
