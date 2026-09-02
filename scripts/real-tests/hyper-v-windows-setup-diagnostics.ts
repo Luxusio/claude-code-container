@@ -169,14 +169,18 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // names no cause. The message is host text; it is bounded here and redacted on the reading
         // side by mountFailureMessage, which is the only path by which this field reaches output.
         //
-        // Redaction is deliberately NOT attempted here. A user-profile rule at this stage stopped at
-        // the first space, so `C:\Users\Kyeong Jae\disk.vhdx` arrived at the reader already split
-        // into `[user-profile] Jae\disk.vhdx` — a fragment with no drive letter for the reader's
-        // whole-path rule to match, leaving the surname beside a marker that read as though
-        // redaction had completed. Splitting the work across two stages is what made a partial
-        // redaction look like a finished one; one stage that sees the raw message cannot.
+        // Neither redaction NOR truncation is attempted here — both fragment. A user-profile rule at
+        // this stage stopped at the first space, so `C:\Users\Kyeong Jae\disk.vhdx` arrived at the
+        // reader already split into `[user-profile] Jae\disk.vhdx`, a fragment with no drive letter
+        // for the reader's whole-path rule to match. A length cap does the same thing for a longer
+        // message: cutting at 200 chars can land inside the segment after a space and leave `Jae`
+        // behind, beside a marker that reads as though redaction had completed.
+        //
+        // So the stage that redacts is also the stage that bounds. `mountFailureMessage` truncates
+        // AFTER redacting, which is the only order that cannot manufacture a fragment. Wire size
+        // stays bounded by the MAX_OUTPUT_BYTES check on the whole stdout; a message large enough to
+        // breach that fails the diagnostic outright, which loses the diagnosis but leaks nothing.
         "      $MountMessage = [string]$_.Exception.Message",
-        `      if ($MountMessage.Length -gt ${MOUNT_MESSAGE_MAX_CHARS}) { $MountMessage = $MountMessage.Substring(0, ${MOUNT_MESSAGE_MAX_CHARS}) }`,
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
         // included in the comparison, so a check passing just under the deadline cannot then add a
@@ -288,14 +292,17 @@ function mountFailureCode(value: unknown): string | null {
     return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
 }
 
-// A drive-lettered or UNC path, continuing across spaces only while the next segment still contains
-// a separator. That is what makes `C:\Program Files\Hyper-V\x.vhdx` and `C:\Users\Kyeong Jae\x.vhdx`
-// redact whole: stopping at the first space left a fragment — a surname, in the second case — next
-// to a marker that read as if redaction had completed, which is worse than no marker at all. Prose
-// after an unquoted path is not swallowed, because it has no separator.
+// A drive-lettered or UNC path, continuing across spaces while the run of following segments still
+// reaches another separator. Stopping at the first space left a fragment — a surname, for
+// `C:\Users\Kyeong Jae\x.vhdx` — beside a marker that read as if redaction had completed, which is
+// worse than no marker at all. Looking past a whole run rather than one segment is what carries
+// `C:\Program Files\Virtual Hard Disks\x.vhdx`, the default Hyper-V VHD location, which a
+// one-segment form truncated to `(host-path) Hard Disks\x.vhdx`. Prose after an unquoted path is
+// not swallowed, because it never reaches another separator.
+//
 // `;` is excluded alongside the quotes so trailing message punctuation is not swallowed into the
 // path and can still be mapped to `,` below.
-const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:\s[^\s'";]*\\[^\s'";]*)*/g;
+const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:(?:\s[^\s'";]*)*?\s[^\s'";]*\\[^\s'";]*)*/g;
 
 function mountFailureMessage(value: unknown): string | null {
     if (typeof value !== "string") return null;
@@ -305,8 +312,8 @@ function mountFailureMessage(value: unknown): string | null {
     //
     // Host paths go next, BEFORE `redactLine`: its user-profile rule stops at the first space, so
     // letting it run first would consume `C:\Users\Kyeong` and leave `Jae\...` with no drive letter
-    // for the broader rule to match. The disk path is already published as its own field, so
-    // dropping it whole loses nothing.
+    // for the broader rule to match. Dropping the path whole costs little — the mount target is the
+    // device's own disk, which the caller supplied and already knows.
     //
     // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
     // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.

@@ -974,7 +974,12 @@ describe("Hyper-V E2E zero-config image selection", () => {
             // saw a fragment with no drive letter and the name survived beside a marker that read
             // as complete. This also keeps the fixtures below honest: they feed the reader exactly
             // what the guest emits, so a passing assertion describes the real pipeline.
-            expect(diagnosticProgram).not.toContain("$MountMessage = [regex]::Replace");
+            // Pins the class, not one spelling: `-replace`, `[Regex]::` (PowerShell is
+            // case-insensitive) and a spacing variant all slipped past a literal string check.
+            expect(diagnosticProgram.match(/\$MountMessage\s*=[^\n]*/g)).toEqual([
+                "$MountMessage = $null",
+                "$MountMessage = [string]$_.Exception.Message",
+            ]);
             expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
@@ -1100,6 +1105,27 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path), retry later]",
         });
+        // The default Hyper-V VHD location has two space-bearing components. Looking ahead only one
+        // segment stopped at "Virtual" and left "Hard Disks\..." exposed.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "cannot open C:\\Program Files\\Virtual Hard Disks\\disk.vhdx now" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path) now]",
+        });
+        // Longer than the cap, with the path straddling where a guest-side Substring used to cut.
+        // Truncating before redacting left the tail of a name behind; the reader truncates after.
+        const straddling = `${"X".repeat(180)} C:\\Users\\Kyeong Jae\\device-lab\\disk.vhdx failed`;
+        const straddlingResult = run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: straddling },
+        }) as { ok: false; code: string };
+        expect(straddlingResult.code).toContain("(host-path)");
+        expect(straddlingResult.code).not.toContain("Jae");
+        expect(straddlingResult.code).not.toContain("Kyeong");
         expect(run({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }))
             .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
         expect(run({
