@@ -11,9 +11,44 @@ import { deviceLabOwnerId, deviceLabProjectMountPath } from "../device-lab-owner
 import { readDeviceRuntimeProcessIdentity } from "../device-lab-process-identity.js";
 import { withSharedMutationLockAsync } from "../device-lab-shared-state.js";
 import { hyperVVmName } from "../host-control/hyper-v/index.js";
+import { HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP } from "../hyper-v-windows/low-level/powershell-transport.js";
 import { backendRoot, cleanupOwner, close, listen, ownerRoot, ownerRpcEndpoint, ownerRpcHeaders, writeBrokerDevices } from "./helpers/host-broker-test-fixture.js";
 
+// The typed Windows library never puts its operation script on the command line. The fixed
+// bootstrap reads one Base64 ASCII blob from stdin and runs the { script, input } envelope it
+// decodes (doc/hyper-v-windows/REQ__internal-library-contract.md, "The fixed bootstrap MUST pass
+// its UTF-8 JSON envelope as Base64 ASCII"). This fixture stands in for the PowerShell host, so it
+// has to unwrap that envelope the same way.
+function memoryBootstrapEnvelope(
+    command: { args: string[]; input?: string },
+): { script: string; input: string } | null {
+    if (command.args.at(-1) !== HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP || !command.input) return null;
+    const decoded = JSON.parse(Buffer.from(command.input, "base64").toString("utf8")) as {
+        script?: unknown;
+        input?: unknown;
+    };
+    if (typeof decoded.script !== "string" || typeof decoded.input !== "string") return null;
+    return { script: decoded.script, input: decoded.input };
+}
+
+// The operation request the library asked for, or null when this command is not a library call.
+function nativeLibraryRequest(
+    command: { args: string[]; input?: string },
+): { operation: string; selector?: { kind: string } } | null {
+    const envelope = memoryBootstrapEnvelope(command);
+    if (envelope) {
+        return envelope.script.includes("Write-HyperVWindowsSuccess")
+            ? JSON.parse(envelope.input) as { operation: string; selector?: { kind: string } }
+            : null;
+    }
+    return providerScript(command).includes("Write-HyperVWindowsSuccess") && command.input
+        ? JSON.parse(command.input) as { operation: string; selector?: { kind: string } }
+        : null;
+}
+
 function providerScript(command: { args: string[]; input?: string }): string {
+    const memoryEnvelope = memoryBootstrapEnvelope(command);
+    if (memoryEnvelope) return memoryEnvelope.script;
     if (command.args.at(-1) === "-" && typeof command.input === "string") return command.input;
     const fileIndex = command.args.indexOf("-File");
     if (fileIndex >= 0) {
@@ -674,9 +709,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
-            const nativeRequest = script.includes("Write-HyperVWindowsSuccess") && command.input
-                ? JSON.parse(command.input) as { operation: string; selector?: { kind: string } }
-                : null;
+            const nativeRequest = nativeLibraryRequest(command);
             if (nativeRequest) {
                 if (nativeRequest.operation === "Start-VM") vmState = "Running";
                 if (nativeRequest.operation === "Stop-VM") vmState = "Off";
@@ -924,7 +957,7 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.slice(callsBeforeStaleLifecycle).some(([command]) => {
                 if (!command.input) return false;
                 try {
-                    return JSON.parse(command.input).operation === "Stop-VM";
+                    return nativeLibraryRequest(command)?.operation === "Stop-VM";
                 } catch {
                     return false;
                 }
