@@ -4910,6 +4910,11 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         // distrusted `deleted` flag). Both mean the mutation ran and its report cannot be trusted,
         // so there is no drift for reconciliation to repair.
         //
+        // One legacy condition deliberately does not come back: an observation the broker could not
+        // parse at all also answered `hyper-v-snapshot-invalid-result`. The typed client raises that
+        // as a protocol error, which reaches the provider-failure branch with reconciliation behind
+        // it — a stricter answer for a response the library itself could not decode.
+        //
         // The ownership fences stay off this list on purpose. `hyper-v-snapshot-ownership-mismatch`
         // and `hyper-v-snapshot-vm-ownership-mismatch` were `ownedSnapshotPrelude`/`ownedVmPrelude`
         // throws inside PowerShell: they fired before any mutation, exited non-zero, and reached the

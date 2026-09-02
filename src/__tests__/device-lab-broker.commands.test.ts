@@ -737,7 +737,6 @@ describe("device-lab host broker lifecycle commands", () => {
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
         let snapshotOwnershipMismatch = false;
-        let snapshotDuplicateOnHost = false;
         let snapshotRestoreProviderFailure = false;
         let restoreRetryJournalObserved = false;
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
@@ -787,17 +786,10 @@ describe("device-lab host broker lifecycle commands", () => {
                     };
                 }
                 if (nativeRequest.operation === "Get-VMSnapshot") {
-                    // A second checkpoint carrying the same owner-scoped name, created out of band.
-                    // The ownership fence must refuse to act on either one.
-                    const observed = !snapshotExists
-                        ? []
-                        : snapshotDuplicateOnHost
-                            ? [nativeSnapshot, { ...nativeSnapshot, id: sameNameReplacementVmId }]
-                            : [nativeSnapshot];
                     return {
                         ...command,
                         status: 0,
-                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMSnapshot", ok: true, items: observed }),
+                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMSnapshot", ok: true, items: snapshotExists ? [nativeSnapshot] : [] }),
                         stderr: "",
                     };
                 }
@@ -1187,9 +1179,10 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await invalidOptions.json()).toEqual(expect.objectContaining({ error: "invalid-hyper-v-snapshot-options" }));
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeInvalidOptions);
             writeFileSync(devicesPath, validDevicesState);
-            rmSync(join(deviceRoot, "snapshot-operation.json"), { force: true });
 
             const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
+            // Nothing here removes the journal the rejected call wrote — the 400 branch clears it
+            // itself, because the request never reached the provider and left nothing to reconcile.
             expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
             const callsBeforeDryRunCreate = commandRunner.mock.calls.length;
@@ -1233,22 +1226,28 @@ describe("device-lab host broker lifecycle commands", () => {
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ snapshots: unknown[] }> }).devices[0].snapshots).toHaveLength(1);
             snapshotDeleteConfirmationFailure = false;
 
-            // A tracked checkpoint the host no longer reports exactly once is out-of-band drift,
-            // not an untrustworthy result. The legacy ownership prelude threw inside PowerShell for
-            // this case, which exited non-zero and reached the provider-failure branch so journal
+            // A tracked checkpoint the host no longer reports is out-of-band drift, not an
+            // untrustworthy result. The legacy ownership prelude threw inside PowerShell for this
+            // case, which exited non-zero and reached the provider-failure branch so journal
             // reconciliation could repair it. Collapsing it onto hyper-v-snapshot-invalid-result
             // would skip the repair that exists for exactly this drift.
+            //
+            // The journal from the case above is cleared first so the pre-operation reconcile does
+            // not consume the drift before the ownership fence sees it — this asserts the fence's
+            // own behavior, not the pre-op path's.
             const devicesBeforeDrift = readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"));
-            snapshotDuplicateOnHost = true;
+            rmSync(snapshotOperationPath, { force: true });
+            snapshotExists = false;
             const callsBeforeDrift = commandRunner.mock.calls.length;
             const driftedDelete = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
             expect(driftedDelete.status).toBe(502);
             expect(await driftedDelete.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-provider-failed" }));
             expect(commandRunner.mock.calls.slice(callsBeforeDrift)
                 .some(([issued]) => providerScript(issued).includes("Repair-CccVmSnapshotState"))).toBe(true);
-            snapshotDuplicateOnHost = false;
+            // Reconciliation owns the journal it repaired; nothing else clears it here.
+            expect(existsSync(snapshotOperationPath)).toBe(false);
+            snapshotExists = true;
             writeFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), devicesBeforeDrift);
-            rmSync(join(deviceRoot, "snapshot-operation.json"), { force: true });
 
             const snapshotDeleted = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
             expect(snapshotDeleted.status).toBe(200);
@@ -1361,21 +1360,23 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
             expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
             const snapshotRepairCalls = commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("Repair-CccVmSnapshotState"));
-            // The 7th is the duplicate-checkpoint drift case: the ownership fence must reach the
-            // provider-failure branch so reconciliation runs.
-            expect(snapshotRepairCalls).toHaveLength(7);
+            // Unchanged by the drift case: it clears the preceding journal itself, so the repair
+            // that used to fire on the following delete's pre-operation reconcile now fires inside
+            // the drift case instead. The drift block asserts that one directly.
+            expect(snapshotRepairCalls).toHaveLength(6);
             for (const [command] of snapshotRepairCalls) {
                 expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
             // Up from 90 with the snapshot migration: the typed library issues one primitive per
             // call, so operations that were a single PowerShell script now cost several round trips
             // (an ownership read before each mutation, a VM state read around restore, and an
-            // absence read confirming a delete). The last 5 are the two new error-path cases: the
-            // result-mismatch case costs a create preflight and the checkpoint itself with no
-            // reconciliation behind it, and the duplicate-checkpoint drift case costs an ownership
-            // read plus its reconciliation. The corrupted-metadata case costs nothing at all.
+            // absence read confirming a delete). The three new error-path cases add 3: the
+            // result-mismatch case costs a create preflight plus the checkpoint itself with no
+            // reconciliation behind it, the drift case costs one ownership read (its reconciliation
+            // moved here from the following delete rather than adding to the total), and the
+            // corrupted-metadata case costs nothing at all — that is the point of its 400.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(107);
+            expect(commandRunner).toHaveBeenCalledTimes(105);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
