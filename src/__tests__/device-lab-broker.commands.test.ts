@@ -561,11 +561,14 @@ describe("device-lab host broker lifecycle commands", () => {
         }
     });
 
+    // The typed library has no self-reported `deleted` flag to distrust, so rollback confirmation is
+    // now an observation: the checkpoint must be gone afterwards. These are the three ways the host
+    // can fail to establish that, all of which must still leave the rollback unconfirmed.
     it.each([
-        ["missing deleted", JSON.stringify({ ok: true, snapshotId: "87654321-4321-4321-4321-cba987654321", snapshotName: "placeholder" })],
-        ["false deleted", JSON.stringify({ ok: true, snapshotId: "87654321-4321-4321-4321-cba987654321", snapshotName: "placeholder", deleted: false })],
-        ["malformed output", "not-json"],
-    ])("preserves snapshot journal evidence when create rollback returns %s", async (_name, rollbackOutput) => {
+        ["a still-present checkpoint", "checkpoint-remains"],
+        ["a native error", "native-error"],
+        ["malformed output", "malformed"],
+    ])("preserves snapshot journal evidence when create rollback returns %s", async (_name, rollbackFailure) => {
         const cwd = join(process.env.HOME!, `broker-hyper-v-snapshot-rollback-${_name.replaceAll(" ", "-")}`);
         mkdirSync(cwd, { recursive: true });
         const ownerId = deviceLabOwnerId(cwd);
@@ -598,26 +601,55 @@ describe("device-lab host broker lifecycle commands", () => {
         writeFileSync(diskPath, "root-vhdx");
         const stateFile = join(stateRoot, "devices.json");
         const providerName = `ccc-${ownerId}-rollback`;
+        const nativeSnapshot = {
+            id: snapshotId,
+            name: providerName,
+            vmId,
+            vmName,
+            snapshotType: "Recovery",
+            parentSnapshotId: null,
+            parentSnapshotName: null,
+            creationTimeMilliseconds: 1_700_000_000_000,
+        };
+        const nativeEnvelope = (operation: string, items: unknown[]) =>
+            JSON.stringify({ schemaVersion: 1, operation, ok: true, items });
+        let removeAttempted = false;
         const commandRunner = vi.fn((command) => {
             const script = providerScript(command);
+            const nativeRequest = nativeLibraryRequest(command);
+            if (nativeRequest) {
+                if (nativeRequest.operation === "Checkpoint-VM") {
+                    const state = JSON.parse(readFileSync(stateFile, "utf8"));
+                    writeFileSync(stateFile, JSON.stringify({ devices: state.devices.map((device: Record<string, unknown>) => ({ ...device, concurrentMutation: true })) }));
+                    return { ...command, status: 0, stdout: nativeEnvelope("Checkpoint-VM", [nativeSnapshot]), stderr: "" };
+                }
+                if (nativeRequest.operation === "Get-VMSnapshot") {
+                    // The checkpoint stays visible after a failed rollback, which is exactly what
+                    // leaves the deletion unconfirmed in the "checkpoint-remains" case.
+                    const present = !removeAttempted || rollbackFailure === "checkpoint-remains";
+                    return { ...command, status: 0, stdout: nativeEnvelope("Get-VMSnapshot", present ? [nativeSnapshot] : []), stderr: "" };
+                }
+                if (nativeRequest.operation === "Remove-VMSnapshot") {
+                    removeAttempted = true;
+                    const leaked = {
+                        ...command,
+                        executable: `C:\\host-secret\\${rollbackSecret}\\powershell.exe`,
+                        args: ["-EncodedCommand", rollbackSecret],
+                        stderr: "",
+                        error: `host error at C:\\host-secret\\${rollbackSecret}`,
+                    };
+                    if (rollbackFailure === "native-error") {
+                        return { ...leaked, status: 1, stdout: JSON.stringify({ schemaVersion: 1, operation: "Remove-VMSnapshot", ok: false, errorCode: "snapshot-not-found" }) };
+                    }
+                    if (rollbackFailure === "malformed") {
+                        return { ...leaked, status: 0, stdout: "not-json" };
+                    }
+                    return { ...leaked, status: 0, stdout: nativeEnvelope("Remove-VMSnapshot", []) };
+                }
+                return { ...command, status: 0, stdout: nativeEnvelope(nativeRequest.operation, []), stderr: "" };
+            }
             if (script.includes("$Snapshots = @(Get-VMSnapshot")) {
                 return { ...command, status: 0, stdout: JSON.stringify({ ok: true, vmId, vmName, state: "Off", status: "Operating normally", diskPath, checkpointPolicy: "ProductionOnly", snapshots: [] }), stderr: "" };
-            }
-            if (script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot")) {
-                const state = JSON.parse(readFileSync(stateFile, "utf8"));
-                writeFileSync(stateFile, JSON.stringify({ devices: state.devices.map((device: Record<string, unknown>) => ({ ...device, concurrentMutation: true })) }));
-                return { ...command, status: 0, stdout: JSON.stringify({ ok: true, snapshotId, snapshotName: providerName, snapshotType: "Recovery" }), stderr: "" };
-            }
-            if (script.includes("Remove-VMSnapshot")) {
-                return {
-                    ...command,
-                    executable: `C:\\host-secret\\${rollbackSecret}\\powershell.exe`,
-                    args: ["-EncodedCommand", rollbackSecret],
-                    status: 0,
-                    stdout: rollbackOutput.replace("placeholder", providerName),
-                    stderr: "",
-                    error: `host error at C:\\host-secret\\${rollbackSecret}`,
-                };
             }
             return { ...command, status: 1, stdout: "", stderr: "unexpected provider command" };
         });
@@ -714,6 +746,47 @@ describe("device-lab host broker lifecycle commands", () => {
                 if (nativeRequest.operation === "Start-VM") vmState = "Running";
                 if (nativeRequest.operation === "Stop-VM") vmState = "Off";
                 if (nativeRequest.operation === "Remove-VM" && !deleteConfirmationFailure) vmExists = false;
+                if (nativeRequest.operation === "Restore-VMSnapshot") {
+                    if (snapshotRestoreProviderFailure) {
+                        snapshotRestoreProviderFailure = false;
+                        return { ...command, status: 1, stdout: "", stderr: "simulated restore provider failure" };
+                    }
+                    if (existsSync(join(deviceRoot, "snapshot-operation.json"))) restoreRetryJournalObserved = true;
+                    vmState = "Off";
+                }
+                if (nativeRequest.operation === "Checkpoint-VM") {
+                    if (snapshotProviderFailure) {
+                        return { ...command, status: 1, stdout: "", stderr: "simulated checkpoint provider failure" };
+                    }
+                    snapshotExists = true;
+                }
+                if (nativeRequest.operation === "Remove-VMSnapshot" && !snapshotDeleteConfirmationFailure) snapshotExists = false;
+                const nativeSnapshot = {
+                    id: snapshotId,
+                    name: `ccc-${ownerId}-before-install`,
+                    vmId,
+                    vmName,
+                    snapshotType: "Recovery",
+                    parentSnapshotId: null,
+                    parentSnapshotName: null,
+                    creationTimeMilliseconds: 1_700_000_000_000,
+                };
+                if (nativeRequest.operation === "Checkpoint-VM") {
+                    return {
+                        ...command,
+                        status: 0,
+                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Checkpoint-VM", ok: true, items: [nativeSnapshot] }),
+                        stderr: "",
+                    };
+                }
+                if (nativeRequest.operation === "Get-VMSnapshot") {
+                    return {
+                        ...command,
+                        status: 0,
+                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMSnapshot", ok: true, items: snapshotExists ? [nativeSnapshot] : [] }),
+                        stderr: "",
+                    };
+                }
                 const observedVmId = vmExists
                     ? vmId
                     : nativeRequest.operation === "Get-VM" && nativeRequest.selector?.kind === "name"
@@ -1227,7 +1300,12 @@ describe("device-lab host broker lifecycle commands", () => {
             for (const [command] of snapshotRepairCalls) {
                 expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
-            expect(commandRunner).toHaveBeenCalledTimes(90);
+            // Up from 90 with the snapshot migration: the typed library issues one primitive per
+            // call, so operations that were a single PowerShell script now cost several round trips
+            // (an ownership read before each mutation, a VM state read around restore, and an
+            // absence read confirming a delete). This guard exists to catch runaway provider
+            // traffic, so it stays exact.
+            expect(commandRunner).toHaveBeenCalledTimes(102);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

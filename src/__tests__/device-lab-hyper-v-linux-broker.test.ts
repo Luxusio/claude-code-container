@@ -1846,6 +1846,7 @@ describe("device-lab Hyper-V broker", () => {
         let bootDiagnosticState: string | null = null;
         let bootDiagnosticFailure: "command" | "invalid" | "identity" | null = null;
         let snapshotExists = false;
+        let snapshotProviderName = "";
         let sshFailure = false;
         let readinessFailure = false;
         let managedReadinessFailure = false;
@@ -1953,6 +1954,27 @@ describe("device-lab Hyper-V broker", () => {
                         controllerLocation: 1,
                     }] : []) };
                 }
+                const snapshotItem = (name: string) => ({
+                    id: snapshotId,
+                    name,
+                    vmId,
+                    vmName,
+                    snapshotType: "Production",
+                    parentSnapshotId: null,
+                    parentSnapshotName: null,
+                    creationTimeMilliseconds: 1_700_000_000_000,
+                });
+                if (operationRequest.operation === "Checkpoint-VM") {
+                    // Echo back the owner-scoped name the adapter asked for; the naming convention
+                    // is Device Lab's, so the host never invents one.
+                    snapshotProviderName = operationRequest.snapshotName;
+                    snapshotExists = true;
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, [snapshotItem(snapshotProviderName)]) };
+                }
+                if (operationRequest.operation === "Get-VMSnapshot") {
+                    return { ...command, ...hyperVWindowsOperationSuccess(operationRequest.operation, snapshotExists ? [snapshotItem(snapshotProviderName)] : []) };
+                }
+                if (operationRequest.operation === "Remove-VMSnapshot") snapshotExists = false;
                 if (operationRequest.operation === "Start-VM") vmState = "Running";
                 if (operationRequest.operation === "Stop-VM") vmState = "Off";
                 if (operationRequest.operation === "Remove-VM") vmExists = false;

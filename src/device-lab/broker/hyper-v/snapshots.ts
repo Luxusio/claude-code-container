@@ -80,11 +80,16 @@ export async function deleteDeviceLabHyperVSnapshot(
     target: DeviceLabHyperVSnapshotTarget,
     options?: { readonly signal?: AbortSignal },
 ): Promise<DeviceLabHyperVSnapshotDeleteObservation> {
+    const selector = { kind: "id", id: target.vmId } as const;
     const snapshot = await resolveOwnedHyperVSnapshot(client, target, options);
-    await client.removeVMSnapshot({
-        selector: { kind: "id", id: target.vmId },
-        snapshot: { kind: "id", id: snapshot.id },
-    }, options);
+    await client.removeVMSnapshot({ selector, snapshot: { kind: "id", id: snapshot.id } }, options);
+    // The legacy provider self-reported a `deleted` flag, which the broker had to distrust. The
+    // typed protocol has no such field, so confirm by observation instead: the checkpoint must be
+    // gone. A host that reports success while leaving it behind is still unconfirmed.
+    const remaining = await client.getVMSnapshots(selector, options);
+    if (remaining.some((candidate) => candidate.id.toLowerCase() === snapshot.id.toLowerCase())) {
+        throw new Error("hyper-v-snapshot-delete-unconfirmed");
+    }
     return { ...observation(snapshot), deleted: true };
 }
 

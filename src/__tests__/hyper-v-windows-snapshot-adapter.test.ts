@@ -101,9 +101,20 @@ describe("Device Lab Hyper-V snapshot adapter", () => {
             .rejects.toThrow("hyper-v-snapshot-ownership-mismatch");
     });
 
+    it("refuses to report a delete the host did not actually perform", async () => {
+        // Remove-VMSnapshot reports success but the checkpoint is still there on the follow-up read.
+        const stubborn = client({ getVMSnapshots: vi.fn(async () => [snapshot()]) });
+        await expect(deleteDeviceLabHyperVSnapshot(stubborn, { vmId, providerName }))
+            .rejects.toThrow("hyper-v-snapshot-delete-unconfirmed");
+    });
+
     it("deletes the resolved checkpoint by id and reports it deleted", async () => {
         const removeVMSnapshot = vi.fn(async () => undefined);
-        const deleted = await deleteDeviceLabHyperVSnapshot(client({ removeVMSnapshot }), { vmId, providerName });
+        const reads = [[snapshot()], []];
+        const deleted = await deleteDeviceLabHyperVSnapshot(
+            client({ removeVMSnapshot, getVMSnapshots: vi.fn(async () => reads.shift() ?? []) }),
+            { vmId, providerName },
+        );
         expect(removeVMSnapshot).toHaveBeenCalledWith(
             { selector: { kind: "id", id: vmId }, snapshot: { kind: "id", id: snapshotId } },
             undefined,
