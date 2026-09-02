@@ -292,17 +292,23 @@ function mountFailureCode(value: unknown): string | null {
     return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
 }
 
-// A drive-lettered or UNC path, continuing across spaces while the run of following segments still
-// reaches another separator. Stopping at the first space left a fragment — a surname, for
+// A drive-lettered or UNC path, continuing across spaces while the next few segments still reach
+// another separator. Stopping at the first space left a fragment — a surname, for
 // `C:\Users\Kyeong Jae\x.vhdx` — beside a marker that read as if redaction had completed, which is
-// worse than no marker at all. Looking past a whole run rather than one segment is what carries
+// worse than no marker at all. Looking past more than one segment is what carries
 // `C:\Program Files\Virtual Hard Disks\x.vhdx`, the default Hyper-V VHD location, which a
-// one-segment form truncated to `(host-path) Hard Disks\x.vhdx`. Prose after an unquoted path is
-// not swallowed, because it never reaches another separator.
+// one-segment form truncated to `(host-path) Hard Disks\x.vhdx`.
+//
+// The look-ahead is capped at two segments rather than unbounded. Unbounded, any later backslash
+// anywhere in the message pulled the prose between into the match: `C:\a <forty words> tail\x`
+// collapsed to a single marker, and `copy C:\a\b.vhdx to D:\c\d.vhdx now` lost its verb. Safe, but
+// it erased the very diagnosis this field exists to carry. Two covers the real path shapes — a
+// space-bearing directory is at most two words in practice — and bounds the damage between two
+// paths in one message to those two words.
 //
 // `;` is excluded alongside the quotes so trailing message punctuation is not swallowed into the
 // path and can still be mapped to `,` below.
-const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:(?:\s[^\s'";]*)*?\s[^\s'";]*\\[^\s'";]*)*/g;
+const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:(?:\s[^\s'";]*){0,2}?\s[^\s'";]*\\[^\s'";]*)*/g;
 
 function mountFailureMessage(value: unknown): string | null {
     if (typeof value !== "string") return null;

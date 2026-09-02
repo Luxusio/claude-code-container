@@ -1115,6 +1115,16 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path) now]",
         });
+        // The look-ahead past a space must stay bounded. Unbounded, any later backslash pulled the
+        // prose between into the match and the diagnosis vanished into one marker.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "C:\\a is busy and the retry also failed on the second attach\\x" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=(host-path) is busy and the retry also failed on the second attach\\x]",
+        });
         // Longer than the cap, with the path straddling where a guest-side Substring used to cut.
         // Truncating before redacting left the tail of a name behind; the reader truncates after.
         const straddling = `${"X".repeat(180)} C:\\Users\\Kyeong Jae\\device-lab\\disk.vhdx failed`;
