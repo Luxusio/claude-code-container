@@ -172,9 +172,12 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "      $MountMessage = [regex]::Replace($MountMessage, '(?i)[A-Z]:\\\\Users\\\\[^\\\\\\s]+', '[user-profile]')",
         `      if ($MountMessage.Length -gt ${MOUNT_MESSAGE_MAX_CHARS}) { $MountMessage = $MountMessage.Substring(0, ${MOUNT_MESSAGE_MAX_CHARS}) }`,
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
-        // budget: a slow mount failure costs wall-clock the sleeps do not account for.
-        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS} -and [DateTime]::UtcNow -lt $MountDeadline) { Start-Sleep -Milliseconds ([Math]::Min(${MOUNT_BACKOFF_CEILING_MS}, 1000 * [Math]::Pow(2, $Attempt - 1))) }`,
-        "      elseif ($Attempt -lt " + String(MOUNT_MAX_ATTEMPTS) + ") { break }",
+        // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
+        // included in the comparison, so a check passing just under the deadline cannot then add a
+        // full ceiling on top of it — the budget is the stated one, not the stated one plus 15 s.
+        `      $MountSleep = [Math]::Min(${MOUNT_BACKOFF_CEILING_MS}, 1000 * [Math]::Pow(2, $Attempt - 1))`,
+        `      if ($Attempt -lt ${MOUNT_MAX_ATTEMPTS} -and [DateTime]::UtcNow.AddMilliseconds($MountSleep) -lt $MountDeadline) { Start-Sleep -Milliseconds $MountSleep }`,
+        `      elseif ($Attempt -lt ${MOUNT_MAX_ATTEMPTS}) { break }`,
         "    }",
         "  }",
         "  if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }",
@@ -279,20 +282,32 @@ function mountFailureCode(value: unknown): string | null {
     return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
 }
 
+// A drive-lettered or UNC path, continuing across spaces only while the next segment still contains
+// a separator. That is what makes `C:\Program Files\Hyper-V\x.vhdx` and `C:\Users\Kyeong Jae\x.vhdx`
+// redact whole: stopping at the first space left a fragment — a surname, in the second case — next
+// to a marker that read as if redaction had completed, which is worse than no marker at all. Prose
+// after an unquoted path is not swallowed, because it has no separator.
+// `;` is excluded alongside the quotes so trailing message punctuation is not swallowed into the
+// path and can still be mapped to `,` below.
+const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:\s[^\s'";]*\\[^\s'";]*)*/g;
+
 function mountFailureMessage(value: unknown): string | null {
     if (typeof value !== "string") return null;
     // Newlines collapse FIRST. `redactLine`'s secret rule is anchored with `$` and no `m` flag, so
     // on a multi-line message it only ever fired on the last line — a secret on any earlier line
     // passed through verbatim.
     //
-    // Then any absolute host path, not just the user-profile segment `redactLine` knows about: the
-    // likeliest real message here is "cannot access the file 'D:\...\disk.vhdx'", and the disk path
-    // is already published as its own field, so nothing is lost by dropping it.
+    // Host paths go next, BEFORE `redactLine`: its user-profile rule stops at the first space, so
+    // letting it run first would consume `C:\Users\Kyeong` and leave `Jae\...` with no drive letter
+    // for the broader rule to match. The disk path is already published as its own field, so
+    // dropping it whole loses nothing.
     //
     // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
     // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.
-    const redacted = redactLine(String(value).replace(/[\r\n\t]+/g, " "))
-        ?.replace(/[A-Za-z]:\\[^\s'"]*/g, "[host-path]")
+    // `;` becomes `,` for the same reason one level up — the e2e failure line is `;`-separated.
+    const collapsed = String(value).replace(/[\r\n\t]+/g, " ").replace(HOST_PATH_PATTERN, "[host-path]");
+    const redacted = redactLine(collapsed)
+        ?.replace(/;/g, ",")
         .replace(/\[/g, "(")
         .replace(/\]/g, ")")
         .trim()

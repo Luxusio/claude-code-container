@@ -961,7 +961,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(diagnosticProgram).toContain("for ($Attempt = 1; $Attempt -le 10; $Attempt++)");
             // Backoff to a 15 s ceiling: a flat 1 s gave the detached VHD handle only 10 s to be
             // released, which a real host exhausted on every attempt.
-            expect(diagnosticProgram).toContain("if ($Attempt -lt 10 -and [DateTime]::UtcNow -lt $MountDeadline) { Start-Sleep -Milliseconds ([Math]::Min(15000, 1000 * [Math]::Pow(2, $Attempt - 1))) }");
+            expect(diagnosticProgram).toContain("$MountSleep = [Math]::Min(15000, 1000 * [Math]::Pow(2, $Attempt - 1))");
+            // The sleep is inside the comparison, so the budget is 60 s, not 60 s plus one ceiling.
+            expect(diagnosticProgram).toContain("if ($Attempt -lt 10 -and [DateTime]::UtcNow.AddMilliseconds($MountSleep) -lt $MountDeadline) { Start-Sleep -Milliseconds $MountSleep }");
             // The retry budget must stay a known share of the process budget, or overrunning kills
             // the process and the mount detail is never read at all.
             expect(diagnosticProgram).toContain("$MountDeadline = [DateTime]::UtcNow.AddMilliseconds(60000)");
@@ -1046,31 +1048,51 @@ describe("Hyper-V E2E zero-config image selection", () => {
         });
         // Both orderings: the secret rule is anchored at end-of-input with no multiline flag, so
         // redacting before collapsing newlines would only ever catch a secret on the last line.
+        // `a=8` rather than 10 because the retry deadline trips first when mounts fail fast, which
+        // is what a real host reports.
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
-            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "denied for C:\\Users\\Luxus\\disk.vhdx\npassword: hunter2" },
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "denied for C:\\Users\\Luxus\\disk.vhdx\npassword: hunter2" },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=denied for (user-profile)\\disk.vhdx password=(redacted)]",
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=denied for (host-path) password=(redacted)]",
         });
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
-            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "password: hunter2\ndenied for C:\\Users\\Luxus\\disk.vhdx" },
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "password: hunter2\ndenied for C:\\Users\\Luxus\\disk.vhdx" },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=password=(redacted)]",
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=password=(redacted)]",
         });
         // The likeliest real message names the disk by absolute path, which is not under Users and
         // so was invisible to the user-profile rule alone.
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
-            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: "The process cannot access the file 'D:\\device-lab\\owner-9f2\\disk.vhdx' because it is being used." },
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "The process cannot access the file 'D:\\device-lab\\owner-9f2\\disk.vhdx' because it is being used." },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891,m=The process cannot access the file '(host-path)' because it is being used.]",
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=The process cannot access the file '(host-path)' because it is being used.]",
+        });
+        // A path with a space, and a UNC path. Stopping at the first space left a fragment — here a
+        // surname — beside a marker that read as though redaction had completed.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "cannot open C:\\Users\\Kyeong Jae\\device-lab\\disk.vhdx now" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path) now]",
+        });
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "cannot open \\\\fileserver\\share\\device-lab\\disk.vhdx; retry later" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path), retry later]",
         });
         expect(run({ ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }))
             .toEqual({ ok: false, code: "hyper-v-setup-diagnostics-output-invalid" });
