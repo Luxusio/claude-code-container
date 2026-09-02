@@ -240,7 +240,14 @@ try {
 } catch {
     $ErrorCode = [string]$_.Exception.Message
     if ($ErrorCode -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') {
-        $ErrorCode = [string]$_.FullyQualifiedErrorId
+        # The exception message is host text and may carry paths or VM names, so it is only ever
+        # accepted when it already is one of our own bounded codes. FullyQualifiedErrorId is a
+        # structured cmdlet identifier with no caller data, but it contains commas
+        # ("InvalidOperation,Microsoft.HyperV.PowerShell.Commands.CheckpointVM"), which the bounded
+        # pattern rejects. Normalising it keeps the code bounded while preserving the one piece of
+        # diagnosis available; discarding it collapsed every native failure to a single constant.
+        $ErrorCode = (([string]$_.FullyQualifiedErrorId) -replace '[^A-Za-z0-9._:-]', '-').Trim('-')
+        if ($ErrorCode.Length -gt 128) { $ErrorCode = $ErrorCode.Substring(0, 128) }
     }
     Write-HyperVWindowsFailure $Operation $ErrorCode
     exit 1

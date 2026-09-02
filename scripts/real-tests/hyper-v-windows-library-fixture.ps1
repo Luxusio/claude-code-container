@@ -393,7 +393,11 @@ function Invoke-Create([object]$Request) {
         } catch { throw "new-vm-failed" }
         Set-FixtureMarker $Request (([Guid]$CreatedVm.Id).ToString("D").ToLowerInvariant())
         try {
-            Hyper-V\Set-VM -VM $CreatedVm -Notes ([string]$Request.notes) -AutomaticCheckpointsEnabled $false -CheckpointType Disabled -ErrorAction Stop
+            # Standard, not Disabled: the scenario exercises the library's checkpoint primitives
+            # against this fixture. Standard rather than Production because the fixture has blank
+            # VHDXs and no guest OS, so there are no integration services to quiesce.
+            # Automatic checkpoints stay off so starting the VM never creates one behind the test.
+            Hyper-V\Set-VM -VM $CreatedVm -Notes ([string]$Request.notes) -AutomaticCheckpointsEnabled $false -CheckpointType Standard -ErrorAction Stop
         } catch { throw "set-vm-failed" }
         try {
             $DefaultDvds = @(Hyper-V\Get-VMDvdDrive -VM $CreatedVm -ErrorAction Stop)
@@ -494,6 +498,14 @@ function Invoke-Cleanup([object]$Request) {
             throw "marker-vm-id-invalid"
         }
         $Request.vmId = $MarkerId
+    }
+    # A checkpoint creates .avhdx differencing disks beside the fixture VHDXs. Removing the
+    # checkpoint on an Off VM merges them away, but a scenario that fails between create and remove
+    # leaves them behind. They are fixture-owned by construction — every attachment is asserted to
+    # live inside this protected root — so admit them to the allowlist and let the sweep below
+    # delete them. Without this, guarded cleanup would refuse and orphan the VM.
+    foreach ($Item in @(Get-ChildItem -LiteralPath $Root -Force -File -Filter "*.avhdx" -ErrorAction Stop)) {
+        [void]$AllowedFiles.Add((Get-CanonicalPath $Item.FullName))
     }
     foreach ($Item in @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop)) {
         if ($Item.PSIsContainer -or -not $AllowedFiles.Contains((Get-CanonicalPath $Item.FullName))) {
