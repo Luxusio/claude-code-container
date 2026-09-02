@@ -4903,17 +4903,21 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 })
                 : await deleteDeviceLabHyperVSnapshot(snapshotRecording.client, snapshotTarget);
     } catch (error) {
-        // The legacy path validated the provider's own report after the command succeeded: an
-        // unparseable observation, a name that was not the owner-scoped one, or a snapshot id that
-        // did not match the tracked one all answered `hyper-v-snapshot-invalid-result` without
-        // touching journal reconciliation. The adapter raises those same three conditions as
-        // `hyper-v-snapshot-ownership-mismatch`, and replaces the distrusted `deleted` flag with
-        // `hyper-v-snapshot-delete-unconfirmed`. Both keep the legacy response code and stay off
-        // the reconciliation path. `hyper-v-snapshot-vm-ownership-mismatch` deliberately does not:
-        // the legacy prelude failed that check inside PowerShell, so it was a provider failure.
+        // The legacy path answered `hyper-v-snapshot-invalid-result` — and stayed off journal
+        // reconciliation — only for its post-success checks on the provider's own report. The
+        // adapter raises those as `hyper-v-snapshot-result-mismatch` (the created checkpoint is not
+        // the owner-scoped one) and `hyper-v-snapshot-delete-unconfirmed` (which replaces the
+        // distrusted `deleted` flag). Both mean the mutation ran and its report cannot be trusted,
+        // so there is no drift for reconciliation to repair.
+        //
+        // The ownership fences stay off this list on purpose. `hyper-v-snapshot-ownership-mismatch`
+        // and `hyper-v-snapshot-vm-ownership-mismatch` were `ownedSnapshotPrelude`/`ownedVmPrelude`
+        // throws inside PowerShell: they fired before any mutation, exited non-zero, and reached the
+        // provider-failure branch precisely so reconciliation could repair the out-of-band drift
+        // that caused them.
         const boundedErrorCode = hyperVBoundedErrorCode(error, "");
         if (boundedErrorCode === "hyper-v-snapshot-delete-unconfirmed"
-            || boundedErrorCode === "hyper-v-snapshot-ownership-mismatch") {
+            || boundedErrorCode === "hyper-v-snapshot-result-mismatch") {
             return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-invalid-result", ownerId, backend: match.backend, deviceId } };
         }
         // Building the legacy provider command rejected bad options before anything ran, and that
@@ -4923,7 +4927,14 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         // The stable public code is kept as-is rather than derived from the error: every library
         // validation message starts with `hyper-v-windows-validation`, so deriving it would replace
         // the public code with the library's internal namespace on every rejection.
+        //
+        // The journal is cleared on the way out. Legacy rejected bad options before writing it at
+        // all; here the write already happened, and leaving it behind would make a request that
+        // never touched the provider cost the next caller a repair round trip — or, for a restore
+        // journal, wedge the next call on `hyper-v-snapshot-restore-outcome-indeterminate`. Nothing
+        // ran, so there is nothing to reconcile.
         if (error instanceof HyperVWindowsError && error.category === "validation") {
+            clearHyperVSnapshotJournal(hyperVJournalPersistenceRuntime(), ownerId, match.stateKey, deviceId);
             return { status: 400, payload: { ok: false, error: "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId } };
         }
         // The typed client throws instead of returning an execution, so the recorded raw provider

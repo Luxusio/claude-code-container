@@ -737,6 +737,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
         let snapshotOwnershipMismatch = false;
+        let snapshotDuplicateOnHost = false;
         let snapshotRestoreProviderFailure = false;
         let restoreRetryJournalObserved = false;
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
@@ -786,10 +787,17 @@ describe("device-lab host broker lifecycle commands", () => {
                     };
                 }
                 if (nativeRequest.operation === "Get-VMSnapshot") {
+                    // A second checkpoint carrying the same owner-scoped name, created out of band.
+                    // The ownership fence must refuse to act on either one.
+                    const observed = !snapshotExists
+                        ? []
+                        : snapshotDuplicateOnHost
+                            ? [nativeSnapshot, { ...nativeSnapshot, id: sameNameReplacementVmId }]
+                            : [nativeSnapshot];
                     return {
                         ...command,
                         status: 0,
-                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMSnapshot", ok: true, items: snapshotExists ? [nativeSnapshot] : [] }),
+                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Get-VMSnapshot", ok: true, items: observed }),
                         stderr: "",
                     };
                 }
@@ -1149,10 +1157,10 @@ describe("device-lab host broker lifecycle commands", () => {
             snapshotProviderFailure = false;
 
             // A provider that reports success but hands back a checkpoint that is not the
-            // owner-scoped one is not a provider failure — it is an untrustworthy result. The
-            // legacy path caught the same three conditions (unparseable observation, wrong name,
-            // wrong tracked id) by re-reading the observation, answered 502
-            // hyper-v-snapshot-invalid-result, and deliberately stayed off journal reconciliation.
+            // owner-scoped one is not a provider failure — the mutation ran and its own report is
+            // what cannot be trusted. The legacy path caught this by re-reading the observation
+            // after success, answered 502 hyper-v-snapshot-invalid-result, and deliberately stayed
+            // off journal reconciliation because there is no drift to repair.
             snapshotOwnershipMismatch = true;
             const callsBeforeOwnershipMismatch = commandRunner.mock.calls.length;
             const mismatchedSnapshot = await invokeTool("device_snapshot_create", { snapshotName: "ownership-mismatch" });
@@ -1224,6 +1232,24 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(existsSync(snapshotOperationPath)).toBe(true);
             expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ snapshots: unknown[] }> }).devices[0].snapshots).toHaveLength(1);
             snapshotDeleteConfirmationFailure = false;
+
+            // A tracked checkpoint the host no longer reports exactly once is out-of-band drift,
+            // not an untrustworthy result. The legacy ownership prelude threw inside PowerShell for
+            // this case, which exited non-zero and reached the provider-failure branch so journal
+            // reconciliation could repair it. Collapsing it onto hyper-v-snapshot-invalid-result
+            // would skip the repair that exists for exactly this drift.
+            const devicesBeforeDrift = readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"));
+            snapshotDuplicateOnHost = true;
+            const callsBeforeDrift = commandRunner.mock.calls.length;
+            const driftedDelete = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
+            expect(driftedDelete.status).toBe(502);
+            expect(await driftedDelete.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-provider-failed" }));
+            expect(commandRunner.mock.calls.slice(callsBeforeDrift)
+                .some(([issued]) => providerScript(issued).includes("Repair-CccVmSnapshotState"))).toBe(true);
+            snapshotDuplicateOnHost = false;
+            writeFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), devicesBeforeDrift);
+            rmSync(join(deviceRoot, "snapshot-operation.json"), { force: true });
+
             const snapshotDeleted = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
             expect(snapshotDeleted.status).toBe(200);
             expect(await snapshotDeleted.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ snapshots: [], activeSnapshotId: null }) }) }));
@@ -1335,17 +1361,21 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("New-NetNat -Name $NatName"))).toHaveLength(2);
             expect(commandRunner.mock.calls.filter(([command]) => isHyperVNetworkCleanupScript(providerScript(command)))).toHaveLength(4);
             const snapshotRepairCalls = commandRunner.mock.calls.filter(([command]) => providerScript(command).includes("Repair-CccVmSnapshotState"));
-            expect(snapshotRepairCalls).toHaveLength(6);
+            // The 7th is the duplicate-checkpoint drift case: the ownership fence must reach the
+            // provider-failure branch so reconciliation runs.
+            expect(snapshotRepairCalls).toHaveLength(7);
             for (const [command] of snapshotRepairCalls) {
                 expect(JSON.parse(command.input)).toMatchObject({ expectedCheckpointPolicy: "ProductionOnly" });
             }
             // Up from 90 with the snapshot migration: the typed library issues one primitive per
             // call, so operations that were a single PowerShell script now cost several round trips
             // (an ownership read before each mutation, a VM state read around restore, and an
-            // absence read confirming a delete). The ownership-mismatch case adds the last 2 (a
-            // create preflight and the checkpoint itself, with no reconciliation behind them).
+            // absence read confirming a delete). The last 5 are the two new error-path cases: the
+            // result-mismatch case costs a create preflight and the checkpoint itself with no
+            // reconciliation behind it, and the duplicate-checkpoint drift case costs an ownership
+            // read plus its reconciliation. The corrupted-metadata case costs nothing at all.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(104);
+            expect(commandRunner).toHaveBeenCalledTimes(107);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

@@ -248,6 +248,10 @@ try {
         # diagnosis available; discarding it collapsed every native failure to a single constant.
         $ErrorCode = (([string]$_.FullyQualifiedErrorId) -replace '[^A-Za-z0-9._:-]', '-').Trim('-')
         if ($ErrorCode.Length -gt 128) { $ErrorCode = $ErrorCode.Substring(0, 128) }
+        # An absent or entirely non-conforming FullyQualifiedErrorId normalises to "" or to a
+        # leading ./_/:, both of which the client's native-code pattern rejects — which would
+        # downgrade a native failure to a protocol error and lose the native status with it.
+        if ($ErrorCode -notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$') { $ErrorCode = 'native-operation-failed' }
     }
     Write-HyperVWindowsFailure $Operation $ErrorCode
     exit 1

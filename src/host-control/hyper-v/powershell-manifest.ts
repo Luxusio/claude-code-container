@@ -22,7 +22,7 @@ export const HYPER_V_POWERSHELL_MANIFEST = {
         "Get-GuestBootDiagnostic.ps1": { sha256: "f17b2ff0e84c52fd6cb4552bd6f63eb3aad89c37a6f50d52a55d07893b44f943" },
         "Get-LinuxBootstrapNetwork.ps1": { sha256: "3639a76b707216ad75645ac4753d2ad4ab5839bd3a6cfb816c49f489e772e8f3" },
         "Ccc.HyperV.Snapshots.psm1": { sha256: "dacdd19cd6a2ee786db6e353e54b55f2cb144ee7d28a2cb143599b7fce8e19cc" },
-        "Repair-SnapshotState.ps1":{ sha256: "0300e2e6c6fa1dd4ab5ddfd5de6dbdada366249856c36dd0f403fbfe7d757257" },
+        "Repair-SnapshotState.ps1": { sha256: "0300e2e6c6fa1dd4ab5ddfd5de6dbdada366249856c36dd0f403fbfe7d757257" },
         [HYPER_V_WINDOWS_POWERSHELL_ASSET.name]: { sha256: HYPER_V_WINDOWS_POWERSHELL_ASSET.sha256 },
     },
     operations: {

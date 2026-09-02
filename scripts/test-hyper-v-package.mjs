@@ -125,7 +125,9 @@ try {
     const resolverUrl = pathToFileURL(join(packageRoot, "dist", "host-control", "hyper-v", "powershell-assets.js"));
     const { hyperVPowerShellAssetPath } = await import(resolverUrl.href);
 
-    for (const operation of ["linux-bootstrap-network", "guest-boot-diagnostic", "snapshot-create", "snapshot-repair"]) {
+    // "snapshot-create" left the manifest when the typed library took over checkpoints; the
+    // resolver throws on an unknown operation, so a stale entry here aborts the whole loop.
+    for (const operation of ["linux-bootstrap-network", "guest-boot-diagnostic", "snapshot-repair"]) {
         const asset = hyperVPowerShellAssetPath(operation);
         if (!existsSync(asset)) throw new Error(`packaged Hyper-V asset missing: ${operation}`);
         if (relative(packageRoot, asset).startsWith("..")) throw new Error(`packaged Hyper-V asset escaped package: ${operation}`);

@@ -37,6 +37,11 @@ function observation(snapshot: HyperVVirtualMachineSnapshot, state?: string): De
 
 // Ownership fencing, previously enforced inside ownedSnapshotPrelude's PowerShell. Exactly one
 // checkpoint must carry the expected owner-scoped name, and the tracked id when Device Lab has one.
+//
+// This throw keeps the prelude's failure semantics: it fired before the mutation, the script exited
+// non-zero, and the broker treated it as a provider failure and ran journal reconciliation. A
+// tracked checkpoint that is missing or duplicated on the host is exactly the out-of-band drift
+// reconciliation exists to repair, so it must not be confused with an untrustworthy result.
 export async function resolveOwnedHyperVSnapshot(
     client: HyperVWindowsClient,
     target: DeviceLabHyperVSnapshotTarget,
@@ -71,7 +76,11 @@ export async function createDeviceLabHyperVSnapshot(
         snapshotName: target.providerName,
     }, options);
     // Checkpoint-VM -Passthru already returns the created checkpoint, so no name re-read is needed.
-    if (created.name !== target.providerName) throw new Error("hyper-v-snapshot-ownership-mismatch");
+    //
+    // Distinct from the ownership fence above: the mutation already succeeded and the provider's
+    // own report is what cannot be trusted. That was the legacy post-success observation check, and
+    // it answered without reconciliation — there is no drift to repair, only a bad result.
+    if (created.name !== target.providerName) throw new Error("hyper-v-snapshot-result-mismatch");
     return observation(created);
 }
 

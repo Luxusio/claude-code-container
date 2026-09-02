@@ -5,7 +5,6 @@ import { hiddenWindowsPowerShellArgs } from "../../windows-system-powershell.js"
 import {
     type HyperVProviderCommand,
     type HyperVCommandOptions,
-    type HyperVSnapshotOptions,
     type HyperVGuestOptions,
     type HyperVLinuxSshOptions,
 } from "./contracts.js";
@@ -414,20 +413,6 @@ export function ownedVmPrelude(options: HyperVCommandOptions): string[] {
         `$ExpectedMarker = ${psQuote(marker)}`,
         "$Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "if ($Vm.Name -ne $ExpectedName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-vm-ownership-mismatch' }",
-    ];
-}
-
-export function ownedSnapshotPrelude(options: HyperVSnapshotOptions): string[] {
-    const lines = ownedVmPrelude(options);
-    const providerName = hyperVSnapshotName(options.ownerId, options.snapshotName);
-    if (options.snapshotId && !VM_ID_PATTERN.test(options.snapshotId)) throw new Error("hyper-v-snapshot-id-invalid");
-    return [
-        ...lines,
-        `$ExpectedSnapshotName = ${psQuote(providerName)}`,
-        ...(options.snapshotId ? [`$ExpectedSnapshotId = [Guid]${psQuote(options.snapshotId)}`] : []),
-        `$Snapshot = @(Get-VMSnapshot -VM $Vm -ErrorAction Stop | Where-Object { $_.Name -eq $ExpectedSnapshotName${options.snapshotId ? " -and $_.Id -eq $ExpectedSnapshotId" : ""} })`,
-        "if ($Snapshot.Count -ne 1) { throw 'hyper-v-snapshot-ownership-mismatch' }",
-        "$Snapshot = $Snapshot[0]",
     ];
 }
 

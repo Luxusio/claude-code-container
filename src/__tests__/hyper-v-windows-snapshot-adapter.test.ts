@@ -71,10 +71,12 @@ describe("Device Lab Hyper-V snapshot adapter", () => {
         });
     });
 
+    // Distinct from the ownership fence: the checkpoint was already created, so this is an
+    // untrustworthy result rather than drift, and the broker answers it without reconciliation.
     it("refuses a checkpoint the host named differently", async () => {
         const renamed = client({ checkpointVM: vi.fn(async () => snapshot({ name: "someone-elses" })) });
         await expect(createDeviceLabHyperVSnapshot(renamed, { vmId, providerName }))
-            .rejects.toThrow("hyper-v-snapshot-ownership-mismatch");
+            .rejects.toThrow("hyper-v-snapshot-result-mismatch");
     });
 
     it("resolves exactly one owned checkpoint by provider name", async () => {
