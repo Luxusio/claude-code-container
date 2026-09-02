@@ -1242,8 +1242,11 @@ describe("device-lab host broker lifecycle commands", () => {
             const driftedDelete = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
             expect(driftedDelete.status).toBe(502);
             expect(await driftedDelete.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-provider-failed" }));
-            expect(commandRunner.mock.calls.slice(callsBeforeDrift)
-                .some(([issued]) => providerScript(issued).includes("Repair-CccVmSnapshotState"))).toBe(true);
+            const driftCalls = commandRunner.mock.calls.slice(callsBeforeDrift);
+            expect(driftCalls.some(([issued]) => providerScript(issued).includes("Repair-CccVmSnapshotState"))).toBe(true);
+            // The guarantee stated directly rather than inferred from the call count: the fence
+            // refused to act, so no checkpoint removal was ever issued.
+            expect(driftCalls.some(([issued]) => nativeLibraryRequest(issued)?.operation === "Remove-VMSnapshot")).toBe(false);
             // Reconciliation owns the journal it repaired; nothing else clears it here.
             expect(existsSync(snapshotOperationPath)).toBe(false);
             snapshotExists = true;

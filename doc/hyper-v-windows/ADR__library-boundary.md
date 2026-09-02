@@ -143,7 +143,23 @@ receives the resolved provider name and never derives it.
 
 Each slice also costs provider round trips, because the library issues one
 primitive per call where a generated script could batch several. Slice 1 raised
-the Windows lifecycle test's provider call count from 90 to 102.
+the Windows lifecycle test's provider call count from 90 to 105.
+
+### Known gap carried past slice 1
+
+`Invoke-HyperVWindowsOperation.ps1` bounds its error code with
+`-notmatch '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'`. In .NET regex `$` also matches
+before a final newline, so an exception message such as `"AccessDenied\n"`
+satisfies the guard and is emitted verbatim. The client's
+`NATIVE_ERROR_CODE_PATTERN` has no multiline flag and rejects it, so nothing
+leaks — but the native status is lost and the failure degrades to
+`response-envelope-invalid`. Anchoring both guards with `\z` closes it.
+
+This is pre-existing and outside the snapshot slice, so it is deliberately not
+fixed here: changing the script re-pins `HYPER_V_WINDOWS_POWERSHELL_ASSET.sha256`
+and breaks the correspondence between the pinned asset and the Windows host run
+that verified it. It belongs with slice 5, or with any other change that already
+re-pins the asset and re-runs hardware QA.
 
 ## Packaging decision
 
