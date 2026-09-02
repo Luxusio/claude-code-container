@@ -54,6 +54,29 @@ function providerResult(result: DeviceLabHyperVCommandResult): HyperVWindowsExec
     };
 }
 
+export type DeviceLabHyperVRecordingClient = {
+    readonly client: HyperVWindowsClient;
+    // The broker surfaces the raw provider execution in snapshot failure payloads via
+    // redactProviderCommandInput. The typed client throws typed errors instead of returning
+    // executions, so the adapter keeps the most recent one to preserve that response shape.
+    lastExecution(): DeviceLabHyperVCommandResult | null;
+};
+
+export function createRecordingDeviceLabHyperVWindowsClient(
+    options: DeviceLabHyperVWindowsClientOptions,
+): DeviceLabHyperVRecordingClient {
+    let lastExecution: DeviceLabHyperVCommandResult | null = null;
+    const client = createDeviceLabHyperVWindowsClient({
+        ...options,
+        run: async (command, runOptions) => {
+            const result = await options.run(command, runOptions);
+            lastExecution = result;
+            return result;
+        },
+    });
+    return { client, lastExecution: () => lastExecution };
+}
+
 export function createDeviceLabHyperVWindowsClient(
     options: DeviceLabHyperVWindowsClientOptions,
 ): HyperVWindowsClient {

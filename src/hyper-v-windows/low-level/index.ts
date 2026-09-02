@@ -9,13 +9,18 @@ export {
 } from "./powershell-transport.js";
 export { HYPER_V_WINDOWS_OPERATIONS } from "./contracts.js";
 export type {
+    HyperVCheckpointVirtualMachineRequest,
     HyperVDvdDrive,
     HyperVHardDiskDrive,
+    HyperVRemoveSnapshotRequest,
     HyperVRemoveVirtualMachineRequest,
+    HyperVRestoreSnapshotRequest,
+    HyperVSnapshotSelector,
     HyperVStartVirtualMachineRequest,
     HyperVStopVirtualMachineRequest,
     HyperVVirtualMachine,
     HyperVVirtualMachineSelector,
+    HyperVVirtualMachineSnapshot,
     HyperVWindowsCallOptions,
     HyperVWindowsClient,
     HyperVWindowsExecutionContext,
