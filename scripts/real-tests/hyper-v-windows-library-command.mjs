@@ -9,6 +9,7 @@ import {
     requestAdministrator,
     resolveTrustedWindowsPowerShell,
 } from "./hyper-v-windows-library-elevation.mjs";
+import { HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEP_COUNT } from "./hyper-v-windows-library-steps.mjs";
 
 const scriptsDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = join(scriptsDirectory, "..", "..");
@@ -117,13 +118,15 @@ function compactPrecomputedResult(execution) {
         const result = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
         if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("invalid");
         if (result.ok === true && Array.isArray(result.steps)
-            && result.steps.length === 8
+            && result.steps.length === HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEP_COUNT
             && result.steps.every((step) => typeof step === "string" && step.length > 0 && step.length <= 256)) {
             return { status: execution.status, steps: result.steps };
         }
         if (result.ok === false && typeof result.errorCode === "string"
             && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(result.errorCode)) {
-            const completedSteps = Number.isInteger(result.completedSteps) && result.completedSteps >= 0 && result.completedSteps <= 8
+            const completedSteps = Number.isInteger(result.completedSteps)
+                && result.completedSteps >= 0
+                && result.completedSteps <= HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEP_COUNT
                 ? result.completedSteps
                 : 0;
             return { status: 1, errorCode: `${result.errorCode}[steps=${completedSteps}]` };

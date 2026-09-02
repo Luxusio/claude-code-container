@@ -1,27 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import { runHyperVWindowsLibraryScenario } from "./hyper-v-windows-library-real.ts";
+import {
+    HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEP_COUNT,
+    HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEPS,
+} from "./hyper-v-windows-library-steps.mjs";
 import { withExclusiveHyperVLibraryRun } from "./hyper-v-windows-library.ts";
 
 const enabled = process.platform === "win32"
     && process.env.CCC_HYPER_V_WINDOWS_LIBRARY_REAL === "1";
 
-// The scenario's steps are only emitted after their own assertions pass, so pinning the exact
-// ordered list is what stops a refactor from dropping or reordering coverage while keeping the
-// count intact.
-const SCENARIO_STEPS = [
-    "Hyper-V library preflight",
-    "compiled library observed exact 0 HDD / 0 DVD",
-    "compiled library observed exact 2 HDD / 2 empty DVD",
-    "compiled library started VM and settled Running",
-    "compiled library stopped VM and settled Off",
-    "lifecycle safe / attachment-conflict / identity-conflict outcomes",
-    "compiled library created and observed exactly one checkpoint",
-    "compiled library restored and removed the checkpoint by id and by name",
-    "compiled library removed VM and retained both VHDX files",
-    "guarded fixture cleanup",
-] as const;
-const SCENARIO_STEP_COUNT = SCENARIO_STEPS.length;
+const SCENARIO_STEPS = HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEPS;
+const SCENARIO_STEP_COUNT = HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEP_COUNT;
 type PrecomputedResult = {
     readonly status: number;
     readonly steps?: readonly string[];

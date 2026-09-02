@@ -7,6 +7,8 @@ import { fileURLToPath } from "url";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEPS } from "./hyper-v-windows-library-steps.mjs";
+
 import {
     createBoundedPowerShellFileRunner,
     createFixtureOperation,
@@ -598,7 +600,7 @@ describe("standalone compiled-library scenario", () => {
             sleeper: async () => undefined,
         });
 
-        expect(steps).toHaveLength(10);
+        expect(steps).toEqual([...HYPER_V_WINDOWS_LIBRARY_SCENARIO_STEPS]);
         expect(fake.calls.filter((call) => call.startsWith("fixture:"))).toEqual([
             "fixture:preflight",
             "fixture:create",
