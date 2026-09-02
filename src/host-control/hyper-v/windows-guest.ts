@@ -21,6 +21,26 @@ import {
     assertGuestPath,
 } from "./core.js";
 
+// Fixed name of the first-logon program carried as its own file on the CCC_UNATTEND ISO.
+export const HYPER_V_FIRST_LOGON_SCRIPT_NAME = "ccc-first-logon.ps1";
+
+// `FirstLogonCommands/SynchronousCommand/CommandLine` is limited to 1024 characters by the unattend
+// schema. Embedding the first-logon program as a UTF-16LE `-EncodedCommand` payload produced a
+// multi-kilobyte value, so Windows Setup rejected the whole answer file in the oobeSystem pass.
+// The bounded launcher below resolves the exact CCC_UNATTEND volume by label (never a drive letter),
+// then runs the program stored beside the answer file. It carries no credential material and fails
+// closed when the labeled media is missing or ambiguous.
+export const HYPER_V_FIRST_LOGON_LAUNCHER = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "
+    + "\"$ErrorActionPreference='Stop';"
+    + "$m=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=5' | Where-Object { $_.VolumeName -eq 'CCC_UNATTEND' });"
+    + "if ($m.Count -ne 1) { exit 3 };"
+    + `$s=[string]$m[0].DeviceID + '\\${HYPER_V_FIRST_LOGON_SCRIPT_NAME}';`
+    + "if (-not (Test-Path -LiteralPath $s -PathType Leaf)) { exit 4 };"
+    + "& $s\"";
+
+// Schema maximum for a single FirstLogonCommands CommandLine value, after XML decoding.
+export const HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT = 1024;
+
 export function hyperVGuestExecCommand(options: HyperVGuestExecOptions): HyperVProviderCommand {
     if (!options.guestCommand || options.guestCommand.length > 4096 || options.guestCommand.includes("\0")) {
         throw new Error("hyper-v-guest-command-invalid");
@@ -90,7 +110,11 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "foreach ($Name in @('DefaultPassword','DefaultUserName','AutoAdminLogon','AutoLogonCount')) { Remove-ItemProperty -LiteralPath $Winlogon -Name $Name -Force -ErrorAction SilentlyContinue }",
         "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
     ].join("\r\n");
-    const firstLogonEncoded = Buffer.from(firstLogonScript, "utf16le").toString("base64");
+    if (HYPER_V_FIRST_LOGON_LAUNCHER.length > HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT) throw new Error("hyper-v-guest-first-logon-launcher-too-long");
+    // Delivered as its own ISO file instead of an inline encoded command line: the program is ASCII
+    // only (validated IPv4 literals and fixed cmdlet text), so UTF-8 bytes are read identically by
+    // Windows PowerShell 5.1 without a byte-order mark.
+    const firstLogonScriptBase64 = Buffer.from(firstLogonScript, "utf8").toString("base64");
     const script = jsonScript([
         "function Set-CccProvisionStage([string]$Stage) {",
         "  $script:CccProvisionStage = $Stage",
@@ -104,7 +128,8 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         `$ProvisioningMedia = ${psQuote(provisioningMediaPath)}`,
         `$MediaSourceRoot = ${psQuote(mediaSourceRoot)}`,
         `$ExpectedUsername = ${psQuote(options.guestUsername)}`,
-        `$FirstLogonEncoded = ${psQuote(firstLogonEncoded)}`,
+        `$FirstLogonLauncher = ${psQuote(HYPER_V_FIRST_LOGON_LAUNCHER)}`,
+        `$FirstLogonScriptBase64 = ${psQuote(firstLogonScriptBase64)}`,
         "Set-CccProvisionStage 'vm-state'",
         "if ($Vm.State -ne 'Off') { throw 'hyper-v-guest-provision-requires-stopped-vm' }",
         "Set-CccProvisionStage 'input-validation'",
@@ -127,6 +152,7 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  Set-CccProvisionStage 'media-content'",
         "  $PasswordXml = [Security.SecurityElement]::Escape($PlainPassword)",
         "  $UsernameXml = [Security.SecurityElement]::Escape($ExpectedUsername)",
+        "  $LauncherXml = [Security.SecurityElement]::Escape($FirstLogonLauncher)",
         // The CCC account is created in the oobeSystem pass (NOT specialize): the Microsoft Windows
         // Server evaluation VHD is specialized (its specialize pass already ran during image build),
         // so a specialize-pass account creation never executes and the guest stalls at OOBE. Creating
@@ -138,7 +164,7 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "  <settings pass=\"oobeSystem\">",
         "    <component name=\"Microsoft-Windows-Shell-Setup\" processorArchitecture=\"amd64\" publicKeyToken=\"31bf3856ad364e35\" language=\"neutral\" versionScope=\"nonSxS\" xmlns:wcm=\"http://schemas.microsoft.com/WMIConfig/2002/State\">",
         "      <AutoLogon><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><Enabled>true</Enabled><LogonCount>1</LogonCount><Username>$UsernameXml</Username></AutoLogon>",
-        "      <FirstLogonCommands><SynchronousCommand wcm:action=\"add\"><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $FirstLogonEncoded</CommandLine><Description>Remove CCC bootstrap secrets</Description><Order>1</Order></SynchronousCommand></FirstLogonCommands>",
+        "      <FirstLogonCommands><SynchronousCommand wcm:action=\"add\"><CommandLine>$LauncherXml</CommandLine><Description>Remove CCC bootstrap secrets</Description><Order>1</Order></SynchronousCommand></FirstLogonCommands>",
         "      <OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><ProtectYourPC>3</ProtectYourPC></OOBE>",
         "      <UserAccounts><LocalAccounts><LocalAccount wcm:action=\"add\"><Password><Value>$PasswordXml</Value><PlainText>true</PlainText></Password><DisplayName>$UsernameXml</DisplayName><Group>Administrators</Group><Name>$UsernameXml</Name></LocalAccount></LocalAccounts></UserAccounts>",
         "    </component>",
@@ -146,12 +172,14 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "</unattend>",
         "\"@",
         "  $UnattendBytes = [Text.Encoding]::UTF8.GetBytes($Unattend)",
-        "  $IsoFiles = [ordered]@{ 'Autounattend.xml' = $UnattendBytes; 'unattend.xml' = $UnattendBytes }",
+        "  $FirstLogonBytes = [Convert]::FromBase64String($FirstLogonScriptBase64)",
+        `  $IsoFiles = [ordered]@{ 'Autounattend.xml' = $UnattendBytes; 'unattend.xml' = $UnattendBytes; '${HYPER_V_FIRST_LOGON_SCRIPT_NAME}' = $FirstLogonBytes }`,
         "  Set-CccProvisionStage 'media-build'",
         ...isoWriterLines(),
         "  Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND' $MediaSourceRoot",
         "  $IsoFiles = $null",
         "  $UnattendBytes = $null",
+        "  $FirstLogonBytes = $null",
         "  Set-CccProvisionStage 'media-attach'",
         "  try { Add-VMDvdDrive -VM $Vm -Path $ProvisioningMedia -ErrorAction Stop | Out-Null } catch { throw 'hyper-v-guest-provisioning-media-attach-failed' }",
         "  $OsDisks = @(Get-VMHardDiskDrive -VM $Vm -ErrorAction Stop | Where-Object { [string]$_.Path -eq $DiskPath })",

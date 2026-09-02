@@ -2,7 +2,7 @@ import { spawnSync } from "child_process";
 import { readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-export const HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT = "hyper-v-windows-unattend-oobe-schema-v1";
+export const HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT = "hyper-v-windows-unattend-oobe-schema-v2";
 export const HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT = "hyper-v-powershell-direct-bounded-probe-v1";
 export const HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT = "hyper-v-windows-library-v1";
 export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [

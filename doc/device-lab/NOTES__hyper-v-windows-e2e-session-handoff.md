@@ -142,7 +142,7 @@ ATTEST Hyper-V broker pid=36044 startedAt=2026-08-27T04:32:15.188Z
 That is the exact broker identity used by every earlier run. The launcher rebuilt `dist`, but package
 version remained `1.1.90` and the unattend edit had not advanced a required broker capability, so the
 compatibility check reused the already-running Node process. The old generator produced the same old
-ISO. Add and require `hyper-v-windows-unattend-oobe-schema-v1`; the next run is valid only if ATTEST
+ISO. Add and require `hyper-v-windows-unattend-oobe-schema-v2`; the next run is valid only if ATTEST
 shows a different PID or `startedAt` before the guest result.
 
 ## Attempted schema correction (still incomplete)
@@ -256,6 +256,39 @@ does not prove the cause. The next increment keeps every identity/path/detach gu
 read-only mount up to ten times with nine one-second waits, and emits a Node-validated category/HResult
 suffix if all attempts fail. Use that suffix or the published Setup JSON as the next bounded input.
 
+## Root cause found and fixed (2026-09-02) — unattend CommandLine length
+
+The `oobeSystem` rejection is a **length violation**, not a pass or account-model problem. Measured
+from the real generator for a network-configured provision:
+
+```text
+first-logon program:      1367 chars
+UTF-16LE Base64 payload:  3648 chars
+generated CommandLine:    3738 chars   (schema maximum: 1024)
+```
+
+`FirstLogonCommands/SynchronousCommand/CommandLine` is capped at 1024 characters, so the whole answer
+file was invalid — which is exactly what Setup reported while still proving it had discovered and read
+the file.
+
+Fix landed in `src/host-control/hyper-v/windows-guest.ts`:
+- the first-logon program is now a third ISO entry, `ccc-first-logon.ps1` (bytes unchanged from the
+  previous inline program; no password, no credential material);
+- `CommandLine` holds a **379-character** launcher that resolves the media by volume label
+  (`Win32_LogicalDisk` `DriveType=5`, `VolumeName -eq 'CCC_UNATTEND'`), exits 3 on a non-unique match
+  and 4 on a missing script, then runs it. No drive letter is ever assumed;
+- broker capability bumped `hyper-v-windows-unattend-oobe-schema-v1` → `-v2`, so an already-running
+  same-version broker fails compatibility and takes the identity-fenced restart path.
+
+Local evidence: rendered answer file parses as well-formed XML; decoded `CommandLine` = 379 chars, no
+`-EncodedCommand`; account/AutoLogon/OOBE/ordering unchanged; `npm run build` (includes
+`test:hyper-v:static` + `typecheck:real-tests`), `eslint`, provider and broker suites green.
+
+**Next hardware proof:** rerun `npm run test:level3:hyper-v:windows` on the Windows host. Expect the
+invalid-answer modal to be gone from the 2/5/10/15-minute console timeline. If the guest still stalls,
+the next bounded input is the Panther Setup JSON or the mount category/HResult suffix — not another
+schema edit.
+
 ## Pitfalls / invariants for the next agent
 - The launcher `scripts/real-tests/hyper-v.ts` runs WITHOUT the source loader (package.json:
   `node scripts/real-tests/hyper-v.ts`). It may import ONLY natively-resolvable modules — NO TS
@@ -266,7 +299,13 @@ suffix if all attempts fail. Use that suffix or the published Setup JSON as the 
 - The unattend password must stay as the `$PasswordXml` PowerShell VARIABLE in the generated script —
   the literal password must never appear (asserted by device-lab-hyper-v-provider.test.ts).
 - Provider unattend structure is spec-locked in `src/__tests__/device-lab-hyper-v-provider.test.ts`
-  (~2395-2470); update it whenever the unattend changes.
+  in two adjacent tests — "delivers the first-logon program as an ISO file so the answer file stays
+  within the 1024-character CommandLine limit" and "provisions a per-device Windows guest account
+  without putting its password on the command line". Update both whenever the unattend changes.
+- The first-logon program is no longer inline in the answer file. It lives on the ISO as
+  `ccc-first-logon.ps1`; only the bounded launcher constant
+  `HYPER_V_FIRST_LOGON_LAUNCHER` goes into `CommandLine`, and it must stay ≤ 1024 characters
+  (`hyperVGuestProvisionCommand` throws `hyper-v-guest-first-logon-launcher-too-long` otherwise).
 - Ignore these pre-existing, env-only full-suite failures (unrelated to this work): 3 in
   `src/__tests__/chrome-devtools-integration.test.ts` (needs Chrome DevTools MCP), 2 in
   `claudep/test/{index,runner}.test.ts` (fake claude binary / PATH).

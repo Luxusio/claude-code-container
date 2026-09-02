@@ -43,6 +43,14 @@ export { hyperVLinuxSeedCommand, hyperVLinuxSshReadyCommand, hyperVBootstrapNetw
 export { hyperVPrepareBaseImageCommand, hyperVAcquireBaseImageCommand } from "./images.js";
 export { hyperVStatusCommand, hyperVStartCommand, hyperVGuestReadyCommand, hyperVGuestBootDiagnosticCommand, hyperVStopCommand, hyperVDeleteCommand, hyperVRecoverOrphanCommand } from "./lifecycle.js";
 export { hyperVSnapshotCreateCommand, hyperVSnapshotRepairCommand, hyperVSnapshotRestoreCommand, hyperVSnapshotDeleteCommand } from "./snapshots.js";
-export { hyperVGuestExecCommand, hyperVGuestProvisionCommand, hyperVGuestUploadCommand, hyperVGuestDownloadCommand } from "./windows-guest.js";
+export {
+    hyperVGuestExecCommand,
+    hyperVGuestProvisionCommand,
+    hyperVGuestUploadCommand,
+    hyperVGuestDownloadCommand,
+    HYPER_V_FIRST_LOGON_LAUNCHER,
+    HYPER_V_FIRST_LOGON_SCRIPT_NAME,
+    HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT,
+} from "./windows-guest.js";
 export { HYPER_V_UBUNTU_IMAGE_CATALOG_ID, HYPER_V_UBUNTU_IMAGE_SHA256, HYPER_V_UBUNTU_IMAGE_URL, HYPER_V_UBUNTU_VIRTUAL_SIZE_BYTES } from "./ubuntu-image.js";
 export * from "./observations.js";

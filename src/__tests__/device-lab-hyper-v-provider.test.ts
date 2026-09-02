@@ -5,6 +5,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import {
+    HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT,
+    HYPER_V_FIRST_LOGON_LAUNCHER,
+    HYPER_V_FIRST_LOGON_SCRIPT_NAME,
     hyperVAcquireBaseImageCommand,
     hyperVBootstrapNetworkCleanupCommand,
     hyperVBootstrapNetworkCommand,
@@ -2395,6 +2398,84 @@ describe("Hyper-V provider adapter", () => {
         }))).toBeNull();
     });
 
+    it("delivers the first-logon program as an ISO file so the answer file stays within the 1024-character CommandLine limit", () => {
+        const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
+        const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
+        const guestPassword = "Ccc!7this-is-a-long-disposable-password";
+        const command = hyperVGuestProvisionCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            diskPath: `${deviceRoot}/disks/root.vhdx`,
+            deviceRoot,
+            credentialPath: `${deviceRoot}/secrets/guest.credential.xml`,
+            provisioningMediaPath: `${deviceRoot}/disks/autounattend.iso`,
+            guestUsername: "ccc01234567",
+            guestPassword,
+            networkAddress: "192.168.100.50",
+            networkGateway: "192.168.100.1",
+            networkPrefixLength: 24,
+        });
+        const script = scriptOf(command);
+
+        // The first-logon program is carried as its own ISO entry, not inline in the answer file.
+        const scriptBase64 = script.match(/\$FirstLogonScriptBase64 = '([A-Za-z0-9+/=]+)'/)?.[1];
+        expect(scriptBase64).toBeTruthy();
+        const firstLogonProgram = Buffer.from(scriptBase64!, "base64").toString("utf8");
+        expect(firstLogonProgram).toContain("New-NetIPAddress");
+        expect(firstLogonProgram).toContain("192.168.100.50");
+        expect(firstLogonProgram).toContain("C:\\Windows\\Panther\\unattend.xml");
+        expect(firstLogonProgram).toContain("AutoAdminLogon");
+
+        // Characterization of the defect this fix removes: the previous generator encoded the very
+        // same program as a UTF-16LE -EncodedCommand argument, which is far past the documented
+        // 1024-character maximum for a FirstLogonCommands CommandLine value.
+        const legacyCommandLine = "powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand "
+            + Buffer.from(firstLogonProgram, "utf16le").toString("base64");
+        expect(legacyCommandLine.length).toBeGreaterThan(HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT);
+
+        // The replacement launcher is bounded and carries no encoded payload.
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER.length).toBeLessThanOrEqual(HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT);
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).not.toContain("-EncodedCommand");
+        expect(script).not.toContain("-EncodedCommand $FirstLogonEncoded");
+        expect(script).not.toContain("$FirstLogonEncoded");
+
+        // The launcher resolves the exact CCC_UNATTEND volume by label and fails closed on a missing
+        // or ambiguous match. It never assumes a drive letter.
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain("Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=5'");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain("$_.VolumeName -eq 'CCC_UNATTEND'");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain("if ($m.Count -ne 1) { exit 3 }");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain("if (-not (Test-Path -LiteralPath $s -PathType Leaf)) { exit 4 }");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain(`'\\${HYPER_V_FIRST_LOGON_SCRIPT_NAME}'`);
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).not.toMatch(/[A-Z]:\\/);
+
+        // Process-scoped execution policy only; no machine-wide policy write.
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).toContain("-ExecutionPolicy Bypass");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).not.toContain("Set-ExecutionPolicy");
+
+        // The launcher is XML-escaped through the same path as the account fields, and the ISO entry
+        // name matches the name the launcher looks for.
+        expect(script).toContain("$LauncherXml = [Security.SecurityElement]::Escape($FirstLogonLauncher)");
+        expect(script).toContain("<CommandLine>$LauncherXml</CommandLine>");
+        expect(script).toContain(`'${HYPER_V_FIRST_LOGON_SCRIPT_NAME}' = $FirstLogonBytes`);
+        expect(script).toContain("$FirstLogonBytes = [Convert]::FromBase64String($FirstLogonScriptBase64)");
+        expect(script).toContain("$FirstLogonBytes = $null");
+        // ISO entry names must satisfy the media writer's entry-name contract.
+        expect(HYPER_V_FIRST_LOGON_SCRIPT_NAME).toMatch(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+
+        // No credential material reaches the external script or the launcher.
+        expect(firstLogonProgram).not.toContain(guestPassword);
+        expect(firstLogonProgram).not.toContain("ccc01234567");
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).not.toContain(guestPassword);
+        expect(HYPER_V_FIRST_LOGON_LAUNCHER).not.toContain("ccc01234567");
+        // The password still travels only as the $PasswordXml variable inside the answer file.
+        expect(script).not.toContain(guestPassword);
+        expect(script).toContain("<Value>$PasswordXml</Value>");
+    });
+
     it("provisions a per-device Windows guest account without putting its password on the command line", () => {
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
@@ -2430,7 +2511,8 @@ describe("Hyper-V provider adapter", () => {
         expect(script).toContain("<UserAccounts><LocalAccounts><LocalAccount wcm:action=\"add\">");
         expect(script).toContain("<Group>Administrators</Group>");
         expect(script).toContain("<HideLocalAccountScreen>true</HideLocalAccountScreen>");
-        expect(script).toContain("<SynchronousCommand wcm:action=\"add\"><CommandLine>powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $FirstLogonEncoded</CommandLine><Description>Remove CCC bootstrap secrets</Description><Order>1</Order></SynchronousCommand>");
+        expect(script).toContain("<SynchronousCommand wcm:action=\"add\"><CommandLine>$LauncherXml</CommandLine><Description>Remove CCC bootstrap secrets</Description><Order>1</Order></SynchronousCommand>");
+        expect(script).toContain("$LauncherXml = [Security.SecurityElement]::Escape($FirstLogonLauncher)");
         expect(script).not.toContain("<SynchronousCommand wcm:action=\"add\"><Order>1</Order><Description>Remove CCC bootstrap secrets</Description><CommandLine>");
         expect(script).toContain("<OOBE><HideEULAPage>true</HideEULAPage><HideLocalAccountScreen>true</HideLocalAccountScreen><HideOnlineAccountScreens>true</HideOnlineAccountScreens><ProtectYourPC>3</ProtectYourPC></OOBE>");
         expect(script).not.toContain("SkipMachineOOBE");
@@ -2442,7 +2524,7 @@ describe("Hyper-V provider adapter", () => {
         expect(script.indexOf("<AutoLogon>")).toBeLessThan(script.indexOf("<FirstLogonCommands>"));
         expect(script.indexOf("<FirstLogonCommands>")).toBeLessThan(script.indexOf("<OOBE>"));
         expect(script.indexOf("<OOBE>")).toBeLessThan(script.indexOf("<UserAccounts>"));
-        expect(script).toContain("$IsoFiles = [ordered]@{ 'Autounattend.xml' = $UnattendBytes; 'unattend.xml' = $UnattendBytes }");
+        expect(script).toContain("$IsoFiles = [ordered]@{ 'Autounattend.xml' = $UnattendBytes; 'unattend.xml' = $UnattendBytes; 'ccc-first-logon.ps1' = $FirstLogonBytes }");
         expect(script).toContain("try { $Image.ChooseImageDefaultsForMediaType(1) } catch");
         expect(script).toContain("$Image.VolumeName = $NormalizedVolumeName");
         expect(script).toContain("hyper-v-provisioning-media-filesystem-selection-failed");
