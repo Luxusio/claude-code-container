@@ -1115,15 +1115,35 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=cannot open (host-path) now]",
         });
-        // The look-ahead past a space must stay bounded. Unbounded, any later backslash pulled the
-        // prose between into the match and the diagnosis vanished into one marker.
+        // Runs longer than any plausible segment cap. A count-bounded look-ahead makes the count a
+        // leak boundary and publishes the tail — here a personal name — under a marker asserting
+        // redaction completed.
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
-            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "C:\\a is busy and the retry also failed on the second attach\\x" },
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "C:\\Users\\Jean Luc Marie de Vries\\vm.vhdx is busy" },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=(host-path) is busy and the retry also failed on the second attach\\x]",
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=(host-path) is busy]",
+        });
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "C:\\Program Files\\Common Shared Virtual Hard Disks\\disk.vhdx failed" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=(host-path) failed]",
+        });
+        // The accepted cost of leaving the look-ahead unbounded: prose between two paths is pulled
+        // into the match. Over-redaction loses diagnosis and leaks nothing, which is the way this
+        // trade is meant to fall.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 8, category: "ResourceBusy", hresult: 2147024891, message: "copy C:\\a\\b.vhdx to D:\\c\\d.vhdx now" },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=8,c=ResourceBusy,h=2147024891,m=copy (host-path) now]",
         });
         // Longer than the cap, with the path straddling where a guest-side Substring used to cut.
         // Truncating before redacting left the tail of a name behind; the reader truncates after.

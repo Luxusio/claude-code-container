@@ -299,16 +299,18 @@ function mountFailureCode(value: unknown): string | null {
 // `C:\Program Files\Virtual Hard Disks\x.vhdx`, the default Hyper-V VHD location, which a
 // one-segment form truncated to `(host-path) Hard Disks\x.vhdx`.
 //
-// The look-ahead is capped at two segments rather than unbounded. Unbounded, any later backslash
-// anywhere in the message pulled the prose between into the match: `C:\a <forty words> tail\x`
-// collapsed to a single marker, and `copy C:\a\b.vhdx to D:\c\d.vhdx now` lost its verb. Safe, but
-// it erased the very diagnosis this field exists to carry. Two covers the real path shapes — a
-// space-bearing directory is at most two words in practice — and bounds the damage between two
-// paths in one message to those two words.
+// The look-ahead is deliberately unbounded, and that is a chosen trade, not an oversight. Bounding
+// it by a segment count makes the count a leak boundary: at two, `C:\Users\Jean Luc Marie de
+// Vries\vm.vhdx` and `C:\Program Files\Common Shared Virtual Hard Disks\x.vhdx` both terminate early
+// and publish the tail — a personal name, in the first — beside a marker asserting redaction
+// completed. Unbounded, the cost is the opposite and lesser one: a later backslash anywhere in the
+// message pulls the prose between into the match, so `copy C:\a\b.vhdx to D:\c\d.vhdx now` loses its
+// verb. Over-redaction costs diagnosis and leaks nothing; under-redaction leaks under a marker that
+// says it did not. This field is capped at 200 characters, so the diagnosis at risk is small.
 //
 // `;` is excluded alongside the quotes so trailing message punctuation is not swallowed into the
 // path and can still be mapped to `,` below.
-const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:(?:\s[^\s'";]*){0,2}?\s[^\s'";]*\\[^\s'";]*)*/g;
+const HOST_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'";]*(?:(?:\s[^\s'";]*)*?\s[^\s'";]*\\[^\s'";]*)*/g;
 
 function mountFailureMessage(value: unknown): string | null {
     if (typeof value !== "string") return null;
@@ -318,8 +320,9 @@ function mountFailureMessage(value: unknown): string | null {
     //
     // Host paths go next, BEFORE `redactLine`: its user-profile rule stops at the first space, so
     // letting it run first would consume `C:\Users\Kyeong` and leave `Jae\...` with no drive letter
-    // for the broader rule to match. Dropping the path whole costs little — the mount target is the
-    // device's own disk, which the caller supplied and already knows.
+    // for the broader rule to match. Which path the message named is lost — usually the mount target
+    // the caller already supplied, but not necessarily — and that is accepted: the cause is carried
+    // by the surrounding words, and a message may name a path the caller does not know.
     //
     // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
     // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.

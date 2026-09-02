@@ -78,8 +78,8 @@ diagnostic lines:
   `Dismount-VHD` before emitting a result;
 - inspect only bounded tails of `Panther` and `Panther\UnattendGC` `setupact.log` / `setuperr.log`;
 - retain only bounded lines related to unattend, OOBE, Shell-Setup, errors, failures, or HRESULTs;
-- redact XML `Value` contents, password/token/secret assignments, and host paths before atomic
-  mode-0600 publication; and
+- redact XML `Value` contents, password/token/secret assignments, and user-profile paths in both
+  PowerShell and Node before atomic mode-0600 publication; and
 - publish a versioned timestamped JSON plus
   `results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json`.
 
@@ -100,12 +100,20 @@ strings MUST remain private. Missing, unknown, out-of-range, or inconsistent mou
 fail closed as output-invalid.
 
 The mount message earns its place because category and HResult alone proved useless in practice: a
-real host reported `NotSpecified` / `0x80131500`, which names no cause. It carries a hard constraint —
-**exactly one stage may transform it, and that stage MUST redact before it truncates.** Splitting the
+real host reported `NotSpecified` / `0x80131500`, which names no cause. It is governed separately from
+the log lines above, by two constraints that apply to it alone.
+
+**Exactly one stage may transform it, and that stage MUST redact before it truncates.** Splitting the
 work is what makes a partial redaction look like a finished one: a guest-side rule that stopped at the
 first space, and later a guest-side length cap, each handed the reader a path fragment with no drive
 letter, leaving a user's name beside a marker reading as though redaction had completed. The guest
 therefore performs no substitution and no truncation on this field; Node redacts, then bounds.
+
+**Its host-path rule MUST NOT be bounded by a segment count.** Any numeric bound on how far the rule
+looks past a space is itself a leak boundary — a path whose separator-free run exceeds it publishes
+the tail, and a name is exactly what that tail tends to be. The rule therefore over-matches instead:
+prose between two paths in one message is pulled into the marker. Over-redaction costs diagnosis and
+leaks nothing; under-redaction leaks under a marker asserting it did not.
 
 ### Known gap — the log-line path still redacts in two stages
 
