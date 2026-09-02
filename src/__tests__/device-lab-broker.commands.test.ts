@@ -736,6 +736,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
+        let snapshotOwnershipMismatch = false;
         let snapshotRestoreProviderFailure = false;
         let restoreRetryJournalObserved = false;
         let checkpointPolicy: "Disabled" | "ProductionOnly" = "ProductionOnly";
@@ -772,10 +773,15 @@ describe("device-lab host broker lifecycle commands", () => {
                     creationTimeMilliseconds: 1_700_000_000_000,
                 };
                 if (nativeRequest.operation === "Checkpoint-VM") {
+                    // A host that reports success but names the checkpoint something other than the
+                    // owner-scoped name. The legacy path caught this by re-reading the observation.
+                    const created = snapshotOwnershipMismatch
+                        ? { ...nativeSnapshot, name: "not-the-owner-scoped-name" }
+                        : nativeSnapshot;
                     return {
                         ...command,
                         status: 0,
-                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Checkpoint-VM", ok: true, items: [nativeSnapshot] }),
+                        stdout: JSON.stringify({ schemaVersion: 1, operation: "Checkpoint-VM", ok: true, items: [created] }),
                         stderr: "",
                     };
                 }
@@ -1142,6 +1148,39 @@ describe("device-lab host broker lifecycle commands", () => {
             expect(await failedSnapshot.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-provider-failed" }));
             snapshotProviderFailure = false;
 
+            // A provider that reports success but hands back a checkpoint that is not the
+            // owner-scoped one is not a provider failure — it is an untrustworthy result. The
+            // legacy path caught the same three conditions (unparseable observation, wrong name,
+            // wrong tracked id) by re-reading the observation, answered 502
+            // hyper-v-snapshot-invalid-result, and deliberately stayed off journal reconciliation.
+            snapshotOwnershipMismatch = true;
+            const callsBeforeOwnershipMismatch = commandRunner.mock.calls.length;
+            const mismatchedSnapshot = await invokeTool("device_snapshot_create", { snapshotName: "ownership-mismatch" });
+            expect(mismatchedSnapshot.status).toBe(502);
+            expect(await mismatchedSnapshot.json()).toEqual(expect.objectContaining({ error: "hyper-v-snapshot-invalid-result" }));
+            expect(commandRunner.mock.calls.slice(callsBeforeOwnershipMismatch)
+                .some(([issued]) => providerScript(issued).includes("Repair-CccVmSnapshotState"))).toBe(false);
+            expect((JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<{ snapshots: unknown[] }> }).devices[0].snapshots).toHaveLength(1);
+            snapshotOwnershipMismatch = false;
+            rmSync(join(deviceRoot, "snapshot-operation.json"), { force: true });
+
+            // Building the legacy provider command rejected bad options before anything ran and
+            // answered 400. The typed client rejects the same corrupted device metadata as a
+            // validation error, still before the first round trip, so it must stay a request error
+            // rather than become a provider failure that drags reconciliation in behind it.
+            const devicesPath = join(backendRoot(ownerId, "windows-vm"), "devices.json");
+            const validDevicesState = readFileSync(devicesPath);
+            const corrupted = JSON.parse(validDevicesState.toString("utf8")) as { devices: Array<{ vmId: string }> };
+            corrupted.devices[0]!.vmId = "not-a-guid";
+            writeFileSync(devicesPath, JSON.stringify(corrupted));
+            const callsBeforeInvalidOptions = commandRunner.mock.calls.length;
+            const invalidOptions = await invokeTool("device_snapshot_delete", { snapshotName: "before-install", confirmDestructive: true });
+            expect(invalidOptions.status).toBe(400);
+            expect(await invalidOptions.json()).toEqual(expect.objectContaining({ error: "invalid-hyper-v-snapshot-options" }));
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeInvalidOptions);
+            writeFileSync(devicesPath, validDevicesState);
+            rmSync(join(deviceRoot, "snapshot-operation.json"), { force: true });
+
             const snapshotOperationPath = join(deviceRoot, "snapshot-operation.json");
             expect(existsSync(snapshotOperationPath)).toBe(false);
             writeFileSync(snapshotOperationPath, JSON.stringify({ version: 1, operationId: vmId, ownerId, deviceId, incarnationId, tool: "device_snapshot_create", snapshotName: "before-install", providerName: `ccc-${ownerId}-before-install`, startedAt: new Date().toISOString() }));
@@ -1303,9 +1342,10 @@ describe("device-lab host broker lifecycle commands", () => {
             // Up from 90 with the snapshot migration: the typed library issues one primitive per
             // call, so operations that were a single PowerShell script now cost several round trips
             // (an ownership read before each mutation, a VM state read around restore, and an
-            // absence read confirming a delete). This guard exists to catch runaway provider
-            // traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(102);
+            // absence read confirming a delete). The ownership-mismatch case adds the last 2 (a
+            // create preflight and the checkpoint itself, with no reconciliation behind them).
+            // This guard exists to catch runaway provider traffic, so it stays exact.
+            expect(commandRunner).toHaveBeenCalledTimes(104);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

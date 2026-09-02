@@ -55,6 +55,7 @@ import {
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { HyperVWindowsError } from "./hyper-v-windows/index.js";
 import {
     createDeviceLabHyperVSnapshot,
     deleteDeviceLabHyperVSnapshot,
@@ -4902,11 +4903,28 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 })
                 : await deleteDeviceLabHyperVSnapshot(snapshotRecording.client, snapshotTarget);
     } catch (error) {
-        // A host that reports a successful delete while leaving the checkpoint behind used to
-        // surface as an unparseable `deleted` flag. Keep the same response code for that case, and
-        // keep it off the journal-reconciliation path exactly as before.
-        if (hyperVBoundedErrorCode(error, "") === "hyper-v-snapshot-delete-unconfirmed") {
+        // The legacy path validated the provider's own report after the command succeeded: an
+        // unparseable observation, a name that was not the owner-scoped one, or a snapshot id that
+        // did not match the tracked one all answered `hyper-v-snapshot-invalid-result` without
+        // touching journal reconciliation. The adapter raises those same three conditions as
+        // `hyper-v-snapshot-ownership-mismatch`, and replaces the distrusted `deleted` flag with
+        // `hyper-v-snapshot-delete-unconfirmed`. Both keep the legacy response code and stay off
+        // the reconciliation path. `hyper-v-snapshot-vm-ownership-mismatch` deliberately does not:
+        // the legacy prelude failed that check inside PowerShell, so it was a provider failure.
+        const boundedErrorCode = hyperVBoundedErrorCode(error, "");
+        if (boundedErrorCode === "hyper-v-snapshot-delete-unconfirmed"
+            || boundedErrorCode === "hyper-v-snapshot-ownership-mismatch") {
             return { status: 502, payload: { ok: false, error: "hyper-v-snapshot-invalid-result", ownerId, backend: match.backend, deviceId } };
+        }
+        // Building the legacy provider command rejected bad options before anything ran, and that
+        // answered 400. The typed client performs the same rejection as a validation error, still
+        // before the first provider round trip, so it stays a request error rather than becoming a
+        // provider failure that drags journal reconciliation in behind it.
+        // The stable public code is kept as-is rather than derived from the error: every library
+        // validation message starts with `hyper-v-windows-validation`, so deriving it would replace
+        // the public code with the library's internal namespace on every rejection.
+        if (error instanceof HyperVWindowsError && error.category === "validation") {
+            return { status: 400, payload: { ok: false, error: "invalid-hyper-v-snapshot-options", ownerId, backend: match.backend, deviceId } };
         }
         // The typed client throws instead of returning an execution, so the recorded raw provider
         // result keeps the response's `execution` field intact. It carries the mode/provider fields
