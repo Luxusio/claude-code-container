@@ -13,6 +13,7 @@ import {
     boundedProviderCommandRunnerScript,
     compareBrokerVersionsForTest,
     createDeviceBrokerServer,
+    DEVICE_BROKER_IMPLEMENTED_CAPABILITIES,
     DEVICE_BROKER_REQUIRED_CAPABILITIES,
     DEVICE_BROKER_CONTROL_RESPONSE_LIMIT_BYTES,
     DEVICE_BROKER_ERROR_RESPONSE_LIMIT,
@@ -65,11 +66,17 @@ describe("device-lab host broker daemon", () => {
     // provider failure — a stale broker cost a real Windows host run exactly that way, reporting a
     // sub-second transport error instead of saying it was out of date.
     //
-    // Three lists have to agree, not two: the broker's own, the level-3 attestation's, and the MCP
-    // server's. Bumping the first two and missing the third is what broke twelve MCP routing tests
-    // while this very guard was being written.
+    // Four lists have to agree, not two: what the broker advertises, and the three that require
+    // things of it — the CLI's, the level-3 attestation's, and the MCP server's. Bumping two and
+    // missing the MCP one broke twelve routing tests while this guard was being written.
+    //
+    // The comparison is against what the broker ADVERTISES. Checking against
+    // DEVICE_BROKER_REQUIRED_CAPABILITIES instead would pass green while every attestation failed,
+    // because that list is what the CLI demands of a remote broker, not what this one answers with.
     it("advertises every capability its consumers require", () => {
-        const advertised = new Set(DEVICE_BROKER_REQUIRED_CAPABILITIES);
+        const advertised = new Set<string>(DEVICE_BROKER_IMPLEMENTED_CAPABILITIES);
+        expect(DEVICE_BROKER_REQUIRED_CAPABILITIES.filter((capability) => !advertised.has(capability)))
+            .toEqual([]);
         expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES.filter((capability) => !advertised.has(capability)))
             .toEqual([]);
         expect(REQUIRED_CCC_HOST_BROKER_CAPABILITIES.filter((capability: string) => !advertised.has(capability)))

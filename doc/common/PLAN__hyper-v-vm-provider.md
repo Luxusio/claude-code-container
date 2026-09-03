@@ -111,14 +111,28 @@ Provider selection is automatic. A provider override may exist for diagnostics,
 but it is not required for normal use.
 
 The host broker advertises `hyper-v-vm-managed-auto-images-v20`. This capability
-revision changes whenever the generated Hyper-V PowerShell programs or automatic
-image acquisition semantics change, even when the package version is unchanged
-during local candidate testing. Host CLI and
+revision changes when automatic image acquisition semantics change, even when the
+package version is unchanged during local candidate testing.
+
+It is deliberately **not** bumped for every edit to a generated Hyper-V
+PowerShell program — an earlier version of this sentence claimed that and a dozen
+subsequent commits did not honour it, which is worse than no rule. The asset
+chain is covered instead by the capability that owns whatever changed: the pinned
+`Invoke-HyperVWindowsOperation.ps1` moves with `hyper-v-windows-library`, and a
+manifest entry appearing or disappearing moves with the capability whose feature
+added or retired it. Both are what reject a stale broker whose compiled manifest
+disagrees with the assets on disk — a mismatch otherwise surfaces as an opaque
+sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
+verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v16`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v17`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
-The v16 Linux readiness contract retains the seeded host key as the only
+v17 additionally requires the Windows readiness script to emit its structured
+failure on every exit path rather than only the deadline one, and the not-ready
+payload to carry `errorDetail`; a v16 broker answers
+`powershell-direct-unavailable` for causes it can now name.
+The Linux readiness contract retains the seeded host key as the only
 authoritative identity. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
 when a validated managed-address `HostKeyAlias` is present. Strict verification
@@ -743,7 +757,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v16` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v17` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

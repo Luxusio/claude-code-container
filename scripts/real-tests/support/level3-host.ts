@@ -5,13 +5,17 @@ import { join } from "path";
 export const HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT = "hyper-v-windows-unattend-oobe-schema-v2";
 export const HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT = "hyper-v-powershell-direct-bounded-probe-v1";
 export const HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT = "hyper-v-windows-library-v2";
-// Declared before the required list that references it: the array is evaluated at module load, so a
-// forward reference would hit the temporal dead zone. Naming it once here is also what keeps the
-// required entry and the standalone contract export from drifting to different versions.
+// Every contract that is also exported standalone is declared above the required list and then
+// referenced by it, never re-spelled inside it. Two reasons: the array is evaluated at module load,
+// so a forward reference hits the temporal dead zone; and a duplicated literal is free to drift, so
+// the exported contract and the entry attestation actually checks can silently disagree.
 export const HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT = "hyper-v-guest-readiness-diagnostics-v17";
+export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v39";
+export const HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT = "hyper-v-setup-network-v10";
+export const HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT = "hyper-v-network-failure-diagnostics-v9";
 export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-vm-managed-auto-images-v20",
-    "hyper-v-setup-network-v10",
+    HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT,
     HYPER_V_LEVEL3_GUEST_DIAGNOSTICS_CONTRACT,
     "hyper-v-windows-boot-contract-v1",
     HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT,
@@ -20,12 +24,9 @@ export const HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES = [
     "hyper-v-linux-create-response-v1",
     "hyper-v-image-acquisition-stage-cache-v1",
     "hyper-v-powershell-stage-propagation-v1",
-    "hyper-v-provider-image-finalization-v39",
-    "hyper-v-network-failure-diagnostics-v9",
+    HYPER_V_LEVEL3_PROVIDER_CONTRACT,
+    HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT,
 ];
-export const HYPER_V_LEVEL3_PROVIDER_CONTRACT = "hyper-v-provider-image-finalization-v39";
-export const HYPER_V_LEVEL3_NETWORK_OWNERSHIP_CONTRACT = "hyper-v-setup-network-v10";
-export const HYPER_V_LEVEL3_NETWORK_DIAGNOSTICS_CONTRACT = "hyper-v-network-failure-diagnostics-v9";
 const HOST_BROKER_STATUS_MAX_BYTES = 256 * 1024;
 const HOST_BROKER_STATUS_TIMEOUT_MS = 5000;
 const HOST_BROKER_REPAIR_TIMEOUT_MS = 180000;
