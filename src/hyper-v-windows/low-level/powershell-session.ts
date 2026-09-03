@@ -23,6 +23,11 @@ const DEFAULT_MAX_STARTS = 3;
 // any one caller's deadline was. Matched to the library's per-execution ceiling, so an operation
 // slow enough to trip this would have timed out through the one-shot transport too.
 const DEFAULT_HEALTH_TIMEOUT_MILLISECONDS = 120 * 1000;
+// How long an unproductive start stays on the record. The budget is meant to catch "this host
+// cannot run PowerShell", which presents as failures in quick succession; without expiry it is an
+// absorbing state — once the cap is reached no start is attempted, so no answer can ever arrive to
+// reset it, and three stalls spread across days demote a healthy broker to one-shot permanently.
+const DEFAULT_START_BUDGET_WINDOW_MILLISECONDS = 5 * 60 * 1000;
 
 // The child reads the asset source once, then serves requests from stdin until the stream closes.
 // The asset is still one-operation-per-invocation: the loop lives here, and each iteration
@@ -82,6 +87,8 @@ export type HyperVWindowsSessionOptions = {
     // How long a request may go unanswered before the child is torn down. Deliberately separate from
     // the caller's deadline: see the two timers in send().
     readonly healthTimeoutMilliseconds?: number;
+    // How long an unproductive start counts against the budget above.
+    readonly startBudgetWindowMilliseconds?: number;
 };
 
 export type HyperVWindowsSession = HyperVWindowsExecutor & {
@@ -112,6 +119,10 @@ export function createHyperVWindowsPowerShellSession(
         1,
         Math.trunc(options.healthTimeoutMilliseconds ?? DEFAULT_HEALTH_TIMEOUT_MILLISECONDS),
     );
+    const startBudgetWindowMilliseconds = Math.max(
+        1,
+        Math.trunc(options.startBudgetWindowMilliseconds ?? DEFAULT_START_BUDGET_WINDOW_MILLISECONDS),
+    );
     const pending = new Map<string, Pending>();
     let child: HyperVWindowsSessionProcess | null = null;
     let starting: Promise<HyperVWindowsSessionProcess | null> | null = null;
@@ -121,6 +132,7 @@ export function createHyperVWindowsPowerShellSession(
     // is for is "this host cannot run PowerShell", not "this broker has been up for days".
     let starts = 0;
     let unansweredStarts = 0;
+    let lastUnproductiveStartAt = 0;
     let closed = false;
     let sequence = 0;
 
@@ -196,9 +208,14 @@ export function createHyperVWindowsPowerShellSession(
         if (closed) return null;
         if (child) return child;
         if (starting) return starting;
+        // Expire the record before consulting it. Once the cap is reached no start is attempted, so
+        // handleLine can never run to reset the counter — without expiry the budget is an absorbing
+        // state and a healthy host stays demoted forever.
+        if (Date.now() - lastUnproductiveStartAt > startBudgetWindowMilliseconds) unansweredStarts = 0;
         if (unansweredStarts >= maximumStarts) return null;
         starts += 1;
         unansweredStarts += 1;
+        lastUnproductiveStartAt = Date.now();
         starting = (async () => {
             const asset = verifiedOperationAsset(options.operationAsset);
             const spawned = await options.spawn(HYPER_V_WINDOWS_SESSION_BOOTSTRAP);

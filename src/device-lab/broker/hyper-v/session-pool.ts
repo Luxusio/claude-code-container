@@ -141,6 +141,9 @@ function installProcessExitSweep(): void {
 
 // Wired to the broker server's close event.
 export function retainBrokerHyperVWindowsSessions(): () => void {
+    // A broker exists again, so the closed-pool instance handed to stragglers is stale. Keeping it
+    // would carry an exhausted start budget into the next broker's lifetime.
+    if (holders === 0) closedPoolSession = null;
     holders += 1;
     let released = false;
     return () => {

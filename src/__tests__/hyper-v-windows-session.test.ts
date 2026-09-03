@@ -106,14 +106,21 @@ describe("Hyper-V Windows PowerShell session", () => {
     });
 
     it("verifies the pinned asset before any source reaches the child", async () => {
+        // Counted, not thrown. A spawn that throws is converted by ensureChild into the same
+        // hyper-v-windows-session-unavailable a tampered asset produces, so asserting the error
+        // alone proves nothing — the spawn count is the only thing that distinguishes "verified
+        // first" from "spawned and then failed".
+        let spawns = 0;
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: { ...ASSET, scriptSource: "# tampered" },
             spawn: () => {
-                throw new Error("spawn must not be reached when the asset fails verification");
+                spawns += 1;
+                return fakeChild();
             },
         });
-        // Integrity is checked before spawning, so a tampered asset cannot start a session at all.
+
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-unavailable");
+        expect(spawns).toBe(0);
     });
 
     it("matches responses by id rather than by arrival order", async () => {
@@ -123,14 +130,12 @@ describe("Hyper-V Windows PowerShell session", () => {
 
         const first = session.execute(REQUEST, CONTEXT);
         await vi.waitFor(() => expect(child.written.length).toBe(2));
-        const frame = child.written[1]!;
         // A reply carrying an id nobody awaits must not be handed to the pending caller.
         const foreign = Buffer.from(JSON.stringify({ id: "not-a-pending-id", code: 0, stdout: "wrong" }), "utf8").toString("base64");
         child.emit(`${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${foreign}`);
 
         expect((await first).error).toBe("hyper-v-windows-session-response-uncorrelated");
         expect(child.killed()).toBe(true);
-        void frame;
     });
 
     it("frees the pipe when building the frame throws, instead of wedging every later caller", async () => {
@@ -168,17 +173,27 @@ describe("Hyper-V Windows PowerShell session", () => {
     });
 
     it("serializes concurrent callers onto the single stream", async () => {
-        const child = autoReplyChild((index) => `reply-${index}`);
+        const child = fakeChild();
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        queueMicrotask(() => child.ready());
 
-        const results = await Promise.all([
+        const results = Promise.all([
             session.execute(REQUEST, CONTEXT),
             session.execute(REQUEST, CONTEXT),
             session.execute(REQUEST, CONTEXT),
         ]);
 
-        // One request in flight at a time: replies come back in issue order, never interleaved.
-        expect(results.map((result) => result.stdout)).toEqual(["reply-0", "reply-1", "reply-2"]);
+        // Counting frames, not ordering replies. Replies come back in issue order whether or not the
+        // frames were serialized, because the session correlates by id — so ordering alone would
+        // pass against a transport that wrote all three at once, which is the property this names.
+        await vi.waitFor(() => expect(child.written.length).toBe(2));
+        for (let index = 0; index < 3; index += 1) {
+            expect(child.written).toHaveLength(index + 2);
+            child.reply(child.written[index + 1]!, `reply-${index}`);
+            if (index < 2) await vi.waitFor(() => expect(child.written.length).toBe(index + 3));
+        }
+
+        expect((await results).map((result) => result.stdout)).toEqual(["reply-0", "reply-1", "reply-2"]);
         expect(session.starts()).toBe(1);
     });
 
@@ -346,6 +361,41 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(spawns).toBe(2);
     });
 
+    it("lets the start budget expire, so a stall cannot demote the broker forever", async () => {
+        // Once the cap is reached no start is attempted, so no answer can arrive to reset the
+        // counter — without expiry the budget is an absorbing state. Three stalls spread over a
+        // broker's lifetime would then leave a perfectly healthy host on the one-shot transport
+        // permanently, which is the same class of defect the lifetime counter had.
+        let spawns = 0;
+        let wedged = true;
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            maximumStarts: 2,
+            healthTimeoutMilliseconds: 5,
+            startBudgetWindowMilliseconds: 300,
+            spawn: () => {
+                spawns += 1;
+                const child = wedged ? fakeChild() : autoReplyChild(() => "recovered");
+                if (wedged) queueMicrotask(() => child.ready());
+                return child;
+            },
+        });
+
+        // The health floor is never shorter than the caller's own budget, so both are small here.
+        const stalling = { ...CONTEXT, timeoutMilliseconds: 5 };
+        for (let stall = 0; stall < 2; stall += 1) {
+            expect((await session.execute(REQUEST, stalling)).error).toBe("hyper-v-windows-session-timeout");
+        }
+        expect((await session.execute(REQUEST, stalling)).error).toBe("hyper-v-windows-session-unavailable");
+        expect(spawns).toBe(2);
+
+        // The host is healthy again and enough time has passed that the old stalls no longer count.
+        wedged = false;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("recovered");
+        expect(spawns).toBe(3);
+    });
+
     it("kills the child on close and refuses to start another", async () => {
         const child = autoReplyChild(() => "before-close");
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
@@ -443,9 +493,15 @@ describe("Hyper-V Windows PowerShell session", () => {
     });
 
     it("keeps the operation loop out of the pinned asset", () => {
-        // The asset stays one-operation-per-invocation and byte-identical to what the one-shot
-        // transport verifies; only the bootstrap loops. That is what stops the two transports
-        // executing different operation code.
+        // Asserted against the asset, which is what the title claims. Asserting only that the
+        // bootstrap contains a loop says nothing about where the loop is NOT: the asset staying
+        // one-operation-per-invocation, and byte-identical to what the one-shot transport verifies,
+        // is what stops the two transports executing different operation code.
+        expect(ASSET.scriptSource).not.toContain(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX);
+        expect(ASSET.scriptSource).not.toContain(HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX);
+        expect(ASSET.scriptSource).not.toContain("[Console]::In.ReadLine()");
+        expect(ASSET.scriptSource).not.toMatch(/while\s*\(\s*\$true\s*\)/);
+
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain("$Operation = [ScriptBlock]::Create($ScriptSource)");
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain("$global:CccHyperVJsonInput = [string]$Envelope.input");
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain(HYPER_V_WINDOWS_SESSION_READY_MARKER);

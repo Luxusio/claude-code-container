@@ -24,6 +24,7 @@ export type DeviceLabHyperVCommandResult = {
     // broker's public snapshot payloads rather than failing anywhere.
     readonly mode?: string;
     readonly provider?: string;
+    readonly input?: string;
     readonly status?: number | null;
     readonly stdout?: string;
     readonly stderr?: string;
@@ -156,10 +157,21 @@ export function createDeviceLabHyperVWindowsClient(
             const result = await session.execute(request, bounded);
             if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) {
                 // The session bypasses options.run, so this is the only place a recorder can see the
-                // execution that actually served the primitive. mode/provider are restated here
-                // because the one-shot runner's result carries them and the broker's snapshot
-                // payloads read them straight off the recorded execution.
-                options.record?.({ mode: "exec", provider: "hyper-v", ...result });
+                // execution that actually served the primitive. Everything the redactor reads has to
+                // be restated here, because the broker's snapshot payloads are built straight off
+                // the recorded execution and a missing key silently changes the public response:
+                // mode/provider become the literal keys, input becomes inputConfigured, and a
+                // session timeout has to present as timedOut the way a one-shot timeout does.
+                // Anything less makes the payload depend on which transport happened to serve it.
+                options.record?.({
+                    mode: "exec",
+                    provider: "hyper-v",
+                    // What the session actually writes to the child as this request's input, so the
+                    // field is accurate rather than a marker fabricated to satisfy the redactor.
+                    input: JSON.stringify(request),
+                    ...(result.error === "hyper-v-windows-session-timeout" ? { timedOut: true } : {}),
+                    ...result,
+                });
                 return result;
             }
             // The session could not be established at all. Rather than fail the operation, serve it

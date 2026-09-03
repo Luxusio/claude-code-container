@@ -212,10 +212,26 @@ describe("Device Lab Hyper-V session transport", () => {
         expect(recording.lastExecution()).toBeNull();
         await recording.client.getVM({ kind: "id", id: VM_ID });
 
-        // Pinned through the redactor the broker actually uses, not with a partial match. mode and
-        // provider are read straight off the recorded execution and JSON.stringify drops them when
-        // undefined, so recording a bare execution result would quietly remove two keys from the
-        // device_snapshot_* payloads while every partial assertion still passed.
+        // Compared against the one-shot transport through the redactor the broker actually uses,
+        // rather than pinning the session's own shape. Pinning one side is how this defect recurred
+        // four times: each fix restored the keys it was told about (mode, provider) and left the
+        // next ones (input -> inputConfigured, timedOut) diverging, with the test asserting the
+        // divergence as if it were correct. Equality is the only assertion that cannot rot that way.
+        const viaOneShot = createRecordingDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 1000,
+            run: async (command) => ({
+                mode: command.mode,
+                provider: command.provider,
+                ...(command.input === undefined ? {} : { input: command.input }),
+                status: 0,
+                stdout,
+            }),
+        });
+        await viaOneShot.client.getVM({ kind: "id", id: VM_ID });
+
+        expect(redactProviderCommandInput(recording.lastExecution() as never, true))
+            .toEqual(redactProviderCommandInput(viaOneShot.lastExecution() as never, true));
         expect(redactProviderCommandInput(recording.lastExecution() as never, true)).toEqual({
             mode: "exec",
             provider: "hyper-v",
@@ -223,7 +239,41 @@ describe("Device Lab Hyper-V session transport", () => {
             stdoutPresent: true,
             stderrPresent: false,
             outputRedacted: true,
+            inputConfigured: true,
         });
+    });
+
+    it("reports a session timeout the way a one-shot timeout is reported", async () => {
+        // The failure payload is the one operators read, and timedOut is part of it. A session
+        // timeout that omitted it made device_snapshot_* failures describable only by which
+        // transport served them.
+        const timedOutViaSession = createRecordingDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 1000,
+            run: vi.fn(),
+            session: sessionReturning({ status: null, stdout: "", error: "hyper-v-windows-session-timeout" }),
+        });
+        const timedOutViaOneShot = createRecordingDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 1000,
+            run: async (command) => ({
+                mode: command.mode,
+                provider: command.provider,
+                ...(command.input === undefined ? {} : { input: command.input }),
+                status: null,
+                stdout: "",
+                timedOut: true,
+                error: "timeout",
+            }),
+        });
+
+        await expect(timedOutViaSession.client.getVM({ kind: "id", id: VM_ID })).rejects.toThrow();
+        await expect(timedOutViaOneShot.client.getVM({ kind: "id", id: VM_ID })).rejects.toThrow();
+
+        const session = redactProviderCommandInput(timedOutViaSession.lastExecution() as never, true);
+        const oneShot = redactProviderCommandInput(timedOutViaOneShot.lastExecution() as never, true);
+        expect(session.timedOut).toBe(true);
+        expect(Object.keys(session).sort()).toEqual(Object.keys(oneShot).sort());
     });
 
     it("passes the caller's request through unchanged", async () => {
