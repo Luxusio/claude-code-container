@@ -74,11 +74,13 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         while (index >= 0) {
             const line = buffered.slice(0, index).replace(/\r$/, "");
             buffered = buffered.slice(index + 1);
-            // trim() rather than equality: it strips U+FEFF as well as whitespace, and a BOM on the
-            // first write is a real possibility under some console encodings. A response frame
-            // counts too — a reply proves the read loop was reached at least as strongly as the
-            // marker does, and costs no reach, since a child that dies before the loop emits neither.
-            if (line.trim() === HYPER_V_WINDOWS_SESSION_READY_MARKER
+            // endsWith after trim, not equality. trim() covers U+FEFF — a BOM on the first write is
+            // real under some console encodings — and endsWith covers anything else printed ahead of
+            // the marker on its line. The loosening costs nothing: response frames start with their
+            // own prefix and continue in base64, so no other protocol line ends with this constant.
+            // A response frame counts too, and proves the read loop at least as strongly as the
+            // marker does, at no cost in reach — a child dying before the loop emits neither.
+            if (line.trim().endsWith(HYPER_V_WINDOWS_SESSION_READY_MARKER)
                 || line.startsWith(HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX)) {
                 announcedReady = true;
             }
@@ -112,7 +114,37 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     const notifyExit = (reason: string) => {
         for (const listener of [...exitListeners]) listener(reason);
     };
-    child.once("close", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
+    // Both events, because neither alone is correct. `close` is the one that guarantees the latch is
+    // fresh, since it fires only after stdio drains — but it fires only after stdio drains, and a
+    // grandchild inheriting the child's stdout keeps it open indefinitely. Measured: with a
+    // grandchild holding stdout, `exit` lands immediately and `close` never arrives, so listening to
+    // `close` alone means the death is never reported and the shared pipe is held until the health
+    // floor expires with a code that is not retryable.
+    //
+    // `exit` alone is what this replaced, and it can read a marker that has not been delivered yet.
+    // So: if the latch is already set, `exit` may report at once — the latch is monotone, so nothing
+    // can be lost by acting early. If it is not, wait briefly for `close`, and if it does not come,
+    // report the conservative answer rather than the never-ran one. `close` wins whenever it arrives.
+    const CLOSE_GRACE_MILLISECONDS = 250;
+    let reportedGone = false;
+    const reportGone = (reason: string) => {
+        if (reportedGone) return;
+        reportedGone = true;
+        notifyExit(reason);
+    };
+    child.once("close", () => reportGone(exitReason("hyper-v-windows-session-exited")));
+    child.once("exit", () => {
+        if (announcedReady || latchEvidenceLost) {
+            reportGone("hyper-v-windows-session-exited");
+            return;
+        }
+        const grace = setTimeout(() => {
+            // Never `start-failed` from here: the latch is only unset because nothing has been
+            // delivered yet, which is not evidence that nothing ran.
+            reportGone("hyper-v-windows-session-exited");
+        }, CLOSE_GRACE_MILLISECONDS);
+        if (typeof grace === "object" && grace && "unref" in grace) grace.unref();
+    });
     // "error" means the process could not be spawned only until it has spawned; Node also emits it
     // when a live child cannot be killed or is aborted by signal. spawn-failed is in the adapter's
     // never-ran set, so reporting a live child's error under that name would tell the broker a
@@ -128,7 +160,7 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // instead of failing the one call that raced the exit. Reported as an exit rather than a write
     // failure: by the time a stream-level error arrives on its own, any write we issued has already
     // reported its own outcome through the callback below, which is the signal that actually knows.
-    child.stdin?.on("error", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
+    child.stdin?.on("error", () => reportGone(exitReason("hyper-v-windows-session-exited")));
 
     return {
         write: (line, settled) => {

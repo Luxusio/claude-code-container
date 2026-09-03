@@ -72,6 +72,12 @@ async function bootstrapSource() {
 }
 
 const bootstrap = libraryFixtureOnly ? null : await bootstrapSource();
+if (requireParser && !bootstrap) {
+    // --require-parser already hard-fails when PowerShell is missing; silently dropping a file in
+    // that mode is the same defect in a different place — absence of evidence reported as success.
+    // The usual cause is running this before `tsc`, since the bootstrap is read from dist/.
+    throw new Error("session bootstrap unavailable for parsing: build before running with --require-parser");
+}
 const files = (libraryFixtureOnly ? [libraryFixture] : [
     ...filesUnder(assetRoot),
     libraryFixture,

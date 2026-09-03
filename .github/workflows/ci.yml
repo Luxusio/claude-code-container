@@ -31,11 +31,15 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Repository PSGallery -Scope CurrentUser -Force
           Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Repository PSGallery -Scope CurrentUser -Force
 
-      - name: Parse and analyze Hyper-V PowerShell
-        run: npm run test:hyper-v:pester
-
+      # Build first. The parser check reads the session bootstrap out of dist/, because that
+      # bootstrap is PowerShell assembled from a TypeScript string array and exists on no source
+      # path. Running the check on a tree without dist/ silently dropped it from the file list, so
+      # the one job with a real PowerShell parser was not parsing the one file nothing else can.
       - name: Build
         run: npm run build
+
+      - name: Parse and analyze Hyper-V PowerShell
+        run: npm run test:hyper-v:pester
 
   test:
     runs-on: ubuntu-latest

@@ -281,6 +281,54 @@ describe("Device Lab Hyper-V session transport", () => {
         expect(Object.keys(session).sort()).toEqual(Object.keys(oneShot).sort());
     });
 
+    it("charges the one-shot retry for what the session already spent", async () => {
+        // The session attempt and its retry together must stay inside the caller's deadline. A floor
+        // of half the budget was measured overrunning it by 41%: a 1000ms caller whose session spent
+        // 900ms still got 500ms for the retry.
+        const seen: number[] = [];
+        const client = createDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 4000,
+            run: async (_command, options) => {
+                seen.push(options.timeoutMs);
+                return { status: 0, stdout: envelope([machine]) };
+            },
+            session: {
+                execute: async () => {
+                    await new Promise((resolve) => setTimeout(resolve, 600));
+                    return { status: null, stdout: "", error: "hyper-v-windows-session-unavailable" };
+                },
+            },
+        });
+
+        await client.getVM({ kind: "id", id: VM_ID });
+        expect(seen).toHaveLength(1);
+        // Roughly the remainder, not the whole budget and not a floored half of it.
+        expect(seen[0]).toBeLessThan(3500);
+        expect(seen[0]).toBeGreaterThan(3000);
+    });
+
+    it("does not spawn a retry it has no time to run, but still records the failure", async () => {
+        // Below a plausible Windows cold start a retry can only pay for a process and be killed on
+        // arrival, while overrunning the caller's deadline to do it. Both halves matter: the missing
+        // record would leave the snapshot payload reporting status 0 for a failed operation, and I
+        // found that by reading rather than from a failing test.
+        const run = vi.fn();
+        const recorded: unknown[] = [];
+        const client = createDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 400,
+            run,
+            record: (result) => { recorded.push(result); },
+            session: sessionReturning({ status: null, stdout: "", error: "hyper-v-windows-session-unavailable" }),
+        });
+
+        await expect(client.getVM({ kind: "id", id: VM_ID })).rejects.toThrow(/hyper-v-windows-transport/);
+        expect(run).not.toHaveBeenCalled();
+        expect(recorded).toHaveLength(1);
+        expect(recorded[0]).toMatchObject({ mode: "exec", provider: "hyper-v" });
+    });
+
     it("passes the caller's request through unchanged", async () => {
         const seen: HyperVWindowsExecutionRequest[] = [];
         const client = createDeviceLabHyperVWindowsClient({

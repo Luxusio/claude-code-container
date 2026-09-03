@@ -10,10 +10,11 @@ import { HYPER_V_WINDOWS_SESSION_READY_MARKER } from "../hyper-v-windows/index.j
 // fails the caller outright.
 const MARKER = HYPER_V_WINDOWS_SESSION_READY_MARKER;
 
-// These four drive a real spawned process, because the latch is the one piece of the pool that
-// decides whether the broker re-issues a request and nothing else here exercises a real child.
-// POSIX-only by construction: on Windows an unspawnable executable yields spawn-failed, which is
-// itself in the never-ran set, so the negative assertions would pass for the wrong reason.
+// These drive a real spawned process, because the latch is the one piece of the pool that decides
+// whether the broker re-issues a request and nothing else here exercises a real child. They are
+// skipped on Windows, where a `#!/bin/sh` file is unspawnable and yields spawn-failed — which fails
+// every assertion here, positive and negative alike. That would break `npm test` on the platform
+// this subsystem targets, which is where someone is most likely to run it.
 async function runStub(script: string, timeoutMilliseconds: number) {
     const stub = join(mkdtempSync(join(tmpdir(), "ccc-session-stub-")), "stub.sh");
     writeFileSync(stub, script, { mode: 0o755 });
@@ -90,6 +91,7 @@ describe("broker Hyper-V session pool", () => {
         }
     });
 
+    describe.skipIf(process.platform === "win32")("readiness latch", () => {
     it("classifies a child that never announced itself as never having run anything", { timeout: 20000 }, async () => {
         // `sleep 0.2` before exiting, not an instant exit. An instantly-dead child resolves on the
         // write path — both write callbacks EPIPE — so the test passes with the latch deleted
@@ -105,7 +107,9 @@ describe("broker Hyper-V session pool", () => {
         // then dies silently — indistinguishable to the pool from a real child that read a frame and
         // died mid-operation.
         const result = await runStub(`#!/bin/sh\necho ${MARKER}\nsleep 0.2\n`, 2000);
-        expect(NEVER_RAN).not.toContain(result.error);
+        // The exact code, not merely "not never-ran": a caller that outran its own budget would
+        // report session-timeout, which also satisfies not-never-ran while testing nothing.
+        expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 
     it("recognises the marker through a byte-order mark", async () => {
@@ -113,7 +117,9 @@ describe("broker Hyper-V session pool", () => {
         // BOM on the first write. Exact equality missed it, so a child that announced and then died
         // was classified never-ran and re-issued — 20/20, silently, for the child's whole life.
         const result = await runStub(`#!/bin/sh\nprintf '\\357\\273\\277%s\\n' ${MARKER}\nsleep 0.2\n`, 2000);
-        expect(NEVER_RAN).not.toContain(result.error);
+        // The exact code, not merely "not never-ran": a caller that outran its own budget would
+        // report session-timeout, which also satisfies not-never-ran while testing nothing.
+        expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 
     it("does not lose the marker when a flood forces the line buffer to be dropped", async () => {
@@ -123,9 +129,23 @@ describe("broker Hyper-V session pool", () => {
         // every later request re-issued. Lost evidence now forces the conservative answer instead.
         const result = await runStub(
             `#!/bin/sh\nawk 'BEGIN { while (i++ < 600) printf "%0512000d", 0 }'\necho ${MARKER}\nsleep 0.2\n`,
-            3000,
+            8000,
         );
-        expect(NEVER_RAN).not.toContain(result.error);
+        // The exact code, not merely "not never-ran": a caller that outran its own budget would
+        // report session-timeout, which also satisfies not-never-ran while testing nothing. This one
+        // pipes ~300MB, so the budget is generous — but a loose assertion would let a slow box turn
+        // the test quiet instead of red.
+        expect(result.error).toBe("hyper-v-windows-session-exited");
+    });
+
+    it("recognises the marker behind a prefix on its line", async () => {
+        // trim() covers a BOM and whitespace, not text. A child that printed anything ahead of the
+        // marker on the same line was classified never-ran and re-issued, 15/15 — and that is
+        // exactly the crash-on-start window this mechanism exists for, where the child had already
+        // reached its read loop.
+        const result = await runStub(`#!/bin/sh\nprintf 'noise%s\\n' ${MARKER}\nsleep 0.2\n`, 2000);
+        expect(result.error).toBe("hyper-v-windows-session-exited");
+    });
     });
 
     it("refuses to pool a session once no broker is left to close it", async () => {
