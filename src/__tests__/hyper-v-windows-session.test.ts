@@ -434,6 +434,29 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-stdin-failed");
     });
 
+    it("classifies a failed write as never-ran even when the child had announced itself", async () => {
+        // The shape that had no coverage on either side, and the one a real defect lived in: a child
+        // that HAS announced, whose write then fails. The pool's readiness latch says "this child
+        // spoke", the write says "nothing reached it", and only the second is about this request.
+        // Reading the latch on the write path is what classified an announced child's delivered
+        // request as never-ran — the duplicate-mutation direction. The complement is this: an
+        // announced child whose write genuinely failed is still never-ran, because the frame did not
+        // arrive, and refusing to say so would fail a caller that could safely be served one-shot.
+        const child = fakeChild();
+        (child as { write: (line: string, settled?: (error?: unknown) => void) => void }).write =
+            (line: string, settled?: (error?: unknown) => void) => {
+                if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
+                settled?.(new Error("ERR_STREAM_DESTROYED"));
+                queueMicrotask(() => child.exit("hyper-v-windows-session-stdin-failed"));
+            };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        // Announced before the request is issued, which is what distinguishes this from the case
+        // above it.
+        queueMicrotask(() => child.ready());
+
+        expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-stdin-failed");
+    });
+
     it("releases a caller that is still queued when the session closes", async () => {
         // A caller waiting for the pipe is not in `pending` yet, so failAll cannot reach it. It is
         // released by ensureChild refusing to start on a closed session when its turn comes.
