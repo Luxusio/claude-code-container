@@ -30,8 +30,26 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     const exitListeners: Array<(reason: string) => void> = [];
     let buffered = "";
 
+    // Whether this child has ever produced a byte. It is the only signal measured to separate
+    // "never consumed the request" from "consumed it and then died", deterministically: the
+    // bootstrap announces itself before entering its read loop, so a child that has produced NOTHING
+    // cannot have reached that loop, and therefore cannot have executed anything sent to it.
+    //
+    // The write completion callback looked like it answered this and does not. It reports whether
+    // the bytes left this process, and a write into a pipe succeeds into the kernel buffer whether
+    // or not anyone will ever read it — so for a PowerShell that spawns and dies, the frame lands in
+    // a buffer belonging to a dead reader and the callback reports success. Measured, it identified
+    // the case 2/30 where this latch identifies it 30/30.
+    //
+    // This is NOT a gate on the READY marker reaching the session's line listener; that is unsound,
+    // because the marker can be emitted before the listener attaches and then be lost, which would
+    // move a request toward being retried. This handler is attached synchronously at spawn, before
+    // any byte can arrive, and it does not care what the output was — only that there was some.
+    let producedOutput = false;
+
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
+        producedOutput = true;
         buffered += chunk;
         // A child that never emits a newline must not grow this without bound. Dropping the buffer
         // makes the pending request time out, which discards the session, rather than consuming
@@ -50,13 +68,20 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     });
 
     // stderr is drained but not parsed. Leaving it unread would eventually block the child on a
-    // full pipe, which presents as a wedged session.
+    // full pipe, which presents as a wedged session. It counts toward the latch above: output on
+    // either stream means the child ran far enough to say something, which only makes the latch more
+    // conservative — it can suppress a never-ran classification, never create one.
+    child.stderr?.on("data", () => { producedOutput = true; });
     child.stderr?.resume();
+
+    // A child that never spoke never reached its read loop, so nothing sent to it can have run.
+    // start-failed already carries exactly that meaning and is already treated as never-ran.
+    const exitReason = (reason: string) => (producedOutput ? reason : "hyper-v-windows-session-start-failed");
 
     const notifyExit = (reason: string) => {
         for (const listener of [...exitListeners]) listener(reason);
     };
-    child.once("exit", () => notifyExit("hyper-v-windows-session-exited"));
+    child.once("exit", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
     // "error" means the process could not be spawned only until it has spawned; Node also emits it
     // when a live child cannot be killed or is aborted by signal. spawn-failed is in the adapter's
     // never-ran set, so reporting a live child's error under that name would tell the broker a
@@ -66,13 +91,13 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     let spawned = false;
     child.once("spawn", () => { spawned = true; });
     child.once("error", () => notifyExit(
-        spawned ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-spawn-failed",
+        spawned ? exitReason("hyper-v-windows-session-exited") : "hyper-v-windows-session-spawn-failed",
     ));
     // Without this, a write to a closed stdin raises an unhandled EPIPE and takes the broker down
     // instead of failing the one call that raced the exit. Reported as an exit rather than a write
     // failure: by the time a stream-level error arrives on its own, any write we issued has already
     // reported its own outcome through the callback below, which is the signal that actually knows.
-    child.stdin?.on("error", () => notifyExit("hyper-v-windows-session-exited"));
+    child.stdin?.on("error", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
 
     return {
         write: (line, settled) => {
@@ -83,7 +108,7 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
                 // it: nothing reached the pipe, so re-issuing it one-shot cannot duplicate a
                 // mutation, and without this it failed outright on every attempt.
                 settled?.(error ?? undefined);
-                if (error) notifyExit("hyper-v-windows-session-stdin-failed");
+                if (error) notifyExit(exitReason("hyper-v-windows-session-stdin-failed"));
             });
         },
         onLine: (listener) => { lineListeners.push(listener); },
