@@ -68,10 +68,10 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     });
 
     // stderr is drained but not parsed. Leaving it unread would eventually block the child on a
-    // full pipe, which presents as a wedged session. It counts toward the latch above: output on
-    // either stream means the child ran far enough to say something, which only makes the latch more
-    // conservative — it can suppress a never-ran classification, never create one.
-    child.stderr?.on("data", () => { producedOutput = true; });
+    // full pipe, which presents as a wedged session. Deliberately NOT counted toward the latch: the
+    // proof is entirely about the READY marker on stdout, so stderr adds nothing to it and costs
+    // reach — a PowerShell that writes a startup diagnostic to stderr and then dies is exactly the
+    // population the latch exists to catch, and counting stderr would classify it as having spoken.
     child.stderr?.resume();
 
     // A child that never spoke never reached its read loop, so nothing sent to it can have run.

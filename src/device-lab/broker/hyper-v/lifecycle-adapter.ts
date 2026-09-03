@@ -56,6 +56,10 @@ export type DeviceLabHyperVWindowsClientOptions = {
 // so no operation reached the host and re-issuing cannot apply a mutation twice. A timeout, an exit
 // mid-request and an uncorrelated frame are all deliberately excluded — the request may well have
 // run, and a second Remove-VMSnapshot is not the same as the first.
+// Below this there is no point starting a PowerShell process: a Windows cold start alone is on the
+// order of a few hundred milliseconds, so a retry with less than this can only be killed on arrival.
+const MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS = 500;
+
 const SESSION_NEVER_RAN_ERRORS = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
@@ -211,7 +215,13 @@ export function createDeviceLabHyperVWindowsClient(
             // the queue wait to a fraction of it now. A caller that queued out arrives here with
             // most of its deadline; a caller that lost its budget to a genuinely slow spawn has
             // honestly spent it, and a sliver is the truthful amount left to retry with.
-            const remaining = Math.max(1, bounded.timeoutMilliseconds - (Date.now() - startedAt));
+            const remaining = bounded.timeoutMilliseconds - (Date.now() - startedAt);
+            if (remaining < MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS) {
+                // Not enough left to start PowerShell, let alone run anything. Spawning anyway would
+                // pay a full cold start on the host to be killed immediately, and would overrun the
+                // caller's deadline to do it. The session's own error is the honest answer.
+                return result;
+            }
             return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });
         },
     });

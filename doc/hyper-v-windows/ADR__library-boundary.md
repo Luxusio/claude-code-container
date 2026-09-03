@@ -209,6 +209,28 @@ resets are belt-and-braces for the one variable that could re-aim it silently.
 `$env:` is the only other member of that class and is deliberately not reset —
 the child legitimately needs its inherited environment.
 
+**Two signals decide whether a request reached the child, and only one of them is
+load-bearing.** The latch is: did the child ever write to stdout? The bootstrap
+emits its ready marker and flushes it *before* entering the read loop, so zero
+bytes out proves the loop was never reached, which proves nothing sent was
+executed. That is a logical invariant and it is deterministic. It is not a gate
+on the marker reaching the session's line listener — that would be unsound,
+because the marker can be emitted before the listener attaches and be lost, which
+would move a request toward being retried. The latch is set by a `data` handler
+attached synchronously at spawn, and it does not care what the output was. stderr
+is deliberately excluded: the proof is about stdout, and counting stderr would
+classify a PowerShell that writes a startup diagnostic and dies as having spoken
+— exactly the population this exists to catch.
+
+The write completion callback is the secondary signal and does **not** answer the
+same question. It reports whether the bytes left this process, not whether
+anything read them: a write into a pipe succeeds into the kernel buffer whether
+or not the reader is alive. Measured against an instantly-dying child on Linux it
+identified the case 2/30. It is kept because it is sound where it does fire, and
+because raising the failure from inside it is what orders the correction ahead of
+`failAll` — but anything that depends on catching a dead child must depend on the
+latch, not on it.
+
 **The never-ran classification is checked, not trusted.** The write-path codes
 mean "this frame never reached the child", and that is what makes the broker
 re-issue them — so believing the reason string would make the safety of a
@@ -219,6 +241,14 @@ request as an exit no matter what reason arrives. QA demonstrated the gap with a
 fully conforming process that accepted the frame and then reported
 `stdin-failed`; the shipped implementation never does that, which is exactly why
 nothing would have caught it.
+
+State the boundary as it now stands rather than as it was: **the process is
+trusted for delivery, not for classification.** It asserts one bit — that a
+particular write did not reach the pipe — and that bit is believed. It is not
+trusted to name what happened, which is what the check above removes. The default
+is the safe one: a process that never reports delivery is treated as having
+delivered, so an implementation that does not cooperate can only cause hard
+failures, never a duplicate mutation.
 
 Two related constraints on the session bootstrap follow from the same reasoning.
 The reply is joined, not piped through `Out-String`, because `Out-String` formats
