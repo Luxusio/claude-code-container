@@ -246,6 +246,29 @@ with "this broker has been up for days": the third restart, however far apart,
 made the pool return `hyper-v-windows-session-unavailable` permanently, which
 falls back to one-shot — so the whole feature disappeared with no error anywhere.
 
+**One session is shared across all owners, and this reverses what the task plan
+said.** `PLAN.md` AC-004 required that the session "does not outlive the broker,
+and is not shared across owners". The first half holds — the pool is
+reference-counted and released on broker close. The second half does not: the
+pool keys sessions by PowerShell executable, so every owner on a broker shares
+one child.
+
+That was a deliberate choice and it should be judged as one rather than
+discovered in a code comment. Keying per owner reintroduces exactly the cost the
+slice exists to remove — a device lab serving N owners would hold N long-lived
+PowerShell children, each with its own loaded Hyper-V module, and each owner's
+first primitive would still pay a spawn and an import. The saving would survive
+only within a single owner's flow.
+
+The price is that owner isolation no longer rests on a process boundary. It now
+rests on the claim that the session carries no owner state: every request names
+its own VM by id and the library validates that, so one owner's request cannot
+name another's machine. That claim is a trust-boundary argument, not an
+implementation detail, and it is the reason this deviation needs an independent
+security judgement and owner-isolation coverage rather than the author's
+assurance. Until both exist, treat AC-004's second clause as knowingly
+unsatisfied, not as satisfied by reinterpretation.
+
 The pool is process-scoped and reference-counted. Sessions carry no per-server
 state, so two broker servers in one process share them; tearing them down on the
 first server's `close` would kill a child the second is mid-request on, and
