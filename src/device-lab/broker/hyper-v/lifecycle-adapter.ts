@@ -13,6 +13,7 @@ import {
     type HyperVVirtualMachineReconciliationOutcome,
     type HyperVWindowsClient,
     type HyperVWindowsExecutionResult,
+    type HyperVWindowsExecutor,
 } from "../../../hyper-v-windows/index.js";
 import type { HyperVProviderCommand } from "../../../host-control/hyper-v/index.js";
 import type { HyperVOperationJournal } from "./operation-journal.js";
@@ -35,7 +36,21 @@ export type DeviceLabHyperVWindowsClientOptions = {
     readonly executable: string;
     readonly timeoutMilliseconds: number | (() => number);
     readonly run: DeviceLabHyperVCommandRunner;
+    // When supplied, primitives go through one reused PowerShell process instead of one process
+    // each. Optional so the real-test scenario and any caller without a session keep the one-shot
+    // transport unchanged.
+    readonly session?: HyperVWindowsExecutor;
 };
+
+// The session failures after which retrying is provably safe: each means the child never came up,
+// so no operation reached the host and re-issuing cannot apply a mutation twice. A timeout, an exit
+// mid-request and an uncorrelated frame are all deliberately excluded — the request may well have
+// run, and a second Remove-VMSnapshot is not the same as the first.
+const SESSION_NEVER_RAN_ERRORS = new Set([
+    "hyper-v-windows-session-unavailable",
+    "hyper-v-windows-session-spawn-failed",
+    "hyper-v-windows-session-start-failed",
+]);
 
 export type DeviceLabHyperVExpectationOptions = {
     readonly ownerId: string;
@@ -80,7 +95,7 @@ export function createRecordingDeviceLabHyperVWindowsClient(
 export function createDeviceLabHyperVWindowsClient(
     options: DeviceLabHyperVWindowsClientOptions,
 ): HyperVWindowsClient {
-    const executor = createHyperVWindowsPowerShellExecutor({
+    const oneShot = createHyperVWindowsPowerShellExecutor({
         executable: options.executable,
         run: async (request, context) => {
             const timeoutMilliseconds = typeof options.timeoutMilliseconds === "function"
@@ -106,7 +121,19 @@ export function createDeviceLabHyperVWindowsClient(
             }));
         },
     });
-    return createHyperVWindowsClient(executor);
+    const session = options.session;
+    if (!session) return createHyperVWindowsClient(oneShot);
+    return createHyperVWindowsClient({
+        async execute(request, context) {
+            const result = await session.execute(request, context);
+            if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) return result;
+            // The session could not be established at all. Rather than fail the operation, serve it
+            // the way this broker served it before sessions existed. Anything else — a timeout, an
+            // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean
+            // the host already did the work.
+            return await oneShot.execute(request, context);
+        },
+    });
 }
 
 export function deviceLabHyperVOperationIntent(

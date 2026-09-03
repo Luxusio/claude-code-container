@@ -145,6 +145,36 @@ Each slice also costs provider round trips, because the library issues one
 primitive per call where a generated script could batch several. Slice 1 raised
 the Windows lifecycle test's provider call count from 90 to 105.
 
+### The round trips are cheap; the process was not
+
+That count is now a poor proxy for cost. The expense was never the fork — it was
+`Import-Module -Force` running inside every one, which the pinned asset did on
+each invocation. The library can therefore serve many primitives from one reused
+PowerShell process, and the asset skips the reimport when the trusted module is
+already loaded from the expected base. A slice's round-trip count still matters
+for latency, but it no longer multiplies a module load.
+
+**Batching was considered and rejected, and the reasoning should not be
+re-derived.** The adapter flows are dependent chains, not independent sets:
+`deleteDeviceLabHyperVSnapshot` is `getVMSnapshots` →
+`removeVMSnapshot(snapshot.id)` → `getVMSnapshots`, where each request needs the
+previous response to exist. Nothing can be sent together, so a batch envelope
+removes no round trip from the flows that actually cost. Session reuse pays the
+module load once whatever the call graph looks like; batching would still pay it
+once per flow. If a future slice introduces genuinely independent operations,
+batching can be added over the session transport — but it is not the answer to
+the cost recorded above.
+
+The loop lives in the session bootstrap, never in the pinned asset. Both
+transports execute a byte-identical artifact, which is what stops the one-shot
+path and the session path from diverging; if that ever stops being true, every
+adapter test proves less than it appears to, because they all exercise the
+one-shot path.
+
+The session is created only when the broker owns process execution. An injected
+command runner means the caller owns it, and a long-lived child spawned behind
+that seam would run work the caller never saw.
+
 ### Known gap carried past slice 1
 
 `Invoke-HyperVWindowsOperation.ps1` bounds its error code with

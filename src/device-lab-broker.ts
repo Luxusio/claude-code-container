@@ -55,6 +55,7 @@ import {
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { brokerHyperVWindowsSession, closeBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
 import { HyperVWindowsError } from "./hyper-v-windows/index.js";
 import {
     createDeviceLabHyperVSnapshot,
@@ -4897,6 +4898,10 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
         executable: powershell,
         timeoutMilliseconds: 120000,
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+        // Only when this broker owns process execution. An injected command runner means the caller
+        // owns it, and spawning a long-lived child behind that seam would execute work it never
+        // saw — which is exactly what a test harness injects a runner to prevent.
+        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
     });
     try {
         writeHyperVSnapshotJournal(ownerId, match.stateKey, deviceId, incarnationId, parsed.tool as HyperVSnapshotJournal["tool"], snapshotName, expectedProviderName, tracked?.id, match.backend === "linux-vm" ? "Production" : "ProductionOnly");
@@ -5057,6 +5062,10 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 executable: powershell,
                 timeoutMilliseconds: 120000,
                 run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+                // Only when this broker owns process execution. An injected command runner means the caller
+        // owns it, and spawning a long-lived child behind that seam would execute work it never
+        // saw — which is exactly what a test harness injects a runner to prevent.
+        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
             });
             let rollbackObservation: DeviceLabHyperVSnapshotDeleteObservation | null = null;
             try {
@@ -9379,6 +9388,10 @@ async function reconcileHyperVOperation(ownerId: string, backend: string, device
         executable: powershell,
         timeoutMilliseconds: () => hyperVRemainingTimeout(deadlineAt, nativeCommandTimeoutCap),
         run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
+        // Only when this broker owns process execution. An injected command runner means the caller
+        // owns it, and spawning a long-lived child behind that seam would execute work it never
+        // saw — which is exactly what a test harness injects a runner to prevent.
+        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
     });
     const reconciliationOptions = {
         ownerId,
@@ -15429,6 +15442,9 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
         }
     });
     server.once("close", stopAllBrokerPhysicalLeaseHeartbeats);
+    // A reused PowerShell session outliving its broker holds a loaded Hyper-V module and a host
+    // handle, which is worse than paying startup again. Tied to the same close event.
+    server.once("close", closeBrokerHyperVWindowsSessions);
     return server;
 }
 
