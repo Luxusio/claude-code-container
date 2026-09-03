@@ -431,6 +431,59 @@ worth having — but it also means an operator reading a public payload cannot t
 a session timeout from a one-shot timeout. The two goals are in tension and the
 current resolution favours payload identity.
 
+### The reviewer's recommendation: measure, then probably replace this
+
+After thirteen review rounds the code reviewer stopped reviewing lines and
+answered a design question instead. Recorded here because it is the strongest
+argument on file against this design, and the decision it points at is the user's.
+
+**Every hard problem in this slice descends from one property: the child outlives
+the request.** That single fact generates all three families of machinery — "did
+my frame reach the child?" (the readiness latch, `latchEvidenceLost`,
+`delivered`/`settled`, the death-code classification, the never-ran taxonomy),
+"whose deadline is this pipe spending?" (queue admission, two timers per request,
+the health floor, the start budget), and "what did the last owner leave behind?"
+(the runspace hygiene, and the security residual that owner isolation no longer
+rests on a process boundary). One process per primitive does not make those
+easier to answer. It makes them **unaskable**: a process serving one request and
+exiting reports what happened in its own exit status and stdout, which is exactly
+what the one-shot transport already does.
+
+Three measured supports, none of them rhetorical:
+
+1. **Eight of the twelve review findings were in machinery a warm pool deletes
+   outright** — the asset-write ordering, the premature latch read, the stderr
+   latch, the three marker routes, `close` never firing, and the grace path's
+   conservative choice. Not "easier to spot": would not have existed. The four
+   that survive — the retry budget, the record bypass, the parse check, the
+   capability list — are in code that stays either way.
+2. **The design declines to serve the case where its advantage would matter.**
+   Above 8-way concurrency the depth cap refuses and callers get fresh processes
+   anyway, so the shared session wins only between "enough concurrency to benefit
+   from reuse" and "fewer than eight". Below that band a warm pool captures the
+   same win by pre-paying the spawn and module import off the critical path.
+3. **Round 12 silently un-pinned round 11.** The flood test kept passing for two
+   reasons unrelated to the guard it was named for, so that guard could be deleted
+   with the suite green. Twelve rounds did not prevent that, and a thirteenth
+   would not have either — which is why the fix was structural.
+
+**What must happen first, and neither the reviewer nor I can do it here:** run
+the measurement this document already specifies — the same level-3 lane's
+duration with and without the session, on a Windows host. The reviewer's
+prediction is that the delta will be small against a 120s per-primitive ceiling
+on a seven-primitive chain, and that the number will make the call easy rather
+than close. If the saving turns out to be large, keep the session and treat the
+death-code table as a floor: the queue admission control and the
+`delivered`/`settled` discriminator are separate invariant clusters with their
+own unpinned rules and deserve the same treatment.
+
+The honest state of the code, in the reviewer's words: correct as measured, with
+no live duplicate-mutation path found — and fragile against the next edit in a
+way twelve rounds did not fix. `sessionProcess()` grew 34% in code while its
+comments nearly tripled, and that ratio is the signal: the reasoning stopped
+fitting in the code. That is not a statement about how it was written. It is what
+happens when a shared mutable child is placed under an idempotency requirement.
+
 The saving this slice buys is also still unmeasured. The round-trip count is
 recorded (90 → 105 for slice 1) but the wall-clock saving is not, and the
 measurement only exists on a Windows host: the same level-3 lane's duration with
