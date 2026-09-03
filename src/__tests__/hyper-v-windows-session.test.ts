@@ -133,6 +133,21 @@ describe("Hyper-V Windows PowerShell session", () => {
         void frame;
     });
 
+    it("frees the pipe when building the frame throws, instead of wedging every later caller", async () => {
+        // Nothing in send has a timeout until the frame is built, so a throw before that used to
+        // leave the queue waiting on a release that never came — a permanent deadlock of a session
+        // the whole process shares, with no error anyone could see.
+        const child = autoReplyChild(() => "served");
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        const circular: Record<string, unknown> = { schemaVersion: 1, operation: "Get-VM" };
+        circular.self = circular;
+
+        await expect(session.execute(circular as unknown as HyperVWindowsExecutionRequest, CONTEXT))
+            .rejects.toThrow(/circular|convert/i);
+        // The pipe is free: the next caller is served rather than hanging forever.
+        expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("served");
+    });
+
     it("rejects a frame with no exit code instead of reading it as a success", async () => {
         const child = fakeChild();
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });

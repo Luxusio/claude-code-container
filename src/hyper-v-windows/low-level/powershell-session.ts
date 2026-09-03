@@ -254,74 +254,80 @@ export function createHyperVWindowsPowerShellSession(
         context: HyperVWindowsExecutionContext,
         release: () => void,
     ): Promise<HyperVWindowsExecutionResult> {
-        if (context.signal?.aborted) {
-            release();
-            return frameError("hyper-v-windows-session-cancelled");
-        }
-        const active = await ensureChild();
-        if (!active) {
-            release();
-            return frameError("hyper-v-windows-session-unavailable");
-        }
+        // Either a pending entry takes ownership of the pipe, or this call frees it — structurally,
+        // in a finally, rather than by remembering a release() at each exit. Releasing per exit is
+        // one forgotten line away from a permanent deadlock: nothing here has a timeout until the
+        // frame is built, so a throw before that (JSON.stringify on a circular value, say) would
+        // leave every later primitive on a process-wide shared session waiting forever.
+        let owned = false;
+        try {
+            if (context.signal?.aborted) return frameError("hyper-v-windows-session-cancelled");
+            const active = await ensureChild();
+            if (!active) return frameError("hyper-v-windows-session-unavailable");
 
-        const payload = JSON.stringify(request);
-        if (Buffer.byteLength(payload, "utf8") > MAX_REQUEST_BYTES) {
-            release();
-            return frameError("hyper-v-windows-session-request-too-large");
-        }
-        sequence += 1;
-        const id = `r${sequence}`;
-        const frame = Buffer.from(JSON.stringify({ id, input: `${payload}\n` }), "utf8").toString("base64");
-        if (Buffer.byteLength(frame, "utf8") > MAX_FRAME_BYTES) {
-            release();
-            return frameError("hyper-v-windows-session-request-too-large");
-        }
+            const payload = JSON.stringify(request);
+            if (Buffer.byteLength(payload, "utf8") > MAX_REQUEST_BYTES) {
+                return frameError("hyper-v-windows-session-request-too-large");
+            }
+            sequence += 1;
+            const id = `r${sequence}`;
+            const frame = Buffer.from(JSON.stringify({ id, input: `${payload}\n` }), "utf8").toString("base64");
+            if (Buffer.byteLength(frame, "utf8") > MAX_FRAME_BYTES) {
+                return frameError("hyper-v-windows-session-request-too-large");
+            }
 
-        return await new Promise<HyperVWindowsExecutionResult>((resolve) => {
-            let done = false;
-            let cleared = false;
-            const clear = () => {
-                if (cleared) return;
-                cleared = true;
-                clearTimeout(callerTimer);
-                clearTimeout(healthTimer);
-                // The pipe is free only now — this is what the next caller waits on.
-                release();
-            };
-            const settle = (result: HyperVWindowsExecutionResult) => {
-                if (done) return;
-                done = true;
-                resolve(result);
-            };
-            // Two deadlines, because they answer two different questions, and conflating them made a
-            // near-expired caller kill a child every other flow was using. The broker bounds each
-            // primitive by what is left of its operation deadline, and hyperVRemainingTimeout floors
-            // that at 1ms — so "my caller ran out of budget" says nothing about the child's health.
-            // The caller's deadline settles the caller and leaves the request pending; if the child
-            // later answers, the reply still clears the entry and still counts as a productive
-            // session. Only the health floor below concludes the child is wedged.
-            const callerTimer = setTimeout(() => {
-                settle(frameError("hyper-v-windows-session-timeout"));
-            }, Math.max(1, context.timeoutMilliseconds));
-            const healthTimer = setTimeout(() => {
-                pending.delete(id);
-                clear();
-                discard("hyper-v-windows-session-timeout");
-                settle(frameError("hyper-v-windows-session-timeout"));
-            }, Math.max(1, context.timeoutMilliseconds, healthTimeoutMilliseconds));
-            for (const timer of [callerTimer, healthTimer]) {
-                if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
-            }
-            pending.set(id, { resolve: settle, clear });
-            try {
-                active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`);
-            } catch {
-                pending.delete(id);
-                clear();
-                discard("hyper-v-windows-session-write-failed");
-                settle(frameError("hyper-v-windows-session-write-failed"));
-            }
-        });
+            return await new Promise<HyperVWindowsExecutionResult>((resolve) => {
+                let done = false;
+                let cleared = false;
+                const clear = () => {
+                    if (cleared) return;
+                    cleared = true;
+                    clearTimeout(callerTimer);
+                    clearTimeout(healthTimer);
+                    // The pipe is free only now — this is what the next caller waits on.
+                    release();
+                };
+                const settle = (result: HyperVWindowsExecutionResult) => {
+                    if (done) return;
+                    done = true;
+                    resolve(result);
+                };
+                // Two deadlines, because they answer two different questions, and conflating them
+                // made a near-expired caller kill a child every other flow was using. The broker
+                // bounds each primitive by what is left of its operation deadline, and
+                // hyperVRemainingTimeout floors that at 1ms — so "my caller ran out of budget" says
+                // nothing about the child's health. The caller's deadline settles the caller and
+                // leaves the request pending; if the child later answers, the reply still clears the
+                // entry and still counts as a productive session. Only the health floor below
+                // concludes the child is wedged.
+                const callerTimer = setTimeout(() => {
+                    settle(frameError("hyper-v-windows-session-timeout"));
+                }, Math.max(1, context.timeoutMilliseconds));
+                const healthTimer = setTimeout(() => {
+                    pending.delete(id);
+                    clear();
+                    discard("hyper-v-windows-session-timeout");
+                    settle(frameError("hyper-v-windows-session-timeout"));
+                }, Math.max(1, context.timeoutMilliseconds, healthTimeoutMilliseconds));
+                for (const timer of [callerTimer, healthTimer]) {
+                    if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
+                }
+                pending.set(id, { resolve: settle, clear });
+                // From here a timer guarantees the entry is cleared, so the pipe is owned rather than
+                // leaked no matter what happens next.
+                owned = true;
+                try {
+                    active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`);
+                } catch {
+                    pending.delete(id);
+                    clear();
+                    discard("hyper-v-windows-session-write-failed");
+                    settle(frameError("hyper-v-windows-session-write-failed"));
+                }
+            });
+        } finally {
+            if (!owned) release();
+        }
     }
 
     return {
