@@ -307,7 +307,11 @@ export function boundedPowerShellErrorId(error?: string | null, stderr?: string 
 
 export function redactProviderCommandInput(
     result: ProviderExecution,
-    redactOutput = false,
+    // Required, not defaulted. Every call site passes true, and only the redacted form is
+    // transport-independent: unredacted, a one-shot execution carries executable/args/stderr and a
+    // session-served one does not, so a future call site taking a default would silently emit a
+    // payload whose shape depends on which transport happened to serve the primitive.
+    redactOutput: boolean,
     fallbackDiagnosticCode?: string,
 ): Record<string, unknown> {
     const { input, ...publicResult } = result;

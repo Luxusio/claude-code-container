@@ -365,6 +365,25 @@ queue behind it and the queue-timeout/never-ran classification is exercised; and
 a deliberately unavailable PowerShell, so the start budget is exhausted and then
 recovers after its window.
 
+Two numbers in this design are guesses that only a real host can settle, and the
+QA pass should report both rather than confirm them.
+
+**The queue depth cap (8) decides where the optimisation stops.** Measured, 20
+concurrent primitives against a healthy idle session admit 8 and refuse 12 in
+2ms. The refusals are correct — immediate, classified never-ran, full budget
+preserved — but they mean 12 fresh PowerShell processes, so above 8-way
+concurrency the slice degrades to the one-shot behaviour it replaces. Whether
+that is the right place to stop depends on how concurrent a real broker actually
+is, which cannot be measured from a container.
+
+**A session failure is publicly indistinguishable from a one-shot failure.** No
+`hyper-v-windows-session-*` code is in `REDACTED_PROVIDER_DIAGNOSTIC_CODES`, so
+every session failure surfaces as the generic fallback `diagnosticCode`. That is
+exactly what makes the two transports' payloads identical, which is a property
+worth having — but it also means an operator reading a public payload cannot tell
+a session timeout from a one-shot timeout. The two goals are in tension and the
+current resolution favours payload identity.
+
 The saving this slice buys is also still unmeasured. The round-trip count is
 recorded (90 → 105 for slice 1) but the wall-clock saving is not, and the
 measurement only exists on a Windows host: the same level-3 lane's duration with

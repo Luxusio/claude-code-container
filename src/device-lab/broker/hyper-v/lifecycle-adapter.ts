@@ -201,17 +201,18 @@ export function createDeviceLabHyperVWindowsClient(
             // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean
             // the host already did the work.
             //
-            // The retry deliberately gets the caller's remaining budget rather than the elapsed time
-            // subtracted from it. Charging the retry for the wait sounds fair and is not: a queued
-            // caller reaches this line precisely because its queue wait expired, so the subtraction
-            // hands the retry a millisecond and guarantees it fails. The queue is bounded to a
-            // fraction of the caller's budget instead — admission control in the session, so the
-            // caller arrives here with most of its deadline intact — which is why this can pass the
-            // budget through. `startedAt` bounds the pass-through so a session that somehow consumed
-            // more than the caller's budget cannot then hand the retry a full second one.
+            // The retry gets what is left of the caller's budget, and nothing more — so the session
+            // attempt plus the retry together stay inside the deadline the caller asked for.
+            //
+            // Handing it a floor of half the budget instead was measured overrunning by 41%: a
+            // session that spent 900ms of a 1000ms budget before failing to start still handed the
+            // retry 500ms. The floor existed because a bare subtraction once left the retry ~1ms,
+            // but that was a symptom of the queue consuming the whole budget, and the session bounds
+            // the queue wait to a fraction of it now. A caller that queued out arrives here with
+            // most of its deadline; a caller that lost its budget to a genuinely slow spawn has
+            // honestly spent it, and a sliver is the truthful amount left to retry with.
             const remaining = Math.max(1, bounded.timeoutMilliseconds - (Date.now() - startedAt));
-            const budgeted = Math.max(remaining, Math.floor(bounded.timeoutMilliseconds / 2));
-            return await oneShot.execute(request, { ...context, timeoutMilliseconds: budgeted });
+            return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });
         },
     });
 }
