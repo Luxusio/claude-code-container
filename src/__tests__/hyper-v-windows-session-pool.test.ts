@@ -8,6 +8,26 @@ import { HYPER_V_WINDOWS_SESSION_READY_MARKER } from "../hyper-v-windows/index.j
 // Kept in step with SESSION_NEVER_RAN_ERRORS in lifecycle-adapter.ts. Membership is the property
 // that matters: an error in this set is re-issued through the one-shot transport, one outside it
 // fails the caller outright.
+const MARKER = HYPER_V_WINDOWS_SESSION_READY_MARKER;
+
+// These four drive a real spawned process, because the latch is the one piece of the pool that
+// decides whether the broker re-issues a request and nothing else here exercises a real child.
+// POSIX-only by construction: on Windows an unspawnable executable yields spawn-failed, which is
+// itself in the never-ran set, so the negative assertions would pass for the wrong reason.
+async function runStub(script: string, timeoutMilliseconds: number) {
+    const stub = join(mkdtempSync(join(tmpdir(), "ccc-session-stub-")), "stub.sh");
+    writeFileSync(stub, script, { mode: 0o755 });
+    const release = retainBrokerHyperVWindowsSessions();
+    try {
+        return await brokerHyperVWindowsSession(stub).execute(
+            { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+            { timeoutMilliseconds, maximumOutputBytes: 64 * 1024 },
+        );
+    } finally {
+        release();
+    }
+}
+
 const NEVER_RAN = [
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
@@ -70,46 +90,42 @@ describe("broker Hyper-V session pool", () => {
         }
     });
 
-    it("classifies a child that never announced itself as never having run anything", async () => {
-        // Against a real spawned process, because this is the one behaviour in the pool that decides
-        // whether the broker re-issues a request, and nothing else here drives a real child. A binary
-        // that exists and exits immediately — a stub PowerShell, a broken install, an antivirus kill
-        // — must be served through the one-shot transport rather than failing outright.
-        const release = retainBrokerHyperVWindowsSessions();
-        try {
-            const session = brokerHyperVWindowsSession("/bin/true");
-            const result = await session.execute(
-                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
-                { timeoutMilliseconds: 2000, maximumOutputBytes: 64 * 1024 },
-            );
-            // Asserted as membership, not as one code: the write path and the exit path both reach
-            // never-ran by their own route, and which one wins is a race. What must never happen is
-            // an error outside this set, because that fails the caller outright instead of falling
-            // back — which is what this case did on every attempt before the latch.
-            expect(NEVER_RAN).toContain(result.error);
-        } finally {
-            release();
-        }
+    it("classifies a child that never announced itself as never having run anything", { timeout: 20000 }, async () => {
+        // `sleep 0.2` before exiting, not an instant exit. An instantly-dead child resolves on the
+        // write path — both write callbacks EPIPE — so the test passes with the latch deleted
+        // entirely and guards nothing. Living long enough for the writes to be accepted forces the
+        // classification through the latch, which is the code this is here to protect.
+        const result = await runStub("#!/bin/sh\nsleep 0.2\n", 2000);
+        expect(result.error).toBe("hyper-v-windows-session-start-failed");
     });
 
     it("does not call a child that announced itself never-ran", async () => {
-        // The other direction, and the one that matters most: a child that reached its read loop may
-        // have executed what it was sent, so re-issuing could apply a mutation twice. This stub
-        // announces itself exactly as the bootstrap does and then goes quiet, which is
-        // indistinguishable — to the pool — from a real child that read a frame and stalled.
-        const stub = join(mkdtempSync(join(tmpdir(), "ccc-ready-stub-")), "stub.sh");
-        writeFileSync(stub, `#!/bin/sh\necho ${HYPER_V_WINDOWS_SESSION_READY_MARKER}\nsleep 5\n`, { mode: 0o755 });
-        const release = retainBrokerHyperVWindowsSessions();
-        try {
-            const session = brokerHyperVWindowsSession(stub);
-            const result = await session.execute(
-                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
-                { timeoutMilliseconds: 250, maximumOutputBytes: 64 * 1024 },
-            );
-            expect(NEVER_RAN).not.toContain(result.error);
-        } finally {
-            release();
-        }
+        // The direction that matters most: a child that reached its read loop may have executed what
+        // it was sent, so re-issuing could apply a mutation twice. Announces, accepts both writes,
+        // then dies silently — indistinguishable to the pool from a real child that read a frame and
+        // died mid-operation.
+        const result = await runStub(`#!/bin/sh\necho ${MARKER}\nsleep 0.2\n`, 2000);
+        expect(NEVER_RAN).not.toContain(result.error);
+    });
+
+    it("recognises the marker through a byte-order mark", async () => {
+        // [Console]::Out writes through the console's encoding, and some UTF-8 console setups emit a
+        // BOM on the first write. Exact equality missed it, so a child that announced and then died
+        // was classified never-ran and re-issued — 20/20, silently, for the child's whole life.
+        const result = await runStub(`#!/bin/sh\nprintf '\\357\\273\\277%s\\n' ${MARKER}\nsleep 0.2\n`, 2000);
+        expect(NEVER_RAN).not.toContain(result.error);
+    });
+
+    it("does not lose the marker when a flood forces the line buffer to be dropped", async () => {
+        // The buffer drop exists so an un-newlined child cannot exhaust memory, but it also discards
+        // whatever evidence that buffer held. Since the latch reads absence of evidence as proof
+        // that nothing ran, a child emitting one long un-newlined run before announcing would have
+        // every later request re-issued. Lost evidence now forces the conservative answer instead.
+        const result = await runStub(
+            `#!/bin/sh\nawk 'BEGIN { while (i++ < 600) printf "%0512000d", 0 }'\necho ${MARKER}\nsleep 0.2\n`,
+            3000,
+        );
+        expect(NEVER_RAN).not.toContain(result.error);
     });
 
     it("refuses to pool a session once no broker is left to close it", async () => {

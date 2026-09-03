@@ -270,9 +270,23 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-
 // explicit. The asset digest is unchanged here; the reused session gained queue admission control
 // (bounded wait and depth, so one owner's slow operation can no longer spend another owner's whole
 // deadline), stopped reporting a live child's error as a never-ran spawn failure, and now clears
-// $PSDefaultParameterValues between requests. A broker predating this advertises the same
-// capability while still holding an unbounded queue, so attestation would accept it and the failure
-// would present as "restart the broker" rather than as a rejected capability.
+// $PSDefaultParameterValues between requests, and its never-ran classification changed shape more
+// than once. A broker predating this advertises the same capability while still holding an unbounded
+// queue, and the failure would present as "restart the broker" rather than as a rejected capability.
+//
+// Which attestation actually rejects a stale broker: the CLI's DEVICE_BROKER_REQUIRED_CAPABILITIES
+// below, and HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES in the level-3 lane. NOT the MCP's
+// REQUIRED_CCC_HOST_BROKER_CAPABILITIES in device-lab-mcp/src/broker.mjs — that list has never
+// carried this capability, nor the two immediately below it, all three of which arrived in 2dc0d73,
+// a commit that did not touch device-lab-mcp at all. Reviewed and judged drift rather than a
+// decision, but not corrected here: that list is a hard attestation gate, so adding entries makes an
+// updated MCP refuse every older broker, which is a fleet compatibility call with its own blast
+// radius and does not belong inside a session-transport fix. The cost of the gap is bounded — an MCP
+// client may attach to a v4 broker whose session has an unbounded queue, which degrades to slow
+// rather than to wrong. The invariant worth adding with that change is
+// DEVICE_BROKER_REQUIRED_CAPABILITIES ⊆ REQUIRED_CCC_HOST_BROKER_CAPABILITIES with a named allowlist
+// for deliberate divergences, so the next omission is loud; the existing test only checks each
+// consumer list is a subset of what the broker advertises, which a shorter list always satisfies.
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v5";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";

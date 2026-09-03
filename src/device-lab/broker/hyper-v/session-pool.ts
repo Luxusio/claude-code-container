@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import {
     createHyperVWindowsPowerShellSession,
     HYPER_V_WINDOWS_SESSION_READY_MARKER,
+    HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsSession,
     type HyperVWindowsSessionProcess,
 } from "../../../hyper-v-windows/index.js";
@@ -50,6 +51,10 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // toward being retried. This handler is attached synchronously at spawn, before any byte can
     // arrive, so it cannot miss it.
     let announcedReady = false;
+    // Set when output was discarded unread. The latch reads absence of evidence as proof that
+    // nothing ran, which is the one place in this slice where the default is the unsafe one — so
+    // anything that destroys evidence has to force the conservative answer instead.
+    let latchEvidenceLost = false;
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
@@ -58,6 +63,10 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         // makes the pending request time out, which discards the session, rather than consuming
         // memory until the broker dies.
         if (Buffer.byteLength(buffered, "utf8") > MAX_LINE_BYTES) {
+            // Dropping the buffer also drops any evidence it held. The latch defaults to the unsafe
+            // answer, so silently losing the marker here would classify this child's requests
+            // never-ran for the rest of its life. Treat lost evidence as "cannot prove it never ran".
+            latchEvidenceLost = true;
             buffered = "";
             return;
         }
@@ -65,7 +74,14 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         while (index >= 0) {
             const line = buffered.slice(0, index).replace(/\r$/, "");
             buffered = buffered.slice(index + 1);
-            if (line === HYPER_V_WINDOWS_SESSION_READY_MARKER) announcedReady = true;
+            // trim() rather than equality: it strips U+FEFF as well as whitespace, and a BOM on the
+            // first write is a real possibility under some console encodings. A response frame
+            // counts too — a reply proves the read loop was reached at least as strongly as the
+            // marker does, and costs no reach, since a child that dies before the loop emits neither.
+            if (line.trim() === HYPER_V_WINDOWS_SESSION_READY_MARKER
+                || line.startsWith(HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX)) {
+                announcedReady = true;
+            }
             for (const listener of [...lineListeners]) listener(line);
             index = buffered.indexOf("\n");
         }
@@ -79,23 +95,24 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // A child that never announced never reached its read loop, so nothing sent to it can have run.
     // start-failed already carries exactly that meaning and is already treated as never-ran.
     //
-    // Read at `exit` rather than `close`. Node documents that stdio streams may still be open at
-    // `exit`, so a marker emitted but not yet delivered would read false here and produce exactly
-    // the false never-ran this function exists to avoid. Measured 112/112 delivered first, idle and
-    // under load — but that is libuv scheduling, not a documented guarantee. `close` fires only
-    // after the streams drain and would close it by construction; if the Windows pass ever sees a
-    // mutation applied twice, change this first.
+    // Driven from `close`, not `exit`. Node may still have stdio open at `exit`, so a marker
+    // emitted but not yet delivered would read false and produce exactly the false never-ran this
+    // exists to avoid; `close` fires only after the streams drain, which closes that by
+    // construction rather than by scheduling luck. Measured 112/112 the safe way at `exit` too, but
+    // that was libuv ordering, not a guarantee.
     //
     // Only for the paths that report the child GOING AWAY. It must not be consulted from a write
     // completion, which fires before any of the child's own output can be delivered to this process
     // — there the latch reads false even for a child that has already announced, which would call an
     // executed request never-ran and have the broker re-issue it. Measured 3/40 before this split.
-    const exitReason = (reason: string) => (announcedReady ? reason : "hyper-v-windows-session-start-failed");
+    const exitReason = (reason: string) => (
+        announcedReady || latchEvidenceLost ? reason : "hyper-v-windows-session-start-failed"
+    );
 
     const notifyExit = (reason: string) => {
         for (const listener of [...exitListeners]) listener(reason);
     };
-    child.once("exit", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
+    child.once("close", () => notifyExit(exitReason("hyper-v-windows-session-exited")));
     // "error" means the process could not be spawned only until it has spawned; Node also emits it
     // when a live child cannot be killed or is aborted by signal. spawn-failed is in the adapter's
     // never-ran set, so reporting a live child's error under that name would tell the broker a
