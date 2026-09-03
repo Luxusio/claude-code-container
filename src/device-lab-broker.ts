@@ -264,7 +264,16 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-
 // envelope and killed the child, reporting an ordinary virtual-machine-not-found as a transport
 // error. The failure is now a flag each bootstrap reads. The asset digest moved with it, so a
 // broker predating this fails asset integrity rather than silently answering the old way.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v4";
+// v5: the criterion for this capability is NOT "the pinned asset's digest moved" — that was true of
+// v2/v3/v4 only because those changes happened to be asset changes. It is "a broker at the older
+// version behaves differently in a way a client would be wrong to assume away". v5 makes that
+// explicit. The asset digest is unchanged here; the reused session gained queue admission control
+// (bounded wait and depth, so one owner's slow operation can no longer spend another owner's whole
+// deadline), stopped reporting a live child's error as a never-ran spawn failure, and now clears
+// $PSDefaultParameterValues between requests. A broker predating this advertises the same
+// capability while still holding an unbounded queue, so attestation would accept it and the failure
+// would present as "restart the broker" rather than as a rejected capability.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v5";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";

@@ -60,8 +60,9 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // "error" means the process could not be spawned only until it has spawned; Node also emits it
     // when a live child cannot be killed or is aborted by signal. spawn-failed is in the adapter's
     // never-ran set, so reporting a live child's error under that name would tell the broker a
-    // request that may already have run Remove-VMSnapshot is safe to re-issue. The first byte of
-    // output is proof the child came up, so after that any error is reported as an exit instead.
+    // request that may already have run Remove-VMSnapshot is safe to re-issue. Node emits "spawn"
+    // only on a successful spawn, and emits "error" instead of it when the spawn fails, so the flag
+    // cannot be set by a child that never came up. After it, any error is reported as an exit.
     let spawned = false;
     child.once("spawn", () => { spawned = true; });
     child.once("error", () => notifyExit(

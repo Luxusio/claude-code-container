@@ -399,7 +399,7 @@ describe("device-lab host broker daemon", () => {
                 "windows-hidden-provider-children-v7",
                 "hyper-v-windows-unattend-oobe-schema-v2",
                 "hyper-v-powershell-direct-bounded-probe-v1",
-                "hyper-v-windows-library-v4",
+                "hyper-v-windows-library-v5",
                 "windows-sandbox-window-minimize-v4", "windows-sandbox-runtime-snapshot-ownership-v1",
                 "appium3-scoped-security-npm-cwd-v1",
                 "constant-time-existing-owner-auth-v1",
@@ -1166,7 +1166,7 @@ describe("device-lab host broker daemon", () => {
         ["provider-bound automatic image finalization", "hyper-v-provider-image-finalization-v39", null],
         ["Windows unattend oobe schema", "hyper-v-windows-unattend-oobe-schema-v2", null],
         ["bounded PowerShell Direct probe", "hyper-v-powershell-direct-bounded-probe-v1", null],
-        ["internal Hyper-V Windows library", "hyper-v-windows-library-v4", null],
+        ["internal Hyper-V Windows library", "hyper-v-windows-library-v5", null],
         ["redacted Hyper-V network stage diagnostics", "hyper-v-network-failure-diagnostics-v9", "hyper-v-network-failure-diagnostics-v7"],
         ["persisted Hyper-V network identity repair", "hyper-v-setup-network-v10", "hyper-v-setup-network-v7"],
         ["hidden elevated PowerShell children", "windows-hidden-provider-children-v7", "windows-hidden-provider-children-v6"],
@@ -1332,7 +1332,7 @@ describe("device-lab host broker daemon", () => {
         const staleStartedAt = "2026-07-27T00:00:00.000Z";
         const staleProcess = fakeBrokerPortProcess(stalePid, "node /opt/ccc/dist/index.js devices broker serve");
         const implemented = [
-            "hyper-v-windows-library-v4",
+            "hyper-v-windows-library-v5",
             "http-host-backend-readiness-api",
             "http-lifecycle-device-create-command",
             "http-desktop-device-tool-proxy",
@@ -1502,7 +1502,7 @@ describe("device-lab host broker daemon", () => {
         const staleStartedAt = "2026-07-27T00:00:00.000Z";
         const staleProcess = fakeBrokerPortProcess(stalePid, "node /opt/ccc/dist/index.js devices broker serve");
         const implemented = [
-            "hyper-v-windows-library-v4",
+            "hyper-v-windows-library-v5",
             "http-host-backend-readiness-api",
             "http-lifecycle-device-create-command",
             "http-desktop-device-tool-proxy",
@@ -1748,7 +1748,7 @@ describe("device-lab host broker daemon", () => {
         const ownerId = "eeeeeeeeeeeeeeee";
         const stalePid = 22334;
         const implemented = [
-            "hyper-v-windows-library-v4",
+            "hyper-v-windows-library-v5",
             "http-host-backend-readiness-api",
             "http-lifecycle-device-create-command",
             "http-desktop-device-tool-proxy",
@@ -2109,7 +2109,7 @@ describe("device-lab host broker daemon", () => {
         const ownerId = "dddddddddddddddd";
         const stalePid = 11223;
         const implemented = [
-            "hyper-v-windows-library-v4",
+            "hyper-v-windows-library-v5",
             "http-host-backend-readiness-api",
             "http-lifecycle-device-create-command",
             "http-desktop-device-tool-proxy",

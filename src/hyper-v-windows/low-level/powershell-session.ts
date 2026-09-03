@@ -144,7 +144,10 @@ export function createHyperVWindowsPowerShellSession(
         1,
         Math.trunc(options.startBudgetWindowMilliseconds ?? DEFAULT_START_BUDGET_WINDOW_MILLISECONDS),
     );
-    const queueWaitFraction = Math.min(1, Math.max(0, options.queueWaitFraction ?? DEFAULT_QUEUE_WAIT_FRACTION));
+    // Floored rather than clamped to [0, 1]: a fraction of 0 gives every caller a 1ms queue wait,
+    // which silently turns the session off under any contention. The knob should not be able to
+    // disable the thing it tunes.
+    const queueWaitFraction = Math.min(1, Math.max(0.05, options.queueWaitFraction ?? DEFAULT_QUEUE_WAIT_FRACTION));
     const maximumQueueDepth = Math.max(1, Math.trunc(options.maximumQueueDepth ?? DEFAULT_MAXIMUM_QUEUE_DEPTH));
     let queueDepth = 0;
     const pending = new Map<string, Pending>();

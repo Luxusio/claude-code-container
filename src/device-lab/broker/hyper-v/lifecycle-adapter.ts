@@ -67,11 +67,21 @@ const SESSION_NEVER_RAN_ERRORS = new Set([
     // the one-shot transport would have given each of them its own healthy process. A caller whose
     // frame WAS written keeps hyper-v-windows-session-timeout and still fails outright.
     "hyper-v-windows-session-queue-timeout",
-    // The write of this request's own frame failed, so the frame did not reach the child. Both codes
-    // are raised by the write path itself — one synchronously from the write call, one from the
-    // stream's error event — and the session holds at most one request at a time, so the request
-    // being failed is the one whose write failed. That serialization is the load-bearing part, and
-    // it is what the property test's peak-outstanding invariant pins.
+    // Two write-path failures, sound for two DIFFERENT reasons — do not collapse them into one.
+    //
+    // write-failed comes from the synchronous catch around the write call. A Node stream's write()
+    // either buffers or throws, so a throw means nothing was queued and nothing reached the child.
+    //
+    // stdin-failed comes from the stream's asynchronous "error" event, which can fire long after the
+    // write call returned, so "the write path raised it" is NOT the argument. The argument is that
+    // an EPIPE requires unflushed data, and a frame that was not fully flushed cannot have produced
+    // a complete line for the child's [Console]::In.ReadLine() — it blocks there rather than
+    // executing a truncated frame. A fully flushed frame leaves nothing outstanding to error on.
+    // That is a more fragile chain than write-failed's, and it is written out here because the next
+    // person to touch the write path will read this instead of re-deriving it.
+    //
+    // Both rest on the session holding at most one request at a time, so the request being failed is
+    // the one whose write failed; the property test's peak-outstanding invariant pins that.
     //
     // Without these, a PowerShell that spawns and dies immediately (a stub binary, an antivirus
     // kill, a broken install) failed the first primitives outright instead of serving them one-shot,

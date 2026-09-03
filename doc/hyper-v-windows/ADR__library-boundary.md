@@ -194,6 +194,21 @@ left to unwind past, and the session bootstrap reports it as the response frame'
 exit status. That is what makes the two transports produce identical
 `HyperVWindowsExecutionResult`s for identical host conditions.
 
+The bootstrap clears `$global:CccHyperVJsonInput` and resets
+`$global:PSDefaultParameterValues` between requests. **That list can never be
+complete, and does not need to be.** Functions and aliases defined during
+`& $Operation` land in the invocation's child scope and die with it — the same
+mechanism that already keeps the asset's own helpers from leaking.
+`$PSDefaultParameterValues` is different in kind: it is consulted by dynamic
+scope lookup, so a global one is honoured, nothing disposes of it, and it would
+silently re-aim the pinned asset's cmdlet calls for every later owner without
+changing a byte of the hashed asset — `Remove-VMSnapshot`'s
+`-IncludeAllChildSnapshots` being the obvious one. The actual invariant is that
+the hash-pinned asset is the only code that runs in that runspace; these two
+resets are belt-and-braces for the one variable that could re-aim it silently.
+`$env:` is the only other member of that class and is deliberately not reset —
+the child legitimately needs its inherited environment.
+
 Two related constraints on the session bootstrap follow from the same reasoning.
 The reply is joined, not piped through `Out-String`, because `Out-String` formats
 to a host width and is free to break a long JSON envelope into lines the reader
@@ -279,14 +294,44 @@ PowerShell children, each with its own loaded Hyper-V module, and each owner's
 first primitive would still pay a spawn and an import. The saving would survive
 only within a single owner's flow.
 
-The price is that owner isolation no longer rests on a process boundary. It now
-rests on the claim that the session carries no owner state: every request names
-its own VM by id and the library validates that, so one owner's request cannot
-name another's machine. That claim is a trust-boundary argument, not an
-implementation detail, and it is the reason this deviation needs an independent
-security judgement and owner-isolation coverage rather than the author's
-assurance. Until both exist, treat AC-004's second clause as knowingly
-unsatisfied, not as satisfied by reinterpretation.
+An independent security review examined this and judged the deviation defensible,
+with a claim narrower and stronger than "the session carries no owner state":
+**owner isolation never rested on the process boundary.** It rests on
+owner-scoped lookup before the call — `findOwnerDeviceForTool` resolves the
+device inside the caller's own owner state, so a caller never supplies a raw VM
+id and cannot name a machine it does not own — and owner-scoped validation after
+it: the `notes` fence and disk-path allowlist in `reconcile.ts`, and
+`resolveOwnedHyperVSnapshot` requiring the owner-scoped `ccc-<ownerId>-<name>`.
+Neither changed in this slice. No credential enters the shared child either: the
+session serves only the ten allowlisted operations, whose requests are JSON
+selectors, and every credential-bearing path goes through
+`hyperVProviderCommandRunner` directly.
+
+Three residuals belong on the record next to that, because "no cross-owner path"
+alone would overstate it.
+
+**The isolation guarantee changed hands.** It used to be enforced by the OS; it
+is now enforced by the SHA-256 pin on the asset. Nothing an owner sends can leave
+state in that runspace *because the only code that runs there is the hashed asset
+and its fixed allowlist*. So the integrity check is now load-bearing for owner
+isolation, not only for supply-chain integrity. Read that sentence before
+relaxing the pin or widening the allowlist to admit anything that takes an
+expression.
+
+**Cross-owner interference now exists in availability terms**, where it did not.
+One owner's stale frame hard-fails whoever is in flight, and one owner can hold
+every queue slot and push the others onto the one-shot path. Both degrade to the
+pre-session behaviour rather than denying service — that is what the depth cap
+buys, and it is part of what AC-004's second clause was buying instead.
+
+**Unverifiable from a container:** whatever process-wide state the Hyper-V
+PowerShell module itself keeps — CIM/WMI handles, internal caching — is now
+shared across owners rather than torn down between them. There is no reason to
+think it caches anything owner-sensitive, and every response is re-validated by
+the fences above, but it cannot be inspected here and is named rather than
+cleared. The Windows QA pass should alternate two owners' primitives against one
+session and confirm results track live host changes rather than a first-request
+snapshot.
 
 The pool is process-scoped and reference-counted. Sessions carry no per-server
 state, so two broker servers in one process share them; tearing them down on the
