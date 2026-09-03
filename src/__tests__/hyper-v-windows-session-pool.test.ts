@@ -56,14 +56,20 @@ describe("broker Hyper-V session pool", () => {
         }
     });
 
-    it("refuses to pool a session once no broker is left to close it", () => {
+    it("refuses to pool a session once no broker is left to close it", async () => {
         // Sessions are handed out lazily from inside async tool handlers, so a request still in
         // flight past the last server's close would otherwise start a PowerShell child nothing ever
         // kills. The session it gets instead reports itself unavailable, which the adapter treats as
         // never-ran and serves through the one-shot transport.
         const orphan = brokerHyperVWindowsSession("powershell.exe");
         expect(brokerHyperVWindowsSessionCountForTest()).toBe(0);
-        expect(orphan.starts()).toBe(0);
+        // What it does, not that it exists: reporting itself unavailable is what routes the straggler
+        // to the one-shot transport, because that code is the adapter's never-ran signal.
+        const result = await orphan.execute(
+            { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+            { timeoutMilliseconds: 1000, maximumOutputBytes: 1024 },
+        );
+        expect(result).toEqual({ status: null, stdout: "", error: "hyper-v-windows-session-unavailable" });
     });
 
     it("is retained by the broker at construction, not at close", async () => {

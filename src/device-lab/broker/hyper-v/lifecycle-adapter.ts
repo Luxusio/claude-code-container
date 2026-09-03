@@ -19,6 +19,11 @@ import type { HyperVProviderCommand } from "../../../host-control/hyper-v/index.
 import type { HyperVOperationJournal } from "./operation-journal.js";
 
 export type DeviceLabHyperVCommandResult = {
+    // Named because redactProviderCommandInput reads exactly these two, and JSON.stringify drops
+    // them when they are undefined — so a recorded execution missing them silently changes the
+    // broker's public snapshot payloads rather than failing anywhere.
+    readonly mode?: string;
+    readonly provider?: string;
     readonly status?: number | null;
     readonly stdout?: string;
     readonly stderr?: string;
@@ -144,10 +149,10 @@ export function createDeviceLabHyperVWindowsClient(
             const result = await session.execute(request, bounded);
             if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) {
                 // The session bypasses options.run, so this is the only place a recorder can see the
-                // execution that actually served the primitive.
-                // The session bypasses options.run, so this is the only place a recorder can see the
-                // execution that actually served the primitive.
-                options.record?.(result);
+                // execution that actually served the primitive. mode/provider are restated here
+                // because the one-shot runner's result carries them and the broker's snapshot
+                // payloads read them straight off the recorded execution.
+                options.record?.({ mode: "exec", provider: "hyper-v", ...result });
                 return result;
             }
             // The session could not be established at all. Rather than fail the operation, serve it

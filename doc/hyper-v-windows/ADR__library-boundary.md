@@ -214,6 +214,17 @@ correlated reply still clears it and still counts as a productive session. A
 separate health floor, matched to the library's per-execution ceiling, is what
 concludes the child is wedged.
 
+The corollary is that the request queue is released when the request leaves the
+pipe, not when its caller stops waiting. Releasing on the caller broke the
+one-request-at-a-time invariant the transport depends on — measured, six frames
+were written to a child that had answered nothing — and started each queued
+caller's deadline against work it had not reached, timing it out for someone
+else's stall. A caller that gives up therefore still holds the pipe until the
+child answers or the health floor fires. That means one wedged operation blocks
+the shared session for up to the health floor, which is the same bound the
+one-shot transport applies to a single execution; the alternative, killing the
+child whenever any caller gives up, is the defect described above.
+
 The start budget bounds *consecutive unproductive* starts, not starts over the
 process lifetime. A lifetime counter conflates "this host cannot run PowerShell"
 with "this broker has been up for days": the third restart, however far apart,

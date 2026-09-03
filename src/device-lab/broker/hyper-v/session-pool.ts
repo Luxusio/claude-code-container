@@ -83,6 +83,7 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
 // mid-request on, and hyper-v-windows-session-closed is deliberately not a retryable error — that
 // request would fail outright rather than fall back.
 let holders = 0;
+let closedPoolSession: HyperVWindowsSession | null = null;
 
 export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSession {
     if (holders === 0) {
@@ -91,11 +92,14 @@ export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSes
         // would otherwise start a child nothing ever kills. This one reports itself unavailable,
         // which the adapter treats as never-ran and serves through the one-shot transport — the way
         // the broker served every primitive before sessions existed.
-        return createHyperVWindowsPowerShellSession({
+        // One shared instance: each execute on it verifies the pinned asset first, which reads and
+        // hashes the file, and there is no reason to pay that per straggler request.
+        closedPoolSession ??= createHyperVWindowsPowerShellSession({
             spawn: () => {
                 throw new Error("hyper-v-windows-session-pool-closed");
             },
         });
+        return closedPoolSession;
     }
     const existing = sessions.get(executable);
     if (existing) return existing;
@@ -103,7 +107,31 @@ export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSes
         spawn: (bootstrap) => sessionProcess(executable, bootstrap),
     });
     sessions.set(executable, session);
+    installProcessExitSweep();
     return session;
+}
+
+// Node does not kill a child when the parent exits, on any platform. Every path that closes the pool
+// runs off a broker server's close event, and a server that is constructed and never closed pins the
+// reference count above zero — at which point nothing else can ever release it either. This sweep
+// does not depend on how the count got stuck: whatever is still pooled when the process exits gets
+// killed, so a long-lived PowerShell child holding a loaded Hyper-V module cannot outlive the broker
+// that started it. Installed lazily so a process that never uses Hyper-V never registers a listener.
+let exitSweepInstalled = false;
+
+function installProcessExitSweep(): void {
+    if (exitSweepInstalled) return;
+    exitSweepInstalled = true;
+    process.once("exit", () => {
+        for (const session of sessions.values()) {
+            try {
+                session.close();
+            } catch {
+                // Nothing useful can be reported from an exit handler.
+            }
+        }
+        sessions.clear();
+    });
 }
 
 // Wired to the broker server's close event.

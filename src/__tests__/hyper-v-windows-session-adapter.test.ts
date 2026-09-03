@@ -4,6 +4,7 @@ import {
     createDeviceLabHyperVWindowsClient,
     createRecordingDeviceLabHyperVWindowsClient,
 } from "../device-lab/broker/hyper-v/lifecycle-adapter.js";
+import { redactProviderCommandInput } from "../device-lab/broker/hyper-v/public-response.js";
 import type {
     HyperVWindowsError,
     HyperVWindowsExecutionRequest,
@@ -206,7 +207,19 @@ describe("Device Lab Hyper-V session transport", () => {
 
         expect(recording.lastExecution()).toBeNull();
         await recording.client.getVM({ kind: "id", id: VM_ID });
-        expect(recording.lastExecution()).toMatchObject({ status: 0, stdout });
+
+        // Pinned through the redactor the broker actually uses, not with a partial match. mode and
+        // provider are read straight off the recorded execution and JSON.stringify drops them when
+        // undefined, so recording a bare execution result would quietly remove two keys from the
+        // device_snapshot_* payloads while every partial assertion still passed.
+        expect(redactProviderCommandInput(recording.lastExecution() as never, true)).toEqual({
+            mode: "exec",
+            provider: "hyper-v",
+            status: 0,
+            stdoutPresent: true,
+            stderrPresent: false,
+            outputRedacted: true,
+        });
     });
 
     it("passes the caller's request through unchanged", async () => {

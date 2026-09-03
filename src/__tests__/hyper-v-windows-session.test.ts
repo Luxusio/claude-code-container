@@ -243,16 +243,55 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(starved.error).toBe("hyper-v-windows-session-timeout");
         expect(children[0]!.killed()).toBe(false);
 
-        // The late answer still clears the entry, and the same child serves the next caller.
-        const abandonedFrame = children[0]!.written[1]!;
-        children[0]!.reply(abandonedFrame, "late but correlated");
-        const served = session.execute(REQUEST, CONTEXT);
+        // Issued while the abandoned request is still unanswered — the ordering that matters. One
+        // stdin and one stdout carry one request at a time, and a caller giving up does not change
+        // that, so nothing may be written until the child answers or the health floor fires.
+        const queued = session.execute(REQUEST, CONTEXT);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(children[0]!.written).toHaveLength(2);
+
+        // The late answer frees the pipe, and the same child serves the caller that was waiting.
+        children[0]!.reply(children[0]!.written[1]!, "late but correlated");
         await vi.waitFor(() => expect(children[0]!.written.length).toBe(3));
         children[0]!.reply(children[0]!.written[2]!, "served");
 
-        expect((await served).stdout).toBe("served");
+        expect((await queued).stdout).toBe("served");
         expect(children).toHaveLength(1);
         expect(session.starts()).toBe(1);
+    });
+
+    it("does not start a queued caller's deadline against work it has not reached", async () => {
+        // The timer starts when the frame is written. Releasing the queue on a caller's give-up
+        // wrote the next frame into a child that had answered nothing, so a caller with a healthy
+        // budget timed out on somebody else's stall without its request ever being served.
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            healthTimeoutMilliseconds: 60000,
+            spawn: () => {
+                const child = fakeChild();
+                queueMicrotask(() => child.ready());
+                children.push(child);
+                return child;
+            },
+        });
+
+        expect((await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 })).error)
+            .toBe("hyper-v-windows-session-timeout");
+        let settled = false;
+        const healthy = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 })
+            .then((result) => { settled = true; return result; });
+        await new Promise((resolve) => setTimeout(resolve, 80));
+
+        // Twice its budget has elapsed and it has not failed, because its budget has not started:
+        // it is waiting its turn rather than being timed out on someone else's stall.
+        expect(settled).toBe(false);
+        expect(children[0]!.written).toHaveLength(2);
+
+        // It was still queued rather than in flight, so closing releases it before it ever reaches a
+        // child — which is itself the proof that the pipe was never handed to it.
+        session.close();
+        expect((await healthy).error).toBe("hyper-v-windows-session-unavailable");
     });
 
     it("kills a child spawned after close rather than orphaning it", async () => {

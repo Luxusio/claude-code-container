@@ -241,32 +241,52 @@ export function createHyperVWindowsPowerShellSession(
 
     // One stdin and one stdout mean one request at a time. Callers are queued rather than rejected:
     // the adapters issue dependent chains, so a concurrent caller is a different flow, not a bug.
+    //
+    // The queue is released when the request leaves the pipe, NOT when its caller stops waiting. A
+    // caller can give up on its own deadline while the child is still working the request, and
+    // writing the next frame into a child that has answered nothing would put two requests on a
+    // stream that can only carry one — and would start the next caller's timer against work it has
+    // not reached yet, timing it out for someone else's stall.
     let queue: Promise<unknown> = Promise.resolve();
 
     async function send(
         request: HyperVWindowsExecutionRequest,
         context: HyperVWindowsExecutionContext,
+        release: () => void,
     ): Promise<HyperVWindowsExecutionResult> {
-        if (context.signal?.aborted) return frameError("hyper-v-windows-session-cancelled");
+        if (context.signal?.aborted) {
+            release();
+            return frameError("hyper-v-windows-session-cancelled");
+        }
         const active = await ensureChild();
-        if (!active) return frameError("hyper-v-windows-session-unavailable");
+        if (!active) {
+            release();
+            return frameError("hyper-v-windows-session-unavailable");
+        }
 
         const payload = JSON.stringify(request);
         if (Buffer.byteLength(payload, "utf8") > MAX_REQUEST_BYTES) {
+            release();
             return frameError("hyper-v-windows-session-request-too-large");
         }
         sequence += 1;
         const id = `r${sequence}`;
         const frame = Buffer.from(JSON.stringify({ id, input: `${payload}\n` }), "utf8").toString("base64");
         if (Buffer.byteLength(frame, "utf8") > MAX_FRAME_BYTES) {
+            release();
             return frameError("hyper-v-windows-session-request-too-large");
         }
 
         return await new Promise<HyperVWindowsExecutionResult>((resolve) => {
             let done = false;
+            let cleared = false;
             const clear = () => {
+                if (cleared) return;
+                cleared = true;
                 clearTimeout(callerTimer);
                 clearTimeout(healthTimer);
+                // The pipe is free only now — this is what the next caller waits on.
+                release();
             };
             const settle = (result: HyperVWindowsExecutionResult) => {
                 if (done) return;
@@ -306,8 +326,12 @@ export function createHyperVWindowsPowerShellSession(
 
     return {
         execute(request, context) {
-            const run = queue.then(() => send(request, context));
-            queue = run.catch(() => undefined);
+            // Two promises: the caller awaits `run`, the queue awaits `free`. They part company
+            // exactly when a caller's deadline expires on a request the child is still working.
+            let release = () => undefined as void;
+            const free = new Promise<void>((resolve) => { release = resolve; });
+            const run = queue.then(() => send(request, context, release));
+            queue = run.then(() => free, () => free);
             return run;
         },
         close() {
