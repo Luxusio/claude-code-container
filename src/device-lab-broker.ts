@@ -239,14 +239,22 @@ const DEVICE_BROKER_CAPABILITY_PHYSICAL_UNATTACHED_WIRELESS = "physical-unattach
 const DEVICE_BROKER_CAPABILITY_ANDROID_RECORDING_SIGNAL_FALLBACK = "android-recording-signal-fallback-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_LIFECYCLE = "hyper-v-vm-managed-auto-images-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v10";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v16";
+// v17: guest readiness emits its structured failure on every exit path, not only the deadline one
+// (adding the hyper-v-guest-ready-failed shape), and the not-ready payload carries errorDetail. A
+// broker predating this answers powershell-direct-unavailable for causes it can now name.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v17";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_SEED = "hyper-v-windows-specialize-seed-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_SPECIALIZE_ACCOUNT = "hyper-v-windows-specialize-account-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-boot-contract-v1";
-const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v1";
+// v2: the typed library gained Get-VMSnapshot / Checkpoint-VM / Remove-VMSnapshot /
+// Restore-VMSnapshot, broker snapshot dispatch moved onto the adapter, and the public error mapping
+// changed (hyper-v-snapshot-result-mismatch answers without reconciliation; the ownership fences
+// keep it). The pinned Invoke-HyperVWindowsOperation.ps1 changed with it, so a broker predating this
+// fails asset integrity as an opaque hyper-v-windows-transport rather than saying it is stale.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";
@@ -255,7 +263,10 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_IMAGE_ACQUISITION_STAGE_CACHE = "hyper-v-
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_STAGE_PROPAGATION = "hyper-v-powershell-stage-propagation-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AUTOMATIC_IMAGE_FINALIZATION = HYPER_V_PROVIDER_IMAGE_FINALIZATION_CONTRACT;
 const DEVICE_BROKER_CAPABILITY_HYPER_V_NETWORK_FAILURE_DIAGNOSTICS = "hyper-v-network-failure-diagnostics-v9";
-const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
+// Exported so the level-3 attestation's required list can be proven a subset of what the broker
+// actually advertises. Bumping one side alone silently breaks every level-3 run: the broker keeps
+// answering, and the failure surfaces later as an unrelated-looking provider error.
+export const DEVICE_BROKER_REQUIRED_CAPABILITIES = [
     DEVICE_BROKER_CAPABILITY_HOST_BACKEND_READINESS,
     DEVICE_BROKER_CAPABILITY_LIFECYCLE_DEVICE_CREATE,
     DEVICE_BROKER_CAPABILITY_DESKTOP_DEVICE_TOOL_PROXY,

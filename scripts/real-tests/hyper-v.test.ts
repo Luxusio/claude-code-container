@@ -41,6 +41,7 @@ describe("Hyper-V Level 3 launcher", () => {
         expect(HYPER_V_LEVEL3_REQUIRED_BROKER_CAPABILITIES).toContain(HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT);
     });
 
+
     it("rejects a build whose compiled Hyper-V provider lacks the current contract", () => {
         const reads = new Map([
             ["/repo/dist/host-control/hyper-v/contracts.js", "export const oldContract = true;"],
