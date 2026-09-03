@@ -67,6 +67,11 @@ describe("Device Lab Hyper-V session transport", () => {
             // process-wide, so without this a single wedged operation would take every other
             // Hyper-V primitive down with it rather than letting them run one-shot.
             "hyper-v-windows-session-queue-timeout",
+            // The write of this request's own frame failed, so nothing reached the child. A
+            // PowerShell that spawns and dies immediately produces exactly this, and it used to fail
+            // the first primitives outright rather than serving them the way it did before sessions.
+            "hyper-v-windows-session-write-failed",
+            "hyper-v-windows-session-stdin-failed",
         ]) {
             run.mockClear();
             const client = createDeviceLabHyperVWindowsClient({

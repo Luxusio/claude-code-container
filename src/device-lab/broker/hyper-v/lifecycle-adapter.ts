@@ -67,6 +67,17 @@ const SESSION_NEVER_RAN_ERRORS = new Set([
     // the one-shot transport would have given each of them its own healthy process. A caller whose
     // frame WAS written keeps hyper-v-windows-session-timeout and still fails outright.
     "hyper-v-windows-session-queue-timeout",
+    // The write of this request's own frame failed, so the frame did not reach the child. Both codes
+    // are raised by the write path itself — one synchronously from the write call, one from the
+    // stream's error event — and the session holds at most one request at a time, so the request
+    // being failed is the one whose write failed. That serialization is the load-bearing part, and
+    // it is what the property test's peak-outstanding invariant pins.
+    //
+    // Without these, a PowerShell that spawns and dies immediately (a stub binary, an antivirus
+    // kill, a broken install) failed the first primitives outright instead of serving them one-shot,
+    // which is the case the fallback exists for.
+    "hyper-v-windows-session-write-failed",
+    "hyper-v-windows-session-stdin-failed",
 ]);
 
 export type DeviceLabHyperVExpectationOptions = {
