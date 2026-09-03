@@ -29,15 +29,6 @@ async function runStub(script: string, timeoutMilliseconds: number) {
     }
 }
 
-const NEVER_RAN = [
-    "hyper-v-windows-session-unavailable",
-    "hyper-v-windows-session-spawn-failed",
-    "hyper-v-windows-session-start-failed",
-    "hyper-v-windows-session-queue-timeout",
-    "hyper-v-windows-session-write-failed",
-    "hyper-v-windows-session-stdin-failed",
-];
-
 import {
     brokerHyperVWindowsSession,
     brokerHyperVWindowsSessionCountForTest,
@@ -115,7 +106,12 @@ describe("child death classification", () => {
         // The complement, and the reason the latch exists: a child that spawned, announced nothing
         // and lost nothing did not run the request, so the broker serves it one-shot rather than
         // failing it outright.
-        for (const event of ["close", "exit", "stdin-error"] as const) {
+        //
+        // Derived, not written out. This list previously held a hardcoded "stdin-error" that
+        // outlived the union member: the argument still satisfied the assertion by falling through
+        // every branch, so the test stayed green while asserting something about an input no caller
+        // could produce, and nothing typechecks this directory to say otherwise.
+        for (const event of EVENTS.filter((candidate) => candidate !== "exit-grace")) {
             expect(hyperVWindowsChildDeathCode(event, {
                 announcedReady: false,
                 latchEvidenceLost: false,
@@ -185,6 +181,38 @@ describe("broker Hyper-V session pool", () => {
         // The exact code, not merely "not never-ran": a caller that outran its own budget would
         // report session-timeout, which also satisfies not-never-ran while testing nothing.
         expect(result.error).toBe("hyper-v-windows-session-exited");
+    });
+
+    it("never reports a stale-latch never-ran when writing to the child fails", async () => {
+        // The child closes its stdin read end immediately, so every write EPIPEs, and announces only
+        // afterwards. That is the shape in which the readiness latch is provably stale at the moment
+        // the stdin stream error fires: the marker has not been read yet, so the latch says false
+        // about a child that is about to prove otherwise.
+        //
+        // TWO orderings are possible here, and this asserts the property both must satisfy rather
+        // than the outcome of either — measured 4/5 and 1/5 across runs on this machine:
+        //   write callback first -> `settled` marks the frame undelivered, notifyExit reports
+        //     stdin-failed (a never-ran established by nothing having been flushed), discard() nulls
+        //     the child, and the stdin handler's later report is eaten by the identity guard.
+        //   stream error first  -> the stdin handler reports `exited`. Lossy — the fallback is lost —
+        //     but safe, and the write callback's notifyExit is then dropped by the identity guard.
+        //
+        // Do NOT rewrite this to assert a single code. An earlier draft asserted stdin-failed and
+        // failed 1 run in 5; the ordering is not guaranteed, which is exactly why the handler must
+        // not classify. Reverting it to `report("error")` — which compiles, since "error" is the
+        // name the stream event actually has — returns start-failed in the second ordering: a
+        // never-ran verdict on a child that reached its read loop, re-issuing a Remove-VMSnapshot.
+        // This catches that, though only on the runs that take the second ordering.
+        const result = await runStub(`#!/bin/sh\nexec 0<&-\nsleep 0.1\necho ${MARKER}\nsleep 0.2\n`, 4000);
+        expect([
+            "hyper-v-windows-session-spawn-failed",
+            "hyper-v-windows-session-start-failed",
+        ]).not.toContain(result.error);
+        // Positively: it must still be one of the two sound answers, not some third thing.
+        expect([
+            "hyper-v-windows-session-stdin-failed",
+            "hyper-v-windows-session-exited",
+        ]).toContain(result.error);
     });
 
     it("recognises the marker through a byte-order mark", async () => {
@@ -289,7 +317,11 @@ describe("broker Hyper-V session pool", () => {
             host: "127.0.0.1",
             port: 0,
             platform: "linux",
-            commandRunner: () => ({ status: 0, stdout: "" }),
+            // `mode` and `provider` are required, and omitting them typechecked only because nothing
+            // typechecked this directory. The pool test never inspects either, but a stub that does
+            // not satisfy the real contract is how a test starts passing on a shape the code cannot
+            // produce.
+            commandRunner: () => ({ mode: "test", provider: "hyper-v", status: 0, stdout: "" }),
         });
         try {
             // Only poolable while a holder exists — otherwise the count stays 0.

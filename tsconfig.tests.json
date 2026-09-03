@@ -1,0 +1,29 @@
+{
+  // `tsconfig.json` excludes `src/__tests__` because tests are not compiled into dist/, and
+  // `tsconfig.real-tests.json` covers only `scripts/real-tests`. That left the unit tests
+  // typechecked by nothing: vitest transpiles without checking, so a test can pass an argument
+  // whose type no longer exists and stay green.
+  //
+  // That is not hypothetical. A hardcoded "stdin-error" death event outlived its union member by a
+  // commit; the call still satisfied its assertion by falling through every branch, so the suite
+  // reported 18/18 while one iteration asserted about an input no caller could produce. The commit
+  // that removed the member is the one whose message argued this directory needed typechecking.
+  //
+  // Scope: the hyper-v-windows session files only. Turning this on for all of `src/__tests__`
+  // surfaces ~740 pre-existing errors (349 here, 391 more dragged in from `scripts/real-tests`),
+  // which is its own piece of work and not this feature's to absorb. These are the files this
+  // feature owns and keeps editing, and the drift above is exactly the failure they are prone to.
+  // Widening the `include` below is the way to pay down the rest.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "./src"
+  },
+  "include": [
+    "src/__tests__/hyper-v-windows-session-pool.test.ts",
+    "src/__tests__/hyper-v-windows-session.test.ts",
+    "src/__tests__/hyper-v-windows-session-adapter.test.ts",
+    "src/__tests__/hyper-v-windows-session-property.test.ts"
+  ],
+  "exclude": []
+}

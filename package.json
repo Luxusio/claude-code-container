@@ -28,7 +28,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npm run test:hyper-v:static && tsc && npm run typecheck:real-tests && npm run bundle:hyper-v:windows:library-test && npm run bundle:hyper-v:windows:library-privileged-test && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp",
+    "build": "npm run test:hyper-v:static && tsc && npm run typecheck:real-tests && npm run typecheck:tests && npm run bundle:hyper-v:windows:library-test && npm run bundle:hyper-v:windows:library-privileged-test && node -e \"const fs=require('fs');const v=require('./package.json').version;const f='dist/utils.js';fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace('__CLI_VERSION__',v))\" && npm run build:x11-mcp && npm run build:device-lab-mcp",
     "build:hyper-v:windows:library": "tsc -p tsconfig.hyper-v-windows.json && npm run bundle:hyper-v:windows:library-test && npm run bundle:hyper-v:windows:library-privileged-test",
     "bundle:hyper-v:windows:library-test": "node node_modules/esbuild-wasm/bin/esbuild scripts/real-tests/hyper-v-windows-library.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/real-tests/hyper-v-windows-library.mjs",
     "bundle:hyper-v:windows:library-privileged-test": "node node_modules/esbuild-wasm/bin/esbuild scripts/real-tests/hyper-v-windows-library-privileged.ts --bundle --platform=node --format=esm --target=node20 --loader:.ps1=text --outfile=dist/real-tests/hyper-v-windows-library-privileged.mjs",
@@ -50,6 +50,7 @@
     "test:hyper-v:ubuntu-image": "node --import tsx scripts/verify-hyper-v-ubuntu-image.ts",
     "test:hyper-v:static": "npm run test:hyper-v:contracts && npm run test:hyper-v:powershell",
     "typecheck:real-tests": "tsc -p tsconfig.real-tests.json",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
     "test:durability:device-lab": "node scripts/durability/run.mjs broker",
     "test:durability:device-lab:real": "node scripts/durability/run.mjs real",
     "test:durability:device-lab:real:self": "node --test scripts/durability/*.self-test.mjs",

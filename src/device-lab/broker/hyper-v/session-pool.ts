@@ -18,17 +18,24 @@ const sessions = new Map<string, HyperVWindowsSession>();
 const MAX_LINE_BYTES = 512 * 1024;
 const CLOSE_GRACE_MILLISECONDS = 250;
 
-// The three ways a child's death reaches us, plus the grace timer that stands in for a `close` that
-// never came. Named rather than inlined so the decision below is one function over an enumerated
-// input instead of four branches spread across four handlers, each reachable only by spawning a
-// real process.
+// The three death events this decision is made from, plus the grace timer that stands in for a
+// `close` that never came. Not "the ways a child's death reaches us" — there are two more of those,
+// the stdin handler and the write callback, and both bypass this decision on purpose. Named rather
+// than inlined so the decision below is one function over an enumerated input instead of branches
+// spread across handlers, each reachable only by spawning a real process.
 //
-// Write failures are deliberately NOT in this enum, and an earlier revision of this comment claimed
-// that absence was itself a safeguard. It was not: a `"stdin-error"` member existed at the time and
-// the stdin handler fed it straight to the classifier, which is the exact hazard the claim denied.
-// What actually keeps write failures out of this decision is that they are classified elsewhere — by
-// the `settled` protocol in `write` below, and WRITE_PATH_ERRORS in the session. That mechanism is
-// load-bearing; this enum is only a list.
+// Write failures are deliberately NOT in this enum, and two earlier revisions of this comment
+// overclaimed what that buys. The first said the absence was itself a safeguard, while a
+// `"stdin-error"` member existed and the stdin handler fed it straight to the classifier. The second
+// said removing that member made routing a write failure here a compile error. It does not: the
+// stdin handler could pass `"error"` — the name the stream event actually has, and the literal used
+// by the sibling `child.once("error", ...)` line — and it would compile and return a never-ran for a
+// child that had already reached its read loop.
+//
+// So state it accurately: this enum is a list, and it constrains spelling, not routing. What keeps
+// write failures out of this decision is that they are decided elsewhere — by the `settled` protocol
+// in `write` below and WRITE_PATH_ERRORS in the session. That is the load-bearing mechanism, and the
+// pool test "lets the write path, not the death classifier, decide a failed write" is what pins it.
 // The list is the type, not a copy of it. The table test enumerates this array, so an event added
 // here is covered by the table automatically, and one cannot be added to the type without appearing
 // in the array — they are the same object. (A separate `Event[]` list in the test would have been
@@ -216,11 +223,17 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // child has written output we have not yet read, so the latch is provably stale here — measured:
     // the stdin error fires with announcedReady false, and the child's marker lands after it. Routing
     // it through the classifier returned `start-failed`, a never-ran verdict on a child that had
-    // reached its read loop. That it was not live rested on Node calling the write callback before
-    // emitting the stream error, an internal ordering nothing documents — the same class of hidden
-    // dependence the `!spawned` check above was written to remove. The write callback below is the
-    // sound discriminator for this path; this handler only needs to report the death, and `exited` is
-    // the direction that costs a fallback rather than duplicating a mutation.
+    // reached its read loop.
+    //
+    // It was believed that Node's write callback always preempts the stream error, leaving that
+    // unreachable. It does not. Measured on the pool test's own stub, roughly one run in five takes
+    // the other order and reaches this handler first — so with the classifier wired in, the false
+    // never-ran was live at that rate, not merely latent. Ordering here is not a guarantee to build
+    // on, which is the same lesson as the `!spawned` check above.
+    //
+    // The write callback below is the sound discriminator for this path; this handler only needs to
+    // report the death, and `exited` is the direction that costs a fallback rather than duplicating
+    // a mutation.
     child.stdin?.on("error", () => reportGone("hyper-v-windows-session-exited"));
 
     return {
