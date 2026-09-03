@@ -76,7 +76,7 @@ describe("child death classification", () => {
             // only when the child provably never got far enough to run it. Anything else — it
             // announced, or the evidence was thrown away, or we never waited for stdio to drain —
             // must not be retried, because a second Remove-VMSnapshot is not the same as the first.
-            const provablyNeverRan = row.event === "error" && !row.state.spawned
+            const provablyNeverRan = !row.state.spawned
                 ? true
                 : row.event !== "exit-grace" && !row.state.latchEvidenceLost && !row.state.announcedReady;
             expect({ ...row, retryable }).toEqual({ ...row, retryable: provablyNeverRan });
@@ -96,7 +96,8 @@ describe("child death classification", () => {
         // unread, or `close` never came so stdio never drained. Both used to be one-line guards in
         // different handlers; both are rules here.
         for (const row of rows.filter((candidate) => candidate.state.latchEvidenceLost || candidate.event === "exit-grace")) {
-            if (row.event === "error" && !row.state.spawned) continue;
+            // A child that never spawned is decided before any of this, on the stronger fact.
+            if (!row.state.spawned) continue;
             expect(row.code).toBe("hyper-v-windows-session-exited");
         }
     });
@@ -221,6 +222,27 @@ describe("broker Hyper-V session pool", () => {
         // would call this never-ran and have the broker re-issue it. That single word is the whole
         // guard, and it is what this pins.
         const result = await runStub("#!/bin/sh\nsh -c 'sleep 10' &\nsleep 0.2\nexit 1\n", 8000);
+        expect(result.error).toBe("hyper-v-windows-session-exited");
+    });
+
+    it("does not accept the marker on stderr", async () => {
+        // stderr cannot carry the ready marker — the bootstrap writes it to stdout — so seeing it
+        // there proves nothing about whether the read loop was reached. Allowing stderr to set the
+        // latch is exactly what made an earlier revision wrong, and it silently costs the fallback:
+        // this child would be classified as having run something it never read.
+        const result = await runStub(`#!/bin/sh\necho ${MARKER} >&2\nsleep 0.2\n`, 2000);
+        expect(result.error).toBe("hyper-v-windows-session-start-failed");
+    });
+
+    it("treats output dropped unread as evidence lost, not as proof nothing ran", async () => {
+        // The flood test above cannot cover this: its stub announces, so the latch is satisfied by
+        // the marker rather than by the drop. This one never announces at all, so the ONLY thing
+        // between it and a never-ran classification is the drop recording that it destroyed
+        // evidence. Getting this wrong re-issues a request the child may have executed.
+        const result = await runStub(
+            "#!/bin/sh\nawk 'BEGIN { while (i++ < 40) printf \"%0512000d\", 0 }'\nsleep 0.2\n",
+            8000,
+        );
         expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 

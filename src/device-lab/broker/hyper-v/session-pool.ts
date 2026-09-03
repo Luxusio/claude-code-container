@@ -22,6 +22,10 @@ const CLOSE_GRACE_MILLISECONDS = 250;
 // never came. Named rather than inlined so the decision below is one function over an enumerated
 // input instead of five branches spread across five handlers, each reachable only by spawning a
 // real process.
+// Note what this type does NOT have: a member for a write completion. That is structural rather
+// than advisory — consulting the classifier from the write path, which fires before any of the
+// child's output can be delivered and so reads the latch stale, now requires deliberately
+// mislabelling the event rather than merely forgetting a comment.
 export type HyperVWindowsChildDeathEvent = "close" | "exit" | "exit-grace" | "error" | "stdin-error";
 
 export type HyperVWindowsChildDeathState = {
@@ -52,9 +56,13 @@ export function hyperVWindowsChildDeathCode(
     event: HyperVWindowsChildDeathEvent,
     state: HyperVWindowsChildDeathState,
 ): string {
-    // A child that never came up cannot have run anything. Node emits "error" instead of "spawn"
-    // when the spawn itself fails, so this cannot be reached by a child that started and then died.
-    if (event === "error" && !state.spawned) return "hyper-v-windows-session-spawn-failed";
+    // A child that never came up cannot have run anything, whichever event carried the news. Node
+    // emits "spawn" only on a successful spawn and always before "exit"/"error", so `!spawned` at
+    // death time means the spawn failed. Deciding on that fact rather than on which event arrived
+    // first removes a dependence on their ordering, which is not guaranteed — the same principle as
+    // the latch: hold by construction, not by timing. (`exit-grace` with `!spawned` is unreachable,
+    // since the grace only arms from `exit`.)
+    if (!state.spawned) return "hyper-v-windows-session-spawn-failed";
 
     // The grace timer means `close` never arrived, so stdio has not drained and the latch may simply
     // be stale rather than false. That is not evidence the child never ran.
@@ -161,6 +169,11 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         reportedGone = true;
         notifyExit(reason);
     };
+    // `spawned` is declared *below* this closure on purpose. Every caller today is an async event
+    // handler, so the temporal dead zone is long exited and the order is invisible at runtime. It
+    // matters only to the next edit: a synchronous classify inserted above the declaration throws,
+    // instead of reading a `false` that would report a live child as never-spawned — the retryable
+    // direction, and the one that re-issues a mutation.
     const report = (event: HyperVWindowsChildDeathEvent) => reportGone(hyperVWindowsChildDeathCode(event, {
         announcedReady,
         latchEvidenceLost,
