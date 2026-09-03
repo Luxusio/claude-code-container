@@ -79,6 +79,13 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // A child that never announced never reached its read loop, so nothing sent to it can have run.
     // start-failed already carries exactly that meaning and is already treated as never-ran.
     //
+    // Read at `exit` rather than `close`. Node documents that stdio streams may still be open at
+    // `exit`, so a marker emitted but not yet delivered would read false here and produce exactly
+    // the false never-ran this function exists to avoid. Measured 112/112 delivered first, idle and
+    // under load — but that is libuv scheduling, not a documented guarantee. `close` fires only
+    // after the streams drain and would close it by construction; if the Windows pass ever sees a
+    // mutation applied twice, change this first.
+    //
     // Only for the paths that report the child GOING AWAY. It must not be consulted from a write
     // completion, which fires before any of the child's own output can be delivered to this process
     // — there the latch reads false even for a child that has already announced, which would call an

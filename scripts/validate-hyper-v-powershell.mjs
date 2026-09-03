@@ -1,7 +1,8 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { hiddenWindowsPowerShellArgs } from "../device-lab-mcp/src/state/windows-system-powershell.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -50,9 +51,31 @@ if (!executable) {
 }
 
 const libraryFixture = join(repoRoot, "scripts", "real-tests", "hyper-v-windows-library-fixture.ps1");
+
+// The session bootstrap is PowerShell too, but it is a TypeScript string array joined with "; ", so
+// it is on no disk path this walker would find and has never been parse-checked anywhere. Its shape
+// is fragile in a way only a parser catches: the try/catch is one array element concatenated with
+// "+" precisely because joining across them would emit `try {...}; catch {...}`, which does not
+// parse. Nothing else enforces that. Written to a temp file so the parser sees what the child
+// actually runs; a regression here would otherwise surface as a hung session on a Windows host.
+async function bootstrapSource() {
+    // Read from the built module rather than parsed out of its text, so what the parser checks is
+    // the exact string the session hands to PowerShell. Absent before a build, which is why this
+    // degrades to skipping that one file rather than failing.
+    const built = join(repoRoot, "dist", "hyper-v-windows", "low-level", "powershell-session.js");
+    if (!existsSync(built)) return null;
+    const { HYPER_V_WINDOWS_SESSION_BOOTSTRAP } = await import(pathToFileURL(built).href);
+    if (typeof HYPER_V_WINDOWS_SESSION_BOOTSTRAP !== "string") return null;
+    const path = join(mkdtempSync(join(tmpdir(), "ccc-hyper-v-bootstrap-")), "session-bootstrap.ps1");
+    writeFileSync(path, HYPER_V_WINDOWS_SESSION_BOOTSTRAP, "utf8");
+    return path;
+}
+
+const bootstrap = libraryFixtureOnly ? null : await bootstrapSource();
 const files = (libraryFixtureOnly ? [libraryFixture] : [
     ...filesUnder(assetRoot),
     libraryFixture,
+    ...(bootstrap ? [bootstrap] : []),
 ]).filter((candidate) => /\.ps(?:1|m1)$/i.test(candidate));
 const parser = [
     "$ErrorActionPreference = 'Stop'",
