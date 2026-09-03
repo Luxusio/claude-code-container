@@ -641,6 +641,27 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain(HYPER_V_WINDOWS_SESSION_READY_MARKER);
     });
 
+    it("announces itself before its read loop, which is what makes the never-ran latch sound", () => {
+        // The broker classifies a child that produced no stdout as never having run anything, and
+        // re-issues those requests — so a child that could consume a frame without speaking first
+        // would have executed mutations re-applied. The only reason it cannot is the order of these
+        // two statements: READY is written and flushed BEFORE the loop that reads frames.
+        //
+        // That coupling spans two files with no reference between them, and nothing else enforces
+        // it. Move the marker below the loop, drop it, or add a path that reads before announcing,
+        // and the latch silently starts classifying executed work as never-ran with no other test
+        // failing. This is the guard for that.
+        const announce = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf(HYPER_V_WINDOWS_SESSION_READY_MARKER);
+        const loop = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf("while ($true)");
+        expect(announce).toBeGreaterThanOrEqual(0);
+        expect(loop).toBeGreaterThanOrEqual(0);
+        expect(announce).toBeLessThan(loop);
+        // Flushed too — a marker sitting in a buffer is not output the parent can observe.
+        const flush = HYPER_V_WINDOWS_SESSION_BOOTSTRAP.indexOf("[Console]::Out.Flush()");
+        expect(flush).toBeGreaterThan(announce);
+        expect(flush).toBeLessThan(loop);
+    });
+
     it("keeps `exit` out of the asset, because it would take the session down with it", () => {
         // PowerShell's exit is not scoped to a script block. Under `& ([ScriptBlock]::Create(...))`
         // it unwinds past the caller, so an exit on the asset's failure path aborted the Out-String

@@ -49,6 +49,10 @@ export const HYPER_V_WINDOWS_SESSION_BOOTSTRAP = [
     // from disk while the session runs.
     "$ScriptSource = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadLine()))",
     "$Operation = [ScriptBlock]::Create($ScriptSource)",
+    // Emitted and flushed BEFORE the loop below, deliberately. The broker treats a child that
+    // produced no stdout as never having run anything and re-issues those requests, so a child that
+    // could consume a frame without speaking first would have executed mutations re-applied. Pinned
+    // by "announces itself before its read loop" in the session tests; do not reorder these.
     `[Console]::Out.WriteLine('${HYPER_V_WINDOWS_SESSION_READY_MARKER}')`,
     "[Console]::Out.Flush()",
     "while ($true) {",

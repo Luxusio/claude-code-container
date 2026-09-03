@@ -41,6 +41,11 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // a buffer belonging to a dead reader and the callback reports success. Measured, it identified
     // the case 2/30 where this latch identifies it 30/30.
     //
+    // The soundness depends on HYPER_V_WINDOWS_SESSION_BOOTSTRAP emitting and flushing its ready
+    // marker BEFORE the loop that reads frames. That is a coupling across two files, so it is pinned
+    // by a test — "announces itself before its read loop" in hyper-v-windows-session.test.ts. Do not
+    // reorder those statements without reading it.
+    //
     // This is NOT a gate on the READY marker reaching the session's line listener; that is unsound,
     // because the marker can be emitted before the listener attaches and then be lost, which would
     // move a request toward being retried. This handler is attached synchronously at spawn, before
