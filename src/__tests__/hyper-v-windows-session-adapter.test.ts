@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createDeviceLabHyperVWindowsClient } from "../device-lab/broker/hyper-v/lifecycle-adapter.js";
+import {
+    createDeviceLabHyperVWindowsClient,
+    createRecordingDeviceLabHyperVWindowsClient,
+} from "../device-lab/broker/hyper-v/lifecycle-adapter.js";
 import type {
+    HyperVWindowsError,
     HyperVWindowsExecutionRequest,
     HyperVWindowsExecutionResult,
     HyperVWindowsExecutor,
@@ -135,12 +139,17 @@ describe("Device Lab Hyper-V session transport", () => {
             errorCode: "virtual-machine-not-found",
         });
         const request = { kind: "id", id: VM_ID } as const;
+        // Compared on nativeStatus, not on message: the message is
+        // hyper-v-windows-<category>:<operation>:<code> and never carries the exit status, so a
+        // message comparison would pass unchanged with the session reporting 0 and the one-shot
+        // reporting 1 — the exact divergence the exit-code plumbing exists to close.
         const failure = async (client: ReturnType<typeof createDeviceLabHyperVWindowsClient>) => {
             try {
                 await client.getVM(request);
                 return "no-error-thrown";
             } catch (error) {
-                return (error as Error).message;
+                const typed = error as HyperVWindowsError;
+                return `${typed.message}|status=${typed.nativeStatus}`;
             }
         };
 
@@ -157,7 +166,7 @@ describe("Device Lab Hyper-V session transport", () => {
         }));
 
         expect(viaSession).toBe(viaOneShot);
-        expect(viaSession).toContain("virtual-machine-not-found");
+        expect(viaSession).toBe("hyper-v-windows-native:Get-VM:virtual-machine-not-found|status=1");
     });
 
     it("bounds a session call by the caller's remaining deadline", async () => {
@@ -179,6 +188,25 @@ describe("Device Lab Hyper-V session transport", () => {
 
         await client.getVM({ kind: "id", id: VM_ID });
         expect(seen).toEqual([2500]);
+    });
+
+    it("records the session's execution, which never passes through the command runner", async () => {
+        // The broker surfaces the raw provider execution in snapshot payloads via
+        // redactProviderCommandInput. Recording only inside the wrapped runner left that permanently
+        // null once a session was supplied, because the session serves every primitive and the
+        // runner is then never called — so the payloads degraded to stubs exactly on the failures
+        // operators need them for.
+        const stdout = envelope([machine]);
+        const recording = createRecordingDeviceLabHyperVWindowsClient({
+            executable: "powershell.exe",
+            timeoutMilliseconds: 1000,
+            run: vi.fn(),
+            session: sessionReturning({ status: 0, stdout }),
+        });
+
+        expect(recording.lastExecution()).toBeNull();
+        await recording.client.getVM({ kind: "id", id: VM_ID });
+        expect(recording.lastExecution()).toMatchObject({ status: 0, stdout });
     });
 
     it("passes the caller's request through unchanged", async () => {

@@ -125,12 +125,31 @@ describe("Hyper-V Windows PowerShell session", () => {
         await vi.waitFor(() => expect(child.written.length).toBe(2));
         const frame = child.written[1]!;
         // A reply carrying an id nobody awaits must not be handed to the pending caller.
-        const foreign = Buffer.from(JSON.stringify({ id: "not-a-pending-id", stdout: "wrong" }), "utf8").toString("base64");
+        const foreign = Buffer.from(JSON.stringify({ id: "not-a-pending-id", code: 0, stdout: "wrong" }), "utf8").toString("base64");
         child.emit(`${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${foreign}`);
 
         expect((await first).error).toBe("hyper-v-windows-session-response-uncorrelated");
         expect(child.killed()).toBe(true);
         void frame;
+    });
+
+    it("rejects a frame with no exit code instead of reading it as a success", async () => {
+        const child = fakeChild();
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        queueMicrotask(() => child.ready());
+
+        const first = session.execute(REQUEST, CONTEXT);
+        await vi.waitFor(() => expect(child.written.length).toBe(2));
+        const id = JSON.parse(Buffer.from(
+            child.written[1]!.slice(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX.length),
+            "base64",
+        ).toString("utf8")).id;
+        // Correctly correlated, but the reader cannot tell whether the operation succeeded. Reading
+        // a missing code as 0 would report a native failure as a success envelope with status 0.
+        const codeless = Buffer.from(JSON.stringify({ id, stdout: "{}" }), "utf8").toString("base64");
+        child.emit(`${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}${codeless}`);
+
+        expect((await first).error).toBe("hyper-v-windows-session-response-invalid");
     });
 
     it("serializes concurrent callers onto the single stream", async () => {
@@ -185,6 +204,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         const children: FakeChild[] = [];
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: ASSET,
+            healthTimeoutMilliseconds: 5,
             spawn: () => {
                 const child = children.length === 0 ? fakeChild() : autoReplyChild(() => "recovered");
                 if (children.length === 0) queueMicrotask(() => child.ready());
@@ -195,10 +215,66 @@ describe("Hyper-V Windows PowerShell session", () => {
 
         const wedged = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 5 });
         expect(wedged.error).toBe("hyper-v-windows-session-timeout");
-        expect(children[0]!.killed()).toBe(true);
+        await vi.waitFor(() => expect(children[0]!.killed()).toBe(true));
 
         // The next call is served by a fresh session rather than queueing behind the dead one.
         expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("recovered");
+    });
+
+    it("does not kill the shared child because one caller's deadline expired", async () => {
+        // The broker bounds each primitive by what is left of its operation deadline, and
+        // hyperVRemainingTimeout floors that at 1ms — so a caller can arrive with almost no budget.
+        // Treating that as evidence the child is wedged killed a process every other concurrent flow
+        // was using, failed them all with an error that is deliberately not retryable, and made the
+        // next primitive pay the PowerShell start and module load this whole slice exists to remove.
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            healthTimeoutMilliseconds: 60000,
+            spawn: () => {
+                const child = fakeChild();
+                queueMicrotask(() => child.ready());
+                children.push(child);
+                return child;
+            },
+        });
+
+        const starved = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 });
+        expect(starved.error).toBe("hyper-v-windows-session-timeout");
+        expect(children[0]!.killed()).toBe(false);
+
+        // The late answer still clears the entry, and the same child serves the next caller.
+        const abandonedFrame = children[0]!.written[1]!;
+        children[0]!.reply(abandonedFrame, "late but correlated");
+        const served = session.execute(REQUEST, CONTEXT);
+        await vi.waitFor(() => expect(children[0]!.written.length).toBe(3));
+        children[0]!.reply(children[0]!.written[2]!, "served");
+
+        expect((await served).stdout).toBe("served");
+        expect(children).toHaveLength(1);
+        expect(session.starts()).toBe(1);
+    });
+
+    it("kills a child spawned after close rather than orphaning it", async () => {
+        // close() discards while child is still null, so the in-flight spawn used to resume and
+        // adopt a live PowerShell process into a closed session that nothing would ever kill — a
+        // leaked child holding a loaded Hyper-V module.
+        const child = fakeChild();
+        let release: (() => void) | null = null;
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            spawn: () => new Promise<HyperVWindowsSessionProcess>((resolve) => {
+                release = () => resolve(child);
+            }),
+        });
+
+        const inFlight = session.execute(REQUEST, CONTEXT);
+        await vi.waitFor(() => expect(release).not.toBeNull());
+        session.close();
+        release!();
+
+        expect((await inFlight).error).toBe("hyper-v-windows-session-unavailable");
+        await vi.waitFor(() => expect(child.killed()).toBe(true));
     });
 
     it("stops respawning once the start budget is exhausted", async () => {
@@ -278,6 +354,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         const children: FakeChild[] = [];
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: ASSET,
+            healthTimeoutMilliseconds: 5,
             spawn: () => {
                 const child = children.length === 0 ? fakeChild() : autoReplyChild(() => "recovered");
                 if (children.length === 0) queueMicrotask(() => child.ready());
@@ -289,6 +366,7 @@ describe("Hyper-V Windows PowerShell session", () => {
         const wedged = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 5 });
         expect(wedged.error).toBe("hyper-v-windows-session-timeout");
         const staleFrame = children[0]!.written[1]!;
+        await vi.waitFor(() => expect(children[0]!.killed()).toBe(true));
         expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("recovered");
 
         children[0]!.reply(staleFrame, "far too late");
@@ -329,7 +407,9 @@ describe("Hyper-V Windows PowerShell session", () => {
         // ordinary virtual-machine-not-found into a non-retryable transport error. try/catch cannot
         // intercept it either: exit raises a flow-control exception, which catch does not catch.
         // The asset records failure in a flag and each bootstrap decides what to do with it.
-        expect(ASSET.scriptSource).not.toMatch(/^\s*exit\b/m);
+        // Not anchored to line start only: `} catch { ...; exit 1 }` and `if ($x) { exit 1 }` are
+        // the same defect on one line.
+        expect(ASSET.scriptSource).not.toMatch(/(?:^|[;{]\s*)exit\b/m);
         expect(ASSET.scriptSource).toContain("$global:CccHyperVExitCode = 1");
         expect(ASSET.scriptSource).toContain("$global:CccHyperVExitCode = 0");
         expect(HYPER_V_WINDOWS_SESSION_BOOTSTRAP).toContain("$Code = [int]$global:CccHyperVExitCode");

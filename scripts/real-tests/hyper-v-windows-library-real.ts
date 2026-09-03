@@ -18,11 +18,18 @@ const WINDOWS_SYSTEM_ROOT_ALIAS = "\\\\?\\GLOBALROOT\\SystemRoot";
 export const HYPER_V_WINDOWS_LIBRARY_FIXTURE_SHA256 = "9ca5140b9cd9498b8bb2de76b6edff6f954660ed790630cb12240421c2791813";
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NATIVE_ERROR_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
-const POWERSHELL_MEMORY_BOOTSTRAP = [
+// A copy, because this lane must not import from src/ — it exists to exercise the compiled public
+// root, and the boundary test enforces that. So the copy is checked against the library's own
+// exported constant at scenario start instead: it silently diverged once already, keeping the
+// pre-v4 shape after the pinned asset stopped calling exit and moved its failure onto
+// $global:CccHyperVExitCode, which had this lane claiming v4 conformance while driving the asset
+// through a v3 bootstrap.
+export const POWERSHELL_MEMORY_BOOTSTRAP = [
     "$EnvelopeJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))",
     "$Envelope = $EnvelopeJson | ConvertFrom-Json -ErrorAction Stop",
     "$global:CccHyperVJsonInput = [string]$Envelope.input",
     "& ([ScriptBlock]::Create([string]$Envelope.script))",
+    "if ($global:CccHyperVExitCode) { exit [int]$global:CccHyperVExitCode }",
 ].join("; ");
 const FIXTURE_RESULT_MARKER = "CCC_HYPER_V_WINDOWS_LIBRARY_FIXTURE_RESULT:";
 
@@ -514,6 +521,7 @@ export type HyperVWindowsLibraryModule = {
         run: ReturnType<typeof createBoundedPowerShellFileRunner>;
     }): unknown;
     createHyperVWindowsClient(executor: unknown): HyperVClient;
+    readonly HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP: string;
     inspectHyperVVirtualMachine(client: HyperVClient, selector: Selector, options?: { signal?: AbortSignal }): Promise<Inspection>;
     reconcileHyperVVirtualMachine(inspection: Inspection, expectation: Expectation, intent: Intent): Outcome;
     retryHyperVLifecycle(
@@ -704,6 +712,14 @@ export async function runHyperVWindowsLibraryScenario(
             vhdPaths: expectedVhdPaths,
         });
         const library = await importLibrary();
+        // This lane cannot import from src/ — it exists to drive the compiled public root, and the
+        // boundary test enforces that — so the local copy of the bootstrap is checked against the
+        // library's own before it is used. Without this the copy is free to keep an older shape
+        // while the lane still attests to the current contract.
+        assert(
+            POWERSHELL_MEMORY_BOOTSTRAP === library.HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP,
+            "hyper-v-library-memory-bootstrap-drift",
+        );
         const executor = library.createHyperVWindowsPowerShellExecutor({ executable: trustedExecutables.powershell, run: runner });
         const client = library.createHyperVWindowsClient(executor);
         const selector = { kind: "id", id: fixture.vmId } as const;

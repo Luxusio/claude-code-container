@@ -19,6 +19,10 @@ export const HYPER_V_WINDOWS_SESSION_READY_MARKER = "CCC_HYPER_V_SESSION_READY";
 const MAX_FRAME_BYTES = 256 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
 const DEFAULT_MAX_STARTS = 3;
+// How long a request may sit unanswered before the child is declared wedged, independent of what
+// any one caller's deadline was. Matched to the library's per-execution ceiling, so an operation
+// slow enough to trip this would have timed out through the one-shot transport too.
+const DEFAULT_HEALTH_TIMEOUT_MILLISECONDS = 120 * 1000;
 
 // The child reads the asset source once, then serves requests from stdin until the stream closes.
 // The asset is still one-operation-per-invocation: the loop lives here, and each iteration
@@ -75,6 +79,9 @@ export type HyperVWindowsSessionOptions = {
     readonly operationAsset?: HyperVWindowsPowerShellOperationAsset;
     // Bounded so a host that cannot start PowerShell fails fast instead of respawning forever.
     readonly maximumStarts?: number;
+    // How long a request may go unanswered before the child is torn down. Deliberately separate from
+    // the caller's deadline: see the two timers in send().
+    readonly healthTimeoutMilliseconds?: number;
 };
 
 export type HyperVWindowsSession = HyperVWindowsExecutor & {
@@ -85,7 +92,10 @@ export type HyperVWindowsSession = HyperVWindowsExecutor & {
 
 type Pending = {
     readonly resolve: (result: HyperVWindowsExecutionResult) => void;
-    readonly settled: () => boolean;
+    // Cancels both of this request's timers. A request outlives its caller — the caller's deadline
+    // settles the call, but the entry stays until the child answers or the health floor declares the
+    // child wedged — so the entry, not the caller, owns the timers.
+    readonly clear: () => void;
 };
 
 function frameError(code: string): HyperVWindowsExecutionResult {
@@ -98,6 +108,10 @@ export function createHyperVWindowsPowerShellSession(
     options: HyperVWindowsSessionOptions,
 ): HyperVWindowsSession {
     const maximumStarts = Math.max(1, Math.trunc(options.maximumStarts ?? DEFAULT_MAX_STARTS));
+    const healthTimeoutMilliseconds = Math.max(
+        1,
+        Math.trunc(options.healthTimeoutMilliseconds ?? DEFAULT_HEALTH_TIMEOUT_MILLISECONDS),
+    );
     const pending = new Map<string, Pending>();
     let child: HyperVWindowsSessionProcess | null = null;
     let starting: Promise<HyperVWindowsSessionProcess | null> | null = null;
@@ -113,7 +127,10 @@ export function createHyperVWindowsPowerShellSession(
     function failAll(code: string) {
         const outstanding = [...pending.values()];
         pending.clear();
-        for (const entry of outstanding) entry.resolve(frameError(code));
+        for (const entry of outstanding) {
+            entry.clear();
+            entry.resolve(frameError(code));
+        }
     }
 
     function discard(code: string) {
@@ -149,6 +166,12 @@ export function createHyperVWindowsPowerShellSession(
             discard("hyper-v-windows-session-response-invalid");
             return;
         }
+        if (!Number.isInteger(reply.code) || typeof reply.stdout !== "string") {
+            // A frame missing its exit code is not a success with an unknown status, it is a frame
+            // this reader does not understand — the same class as unparseable base64.
+            discard("hyper-v-windows-session-response-invalid");
+            return;
+        }
         const id = typeof reply.id === "string" ? reply.id : "";
         const entry = id ? pending.get(id) : undefined;
         if (!entry) {
@@ -159,16 +182,14 @@ export function createHyperVWindowsPowerShellSession(
             return;
         }
         pending.delete(id);
+        entry.clear();
         // A session that answers is a session that started, so the budget below bounds consecutive
         // unproductive starts rather than the lifetime of the broker that owns them.
         unansweredStarts = 0;
         // The asset reports a native failure as exit code 1, and the one-shot transport turns that
         // into the process exit status. Carrying it here is what makes the two transports produce
         // identical HyperVWindowsExecutionResults for identical host conditions.
-        entry.resolve({
-            status: Number.isInteger(reply.code) ? (reply.code as number) : 0,
-            stdout: typeof reply.stdout === "string" ? reply.stdout : "",
-        });
+        entry.resolve({ status: reply.code as number, stdout: reply.stdout as string });
     }
 
     async function ensureChild(): Promise<HyperVWindowsSessionProcess | null> {
@@ -181,6 +202,17 @@ export function createHyperVWindowsPowerShellSession(
         starting = (async () => {
             const asset = verifiedOperationAsset(options.operationAsset);
             const spawned = await options.spawn(HYPER_V_WINDOWS_SESSION_BOOTSTRAP);
+            if (closed) {
+                // close() ran while this spawn was in flight, so it discarded a child that was still
+                // null. Adopting one now would leave a live PowerShell process holding a loaded
+                // Hyper-V module that nothing owns and nothing will ever kill.
+                try {
+                    spawned.kill();
+                } catch {
+                    // Killing a child that never came up is not a failure worth surfacing.
+                }
+                return null;
+            }
             // Adopted before the listeners are attached, so the identity guards below admit this
             // child's own output from the first line.
             child = spawned;
@@ -232,25 +264,40 @@ export function createHyperVWindowsPowerShellSession(
 
         return await new Promise<HyperVWindowsExecutionResult>((resolve) => {
             let done = false;
+            const clear = () => {
+                clearTimeout(callerTimer);
+                clearTimeout(healthTimer);
+            };
             const settle = (result: HyperVWindowsExecutionResult) => {
                 if (done) return;
                 done = true;
-                clearTimeout(timer);
                 resolve(result);
             };
-            // A session that stops answering is the failure that would be worse than the cost this
-            // task removes, so the timeout tears the session down rather than only failing the call.
-            const timer = setTimeout(() => {
-                pending.delete(id);
-                discard("hyper-v-windows-session-timeout");
+            // Two deadlines, because they answer two different questions, and conflating them made a
+            // near-expired caller kill a child every other flow was using. The broker bounds each
+            // primitive by what is left of its operation deadline, and hyperVRemainingTimeout floors
+            // that at 1ms — so "my caller ran out of budget" says nothing about the child's health.
+            // The caller's deadline settles the caller and leaves the request pending; if the child
+            // later answers, the reply still clears the entry and still counts as a productive
+            // session. Only the health floor below concludes the child is wedged.
+            const callerTimer = setTimeout(() => {
                 settle(frameError("hyper-v-windows-session-timeout"));
             }, Math.max(1, context.timeoutMilliseconds));
-            if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
-            pending.set(id, { resolve: settle, settled: () => done });
+            const healthTimer = setTimeout(() => {
+                pending.delete(id);
+                clear();
+                discard("hyper-v-windows-session-timeout");
+                settle(frameError("hyper-v-windows-session-timeout"));
+            }, Math.max(1, context.timeoutMilliseconds, healthTimeoutMilliseconds));
+            for (const timer of [callerTimer, healthTimer]) {
+                if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
+            }
+            pending.set(id, { resolve: settle, clear });
             try {
                 active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`);
             } catch {
                 pending.delete(id);
+                clear();
                 discard("hyper-v-windows-session-write-failed");
                 settle(frameError("hyper-v-windows-session-write-failed"));
             }

@@ -40,6 +40,10 @@ export type DeviceLabHyperVWindowsClientOptions = {
     // each. Optional so the real-test scenario and any caller without a session keep the one-shot
     // transport unchanged.
     readonly session?: HyperVWindowsExecutor;
+    // Called with every execution this client performs, whichever transport served it. The one-shot
+    // branch is observable through `run`; the session branch is not, so a recorder that only wrapped
+    // `run` would see nothing at all once a session is in play.
+    readonly record?: (result: DeviceLabHyperVCommandResult) => void;
 };
 
 // The session failures after which retrying is provably safe: each means the child never came up,
@@ -88,6 +92,10 @@ export function createRecordingDeviceLabHyperVWindowsClient(
             lastExecution = result;
             return result;
         },
+        // Recording only the one-shot runner left lastExecution permanently null once a session was
+        // supplied, because the session serves every primitive and run is then never called. The
+        // snapshot payloads that exist to carry provider diagnostics silently degraded to stubs.
+        record: (result) => { lastExecution = result; },
     });
     return { client, lastExecution: () => lastExecution };
 }
@@ -134,7 +142,14 @@ export function createDeviceLabHyperVWindowsClient(
                 : options.timeoutMilliseconds;
             const bounded = { ...context, timeoutMilliseconds: Math.min(context.timeoutMilliseconds, budget) };
             const result = await session.execute(request, bounded);
-            if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) return result;
+            if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) {
+                // The session bypasses options.run, so this is the only place a recorder can see the
+                // execution that actually served the primitive.
+                // The session bypasses options.run, so this is the only place a recorder can see the
+                // execution that actually served the primitive.
+                options.record?.(result);
+                return result;
+            }
             // The session could not be established at all. Rather than fail the operation, serve it
             // the way this broker served it before sessions existed. Anything else — a timeout, an
             // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean

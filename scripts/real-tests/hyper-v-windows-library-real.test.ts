@@ -14,6 +14,7 @@ import {
     createFixtureOperation,
     HYPER_V_WINDOWS_LIBRARY_FIXTURE_SHA256,
     loadHyperVWindowsLibrary,
+    POWERSHELL_MEMORY_BOOTSTRAP,
     resolveTrustedWindowsSystemExecutables,
     runHyperVWindowsLibraryScenario,
     verifiedHyperVWindowsLibraryFixturePath,
@@ -521,6 +522,7 @@ function fakeScenario(options: {
             return { execute: vi.fn() };
         }),
         createHyperVWindowsClient: vi.fn(() => client),
+        HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP: POWERSHELL_MEMORY_BOOTSTRAP,
         inspectHyperVVirtualMachine: vi.fn(async (_client: unknown, _selector: unknown, callOptions?: { signal?: AbortSignal }) => {
             calls.push("library:inspect");
             if (callOptions?.signal?.aborted) throw new Error("scenario-aborted");
@@ -930,5 +932,10 @@ describe("standalone launcher and boundary", () => {
             reconcileHyperVVirtualMachine: expect.any(Function),
             retryHyperVLifecycle: expect.any(Function),
         });
+        // The lane cannot import from src/, so it keeps its own copy of the memory bootstrap and the
+        // scenario asserts the two agree at runtime. This is where that agreement is proved against
+        // the real compiled artifact rather than a stub — the copy silently kept a pre-v4 shape once
+        // already, leaving the lane attesting to a contract it was not driving.
+        expect(library.HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP).toBe(POWERSHELL_MEMORY_BOOTSTRAP);
     });
 });

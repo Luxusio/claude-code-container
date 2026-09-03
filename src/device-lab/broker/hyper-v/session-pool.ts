@@ -76,7 +76,27 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     };
 }
 
+// A long-lived child holds a loaded Hyper-V module and a host handle, so leaking one is worse than
+// paying the startup cost again. Reference counted because the map is module scoped while broker
+// servers are not: a process can hold more than one, and a session carries no per-server state, so
+// they share. Closing on the first server's close event would kill a child another server is
+// mid-request on, and hyper-v-windows-session-closed is deliberately not a retryable error — that
+// request would fail outright rather than fall back.
+let holders = 0;
+
 export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSession {
+    if (holders === 0) {
+        // No broker is left to close what this would spawn. Sessions are handed out lazily from
+        // inside async tool handlers, so a request still in flight past the last server's close
+        // would otherwise start a child nothing ever kills. This one reports itself unavailable,
+        // which the adapter treats as never-ran and serves through the one-shot transport — the way
+        // the broker served every primitive before sessions existed.
+        return createHyperVWindowsPowerShellSession({
+            spawn: () => {
+                throw new Error("hyper-v-windows-session-pool-closed");
+            },
+        });
+    }
     const existing = sessions.get(executable);
     if (existing) return existing;
     const session = createHyperVWindowsPowerShellSession({
@@ -86,16 +106,7 @@ export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSes
     return session;
 }
 
-// A long-lived child holds a loaded Hyper-V module and a host handle, so leaking one is worse than
-// paying the startup cost again. Wired to the broker server's close event.
-//
-// Reference counted because the map is module scoped while broker servers are not: a process can
-// hold more than one, and a session carries no per-server state, so they share. Closing on the first
-// server's close event would kill a child another server is mid-request on, and
-// hyper-v-windows-session-closed is deliberately not a retryable error — that request would fail
-// outright rather than fall back.
-let holders = 0;
-
+// Wired to the broker server's close event.
 export function retainBrokerHyperVWindowsSessions(): () => void {
     holders += 1;
     let released = false;

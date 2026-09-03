@@ -201,6 +201,19 @@ would reject as `response-malformed`. And `2>&1` is not used, because merging th
 error stream into machine-readable output corrupts it; the session owner drains
 stderr separately.
 
+**A caller's deadline and the child's health are separate questions, and
+conflating them is worse than either alone.** The broker bounds each primitive by
+what is left of its operation deadline, and `hyperVRemainingTimeout` floors that
+at 1ms, so a caller can legitimately arrive with almost no budget. The first
+implementation let that one caller's timeout discard the session — killing a
+child every other concurrent flow was using, failing all of them with an error
+that is deliberately not retryable, and making the next primitive pay the
+PowerShell start and module load this slice exists to remove. The caller's
+deadline now settles only that caller and leaves the request pending; a late but
+correlated reply still clears it and still counts as a productive session. A
+separate health floor, matched to the library's per-execution ceiling, is what
+concludes the child is wedged.
+
 The start budget bounds *consecutive unproductive* starts, not starts over the
 process lifetime. A lifetime counter conflates "this host cannot run PowerShell"
 with "this broker has been up for days": the third restart, however far apart,
@@ -210,7 +223,16 @@ falls back to one-shot — so the whole feature disappeared with no error anywhe
 The pool is process-scoped and reference-counted. Sessions carry no per-server
 state, so two broker servers in one process share them; tearing them down on the
 first server's `close` would kill a child the second is mid-request on, and
-`hyper-v-windows-session-closed` is deliberately not retryable.
+`hyper-v-windows-session-closed` is deliberately not retryable. Past the last
+release the pool stops handing out real sessions, because they are taken lazily
+from inside async tool handlers — a request still in flight at shutdown would
+otherwise start a child nothing would ever kill.
+
+Anything a session serves must remain visible to the recorder the broker uses for
+provider diagnostics. The session bypasses the injected command runner entirely,
+so a recorder that only wraps that runner sees nothing at all once a session is
+live, and the snapshot payloads that carry provider execution degrade to stubs
+exactly on the failures operators need them for.
 
 ### Known gap carried past slice 1
 

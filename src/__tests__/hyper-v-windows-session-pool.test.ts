@@ -1,3 +1,6 @@
+import { mkdtempSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -51,6 +54,43 @@ describe("broker Hyper-V session pool", () => {
             second();
             drain();
         }
+    });
+
+    it("refuses to pool a session once no broker is left to close it", () => {
+        // Sessions are handed out lazily from inside async tool handlers, so a request still in
+        // flight past the last server's close would otherwise start a PowerShell child nothing ever
+        // kills. The session it gets instead reports itself unavailable, which the adapter treats as
+        // never-ran and serves through the one-shot transport.
+        const orphan = brokerHyperVWindowsSession("powershell.exe");
+        expect(brokerHyperVWindowsSessionCountForTest()).toBe(0);
+        expect(orphan.starts()).toBe(0);
+    });
+
+    it("is retained by the broker at construction, not at close", async () => {
+        // The wiring, not the pool. `server.once("close", retainBrokerHyperVWindowsSessions())` and
+        // `server.once("close", retainBrokerHyperVWindowsSessions)` differ by two characters; the
+        // second retains on close and never releases, pinning the pool open forever. Every
+        // pool-level test above passes either way.
+        const { createDeviceBrokerServer } = await import("../device-lab-broker.js");
+        const home = process.env.HOME;
+        // Constructing a server registers owner state under HOME, which is read-only here.
+        process.env.HOME = mkdtempSync(join(tmpdir(), "ccc-session-pool-home-"));
+        const server = createDeviceBrokerServer({
+            cwd: mkdtempSync(join(tmpdir(), "ccc-session-pool-cwd-")),
+            host: "127.0.0.1",
+            port: 0,
+            platform: "linux",
+            commandRunner: () => ({ status: 0, stdout: "" }),
+        });
+        try {
+            // Only poolable while a holder exists — otherwise the count stays 0.
+            brokerHyperVWindowsSession("powershell.exe");
+            expect(brokerHyperVWindowsSessionCountForTest()).toBe(1);
+        } finally {
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+            if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
+        }
+        expect(brokerHyperVWindowsSessionCountForTest()).toBe(0);
     });
 
     it("ignores a repeated release rather than dropping another holder's count", () => {
