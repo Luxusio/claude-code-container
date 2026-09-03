@@ -220,10 +220,25 @@ one-request-at-a-time invariant the transport depends on — measured, six frame
 were written to a child that had answered nothing — and started each queued
 caller's deadline against work it had not reached, timing it out for someone
 else's stall. A caller that gives up therefore still holds the pipe until the
-child answers or the health floor fires. That means one wedged operation blocks
-the shared session for up to the health floor, which is the same bound the
-one-shot transport applies to a single execution; the alternative, killing the
-child whenever any caller gives up, is the defect described above.
+child answers or the health floor fires.
+
+That leaves one wedged operation blocking the pipe for up to the health floor,
+which on its own would be a real availability regression against the one-shot
+transport: there, four callers behind a wedged one got four healthy processes,
+because a session is shared process-wide while a one-shot execution is not. The
+resolution is classification, not a shorter floor. A caller whose deadline
+expires **while still queued** provably never ran — its frame was never written.
+That is the same proof `SESSION_NEVER_RAN_ERRORS` already rests on, so it gets
+its own code, `hyper-v-windows-session-queue-timeout`, and the broker serves it
+one-shot. A caller whose frame *was* written keeps
+`hyper-v-windows-session-timeout` and still fails outright, because the host may
+already have done the work. The pipe blocks; the other callers do not.
+
+For the same reason the caller's deadline starts in `execute`, before the queue
+wait, not inside the write. Timing it from the write gave a queued caller no
+deadline at all — it waited out the health floor, which is exactly the "a
+primitive with 2.5s of budget must not run against the 120s ceiling" failure the
+clamp exists to prevent, reappearing one layer up.
 
 The start budget bounds *consecutive unproductive* starts, not starts over the
 process lifetime. A lifetime counter conflates "this host cannot run PowerShell"
@@ -260,6 +275,17 @@ fixed here: changing the script re-pins `HYPER_V_WINDOWS_POWERSHELL_ASSET.sha256
 and breaks the correspondence between the pinned asset and the Windows host run
 that verified it. It belongs with slice 5, or with any other change that already
 re-pins the asset and re-runs hardware QA.
+
+**The session discards stderr.** `sessionProcess` drains the child's stderr
+without reading it, because leaving it unread eventually blocks the child on a
+full pipe. So `stderr` is always undefined on a session-served execution, and
+`hyperVProviderDiagnosticCode` can never derive a PowerShell-flavoured
+`diagnosticCode` from it. The damage is bounded: native failures already carry
+the asset's normalised `errorCode` through the envelope, and the session's own
+codes are filtered out of `diagnosticCode` by `REDACTED_PROVIDER_DIAGNOSTIC_CODES`
+anyway — so the loss is real only for transport-level failures, which is exactly
+where stderr would have been the only evidence. A bounded stderr ring buffer in
+`sessionProcess`, attached to the `frameError` results, closes it.
 
 ## Packaging decision
 

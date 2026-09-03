@@ -59,6 +59,13 @@ const SESSION_NEVER_RAN_ERRORS = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
     "hyper-v-windows-session-start-failed",
+    // A caller whose deadline expired while it was still waiting for the pipe. Its frame was never
+    // written, so this is the same proof as the three above: nothing reached the host. It matters
+    // because one session is shared process-wide — without this, a single wedged operation takes
+    // every other Hyper-V primitive down with it for the length of the session health floor, where
+    // the one-shot transport would have given each of them its own healthy process. A caller whose
+    // frame WAS written keeps hyper-v-windows-session-timeout and still fails outright.
+    "hyper-v-windows-session-queue-timeout",
 ]);
 
 export type DeviceLabHyperVExpectationOptions = {

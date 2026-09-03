@@ -63,6 +63,10 @@ describe("Device Lab Hyper-V session transport", () => {
             "hyper-v-windows-session-unavailable",
             "hyper-v-windows-session-spawn-failed",
             "hyper-v-windows-session-start-failed",
+            // Expired while still queued, so its frame was never written. One session is shared
+            // process-wide, so without this a single wedged operation would take every other
+            // Hyper-V primitive down with it rather than letting them run one-shot.
+            "hyper-v-windows-session-queue-timeout",
         ]) {
             run.mockClear();
             const client = createDeviceLabHyperVWindowsClient({

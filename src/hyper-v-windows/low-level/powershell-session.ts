@@ -252,6 +252,9 @@ export function createHyperVWindowsPowerShellSession(
     async function send(
         request: HyperVWindowsExecutionRequest,
         context: HyperVWindowsExecutionContext,
+        // Absolute, set when the caller called execute — so time spent queueing counts against the
+        // caller's budget rather than being handed back to it at the head of the queue.
+        expiresAt: number,
         release: () => void,
     ): Promise<HyperVWindowsExecutionResult> {
         // Either a pending entry takes ownership of the pipe, or this call frees it — structurally,
@@ -302,7 +305,7 @@ export function createHyperVWindowsPowerShellSession(
                 // concludes the child is wedged.
                 const callerTimer = setTimeout(() => {
                     settle(frameError("hyper-v-windows-session-timeout"));
-                }, Math.max(1, context.timeoutMilliseconds));
+                }, Math.max(1, expiresAt - Date.now()));
                 const healthTimer = setTimeout(() => {
                     pending.delete(id);
                     clear();
@@ -336,9 +339,37 @@ export function createHyperVWindowsPowerShellSession(
             // exactly when a caller's deadline expires on a request the child is still working.
             let release = () => undefined as void;
             const free = new Promise<void>((resolve) => { release = resolve; });
-            const run = queue.then(() => send(request, context, release));
+
+            // The caller's deadline starts here, not when the request reaches the head of the queue.
+            // Timing it from inside send() gave a queued caller no deadline at all: it waited out the
+            // health floor, which is exactly the "a primitive with 2.5s of budget must not run
+            // against the 120s ceiling" failure the clamp exists to prevent, reappearing one layer up.
+            const expiresAt = Date.now() + Math.max(1, context.timeoutMilliseconds);
+            let dequeued = false;
+            let expiredInQueue = false;
+            let expire = (_result: HyperVWindowsExecutionResult) => undefined as void;
+            const queueExpiry = new Promise<HyperVWindowsExecutionResult>((resolve) => { expire = resolve; });
+            const queueTimer = setTimeout(() => {
+                if (dequeued) return;
+                expiredInQueue = true;
+                expire(frameError("hyper-v-windows-session-queue-timeout"));
+            }, Math.max(1, context.timeoutMilliseconds));
+            if (typeof queueTimer === "object" && queueTimer && "unref" in queueTimer) queueTimer.unref();
+
+            const run = queue.then(() => {
+                dequeued = true;
+                clearTimeout(queueTimer);
+                if (expiredInQueue) {
+                    // Its frame was never written, so nothing reached the host. That is a distinct
+                    // code from a timeout on a request the child actually received, because it is
+                    // the one case where re-issuing provably cannot apply a mutation twice.
+                    release();
+                    return frameError("hyper-v-windows-session-queue-timeout");
+                }
+                return send(request, context, expiresAt, release);
+            });
             queue = run.then(() => free, () => free);
-            return run;
+            return Promise.race([queueExpiry, run]);
         },
         close() {
             closed = true;

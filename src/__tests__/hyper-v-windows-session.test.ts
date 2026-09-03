@@ -275,10 +275,11 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(session.starts()).toBe(1);
     });
 
-    it("does not start a queued caller's deadline against work it has not reached", async () => {
-        // The timer starts when the frame is written. Releasing the queue on a caller's give-up
-        // wrote the next frame into a child that had answered nothing, so a caller with a healthy
-        // budget timed out on somebody else's stall without its request ever being served.
+    it("expires a queued caller on its own deadline, and says its request never ran", async () => {
+        // A queued caller's deadline runs from when it called execute, not from when it reaches the
+        // head of the queue. Timing it from inside the write meant a queued caller had no deadline
+        // at all and waited out the health floor — up to 120s for a primitive the broker budgeted at
+        // seconds, which is the failure the deadline clamp exists to prevent, one layer up.
         const children: FakeChild[] = [];
         const session = createHyperVWindowsPowerShellSession({
             operationAsset: ASSET,
@@ -293,20 +294,16 @@ describe("Hyper-V Windows PowerShell session", () => {
 
         expect((await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 1 })).error)
             .toBe("hyper-v-windows-session-timeout");
-        let settled = false;
-        const healthy = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 })
-            .then((result) => { settled = true; return result; });
-        await new Promise((resolve) => setTimeout(resolve, 80));
+        const started = Date.now();
+        const queued = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 });
 
-        // Twice its budget has elapsed and it has not failed, because its budget has not started:
-        // it is waiting its turn rather than being timed out on someone else's stall.
-        expect(settled).toBe(false);
+        // Its own budget, nowhere near the 60s health floor.
+        expect(Date.now() - started).toBeLessThan(5000);
+        // A distinct code, because its frame was never written: one request reached the child, and
+        // this one provably did not. Only that distinction makes it safe for the broker to re-issue
+        // it through the one-shot transport instead of failing it outright.
+        expect(queued.error).toBe("hyper-v-windows-session-queue-timeout");
         expect(children[0]!.written).toHaveLength(2);
-
-        // It was still queued rather than in flight, so closing releases it before it ever reaches a
-        // child — which is itself the proof that the pipe was never handed to it.
-        session.close();
-        expect((await healthy).error).toBe("hyper-v-windows-session-unavailable");
     });
 
     it("kills a child spawned after close rather than orphaning it", async () => {

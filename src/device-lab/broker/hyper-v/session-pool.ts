@@ -117,6 +117,11 @@ export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSes
 // does not depend on how the count got stuck: whatever is still pooled when the process exits gets
 // killed, so a long-lived PowerShell child holding a loaded Hyper-V module cannot outlive the broker
 // that started it. Installed lazily so a process that never uses Hyper-V never registers a listener.
+//
+// What it does not cover: "exit" does not fire on SIGINT or SIGTERM unless something calls
+// process.exit, nor on a fatal signal. A broker killed outright by a service manager therefore still
+// leaves its children behind. The broker's own signal handling is what closes that gap; this is the
+// backstop for the ordinary exits.
 let exitSweepInstalled = false;
 
 function installProcessExitSweep(): void {
