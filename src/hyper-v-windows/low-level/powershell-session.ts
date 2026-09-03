@@ -309,12 +309,11 @@ export function createHyperVWindowsPowerShellSession(
             // delivered, and the never-ran classification was silently lost. Stream ordering makes
             // this sound: if the asset never reached the child, nothing written after it did either.
             spawned.write(Buffer.from(asset.scriptSource, "utf8").toString("base64"), (error) => {
-                // Identity guarded like onLine and onExit above, and for the same reason: a callback
-                // from a discarded child can still arrive after its replacement is serving. Without
-                // it, a stale asset-write failure clears `delivered` on the CURRENT child's pending
-                // entry, so a frame that did reach the host is reported never-ran and re-issued —
-                // the duplicate mutation. "Every pending entry" is only equivalent to "the one"
-                // because of this guard, not because of the serialization invariant.
+                // Identity guarded like onLine and onExit above. Two reviewers and I each tried and
+                // failed to reach a duplicate mutation through a stale callback here, so this is not
+                // claimed to prevent one — it is consistency with every other listener on this
+                // child, and it makes "every pending entry" equivalent to "the one" true by
+                // construction rather than by an argument about the serialization invariant.
                 if (!error || child !== spawned) return;
                 for (const entry of pending.values()) entry.delivered = false;
             });

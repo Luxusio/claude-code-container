@@ -138,6 +138,21 @@ describe("broker Hyper-V session pool", () => {
         expect(result.error).toBe("hyper-v-windows-session-exited");
     });
 
+    it("reports a death whose `close` a surviving grandchild is holding open", async () => {
+        // Four lines of shell for the last uncovered duplicate-mutation path, and it discriminates
+        // two separate changes at once.
+        //
+        // `close` fires only after every stdio stream closes, and a grandchild inheriting stdout
+        // keeps it open — so listening to `close` alone means the death is never reported and the
+        // shared pipe is held until the health floor expires with a code that is not retryable.
+        // Listening to `exit` alone reads the latch before stdio has drained. Hence both, with the
+        // grace timer choosing the CONSERVATIVE code: reporting `exitReason` from there instead
+        // would call this never-ran and have the broker re-issue it. That single word is the whole
+        // guard, and it is what this pins.
+        const result = await runStub("#!/bin/sh\nsh -c 'sleep 10' &\nsleep 0.2\nexit 1\n", 8000);
+        expect(result.error).toBe("hyper-v-windows-session-exited");
+    });
+
     it("recognises the marker behind a prefix on its line", async () => {
         // trim() covers a BOM and whitespace, not text. A child that printed anything ahead of the
         // marker on the same line was classified never-ran and re-issued, 15/15 — and that is

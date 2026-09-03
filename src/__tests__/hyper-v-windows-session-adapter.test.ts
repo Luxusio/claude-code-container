@@ -285,17 +285,22 @@ describe("Device Lab Hyper-V session transport", () => {
         // The session attempt and its retry together must stay inside the caller's deadline. A floor
         // of half the budget was measured overrunning it by 41%: a 1000ms caller whose session spent
         // 900ms still got 500ms for the retry.
+        // The fixture has to separate three values, which a generous budget does not: with 4000ms
+        // and 600ms spent, the old half-budget floor (2000) sits BELOW the true remainder (3400) and
+        // never bites. 2000ms with 1200ms spent puts them on either side — remainder ~800, floor
+        // 1000, no-subtraction 2000 — and stays above the 500ms guard, below which the retry is
+        // suppressed entirely and this would measure nothing at all.
         const seen: number[] = [];
         const client = createDeviceLabHyperVWindowsClient({
             executable: "powershell.exe",
-            timeoutMilliseconds: 4000,
+            timeoutMilliseconds: 2000,
             run: async (_command, options) => {
                 seen.push(options.timeoutMs);
                 return { status: 0, stdout: envelope([machine]) };
             },
             session: {
                 execute: async () => {
-                    await new Promise((resolve) => setTimeout(resolve, 600));
+                    await new Promise((resolve) => setTimeout(resolve, 1200));
                     return { status: null, stdout: "", error: "hyper-v-windows-session-unavailable" };
                 },
             },
@@ -303,9 +308,8 @@ describe("Device Lab Hyper-V session transport", () => {
 
         await client.getVM({ kind: "id", id: VM_ID });
         expect(seen).toHaveLength(1);
-        // Roughly the remainder, not the whole budget and not a floored half of it.
-        expect(seen[0]).toBeLessThan(3500);
-        expect(seen[0]).toBeGreaterThan(3000);
+        expect(seen[0]).toBeGreaterThan(500);
+        expect(seen[0]).toBeLessThan(900);
     });
 
     it("does not spawn a retry it has no time to run, but still records the failure", async () => {

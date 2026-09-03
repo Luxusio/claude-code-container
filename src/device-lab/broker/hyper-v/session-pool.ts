@@ -97,11 +97,8 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // A child that never announced never reached its read loop, so nothing sent to it can have run.
     // start-failed already carries exactly that meaning and is already treated as never-ran.
     //
-    // Driven from `close`, not `exit`. Node may still have stdio open at `exit`, so a marker
-    // emitted but not yet delivered would read false and produce exactly the false never-ran this
-    // exists to avoid; `close` fires only after the streams drain, which closes that by
-    // construction rather than by scheduling luck. Measured 112/112 the safe way at `exit` too, but
-    // that was libuv ordering, not a guarantee.
+    // Read only where the latch is known fresh — see the death reporting below, which is where the
+    // `close`/`exit` handling and its reasoning live.
     //
     // Only for the paths that report the child GOING AWAY. It must not be consulted from a write
     // completion, which fires before any of the child's own output can be delivered to this process
@@ -151,9 +148,13 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // request that may already have run Remove-VMSnapshot is safe to re-issue. Node emits "spawn"
     // only on a successful spawn, and emits "error" instead of it when the spawn fails, so the flag
     // cannot be set by a child that never came up. After it, any error is reported as an exit.
+    //
+    // Routed through reportGone like the other death paths, so it cannot double-report and cannot
+    // read the latch at a moment with no drain guarantee — the same premature read the exit/close
+    // split exists to prevent. It was the one path left doing that.
     let spawned = false;
     child.once("spawn", () => { spawned = true; });
-    child.once("error", () => notifyExit(
+    child.once("error", () => reportGone(
         spawned ? exitReason("hyper-v-windows-session-exited") : "hyper-v-windows-session-spawn-failed",
     ));
     // Without this, a write to a closed stdin raises an unhandled EPIPE and takes the broker down
