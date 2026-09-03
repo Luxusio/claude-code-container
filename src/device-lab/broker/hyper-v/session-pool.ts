@@ -16,6 +16,62 @@ import { hiddenWindowsPowerShellArgs } from "../../../windows-system-powershell.
 const sessions = new Map<string, HyperVWindowsSession>();
 
 const MAX_LINE_BYTES = 512 * 1024;
+const CLOSE_GRACE_MILLISECONDS = 250;
+
+// The four ways a child's death reaches us, plus the grace timer that stands in for a `close` that
+// never came. Named rather than inlined so the decision below is one function over an enumerated
+// input instead of five branches spread across five handlers, each reachable only by spawning a
+// real process.
+export type HyperVWindowsChildDeathEvent = "close" | "exit" | "exit-grace" | "error" | "stdin-error";
+
+export type HyperVWindowsChildDeathState = {
+    // The child emitted its ready marker, or a reply. Either proves it reached the read loop.
+    readonly announcedReady: boolean;
+    // Output was discarded unread, so the marker may have been in it.
+    readonly latchEvidenceLost: boolean;
+    // Node emitted "spawn", which it does only on a successful spawn and never when the spawn fails.
+    readonly spawned: boolean;
+};
+
+/**
+ * The single place that decides whether a dead child's outstanding request may be re-issued.
+ *
+ * This exists as one pure function because the decision used to live in five handlers, and twelve
+ * rounds of review showed that shape could not be held in one reader's head: guards accumulated
+ * until two of them covered the same property, a test written for one silently began passing
+ * because of the other, and the invariant it named could be deleted with everything still green.
+ * Every rule below is exercised by a table test rather than by spawning children, which is what
+ * makes them individually pinned instead of collectively plausible.
+ *
+ * `start-failed` and `spawn-failed` are in the adapter's never-ran set: returning either tells the
+ * broker the request certainly did not run, and it will re-issue it. A wrong never-ran is a second
+ * Remove-VMSnapshot against a live host, so every rule here is biased toward `exited`, which is not
+ * retryable.
+ */
+export function hyperVWindowsChildDeathCode(
+    event: HyperVWindowsChildDeathEvent,
+    state: HyperVWindowsChildDeathState,
+): string {
+    // A child that never came up cannot have run anything. Node emits "error" instead of "spawn"
+    // when the spawn itself fails, so this cannot be reached by a child that started and then died.
+    if (event === "error" && !state.spawned) return "hyper-v-windows-session-spawn-failed";
+
+    // The grace timer means `close` never arrived, so stdio has not drained and the latch may simply
+    // be stale rather than false. That is not evidence the child never ran.
+    if (event === "exit-grace") return "hyper-v-windows-session-exited";
+
+    // Output was dropped unread, so the marker may have been inside it. Lost evidence is not proof.
+    if (state.latchEvidenceLost) return "hyper-v-windows-session-exited";
+
+    // The child announced itself, which means it reached the loop that reads requests, which means
+    // whatever it was sent may have executed.
+    if (state.announcedReady) return "hyper-v-windows-session-exited";
+
+    // Nothing announced, nothing lost: the child died before reaching its read loop, so nothing sent
+    // to it can have run. This is the one branch that lets the broker retry, and it is why the
+    // crash-on-start case falls back to the one-shot transport instead of failing outright.
+    return "hyper-v-windows-session-start-failed";
+}
 
 function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSessionProcess {
     const child = spawn(executable, hiddenWindowsPowerShellArgs([
@@ -94,74 +150,47 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // about whether the read loop was reached.
     child.stderr?.resume();
 
-    // A child that never announced never reached its read loop, so nothing sent to it can have run.
-    // start-failed already carries exactly that meaning and is already treated as never-ran.
-    //
-    // Read only where the latch is known fresh — see the death reporting below, which is where the
-    // `close`/`exit` handling and its reasoning live.
-    //
-    // Only for the paths that report the child GOING AWAY. It must not be consulted from a write
-    // completion, which fires before any of the child's own output can be delivered to this process
-    // — there the latch reads false even for a child that has already announced, which would call an
-    // executed request never-ran and have the broker re-issue it. Measured 3/40 before this split.
-    const exitReason = (reason: string) => (
-        announcedReady || latchEvidenceLost ? reason : "hyper-v-windows-session-start-failed"
-    );
-
     const notifyExit = (reason: string) => {
         for (const listener of [...exitListeners]) listener(reason);
     };
-    // Both events, because neither alone is correct. `close` is the one that guarantees the latch is
-    // fresh, since it fires only after stdio drains — but it fires only after stdio drains, and a
-    // grandchild inheriting the child's stdout keeps it open indefinitely. Measured: with a
-    // grandchild holding stdout, `exit` lands immediately and `close` never arrives, so listening to
-    // `close` alone means the death is never reported and the shared pipe is held until the health
-    // floor expires with a code that is not retryable.
-    //
-    // `exit` alone is what this replaced, and it can read a marker that has not been delivered yet.
-    // So: if the latch is already set, `exit` may report at once — the latch is monotone, so nothing
-    // can be lost by acting early. If it is not, wait briefly for `close`, and if it does not come,
-    // report the conservative answer rather than the never-ran one. `close` wins whenever it arrives.
-    const CLOSE_GRACE_MILLISECONDS = 250;
     let reportedGone = false;
     const reportGone = (reason: string) => {
+        // At most once. Several of these events fire for the same death, and the first is the one
+        // with the freshest evidence.
         if (reportedGone) return;
         reportedGone = true;
         notifyExit(reason);
     };
-    child.once("close", () => reportGone(exitReason("hyper-v-windows-session-exited")));
-    child.once("exit", () => {
-        if (announcedReady || latchEvidenceLost) {
-            reportGone("hyper-v-windows-session-exited");
-            return;
-        }
-        const grace = setTimeout(() => {
-            // Never `start-failed` from here: the latch is only unset because nothing has been
-            // delivered yet, which is not evidence that nothing ran.
-            reportGone("hyper-v-windows-session-exited");
-        }, CLOSE_GRACE_MILLISECONDS);
-        if (typeof grace === "object" && grace && "unref" in grace) grace.unref();
-    });
-    // "error" means the process could not be spawned only until it has spawned; Node also emits it
-    // when a live child cannot be killed or is aborted by signal. spawn-failed is in the adapter's
-    // never-ran set, so reporting a live child's error under that name would tell the broker a
-    // request that may already have run Remove-VMSnapshot is safe to re-issue. Node emits "spawn"
-    // only on a successful spawn, and emits "error" instead of it when the spawn fails, so the flag
-    // cannot be set by a child that never came up. After it, any error is reported as an exit.
-    //
-    // Routed through reportGone like the other death paths, so it cannot double-report and cannot
-    // read the latch at a moment with no drain guarantee — the same premature read the exit/close
-    // split exists to prevent. It was the one path left doing that.
+    const report = (event: HyperVWindowsChildDeathEvent) => reportGone(hyperVWindowsChildDeathCode(event, {
+        announcedReady,
+        latchEvidenceLost,
+        spawned,
+    }));
+
     let spawned = false;
     child.once("spawn", () => { spawned = true; });
-    child.once("error", () => reportGone(
-        spawned ? exitReason("hyper-v-windows-session-exited") : "hyper-v-windows-session-spawn-failed",
-    ));
+    child.once("close", () => report("close"));
+    child.once("exit", () => {
+        // `close` is the event that guarantees the latch is fresh, so it is preferred — but it fires
+        // only after stdio drains, and a grandchild inheriting the child's stdout keeps it open
+        // indefinitely. Measured: with a grandchild holding stdout, `exit` lands immediately and
+        // `close` never arrives, so waiting for `close` alone means the death is never reported and
+        // the shared pipe is held until the health floor expires with a non-retryable code.
+        //
+        // So `exit` reports immediately only when the latch is already set — it is monotone, so
+        // nothing can be lost by acting early — and otherwise waits briefly for `close`. Whichever
+        // arrives first wins, and reportGone makes the second a no-op.
+        if (announcedReady || latchEvidenceLost) {
+            report("exit");
+            return;
+        }
+        const grace = setTimeout(() => report("exit-grace"), CLOSE_GRACE_MILLISECONDS);
+        if (typeof grace === "object" && grace && "unref" in grace) grace.unref();
+    });
+    child.once("error", () => report("error"));
     // Without this, a write to a closed stdin raises an unhandled EPIPE and takes the broker down
-    // instead of failing the one call that raced the exit. Reported as an exit rather than a write
-    // failure: by the time a stream-level error arrives on its own, any write we issued has already
-    // reported its own outcome through the callback below, which is the signal that actually knows.
-    child.stdin?.on("error", () => reportGone(exitReason("hyper-v-windows-session-exited")));
+    // instead of failing the one call that raced the exit.
+    child.stdin?.on("error", () => report("stdin-error"));
 
     return {
         write: (line, settled) => {

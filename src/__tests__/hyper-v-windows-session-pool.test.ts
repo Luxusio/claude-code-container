@@ -41,7 +41,9 @@ const NEVER_RAN = [
 import {
     brokerHyperVWindowsSession,
     brokerHyperVWindowsSessionCountForTest,
+    hyperVWindowsChildDeathCode,
     retainBrokerHyperVWindowsSessions,
+    type HyperVWindowsChildDeathEvent,
 } from "../device-lab/broker/hyper-v/session-pool.js";
 
 // The pool is module scoped, so every test releases what it retains and drains the map before it
@@ -49,6 +51,75 @@ import {
 function drain(): void {
     retainBrokerHyperVWindowsSessions()();
 }
+
+describe("child death classification", () => {
+    // The whole decision, every combination, no child processes. This exists because the review that
+    // prompted it measured that five of fourteen invariants in this area were pinned: guards had
+    // accumulated until two covered the same property, and a test written for one silently began
+    // passing because of the other, so the guard it named could be deleted with the suite still
+    // green. Process-level tests are good at proving the wiring works and provably bad at pinning
+    // individual rules; this table is the opposite, and the two together are the coverage.
+    const EVENTS: HyperVWindowsChildDeathEvent[] = ["close", "exit", "exit-grace", "error", "stdin-error"];
+    const NEVER_RAN_CODES = new Set(["hyper-v-windows-session-start-failed", "hyper-v-windows-session-spawn-failed"]);
+
+    const rows = EVENTS.flatMap((event) => [true, false].flatMap((announcedReady) =>
+        [true, false].flatMap((latchEvidenceLost) => [true, false].map((spawned) => ({
+            event,
+            state: { announcedReady, latchEvidenceLost, spawned },
+            code: hyperVWindowsChildDeathCode(event, { announcedReady, latchEvidenceLost, spawned }),
+        })))));
+
+    it("only calls a request never-ran when nothing proves the child reached its read loop", () => {
+        for (const row of rows) {
+            const retryable = NEVER_RAN_CODES.has(row.code);
+            // The one safety property, stated once over the whole space: a request may be re-issued
+            // only when the child provably never got far enough to run it. Anything else — it
+            // announced, or the evidence was thrown away, or we never waited for stdio to drain —
+            // must not be retried, because a second Remove-VMSnapshot is not the same as the first.
+            const provablyNeverRan = row.event === "error" && !row.state.spawned
+                ? true
+                : row.event !== "exit-grace" && !row.state.latchEvidenceLost && !row.state.announcedReady;
+            expect({ ...row, retryable }).toEqual({ ...row, retryable: provablyNeverRan });
+        }
+    });
+
+    it("never reports a spawn failure for a child that spawned", () => {
+        // spawn-failed is never-ran, so naming a live child's error with it would tell the broker a
+        // request that may already have run Remove-VMSnapshot is safe to re-issue.
+        for (const row of rows.filter((candidate) => candidate.state.spawned)) {
+            expect(row.code).not.toBe("hyper-v-windows-session-spawn-failed");
+        }
+    });
+
+    it("treats lost evidence and a missing drain as not-proof, never as proof", () => {
+        // Two separate reasons the latch may read false without meaning anything: output was dropped
+        // unread, or `close` never came so stdio never drained. Both used to be one-line guards in
+        // different handlers; both are rules here.
+        for (const row of rows.filter((candidate) => candidate.state.latchEvidenceLost || candidate.event === "exit-grace")) {
+            if (row.event === "error" && !row.state.spawned) continue;
+            expect(row.code).toBe("hyper-v-windows-session-exited");
+        }
+    });
+
+    it("never calls an announced child's request never-ran, on any path", () => {
+        for (const row of rows.filter((candidate) => candidate.state.announcedReady && candidate.state.spawned)) {
+            expect(NEVER_RAN_CODES.has(row.code)).toBe(false);
+        }
+    });
+
+    it("still lets a crash-on-start child fall back", () => {
+        // The complement, and the reason the latch exists: a child that spawned, announced nothing
+        // and lost nothing did not run the request, so the broker serves it one-shot rather than
+        // failing it outright.
+        for (const event of ["close", "exit", "stdin-error"] as const) {
+            expect(hyperVWindowsChildDeathCode(event, {
+                announcedReady: false,
+                latchEvidenceLost: false,
+                spawned: true,
+            })).toBe("hyper-v-windows-session-start-failed");
+        }
+    });
+});
 
 describe("broker Hyper-V session pool", () => {
     it("hands the same session to every caller naming the same executable", () => {
