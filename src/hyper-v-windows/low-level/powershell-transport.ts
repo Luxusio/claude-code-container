@@ -12,13 +12,17 @@ import type {
 
 export const HYPER_V_WINDOWS_POWERSHELL_ASSET = {
     name: "Invoke-HyperVWindowsOperation.ps1",
-    sha256: "754790d00c3c2e59c4ee4efd90a21e561416bf0aa0f1b248b4377d92cc759a7b",
+    sha256: "e7480fc899bbfe9dc7d9c4ece65cd8db10584d68f418bfbab9c77f6ce54b0c98",
 } as const;
 export const HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP = [
     "$EnvelopeJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))",
     "$Envelope = $EnvelopeJson | ConvertFrom-Json -ErrorAction Stop",
     "$global:CccHyperVJsonInput = [string]$Envelope.input",
     "& ([ScriptBlock]::Create([string]$Envelope.script))",
+    // The asset records failure in a flag instead of calling exit, because exit inside a script
+    // block unwinds past its caller. Exiting here — at the top level of -Command, where there is
+    // nothing left to unwind past — reproduces the process exit code the asset used to produce.
+    "if ($global:CccHyperVExitCode) { exit [int]$global:CccHyperVExitCode }",
 ].join("; ");
 export const HYPER_V_WINDOWS_POWERSHELL_MEMORY_INPUT_LIMIT_BYTES = 256 * 1024;
 const ASSET_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../scripts/host-control/hyper-v");

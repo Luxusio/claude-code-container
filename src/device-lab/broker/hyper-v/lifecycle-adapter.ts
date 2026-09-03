@@ -125,12 +125,21 @@ export function createDeviceLabHyperVWindowsClient(
     if (!session) return createHyperVWindowsClient(oneShot);
     return createHyperVWindowsClient({
         async execute(request, context) {
-            const result = await session.execute(request, context);
+            // The same clamp the one-shot branch applies. options.timeoutMilliseconds is passed as a
+            // function by the broker so each primitive is bounded by what is left of the operation's
+            // deadline; without this a session call with three seconds of budget left would block
+            // for the library's full per-execution ceiling instead.
+            const budget = typeof options.timeoutMilliseconds === "function"
+                ? options.timeoutMilliseconds()
+                : options.timeoutMilliseconds;
+            const bounded = { ...context, timeoutMilliseconds: Math.min(context.timeoutMilliseconds, budget) };
+            const result = await session.execute(request, bounded);
             if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) return result;
             // The session could not be established at all. Rather than fail the operation, serve it
             // the way this broker served it before sessions existed. Anything else — a timeout, an
             // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean
-            // the host already did the work.
+            // the host already did the work. The one-shot branch applies its own clamp against a
+            // freshly read budget, so it takes the caller's context rather than this one.
             return await oneShot.execute(request, context);
         },
     });

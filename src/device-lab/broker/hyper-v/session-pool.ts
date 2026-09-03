@@ -88,16 +88,32 @@ export function brokerHyperVWindowsSession(executable: string): HyperVWindowsSes
 
 // A long-lived child holds a loaded Hyper-V module and a host handle, so leaking one is worse than
 // paying the startup cost again. Wired to the broker server's close event.
-export function closeBrokerHyperVWindowsSessions(): void {
-    const open = [...sessions.values()];
-    sessions.clear();
-    for (const session of open) {
-        try {
-            session.close();
-        } catch {
-            // Closing an already-dead session is not a failure worth surfacing during shutdown.
+//
+// Reference counted because the map is module scoped while broker servers are not: a process can
+// hold more than one, and a session carries no per-server state, so they share. Closing on the first
+// server's close event would kill a child another server is mid-request on, and
+// hyper-v-windows-session-closed is deliberately not a retryable error — that request would fail
+// outright rather than fall back.
+let holders = 0;
+
+export function retainBrokerHyperVWindowsSessions(): () => void {
+    holders += 1;
+    let released = false;
+    return () => {
+        if (released) return;
+        released = true;
+        holders -= 1;
+        if (holders > 0) return;
+        const open = [...sessions.values()];
+        sessions.clear();
+        for (const session of open) {
+            try {
+                session.close();
+            } catch {
+                // Closing an already-dead session is not a failure worth surfacing during shutdown.
+            }
         }
-    }
+    };
 }
 
 export function brokerHyperVWindowsSessionCountForTest(): number {

@@ -55,7 +55,7 @@ import {
 import { hyperVBoundedErrorCode, hyperVProviderDiagnosticCode, publicHyperVArtifactCleanup, publicHyperVCreateConfiguration, publicHyperVNetworkCleanup, redactHyperVDeviceSecrets, redactHyperVResultSecrets, redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 export { redactProviderCommandInput } from "./device-lab/broker/hyper-v/public-response.js";
 import { createRecordingDeviceLabHyperVWindowsClient } from "./device-lab/broker/hyper-v/lifecycle-adapter.js";
-import { brokerHyperVWindowsSession, closeBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
+import { brokerHyperVWindowsSession, retainBrokerHyperVWindowsSessions } from "./device-lab/broker/hyper-v/session-pool.js";
 import { HyperVWindowsError } from "./hyper-v-windows/index.js";
 import {
     createDeviceLabHyperVSnapshot,
@@ -259,7 +259,12 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-
 // trusted module is already loaded, which is what makes one PowerShell process serving many
 // primitives cheaper than one process each. The asset digest moved with it, so a broker predating
 // this fails asset integrity as an opaque hyper-v-windows-transport rather than saying it is stale.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v3";
+// v4: the pinned Invoke-HyperVWindowsOperation.ps1 no longer calls exit on the failure path. Its
+// exit is not scoped to a script block, so under the reused session it discarded the failure
+// envelope and killed the child, reporting an ordinary virtual-machine-not-found as a transport
+// error. The failure is now a flag each bootstrap reads. The asset digest moved with it, so a
+// broker predating this fails asset integrity rather than silently answering the old way.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v4";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";
@@ -5062,10 +5067,10 @@ async function invokeHyperVDeviceTool(ownerId: string, parsed: DeviceToolParamSu
                 executable: powershell,
                 timeoutMilliseconds: 120000,
                 run: (command, options) => hyperVProviderCommandRunner(normalized, command, options),
-                // Only when this broker owns process execution. An injected command runner means the caller
-        // owns it, and spawning a long-lived child behind that seam would execute work it never
-        // saw — which is exactly what a test harness injects a runner to prevent.
-        ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
+                // Only when this broker owns process execution. An injected command runner means the
+                // caller owns it, and spawning a long-lived child behind that seam would execute work
+                // it never saw — which is exactly what a test harness injects a runner to prevent.
+                ...(normalized.usesDefaultCommandRunner ? { session: brokerHyperVWindowsSession(powershell) } : {}),
             });
             let rollbackObservation: DeviceLabHyperVSnapshotDeleteObservation | null = null;
             try {
@@ -15443,8 +15448,10 @@ export function createDeviceBrokerServer(options: DeviceBrokerOptions = {}): Ser
     });
     server.once("close", stopAllBrokerPhysicalLeaseHeartbeats);
     // A reused PowerShell session outliving its broker holds a loaded Hyper-V module and a host
-    // handle, which is worse than paying startup again. Tied to the same close event.
-    server.once("close", closeBrokerHyperVWindowsSessions);
+    // handle, which is worse than paying startup again. Tied to the same close event, but reference
+    // counted: the session pool is process wide, and one server closing must not kill a child a
+    // second server in the same process is mid-request on.
+    server.once("close", retainBrokerHyperVWindowsSessions());
     return server;
 }
 

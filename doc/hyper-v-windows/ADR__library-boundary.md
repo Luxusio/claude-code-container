@@ -175,6 +175,43 @@ The session is created only when the broker owns process execution. An injected
 command runner means the caller owns it, and a long-lived child spawned behind
 that seam would run work the caller never saw.
 
+**The asset must never call `exit`, and this is load-bearing rather than
+stylistic.** PowerShell's `exit` is not scoped to a script block: under
+`& ([ScriptBlock]::Create($source))` — how both transports invoke the asset — it
+unwinds past the caller instead of returning to it. The first session
+implementation kept the asset's `exit 1` on the failure path, which aborted the
+`Out-String` pipeline that was capturing the failure envelope and terminated the
+child. An ordinary `virtual-machine-not-found` — the condition every ownership
+fence and every reconcile exists to discover — therefore reached callers as a
+non-retryable `hyper-v-windows-transport` instead of a typed native error, and
+cost a process spawn and module load per occurrence. `try`/`catch` is no defence:
+`exit` raises a flow-control exception, which `catch` does not intercept.
+
+The asset now resets `$global:CccHyperVExitCode` on entry and sets it to 1 on the
+failure path, and each bootstrap decides what to do with it — the one-shot
+bootstrap exits with it at the top level of `-Command`, where there is nothing
+left to unwind past, and the session bootstrap reports it as the response frame's
+exit status. That is what makes the two transports produce identical
+`HyperVWindowsExecutionResult`s for identical host conditions.
+
+Two related constraints on the session bootstrap follow from the same reasoning.
+The reply is joined, not piped through `Out-String`, because `Out-String` formats
+to a host width and is free to break a long JSON envelope into lines the reader
+would reject as `response-malformed`. And `2>&1` is not used, because merging the
+error stream into machine-readable output corrupts it; the session owner drains
+stderr separately.
+
+The start budget bounds *consecutive unproductive* starts, not starts over the
+process lifetime. A lifetime counter conflates "this host cannot run PowerShell"
+with "this broker has been up for days": the third restart, however far apart,
+made the pool return `hyper-v-windows-session-unavailable` permanently, which
+falls back to one-shot — so the whole feature disappeared with no error anywhere.
+
+The pool is process-scoped and reference-counted. Sessions carry no per-server
+state, so two broker servers in one process share them; tearing them down on the
+first server's `close` would kill a child the second is mid-request on, and
+`hyper-v-windows-session-closed` is deliberately not retryable.
+
 ### Known gap carried past slice 1
 
 `Invoke-HyperVWindowsOperation.ps1` bounds its error code with

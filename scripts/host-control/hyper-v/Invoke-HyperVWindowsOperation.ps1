@@ -1,5 +1,9 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+# Reset here rather than in the caller so every invocation defines its own outcome. A session
+# reuses one PowerShell process across many invocations, and a flag left set by an earlier failure
+# would otherwise report the next success as a failure.
+$global:CccHyperVExitCode = 0
 
 function Write-HyperVWindowsSuccess([string]$Operation, [object[]]$Items) {
     [ordered]@{
@@ -261,5 +265,11 @@ try {
         if ($ErrorCode.Length -gt 128) { $ErrorCode = $ErrorCode.Substring(0, 128) }
     }
     Write-HyperVWindowsFailure $Operation $ErrorCode
-    exit 1
+    # Deliberately not `exit`. PowerShell's exit is not scoped to a script block, so when this asset
+    # runs as `& ([ScriptBlock]::Create($source))` — how both transports invoke it — an exit here
+    # unwinds past the caller instead of returning to it. Under the reused session that discards the
+    # failure envelope written one line above, because Out-String never completes, and kills the
+    # child, turning an ordinary virtual-machine-not-found into a transport error. Each bootstrap
+    # reads this flag instead, so a one-shot invocation still ends with exit code 1.
+    $global:CccHyperVExitCode = 1
 }
