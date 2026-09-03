@@ -154,6 +154,7 @@ export function createDeviceLabHyperVWindowsClient(
                 ? options.timeoutMilliseconds()
                 : options.timeoutMilliseconds;
             const bounded = { ...context, timeoutMilliseconds: Math.min(context.timeoutMilliseconds, budget) };
+            const startedAt = Date.now();
             const result = await session.execute(request, bounded);
             if (!result.error || !SESSION_NEVER_RAN_ERRORS.has(result.error)) {
                 // The session bypasses options.run, so this is the only place a recorder can see the
@@ -177,9 +178,16 @@ export function createDeviceLabHyperVWindowsClient(
             // The session could not be established at all. Rather than fail the operation, serve it
             // the way this broker served it before sessions existed. Anything else — a timeout, an
             // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean
-            // the host already did the work. The one-shot branch applies its own clamp against a
-            // freshly read budget, so it takes the caller's context rather than this one.
-            return await oneShot.execute(request, context);
+            // the host already did the work.
+            //
+            // The retry is charged what the session already spent. Only one of the three broker call
+            // sites passes timeoutMilliseconds as a function of a live deadline; the two snapshot
+            // sites pass a constant equal to the library's own ceiling, so nothing downstream would
+            // shorten this. Without the subtraction a primitive could wait out the full budget
+            // queueing and then wait it out again one-shot — twice the bound the caller asked for,
+            // on a three-primitive chain like deleteDeviceLabHyperVSnapshot.
+            const remaining = Math.max(1, bounded.timeoutMilliseconds - (Date.now() - startedAt));
+            return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });
         },
     });
 }
