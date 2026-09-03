@@ -246,6 +246,25 @@ with "this broker has been up for days": the third restart, however far apart,
 made the pool return `hyper-v-windows-session-unavailable` permanently, which
 falls back to one-shot — so the whole feature disappeared with no error anywhere.
 
+**Sharing one pipe needs admission control, or one owner denies the path to
+every other.** A slow operation — `Stop-VM` against a guest ignoring shutdown, a
+checkpoint on a large VM — holds the single process-wide pipe for up to the
+health floor, and every other owner queues behind it. The never-ran
+classification is the escape, but it only helps if the caller reaches it with
+budget left: waiting the whole deadline and then falling back is the same as not
+falling back. Subtracting the wait from the retry is worse still — a queued
+caller reaches the fallback precisely because its wait expired, so the
+subtraction hands the retry a millisecond and guarantees it fails.
+
+So the queue may consume only a fraction of a caller's budget, and a queue
+already at its depth cap refuses immediately. Both bound the same thing: how much
+of one owner's deadline another owner's slow operation can spend. The depth cap
+also bounds the queue's memory, since every waiting closure pins its request.
+This matters more than it looks — at the broker's snapshot call sites the budget
+is a constant equal to the library's own per-execution ceiling, so every clamp
+downstream is a no-op, and `restoreDeviceLabHyperVSnapshot` issues seven
+primitives.
+
 **One session is shared across all owners, and this reverses what the task plan
 said.** `PLAN.md` AC-004 required that the session "does not outlive the broker,
 and is not shared across owners". The first half holds — the pool is

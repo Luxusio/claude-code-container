@@ -28,6 +28,14 @@ const DEFAULT_HEALTH_TIMEOUT_MILLISECONDS = 120 * 1000;
 // absorbing state — once the cap is reached no start is attempted, so no answer can ever arrive to
 // reset it, and three stalls spread across days demote a healthy broker to one-shot permanently.
 const DEFAULT_START_BUDGET_WINDOW_MILLISECONDS = 5 * 60 * 1000;
+// How much of a caller's own budget the queue may consume before the caller is told its request
+// never ran and is served in its own process instead. A quarter leaves three quarters for that
+// retry, which is the whole point: a fallback the caller has no time left to use is not a fallback.
+const DEFAULT_QUEUE_WAIT_FRACTION = 0.25;
+// Beyond this many waiting callers the pipe is not worth queueing for. Refusing immediately is what
+// keeps one owner's slow operation from consuming every other owner's deadline, and it is also what
+// bounds the memory the queue holds — each waiting closure pins its request.
+const DEFAULT_MAXIMUM_QUEUE_DEPTH = 8;
 
 // The child reads the asset source once, then serves requests from stdin until the stream closes.
 // The asset is still one-operation-per-invocation: the loop lives here, and each iteration
@@ -61,6 +69,15 @@ export const HYPER_V_WINDOWS_SESSION_BOOTSTRAP = [
     // corrupts it, and the session owner drains stderr separately.
     "  try { $Captured = [string]::Join([string][char]10, @(& $Operation)); $Code = [int]$global:CccHyperVExitCode }"
         + " catch { $Captured = ''; $Code = 1 }",
+    // One child now serves every owner, where a process boundary used to reset all of this between
+    // them. The asset's allowlist admits only fixed Hyper-V cmdlets with typed arguments, so nothing
+    // today can set these — but $PSDefaultParameterValues silently re-aims the pinned asset's calls
+    // for every later owner without changing a byte of the hashed asset (Remove-VMSnapshot's
+    // -IncludeAllChildSnapshots is the obvious one), and the input holds the previous owner's VM and
+    // snapshot names. Clearing both per iteration costs nothing and keeps the property the process
+    // boundary used to give for free.
+    "  $global:CccHyperVJsonInput = ''",
+    "  $global:PSDefaultParameterValues = @{}",
     "  $Reply = [ordered]@{ id = [string]$Envelope.id; code = $Code; stdout = [string]$Captured }",
     "  $Payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($Reply | ConvertTo-Json -Compress -Depth 4)))",
     `  [Console]::Out.WriteLine('${HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX}' + $Payload)`,
@@ -89,6 +106,10 @@ export type HyperVWindowsSessionOptions = {
     readonly healthTimeoutMilliseconds?: number;
     // How long an unproductive start counts against the budget above.
     readonly startBudgetWindowMilliseconds?: number;
+    // Admission control: the share of a caller's budget the queue may consume, and how many callers
+    // may wait at all. See execute().
+    readonly queueWaitFraction?: number;
+    readonly maximumQueueDepth?: number;
 };
 
 export type HyperVWindowsSession = HyperVWindowsExecutor & {
@@ -123,6 +144,9 @@ export function createHyperVWindowsPowerShellSession(
         1,
         Math.trunc(options.startBudgetWindowMilliseconds ?? DEFAULT_START_BUDGET_WINDOW_MILLISECONDS),
     );
+    const queueWaitFraction = Math.min(1, Math.max(0, options.queueWaitFraction ?? DEFAULT_QUEUE_WAIT_FRACTION));
+    const maximumQueueDepth = Math.max(1, Math.trunc(options.maximumQueueDepth ?? DEFAULT_MAXIMUM_QUEUE_DEPTH));
+    let queueDepth = 0;
     const pending = new Map<string, Pending>();
     let child: HyperVWindowsSessionProcess | null = null;
     let starting: Promise<HyperVWindowsSessionProcess | null> | null = null;
@@ -352,10 +376,35 @@ export function createHyperVWindowsPowerShellSession(
 
     return {
         execute(request, context) {
+            // Admission control, not budget arithmetic. One slow operation holds the single
+            // process-wide pipe for up to the health floor, and every other owner queues behind it.
+            // The escape is the never-ran classification below, which lets the broker serve a queued
+            // caller one-shot — but that only helps if the caller reaches it with budget left to
+            // spend. Waiting the whole budget in the queue and then falling back is the same as not
+            // falling back; subtracting the wait from the retry is worse, because the retry then
+            // gets ~1ms and is guaranteed to fail. So the queue may consume only a fraction of the
+            // caller's budget, and a queue already this deep is refused outright: the pipe serves
+            // one request at a time, so a caller far back in the line has no realistic chance and is
+            // better off in its own process immediately.
+            if (queueDepth >= maximumQueueDepth) {
+                return Promise.resolve(frameError("hyper-v-windows-session-queue-timeout"));
+            }
+            queueDepth += 1;
+
             // Two promises: the caller awaits `run`, the queue awaits `free`. They part company
             // exactly when a caller's deadline expires on a request the child is still working.
-            let release = () => undefined as void;
-            const free = new Promise<void>((resolve) => { release = resolve; });
+            // The depth slot is held for as long as the pipe is — the caller occupying it counts,
+            // not just the ones behind it — so the cap describes the real length of the line.
+            let holdsSlot = true;
+            let resolveFree = () => undefined as void;
+            const free = new Promise<void>((resolve) => { resolveFree = resolve; });
+            const release = () => {
+                if (holdsSlot) {
+                    holdsSlot = false;
+                    queueDepth -= 1;
+                }
+                resolveFree();
+            };
 
             // The caller's deadline starts here, not when the request reaches the head of the queue.
             // Timing it from inside send() gave a queued caller no deadline at all: it waited out the
@@ -370,7 +419,7 @@ export function createHyperVWindowsPowerShellSession(
                 if (dequeued) return;
                 expiredInQueue = true;
                 expire(frameError("hyper-v-windows-session-queue-timeout"));
-            }, Math.max(1, context.timeoutMilliseconds));
+            }, Math.max(1, Math.floor(context.timeoutMilliseconds * queueWaitFraction)));
             if (typeof queueTimer === "object" && queueTimer && "unref" in queueTimer) queueTimer.unref();
 
             const run = queue.then(() => {

@@ -180,14 +180,17 @@ export function createDeviceLabHyperVWindowsClient(
             // uncorrelated frame, an exit mid-request — is returned as-is, because those can mean
             // the host already did the work.
             //
-            // The retry is charged what the session already spent. Only one of the three broker call
-            // sites passes timeoutMilliseconds as a function of a live deadline; the two snapshot
-            // sites pass a constant equal to the library's own ceiling, so nothing downstream would
-            // shorten this. Without the subtraction a primitive could wait out the full budget
-            // queueing and then wait it out again one-shot — twice the bound the caller asked for,
-            // on a three-primitive chain like deleteDeviceLabHyperVSnapshot.
+            // The retry deliberately gets the caller's remaining budget rather than the elapsed time
+            // subtracted from it. Charging the retry for the wait sounds fair and is not: a queued
+            // caller reaches this line precisely because its queue wait expired, so the subtraction
+            // hands the retry a millisecond and guarantees it fails. The queue is bounded to a
+            // fraction of the caller's budget instead — admission control in the session, so the
+            // caller arrives here with most of its deadline intact — which is why this can pass the
+            // budget through. `startedAt` bounds the pass-through so a session that somehow consumed
+            // more than the caller's budget cannot then hand the retry a full second one.
             const remaining = Math.max(1, bounded.timeoutMilliseconds - (Date.now() - startedAt));
-            return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });
+            const budgeted = Math.max(remaining, Math.floor(bounded.timeoutMilliseconds / 2));
+            return await oneShot.execute(request, { ...context, timeoutMilliseconds: budgeted });
         },
     });
 }

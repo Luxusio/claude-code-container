@@ -322,6 +322,73 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(children[0]!.written).toHaveLength(2);
     });
 
+    it("gives a queued caller back most of its budget instead of spending it waiting", async () => {
+        // One session serves every owner, so one slow operation holds the only pipe. The escape is
+        // the never-ran classification, which lets the broker serve a queued caller in its own
+        // process — but that is worthless if the caller waited out its whole deadline first. At the
+        // broker's snapshot call sites the budget is a constant equal to the library's own ceiling,
+        // so nothing downstream shortens it: without this bound, one owner's slow snapshot restore
+        // costs every other owner the full 120s per primitive, on a seven-primitive chain.
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            healthTimeoutMilliseconds: 60000,
+            queueWaitFraction: 0.25,
+            spawn: () => {
+                const child = fakeChild();
+                queueMicrotask(() => child.ready());
+                children.push(child);
+                return child;
+            },
+        });
+
+        // Occupy the pipe with a request the child never answers.
+        void session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        await vi.waitFor(() => expect(children[0]!.written.length).toBe(2));
+
+        const started = Date.now();
+        const queued = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 400 });
+        const waited = Date.now() - started;
+
+        expect(queued.error).toBe("hyper-v-windows-session-queue-timeout");
+        // A quarter of 400ms, not all of it — the caller still has most of its deadline to spend in
+        // its own process.
+        expect(waited).toBeLessThan(300);
+        // And it never reached the pipe, which is what makes re-issuing it safe.
+        expect(children[0]!.written).toHaveLength(2);
+    });
+
+    it("refuses to queue at all once the line is too long to be worth joining", async () => {
+        // The pipe serves one request at a time, so a caller far back has no realistic chance and is
+        // better off in its own process immediately. This is also what bounds the queue's memory:
+        // every waiting closure pins its request.
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            healthTimeoutMilliseconds: 60000,
+            maximumQueueDepth: 3,
+            spawn: () => {
+                const child = fakeChild();
+                queueMicrotask(() => child.ready());
+                children.push(child);
+                return child;
+            },
+        });
+
+        void session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        await vi.waitFor(() => expect(children[0]!.written.length).toBe(2));
+        for (let waiting = 0; waiting < 2; waiting += 1) {
+            void session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        }
+
+        // Three are already in the line; this one is turned away without waiting at all.
+        const started = Date.now();
+        const refused = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        expect(refused.error).toBe("hyper-v-windows-session-queue-timeout");
+        expect(Date.now() - started).toBeLessThan(200);
+        expect(children[0]!.written).toHaveLength(2);
+    });
+
     it("releases a caller that is still queued when the session closes", async () => {
         // A caller waiting for the pipe is not in `pending` yet, so failAll cannot reach it. It is
         // released by ensureChild refusing to start on a closed session when its turn comes.
