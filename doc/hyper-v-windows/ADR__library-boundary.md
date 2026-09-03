@@ -260,6 +260,33 @@ so a recorder that only wraps that runner sees nothing at all once a session is
 live, and the snapshot payloads that carry provider execution degrade to stubs
 exactly on the failures operators need them for.
 
+### What the session's QA has to exercise, and why the unit suite cannot
+
+Every defect found in this slice was an interaction defect at one seam: a single
+shared, long-lived, stateful child against many independent callers, each with
+its own deadline and its own idempotency requirement. Who owns the pipe, whose
+clock applies, and what may safely be re-issued. None was a local logic error,
+and none was reachable from the unit suite as written — the broker suite cannot
+reach the session branch at all, because `usesDefaultCommandRunner` makes it dead
+code in any test that injects a command runner. They were found by driving the
+compiled library directly.
+
+So a Windows QA pass that runs one flow at a time proves nothing about any of
+them. It has to run: several owners issuing primitives against one broker
+concurrently; at least one deliberately slow operation in the mix, so callers
+queue behind it and the queue-timeout/never-ran classification is exercised; and
+a deliberately unavailable PowerShell, so the start budget is exhausted and then
+recovers after its window.
+
+The saving this slice buys is also still unmeasured. The round-trip count is
+recorded (90 → 105 for slice 1) but the wall-clock saving is not, and the
+measurement only exists on a Windows host: the same level-3 lane's duration with
+and without a session. It is worth stating, because the cost side has grown —
+a queue, two timers per request, a health floor, a decaying start budget, a
+reference-counted pool, a process-exit sweep, and a new error class in the retry
+taxonomy. If the saving turns out to be modest, one process per primitive with a
+warm pool is a materially simpler design with most of the win.
+
 ### Known gap carried past slice 1
 
 `Invoke-HyperVWindowsOperation.ps1` bounds its error code with

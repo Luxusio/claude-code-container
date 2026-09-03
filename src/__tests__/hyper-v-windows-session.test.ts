@@ -312,13 +312,39 @@ describe("Hyper-V Windows PowerShell session", () => {
         const started = Date.now();
         const queued = await session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 40 });
 
-        // Its own budget, nowhere near the 60s health floor.
-        expect(Date.now() - started).toBeLessThan(5000);
+        // Proportional to its own 40ms budget, not merely "less than the 60s floor" — a bound loose
+        // enough to pass at 4.9s would let a partial stall back in unnoticed.
+        expect(Date.now() - started).toBeLessThan(1000);
         // A distinct code, because its frame was never written: one request reached the child, and
         // this one provably did not. Only that distinction makes it safe for the broker to re-issue
         // it through the one-shot transport instead of failing it outright.
         expect(queued.error).toBe("hyper-v-windows-session-queue-timeout");
         expect(children[0]!.written).toHaveLength(2);
+    });
+
+    it("releases a caller that is still queued when the session closes", async () => {
+        // A caller waiting for the pipe is not in `pending` yet, so failAll cannot reach it. It is
+        // released by ensureChild refusing to start on a closed session when its turn comes.
+        const children: FakeChild[] = [];
+        const session = createHyperVWindowsPowerShellSession({
+            operationAsset: ASSET,
+            healthTimeoutMilliseconds: 60000,
+            spawn: () => {
+                const child = fakeChild();
+                queueMicrotask(() => child.ready());
+                children.push(child);
+                return child;
+            },
+        });
+
+        const held = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        await vi.waitFor(() => expect(children[0]!.written.length).toBe(2));
+        const stuck = session.execute(REQUEST, { ...CONTEXT, timeoutMilliseconds: 60000 });
+        session.close();
+
+        expect((await held).error).toBe("hyper-v-windows-session-closed");
+        expect((await stuck).error).toBe("hyper-v-windows-session-unavailable");
+        expect(children[0]!.killed()).toBe(true);
     });
 
     it("kills a child spawned after close rather than orphaning it", async () => {
