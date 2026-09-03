@@ -60,6 +60,17 @@ function Resolve-HyperVWindowsTrustedModulePath {
 function Import-HyperVWindowsTrustedModule {
     $ModulePath = Resolve-HyperVWindowsTrustedModulePath
     $ExpectedModuleBase = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($ModulePath))
+
+    # Already loaded from the expected base is accepted as-is. -Force reimports on every call, which
+    # is redundant inside one process and is the single dominant cost when this script serves many
+    # operations from one session. The path is still re-resolved and re-verified above, so this
+    # skips work rather than trust: a module loaded from anywhere else falls through to the import
+    # below and is rejected there.
+    $Existing = @(Microsoft.PowerShell.Core\Get-Module -Name "Hyper-V" | Where-Object {
+        [IO.Path]::GetFullPath([string]$_.ModuleBase) -ieq $ExpectedModuleBase
+    })
+    if ($Existing.Count -gt 0) { return }
+
     $Loaded = @(Import-Module -Name $ModulePath -Force -PassThru -ErrorAction Stop)
     if ($Loaded.Count -eq 0 -or -not ($Loaded | Where-Object {
         [IO.Path]::GetFullPath([string]$_.ModuleBase) -ieq $ExpectedModuleBase

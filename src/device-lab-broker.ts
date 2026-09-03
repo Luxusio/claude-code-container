@@ -254,7 +254,11 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-
 // changed (hyper-v-snapshot-result-mismatch answers without reconciliation; the ownership fences
 // keep it). The pinned Invoke-HyperVWindowsOperation.ps1 changed with it, so a broker predating this
 // fails asset integrity as an opaque hyper-v-windows-transport rather than saying it is stale.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v2";
+// v3: the pinned Invoke-HyperVWindowsOperation.ps1 skips the -Force module reimport when the
+// trusted module is already loaded, which is what makes one PowerShell process serving many
+// primitives cheaper than one process each. The asset digest moved with it, so a broker predating
+// this fails asset integrity as an opaque hyper-v-windows-transport rather than saying it is stale.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v3";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";

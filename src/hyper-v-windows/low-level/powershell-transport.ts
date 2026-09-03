@@ -12,7 +12,7 @@ import type {
 
 export const HYPER_V_WINDOWS_POWERSHELL_ASSET = {
     name: "Invoke-HyperVWindowsOperation.ps1",
-    sha256: "8f31196ca76566960e207842946ef2068d074bd8ca7cd46d59670556a3526cd2",
+    sha256: "754790d00c3c2e59c4ee4efd90a21e561416bf0aa0f1b248b4377d92cc759a7b",
 } as const;
 export const HYPER_V_WINDOWS_POWERSHELL_MEMORY_BOOTSTRAP = [
     "$EnvelopeJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))",
@@ -62,6 +62,14 @@ export function hyperVWindowsPowerShellMemoryInput(
 function isInside(root: string, candidate: string): boolean {
     const path = relative(root, candidate);
     return path === "" || (!path.startsWith(`..${sep}`) && path !== ".." && !isAbsolute(path));
+}
+
+// Exported so the session transport verifies the identical artifact by the identical rule. Both
+// transports must execute the same operation code or every test proves less than it appears to.
+export function verifiedOperationAsset(
+    embedded?: HyperVWindowsPowerShellOperationAsset,
+): HyperVWindowsPowerShellOperationAsset {
+    return verifiedAsset(embedded);
 }
 
 function verifiedAsset(embedded?: HyperVWindowsPowerShellOperationAsset): HyperVWindowsPowerShellOperationAsset {
