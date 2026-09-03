@@ -41,9 +41,9 @@ const NEVER_RAN = [
 import {
     brokerHyperVWindowsSession,
     brokerHyperVWindowsSessionCountForTest,
+    HYPER_V_WINDOWS_CHILD_DEATH_EVENTS,
     hyperVWindowsChildDeathCode,
     retainBrokerHyperVWindowsSessions,
-    type HyperVWindowsChildDeathEvent,
 } from "../device-lab/broker/hyper-v/session-pool.js";
 
 // The pool is module scoped, so every test releases what it retains and drains the map before it
@@ -59,7 +59,10 @@ describe("child death classification", () => {
     // passing because of the other, so the guard it named could be deleted with the suite still
     // green. Process-level tests are good at proving the wiring works and provably bad at pinning
     // individual rules; this table is the opposite, and the two together are the coverage.
-    const EVENTS: HyperVWindowsChildDeathEvent[] = ["close", "exit", "exit-grace", "error", "stdin-error"];
+    // Imported, never re-listed here. The type is derived from this same array, so the table covers
+    // every event by construction. A local copy would be free to fall behind — nothing typechecks
+    // this directory, so a stale list would fail nothing and silently shrink the table.
+    const EVENTS = HYPER_V_WINDOWS_CHILD_DEATH_EVENTS;
     const NEVER_RAN_CODES = new Set(["hyper-v-windows-session-start-failed", "hyper-v-windows-session-spawn-failed"]);
 
     const rows = EVENTS.flatMap((event) => [true, false].flatMap((announcedReady) =>

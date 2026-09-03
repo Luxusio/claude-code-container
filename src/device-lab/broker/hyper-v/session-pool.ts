@@ -18,22 +18,32 @@ const sessions = new Map<string, HyperVWindowsSession>();
 const MAX_LINE_BYTES = 512 * 1024;
 const CLOSE_GRACE_MILLISECONDS = 250;
 
-// The four ways a child's death reaches us, plus the grace timer that stands in for a `close` that
+// The three ways a child's death reaches us, plus the grace timer that stands in for a `close` that
 // never came. Named rather than inlined so the decision below is one function over an enumerated
-// input instead of five branches spread across five handlers, each reachable only by spawning a
+// input instead of four branches spread across four handlers, each reachable only by spawning a
 // real process.
-// Note what this type does NOT have: a member for a write completion. That is structural rather
-// than advisory — consulting the classifier from the write path, which fires before any of the
-// child's output can be delivered and so reads the latch stale, now requires deliberately
-// mislabelling the event rather than merely forgetting a comment.
-export type HyperVWindowsChildDeathEvent = "close" | "exit" | "exit-grace" | "error" | "stdin-error";
+//
+// Write failures are deliberately NOT in this enum, and an earlier revision of this comment claimed
+// that absence was itself a safeguard. It was not: a `"stdin-error"` member existed at the time and
+// the stdin handler fed it straight to the classifier, which is the exact hazard the claim denied.
+// What actually keeps write failures out of this decision is that they are classified elsewhere — by
+// the `settled` protocol in `write` below, and WRITE_PATH_ERRORS in the session. That mechanism is
+// load-bearing; this enum is only a list.
+// The list is the type, not a copy of it. The table test enumerates this array, so an event added
+// here is covered by the table automatically, and one cannot be added to the type without appearing
+// in the array — they are the same object. (A separate `Event[]` list in the test would have been
+// free to fall behind: nothing typechecks `src/__tests__`, so a stale copy there fails nothing.)
+export const HYPER_V_WINDOWS_CHILD_DEATH_EVENTS = ["close", "exit", "exit-grace", "error"] as const;
+
+export type HyperVWindowsChildDeathEvent = typeof HYPER_V_WINDOWS_CHILD_DEATH_EVENTS[number];
 
 export type HyperVWindowsChildDeathState = {
     // The child emitted its ready marker, or a reply. Either proves it reached the read loop.
     readonly announcedReady: boolean;
     // Output was discarded unread, so the marker may have been in it.
     readonly latchEvidenceLost: boolean;
-    // Node emitted "spawn", which it does only on a successful spawn and never when the spawn fails.
+    // The child has a pid, which Node assigns only on a successful spawn. See the call site: it is
+    // read from the child at death time, not latched by an event.
     readonly spawned: boolean;
 };
 
@@ -56,12 +66,11 @@ export function hyperVWindowsChildDeathCode(
     event: HyperVWindowsChildDeathEvent,
     state: HyperVWindowsChildDeathState,
 ): string {
-    // A child that never came up cannot have run anything, whichever event carried the news. Node
-    // emits "spawn" only on a successful spawn and always before "exit"/"error", so `!spawned` at
-    // death time means the spawn failed. Deciding on that fact rather than on which event arrived
-    // first removes a dependence on their ordering, which is not guaranteed — the same principle as
-    // the latch: hold by construction, not by timing. (`exit-grace` with `!spawned` is unreachable,
-    // since the grace only arms from `exit`.)
+    // A child that never came up cannot have run anything, whichever event carried the news. The
+    // caller derives `spawned` from the child's pid, which Node assigns synchronously on a successful
+    // spawn and never on a failed one, so this holds by construction rather than by the order the
+    // death events happen to arrive in. (`exit-grace` with `!spawned` is unreachable, since the grace
+    // only arms from `exit`.)
     if (!state.spawned) return "hyper-v-windows-session-spawn-failed";
 
     // The grace timer means `close` never arrived, so stdio has not drained and the latch may simply
@@ -169,19 +178,18 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         reportedGone = true;
         notifyExit(reason);
     };
-    // `spawned` is declared *below* this closure on purpose. Every caller today is an async event
-    // handler, so the temporal dead zone is long exited and the order is invisible at runtime. It
-    // matters only to the next edit: a synchronous classify inserted above the declaration throws,
-    // instead of reading a `false` that would report a live child as never-spawned — the retryable
-    // direction, and the one that re-issues a mutation.
     const report = (event: HyperVWindowsChildDeathEvent) => reportGone(hyperVWindowsChildDeathCode(event, {
         announcedReady,
         latchEvidenceLost,
-        spawned,
+        // Read from the child rather than latched by a "spawn" listener. Node assigns `pid`
+        // synchronously inside spawn() on success and leaves it undefined on failure, before any
+        // event fires, and it survives exit and kill() — so this cannot be stale, cannot be missed by
+        // a listener registered a tick late, and needs no invariant of its own. Measured in both
+        // directions: undefined immediately after spawning a nonexistent binary; a pid immediately
+        // after spawning a real one, unchanged through spawn, exit, close and kill().
+        spawned: child.pid !== undefined,
     }));
 
-    let spawned = false;
-    child.once("spawn", () => { spawned = true; });
     child.once("close", () => report("close"));
     child.once("exit", () => {
         // `close` is the event that guarantees the latch is fresh, so it is preferred — but it fires
@@ -203,7 +211,17 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     child.once("error", () => report("error"));
     // Without this, a write to a closed stdin raises an unhandled EPIPE and takes the broker down
     // instead of failing the one call that raced the exit.
-    child.stdin?.on("error", () => report("stdin-error"));
+    //
+    // It reports a fixed `exited` rather than classifying. A stream "error" can arrive AFTER the
+    // child has written output we have not yet read, so the latch is provably stale here — measured:
+    // the stdin error fires with announcedReady false, and the child's marker lands after it. Routing
+    // it through the classifier returned `start-failed`, a never-ran verdict on a child that had
+    // reached its read loop. That it was not live rested on Node calling the write callback before
+    // emitting the stream error, an internal ordering nothing documents — the same class of hidden
+    // dependence the `!spawned` check above was written to remove. The write callback below is the
+    // sound discriminator for this path; this handler only needs to report the death, and `exited` is
+    // the direction that costs a fallback rather than duplicating a mutation.
+    child.stdin?.on("error", () => reportGone("hyper-v-windows-session-exited"));
 
     return {
         write: (line, settled) => {
