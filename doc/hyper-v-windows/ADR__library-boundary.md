@@ -209,6 +209,17 @@ resets are belt-and-braces for the one variable that could re-aim it silently.
 `$env:` is the only other member of that class and is deliberately not reset —
 the child legitimately needs its inherited environment.
 
+**The never-ran classification is checked, not trusted.** The write-path codes
+mean "this frame never reached the child", and that is what makes the broker
+re-issue them — so believing the reason string would make the safety of a
+duplicate `Remove-VMSnapshot` a contract on whatever implements
+`HyperVWindowsSessionProcess`, enforced only by prose in a different file. The
+session records whether each request's write returned, and reports a delivered
+request as an exit no matter what reason arrives. QA demonstrated the gap with a
+fully conforming process that accepted the frame and then reported
+`stdin-failed`; the shipped implementation never does that, which is exactly why
+nothing would have caught it.
+
 Two related constraints on the session bootstrap follow from the same reasoning.
 The reply is joined, not piped through `Out-String`, because `Out-String` formats
 to a host width and is free to break a long JSON envelope into lines the reader

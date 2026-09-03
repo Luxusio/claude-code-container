@@ -389,6 +389,41 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect(children[0]!.written).toHaveLength(2);
     });
 
+    it("checks that a frame never ran rather than trusting the reason it is told", async () => {
+        // The write-path codes mean "this frame never reached the child", which is what makes the
+        // broker re-issue them one-shot. They are raised by the process implementation, so taking
+        // them at face value would make the safety of a duplicate Remove-VMSnapshot a contract on
+        // that implementation rather than something the session checks. This process conforms to the
+        // interface and reports stdin-failed AFTER accepting the frame — the shipped one never does,
+        // but nothing structural stopped it.
+        const child = fakeChild();
+        const write = child.write;
+        (child as { write: (line: string) => void }).write = (line: string) => {
+            write(line);
+            if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
+            queueMicrotask(() => child.exit("hyper-v-windows-session-stdin-failed"));
+        };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        queueMicrotask(() => child.ready());
+
+        // Reported as an exit, which is not in the adapter's never-ran set, so it is not retried.
+        expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-exited");
+    });
+
+    it("still reports never-ran when the write itself failed", async () => {
+        // The complement: nothing was accepted, so the code stands and the broker may re-issue it.
+        // A PowerShell that spawns and dies immediately produces exactly this.
+        const child = fakeChild();
+        (child as { write: (line: string) => void }).write = (line: string) => {
+            if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
+            child.exit("hyper-v-windows-session-stdin-failed");
+        };
+        const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
+        queueMicrotask(() => child.ready());
+
+        expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-stdin-failed");
+    });
+
     it("releases a caller that is still queued when the session closes", async () => {
         // A caller waiting for the pipe is not in `pending` yet, so failAll cannot reach it. It is
         // released by ensureChild refusing to start on a closed session when its turn comes.

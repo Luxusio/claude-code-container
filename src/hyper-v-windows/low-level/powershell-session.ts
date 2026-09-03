@@ -124,6 +124,9 @@ type Pending = {
     // settles the call, but the entry stays until the child answers or the health floor declares the
     // child wedged — so the entry, not the caller, owns the timers.
     readonly clear: () => void;
+    // Whether this request's frame was handed to the child without the write throwing. It is what
+    // lets the never-ran classification be checked rather than trusted: see failAll.
+    delivered: boolean;
 };
 
 function frameError(code: string): HyperVWindowsExecutionResult {
@@ -163,12 +166,26 @@ export function createHyperVWindowsPowerShellSession(
     let closed = false;
     let sequence = 0;
 
+    // Codes whose whole meaning is "this request's frame never reached the child" — which is what
+    // puts them in the adapter's never-ran set and makes the broker re-issue them. They are raised
+    // by the process implementation, so taking them at face value would make the safety of a
+    // duplicate Remove-VMSnapshot a contract on that implementation rather than something anything
+    // checks. If the write for this entry already returned, the frame may have been delivered, and
+    // the entry is failed as an exit instead — which is not retryable.
+    const WRITE_PATH_ERRORS = new Set([
+        "hyper-v-windows-session-stdin-failed",
+        "hyper-v-windows-session-write-failed",
+    ]);
+
     function failAll(code: string) {
         const outstanding = [...pending.values()];
         pending.clear();
         for (const entry of outstanding) {
             entry.clear();
-            entry.resolve(frameError(code));
+            const reported = entry.delivered && WRITE_PATH_ERRORS.has(code)
+                ? "hyper-v-windows-session-exited"
+                : code;
+            entry.resolve(frameError(reported));
         }
     }
 
@@ -359,12 +376,16 @@ export function createHyperVWindowsPowerShellSession(
                 for (const timer of [callerTimer, healthTimer]) {
                     if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
                 }
-                pending.set(id, { resolve: settle, clear });
+                const entry: Pending = { resolve: settle, clear, delivered: false };
+                pending.set(id, entry);
                 // From here a timer guarantees the entry is cleared, so the pipe is owned rather than
                 // leaked no matter what happens next.
                 owned = true;
                 try {
                     active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`);
+                    // The write returned, so the child may have the frame. Recorded before anything
+                    // can settle this entry, so a later write-path failure cannot claim it never ran.
+                    entry.delivered = true;
                 } catch {
                     pending.delete(id);
                     clear();
