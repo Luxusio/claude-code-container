@@ -2,6 +2,7 @@ import { spawn } from "child_process";
 
 import {
     createHyperVWindowsPowerShellSession,
+    HYPER_V_WINDOWS_SESSION_READY_MARKER,
     type HyperVWindowsSession,
     type HyperVWindowsSessionProcess,
 } from "../../../hyper-v-windows/index.js";
@@ -30,31 +31,28 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     const exitListeners: Array<(reason: string) => void> = [];
     let buffered = "";
 
-    // Whether this child has ever produced a byte. It is the only signal measured to separate
-    // "never consumed the request" from "consumed it and then died", deterministically: the
-    // bootstrap announces itself before entering its read loop, so a child that has produced NOTHING
-    // cannot have reached that loop, and therefore cannot have executed anything sent to it.
+    // Whether this child announced itself. It is what separates "never consumed the request" from
+    // "consumed it and then died": the bootstrap emits and flushes this marker immediately BEFORE
+    // the loop that reads frames, so a child that has not announced cannot have reached that loop,
+    // and therefore cannot have executed anything sent to it.
     //
-    // The write completion callback looked like it answered this and does not. It reports whether
-    // the bytes left this process, and a write into a pipe succeeds into the kernel buffer whether
-    // or not anyone will ever read it — so for a PowerShell that spawns and dies, the frame lands in
-    // a buffer belonging to a dead reader and the callback reports success. Measured, it identified
-    // the case 2/30 where this latch identifies it 30/30.
+    // Latching on ANY byte was the earlier version and is weaker in both directions: a child that
+    // writes a startup banner and dies without ever reaching the loop counts as having spoken, so
+    // its request is not re-issued when it safely could be. The marker is the exact question.
     //
-    // The soundness depends on HYPER_V_WINDOWS_SESSION_BOOTSTRAP emitting and flushing its ready
-    // marker BEFORE the loop that reads frames. That is a coupling across two files, so it is pinned
-    // by a test — "announces itself before its read loop" in hyper-v-windows-session.test.ts. Do not
-    // reorder those statements without reading it.
+    // The soundness depends on HYPER_V_WINDOWS_SESSION_BOOTSTRAP emitting and flushing the marker
+    // before that loop. That is a coupling across two files, so it is pinned by a test — "announces
+    // itself before its read loop" in hyper-v-windows-session.test.ts. Do not reorder it.
     //
-    // This is NOT a gate on the READY marker reaching the session's line listener; that is unsound,
-    // because the marker can be emitted before the listener attaches and then be lost, which would
-    // move a request toward being retried. This handler is attached synchronously at spawn, before
-    // any byte can arrive, and it does not care what the output was — only that there was some.
-    let producedOutput = false;
+    // This is NOT the unsound version of the same idea. That one gates on the marker reaching the
+    // SESSION's line listener, which is attached later, inside ensureChild, so the marker can be
+    // emitted first and lost — and concluding "never announced" from a lost marker moves a request
+    // toward being retried. This handler is attached synchronously at spawn, before any byte can
+    // arrive, so it cannot miss it.
+    let announcedReady = false;
 
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
-        producedOutput = true;
         buffered += chunk;
         // A child that never emits a newline must not grow this without bound. Dropping the buffer
         // makes the pending request time out, which discards the session, rather than consuming
@@ -67,21 +65,25 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         while (index >= 0) {
             const line = buffered.slice(0, index).replace(/\r$/, "");
             buffered = buffered.slice(index + 1);
+            if (line === HYPER_V_WINDOWS_SESSION_READY_MARKER) announcedReady = true;
             for (const listener of [...lineListeners]) listener(line);
             index = buffered.indexOf("\n");
         }
     });
 
     // stderr is drained but not parsed. Leaving it unread would eventually block the child on a
-    // full pipe, which presents as a wedged session. Deliberately NOT counted toward the latch: the
-    // proof is entirely about the READY marker on stdout, so stderr adds nothing to it and costs
-    // reach — a PowerShell that writes a startup diagnostic to stderr and then dies is exactly the
-    // population the latch exists to catch, and counting stderr would classify it as having spoken.
+    // full pipe, which presents as a wedged session. It cannot carry the marker, so it says nothing
+    // about whether the read loop was reached.
     child.stderr?.resume();
 
-    // A child that never spoke never reached its read loop, so nothing sent to it can have run.
+    // A child that never announced never reached its read loop, so nothing sent to it can have run.
     // start-failed already carries exactly that meaning and is already treated as never-ran.
-    const exitReason = (reason: string) => (producedOutput ? reason : "hyper-v-windows-session-start-failed");
+    //
+    // Only for the paths that report the child GOING AWAY. It must not be consulted from a write
+    // completion, which fires before any of the child's own output can be delivered to this process
+    // — there the latch reads false even for a child that has already announced, which would call an
+    // executed request never-ran and have the broker re-issue it. Measured 3/40 before this split.
+    const exitReason = (reason: string) => (announcedReady ? reason : "hyper-v-windows-session-start-failed");
 
     const notifyExit = (reason: string) => {
         for (const listener of [...exitListeners]) listener(reason);
@@ -113,7 +115,11 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
                 // it: nothing reached the pipe, so re-issuing it one-shot cannot duplicate a
                 // mutation, and without this it failed outright on every attempt.
                 settled?.(error ?? undefined);
-                if (error) notifyExit(exitReason("hyper-v-windows-session-stdin-failed"));
+                // Raised bare, NOT through exitReason: this fires before the child's own output can
+                // reach us, so the latch would read false here regardless of what the child did. The
+                // `settled` report above is the sound discriminator on this path, and the session
+                // decides from it.
+                if (error) notifyExit("hyper-v-windows-session-stdin-failed");
             });
         },
         onLine: (listener) => { lineListeners.push(listener); },

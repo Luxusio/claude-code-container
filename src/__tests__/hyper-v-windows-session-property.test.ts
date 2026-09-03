@@ -108,6 +108,10 @@ describe("Hyper-V Windows session transport properties", () => {
                 healthTimeoutMilliseconds: 60,
                 startBudgetWindowMilliseconds: 60000,
                 maximumStarts: 1000,
+                // Below the six callers per round, so the depth-refusal path is actually exercised
+                // here. At the default of 8 it never fires and the invariants below say nothing
+                // about it.
+                maximumQueueDepth: 2,
                 spawn: () => {
                     const child = flakyChild(next, 0.35, 12);
                     children.push(child);

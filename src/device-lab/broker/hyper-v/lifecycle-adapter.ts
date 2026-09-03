@@ -52,14 +52,14 @@ export type DeviceLabHyperVWindowsClientOptions = {
     readonly record?: (result: DeviceLabHyperVCommandResult) => void;
 };
 
-// The session failures after which retrying is provably safe: each means the child never came up,
-// so no operation reached the host and re-issuing cannot apply a mutation twice. A timeout, an exit
-// mid-request and an uncorrelated frame are all deliberately excluded — the request may well have
-// run, and a second Remove-VMSnapshot is not the same as the first.
 // Below this there is no point starting a PowerShell process: a Windows cold start alone is on the
 // order of a few hundred milliseconds, so a retry with less than this can only be killed on arrival.
 const MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS = 500;
 
+// The session failures after which retrying is provably safe: each means no operation reached the
+// host, so re-issuing cannot apply a mutation twice. A timeout, an exit mid-request and an
+// uncorrelated frame are all deliberately excluded — the request may well have run, and a second
+// Remove-VMSnapshot is not the same as the first.
 const SESSION_NEVER_RAN_ERRORS = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
@@ -87,9 +87,11 @@ const SESSION_NEVER_RAN_ERRORS = new Set([
     // Both rest on the session holding at most one request at a time, so the request being failed is
     // the one whose write failed; the property test's peak-outstanding invariant pins that.
     //
-    // Without these, a PowerShell that spawns and dies immediately (a stub binary, an antivirus
-    // kill, a broken install) failed the first primitives outright instead of serving them one-shot,
-    // which is the case the fallback exists for.
+    // What actually catches a PowerShell that spawns and dies immediately (a stub binary, an
+    // antivirus kill, a broken install) is NOT either of these — it is the pool's ready-marker
+    // latch, which reports start-failed. These two fire for it only occasionally, because a write
+    // into a pipe succeeds into the kernel buffer whether or not the reader is alive. They are here
+    // because they are sound where they do fire, not because they are the mechanism.
     "hyper-v-windows-session-write-failed",
     "hyper-v-windows-session-stdin-failed",
 ]);
@@ -220,6 +222,11 @@ export function createDeviceLabHyperVWindowsClient(
                 // Not enough left to start PowerShell, let alone run anything. Spawning anyway would
                 // pay a full cold start on the host to be killed immediately, and would overrun the
                 // caller's deadline to do it. The session's own error is the honest answer.
+                //
+                // Recorded before returning, like every other path. Without this the snapshot
+                // payload falls through to its stub and reports status 0 for an operation that
+                // failed — the exact degradation the recorder exists to prevent.
+                options.record?.({ mode: "exec", provider: "hyper-v", input: JSON.stringify(request), ...result });
                 return result;
             }
             return await oneShot.execute(request, { ...context, timeoutMilliseconds: remaining });

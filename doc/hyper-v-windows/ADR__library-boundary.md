@@ -210,34 +210,40 @@ resets are belt-and-braces for the one variable that could re-aim it silently.
 the child legitimately needs its inherited environment.
 
 **Two signals decide whether a request reached the child, and only one of them is
-load-bearing.** The latch is: did the child ever write to stdout? The bootstrap
-emits its ready marker and flushes it *before* entering the read loop, so zero
-bytes out proves the loop was never reached, which proves nothing sent was
-executed. That is a logical invariant and it is deterministic. It is not a gate
-on the marker reaching the session's line listener — that would be unsound,
-because the marker can be emitted before the listener attaches and be lost, which
-would move a request toward being retried. The latch is set by a `data` handler
-attached synchronously at spawn, and it does not care what the output was. stderr
-is deliberately excluded: the proof is about stdout, and counting stderr would
-classify a PowerShell that writes a startup diagnostic and dies as having spoken
-— exactly the population this exists to catch.
+load-bearing.** The latch is: did the child emit the ready marker? The bootstrap
+writes and flushes it immediately *before* entering the read loop, so a child that
+has not announced cannot have reached that loop, which proves nothing sent was
+executed. That is a logical invariant, it is deterministic, and it is the
+mechanism the crash-on-start fallback actually rests on.
+
+Two narrower versions were tried and are both worse. Latching on *any* byte
+counts a child that writes a startup banner and dies as having spoken, so its
+request is not re-issued when it safely could be. Gating on the marker reaching
+the *session's* line listener is unsound in the dangerous direction: that listener
+is attached later, inside `ensureChild`, so the marker can be emitted first and
+lost, and concluding "never announced" from a lost marker moves a request toward
+being retried. The latch here is set by the pool's own line handler, attached
+synchronously at spawn, so it cannot miss it.
 
 The write completion callback is the secondary signal and does **not** answer the
 same question. It reports whether the bytes left this process, not whether
 anything read them: a write into a pipe succeeds into the kernel buffer whether
-or not the reader is alive. Measured against an instantly-dying child on Linux it
-identified the case 2/30. It is kept because it is sound where it does fire, and
-because raising the failure from inside it is what orders the correction ahead of
-`failAll` — but anything that depends on catching a dead child must depend on the
-latch, not on it.
+or not the reader is alive, so measured against an instantly-dying child on Linux
+it identified the case 2/30. It is kept because it is sound where it does fire,
+and because raising the failure from inside it orders the correction ahead of
+`failAll`. It must never be combined with the latch: the callback runs before any
+of the child's output can be delivered, so consulting the latch there reads
+"never announced" even for a child that had — which measured 3/40 as a false
+never-ran, the direction that duplicates a mutation.
 
 **The never-ran classification is checked, not trusted.** The write-path codes
 mean "this frame never reached the child", and that is what makes the broker
 re-issue them — so believing the reason string would make the safety of a
 duplicate `Remove-VMSnapshot` a contract on whatever implements
 `HyperVWindowsSessionProcess`, enforced only by prose in a different file. The
-session records whether each request's write returned, and reports a delivered
-request as an exit no matter what reason arrives. QA demonstrated the gap with a
+session records whether each request's write reported reaching the pipe — the
+completion callback, not the return, which proves nothing — and reports a
+delivered request as an exit no matter what reason arrives. QA demonstrated the gap with a
 fully conforming process that accepted the frame and then reported
 `stdin-failed`; the shipped implementation never does that, which is exactly why
 nothing would have caught it.

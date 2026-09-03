@@ -1,7 +1,21 @@
-import { mkdtempSync } from "fs";
+import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
+
+import { HYPER_V_WINDOWS_SESSION_READY_MARKER } from "../hyper-v-windows/index.js";
+
+// Kept in step with SESSION_NEVER_RAN_ERRORS in lifecycle-adapter.ts. Membership is the property
+// that matters: an error in this set is re-issued through the one-shot transport, one outside it
+// fails the caller outright.
+const NEVER_RAN = [
+    "hyper-v-windows-session-unavailable",
+    "hyper-v-windows-session-spawn-failed",
+    "hyper-v-windows-session-start-failed",
+    "hyper-v-windows-session-queue-timeout",
+    "hyper-v-windows-session-write-failed",
+    "hyper-v-windows-session-stdin-failed",
+];
 
 import {
     brokerHyperVWindowsSession,
@@ -53,6 +67,48 @@ describe("broker Hyper-V session pool", () => {
             first();
             second();
             drain();
+        }
+    });
+
+    it("classifies a child that never announced itself as never having run anything", async () => {
+        // Against a real spawned process, because this is the one behaviour in the pool that decides
+        // whether the broker re-issues a request, and nothing else here drives a real child. A binary
+        // that exists and exits immediately — a stub PowerShell, a broken install, an antivirus kill
+        // — must be served through the one-shot transport rather than failing outright.
+        const release = retainBrokerHyperVWindowsSessions();
+        try {
+            const session = brokerHyperVWindowsSession("/bin/true");
+            const result = await session.execute(
+                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+                { timeoutMilliseconds: 2000, maximumOutputBytes: 64 * 1024 },
+            );
+            // Asserted as membership, not as one code: the write path and the exit path both reach
+            // never-ran by their own route, and which one wins is a race. What must never happen is
+            // an error outside this set, because that fails the caller outright instead of falling
+            // back — which is what this case did on every attempt before the latch.
+            expect(NEVER_RAN).toContain(result.error);
+        } finally {
+            release();
+        }
+    });
+
+    it("does not call a child that announced itself never-ran", async () => {
+        // The other direction, and the one that matters most: a child that reached its read loop may
+        // have executed what it was sent, so re-issuing could apply a mutation twice. This stub
+        // announces itself exactly as the bootstrap does and then goes quiet, which is
+        // indistinguishable — to the pool — from a real child that read a frame and stalled.
+        const stub = join(mkdtempSync(join(tmpdir(), "ccc-ready-stub-")), "stub.sh");
+        writeFileSync(stub, `#!/bin/sh\necho ${HYPER_V_WINDOWS_SESSION_READY_MARKER}\nsleep 5\n`, { mode: 0o755 });
+        const release = retainBrokerHyperVWindowsSessions();
+        try {
+            const session = brokerHyperVWindowsSession(stub);
+            const result = await session.execute(
+                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+                { timeoutMilliseconds: 250, maximumOutputBytes: 64 * 1024 },
+            );
+            expect(NEVER_RAN).not.toContain(result.error);
+        } finally {
+            release();
         }
     });
 

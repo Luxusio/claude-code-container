@@ -421,7 +421,11 @@ describe("Hyper-V Windows PowerShell session", () => {
             (line: string, settled?: (error?: unknown) => void) => {
                 if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
                 settled?.(new Error("ERR_STREAM_DESTROYED"));
-                child.exit("hyper-v-windows-session-stdin-failed");
+                // Asynchronous, because the real pool raises this from a stream callback. Emitting
+                // it synchronously from inside write() made this test pass either way: failAll then
+                // ran before `delivered` was even assigned, so it never exercised the correction it
+                // is named for.
+                queueMicrotask(() => child.exit("hyper-v-windows-session-stdin-failed"));
             };
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
         queueMicrotask(() => child.ready());

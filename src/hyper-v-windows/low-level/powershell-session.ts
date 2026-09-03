@@ -160,8 +160,15 @@ export function createHyperVWindowsPowerShellSession(
     // Floored rather than clamped to [0, 1]: a fraction of 0 gives every caller a 1ms queue wait,
     // which silently turns the session off under any contention. The knob should not be able to
     // disable the thing it tunes.
-    const queueWaitFraction = Math.min(1, Math.max(0.05, options.queueWaitFraction ?? DEFAULT_QUEUE_WAIT_FRACTION));
-    const maximumQueueDepth = Math.max(1, Math.trunc(options.maximumQueueDepth ?? DEFAULT_MAXIMUM_QUEUE_DEPTH));
+    // Number.isFinite first: NaN defeats both clamps below — Math.max(0.05, NaN) is NaN, giving
+    // every caller a 1ms queue wait, and `depth >= NaN` is always false, disabling the cap. Those
+    // are exactly the two states the clamps exist to prevent.
+    const queueWaitFraction = Number.isFinite(options.queueWaitFraction)
+        ? Math.min(1, Math.max(0.05, options.queueWaitFraction as number))
+        : DEFAULT_QUEUE_WAIT_FRACTION;
+    const maximumQueueDepth = Number.isFinite(options.maximumQueueDepth)
+        ? Math.max(1, Math.trunc(options.maximumQueueDepth as number))
+        : DEFAULT_MAXIMUM_QUEUE_DEPTH;
     let queueDepth = 0;
     const pending = new Map<string, Pending>();
     let child: HyperVWindowsSessionProcess | null = null;
@@ -297,7 +304,14 @@ export function createHyperVWindowsPowerShellSession(
             spawned.onExit((reason) => {
                 if (child === spawned) discard(reason || "hyper-v-windows-session-exited");
             });
-            spawned.write(Buffer.from(asset.scriptSource, "utf8").toString("base64"));
+            // The asset write reports its outcome too. Its completion fires before any request's,
+            // so without this its failure reached failAll while every pending entry still read as
+            // delivered, and the never-ran classification was silently lost. Stream ordering makes
+            // this sound: if the asset never reached the child, nothing written after it did either.
+            spawned.write(Buffer.from(asset.scriptSource, "utf8").toString("base64"), (error) => {
+                if (!error) return;
+                for (const entry of pending.values()) entry.delivered = false;
+            });
             return spawned;
         })();
         try {
