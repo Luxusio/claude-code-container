@@ -86,7 +86,13 @@ export const HYPER_V_WINDOWS_SESSION_BOOTSTRAP = [
 ].join("; ");
 
 export type HyperVWindowsSessionProcess = {
-    readonly write: (line: string) => void;
+    // `settled` reports whether the line actually reached the pipe. It is the only signal that can
+    // separate a child that never received the request at all from one that received it and then
+    // died — the difference between safe to re-issue and a second Remove-VMSnapshot. A write()
+    // return cannot separate them: writing to an already-dead child does not throw, it returns
+    // normally and reports ERR_STREAM_DESTROYED asynchronously. An implementation that never calls
+    // `settled` is treated as having delivered, because that is the conservative reading.
+    readonly write: (line: string, settled?: (error?: unknown) => void) => void;
     readonly onLine: (listener: (line: string) => void) => void;
     readonly onExit: (listener: (reason: string) => void) => void;
     readonly kill: () => void;
@@ -382,10 +388,16 @@ export function createHyperVWindowsPowerShellSession(
                 // leaked no matter what happens next.
                 owned = true;
                 try {
-                    active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`);
-                    // The write returned, so the child may have the frame. Recorded before anything
-                    // can settle this entry, so a later write-path failure cannot claim it never ran.
+                    // Optimistic and then corrected, in that order, because the correction is the
+                    // only one that can move a request toward being retried. Returning from write()
+                    // proves nothing — a write to a dead child returns normally — so the entry is
+                    // treated as delivered until the process reports otherwise. The pool raises the
+                    // stdin failure from inside this callback, so the correction always lands before
+                    // failAll reads it.
                     entry.delivered = true;
+                    active.write(`${HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX}${frame}`, (error) => {
+                        if (error) entry.delivered = false;
+                    });
                 } catch {
                     pending.delete(id);
                     clear();

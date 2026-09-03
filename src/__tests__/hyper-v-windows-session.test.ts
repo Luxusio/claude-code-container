@@ -410,17 +410,23 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-exited");
     });
 
-    it("still reports never-ran when the write itself failed", async () => {
-        // The complement: nothing was accepted, so the code stands and the broker may re-issue it.
-        // A PowerShell that spawns and dies immediately produces exactly this.
+    it("still reports never-ran when the write never reached the pipe", async () => {
+        // The complement, modelled the way the real pool behaves. A PowerShell that spawned and died
+        // before this write produces exactly this: `write()` does NOT throw — a write to a dead
+        // child returns normally — so the only signal that nothing reached the pipe is the
+        // completion callback reporting an error. The pool raises the failure from inside that
+        // callback, which is what guarantees the correction lands before the entry is failed.
         const child = fakeChild();
-        (child as { write: (line: string) => void }).write = (line: string) => {
-            if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
-            child.exit("hyper-v-windows-session-stdin-failed");
-        };
+        (child as { write: (line: string, settled?: (error?: unknown) => void) => void }).write =
+            (line: string, settled?: (error?: unknown) => void) => {
+                if (!line.startsWith(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX)) return;
+                settled?.(new Error("ERR_STREAM_DESTROYED"));
+                child.exit("hyper-v-windows-session-stdin-failed");
+            };
         const session = createHyperVWindowsPowerShellSession({ operationAsset: ASSET, spawn: () => child });
         queueMicrotask(() => child.ready());
 
+        // Never-ran, so the broker serves it through the one-shot transport rather than failing it.
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-stdin-failed");
     });
 

@@ -69,11 +69,23 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
         spawned ? "hyper-v-windows-session-exited" : "hyper-v-windows-session-spawn-failed",
     ));
     // Without this, a write to a closed stdin raises an unhandled EPIPE and takes the broker down
-    // instead of failing the one call that raced the exit.
-    child.stdin?.on("error", () => notifyExit("hyper-v-windows-session-stdin-failed"));
+    // instead of failing the one call that raced the exit. Reported as an exit rather than a write
+    // failure: by the time a stream-level error arrives on its own, any write we issued has already
+    // reported its own outcome through the callback below, which is the signal that actually knows.
+    child.stdin?.on("error", () => notifyExit("hyper-v-windows-session-exited"));
 
     return {
-        write: (line) => { child.stdin?.write(`${line}\n`); },
+        write: (line, settled) => {
+            child.stdin?.write(`${line}\n`, (error) => {
+                // Ordered deliberately: the session marks the request undelivered from `settled`,
+                // and only then is the failure raised — so failAll always reads the corrected flag.
+                // A PowerShell that spawned and died before this write is the case that depends on
+                // it: nothing reached the pipe, so re-issuing it one-shot cannot duplicate a
+                // mutation, and without this it failed outright on every attempt.
+                settled?.(error ?? undefined);
+                if (error) notifyExit("hyper-v-windows-session-stdin-failed");
+            });
+        },
         onLine: (listener) => { lineListeners.push(listener); },
         onExit: (listener) => { exitListeners.push(listener); },
         kill: () => {
