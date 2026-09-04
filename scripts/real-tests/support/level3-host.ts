@@ -4,7 +4,7 @@ import { join } from "path";
 
 export const HYPER_V_LEVEL3_WINDOWS_UNATTEND_OOBE_SCHEMA_CONTRACT = "hyper-v-windows-unattend-oobe-schema-v2";
 export const HYPER_V_LEVEL3_POWERSHELL_DIRECT_BOUNDED_PROBE_CONTRACT = "hyper-v-powershell-direct-bounded-probe-v1";
-export const HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT = "hyper-v-windows-library-v5";
+export const HYPER_V_LEVEL3_WINDOWS_LIBRARY_CONTRACT = "hyper-v-windows-library-v6";
 // Every contract that is also exported standalone is declared above the required list and then
 // referenced by it, never re-spelled inside it. Two reasons: the array is evaluated at module load,
 // so a forward reference hits the temporal dead zone; and a duplicated literal is free to drift, so

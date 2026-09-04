@@ -287,7 +287,24 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_BOOT_CONTRACT = "hyper-v-windows-
 // DEVICE_BROKER_REQUIRED_CAPABILITIES ⊆ REQUIRED_CCC_HOST_BROKER_CAPABILITIES with a named allowlist
 // for deliberate divergences, so the next omission is loud; the existing test only checks each
 // consumer list is a subset of what the broker advertises, which a shorter list always satisfies.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v5";
+// v6: a retry decision moved, which is the criterion v5 wrote down. Before c34362b the pool wired
+// `child.stdin.on("error")` into the death classifier as the event "stdin-error", and the classifier
+// had no branch for it — it fell through every guard to the terminal `start-failed`, which IS in the
+// adapter's SESSION_NEVER_RAN_ERRORS. So every stdin-death on a spawned child was reported as
+// never-ran and re-issued. c34362b reports a fixed `exited` there, which is NOT in that set.
+//
+// That is a code leaving the never-ran set, not two codes swapping inside it, and it matters because
+// the ordering that was believed to make the old path unreachable does not hold: measured on the
+// pool's own stub, roughly one run in five the stdin stream error wins the race against the write
+// callback and reaches the classifier first. A broker predating c34362b therefore re-issues a
+// privileged mutation — a second Remove-VMSnapshot against a live host — at about that rate of that
+// failure shape, while advertising the same capability string as a broker that does not.
+//
+// Note what v5 turned out to cover: the bump landed in a4b97c1, and the entire never-ran hardening
+// series is the 17 commits after it. One label spanned the pre-latch behaviour, the revision where
+// the write path consulted a latch it could not read freshly, and the three silent never-ran routes
+// closed later. Bumping per behaviour change rather than per batch is what keeps that from recurring.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_LIBRARY = "hyper-v-windows-library-v6";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_WINDOWS_UNATTEND_OOBE_SCHEMA = "hyper-v-windows-unattend-oobe-schema-v2";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_POWERSHELL_DIRECT_BOUNDED_PROBE = "hyper-v-powershell-direct-bounded-probe-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOT_DISK_GENERATION = "hyper-v-boot-disk-generation-v1";

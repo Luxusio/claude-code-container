@@ -70,9 +70,14 @@ describe("child death classification", () => {
             // only when the child provably never got far enough to run it. Anything else — it
             // announced, or the evidence was thrown away, or we never waited for stdio to drain —
             // must not be retried, because a second Remove-VMSnapshot is not the same as the first.
+            // `exit-grace` and `error` are both excluded because neither guarantees stdio drained,
+            // so a false latch on those paths proves nothing. Only `close` (drained by definition)
+            // and `exit` (which reports early only when the latch is already set, and the latch is
+            // monotone) can support a never-ran verdict.
+            const drained = row.event === "close" || row.event === "exit";
             const provablyNeverRan = !row.state.spawned
                 ? true
-                : row.event !== "exit-grace" && !row.state.latchEvidenceLost && !row.state.announcedReady;
+                : drained && !row.state.latchEvidenceLost && !row.state.announcedReady;
             expect({ ...row, retryable }).toEqual({ ...row, retryable: provablyNeverRan });
         }
     });
@@ -86,10 +91,13 @@ describe("child death classification", () => {
     });
 
     it("treats lost evidence and a missing drain as not-proof, never as proof", () => {
-        // Two separate reasons the latch may read false without meaning anything: output was dropped
-        // unread, or `close` never came so stdio never drained. Both used to be one-line guards in
-        // different handlers; both are rules here.
-        for (const row of rows.filter((candidate) => candidate.state.latchEvidenceLost || candidate.event === "exit-grace")) {
+        // Three separate reasons the latch may read false without meaning anything: output was
+        // dropped unread, `close` never came so stdio never drained, or the death arrived as an
+        // `error` event, which carries no drain guarantee at all. Each used to be a one-line guard in
+        // a different handler, or in the `error` case no guard whatsoever; all are rules here.
+        for (const row of rows.filter((candidate) => candidate.state.latchEvidenceLost
+            || candidate.event === "exit-grace"
+            || candidate.event === "error")) {
             // A child that never spawned is decided before any of this, on the stronger fact.
             if (!row.state.spawned) continue;
             expect(row.code).toBe("hyper-v-windows-session-exited");
@@ -111,7 +119,10 @@ describe("child death classification", () => {
         // outlived the union member: the argument still satisfied the assertion by falling through
         // every branch, so the test stayed green while asserting something about an input no caller
         // could produce, and nothing typechecks this directory to say otherwise.
-        for (const event of EVENTS.filter((candidate) => candidate !== "exit-grace")) {
+        // Only the two events that carry a drain guarantee. `exit-grace` means `close` never came,
+        // and `error` carries no drain guarantee either — on both, a false latch proves nothing and
+        // the classifier deliberately declines to call it never-ran.
+        for (const event of EVENTS.filter((candidate) => candidate === "close" || candidate === "exit")) {
             expect(hyperVWindowsChildDeathCode(event, {
                 announcedReady: false,
                 latchEvidenceLost: false,

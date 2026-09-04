@@ -84,6 +84,19 @@ export function hyperVWindowsChildDeathCode(
     // be stale rather than false. That is not evidence the child never ran.
     if (event === "exit-grace") return "hyper-v-windows-session-exited";
 
+    // A post-spawn "error" carries no drain guarantee — unlike `close`, which fires only after stdio
+    // drains, and unlike `exit`, which arms the grace timer for exactly that reason. So the latch may
+    // be stale here for the same reason it was on the stdin path, and this was the last route left
+    // from a stale latch to a never-ran verdict.
+    //
+    // It is unreachable today: Node emits "error" after a successful spawn only for a kill or IPC
+    // failure, every kill() here runs after the session has already nulled its own reference, and the
+    // session's identity guard drops the report. But "no caller currently reaches it" is precisely
+    // the argument that was made for the spawn-event ordering and for the write-callback ordering,
+    // and both turned out to be false — the second one at roughly one run in five. Closing it costs
+    // nothing: a genuine spawn failure has no pid and has already returned above.
+    if (event === "error") return "hyper-v-windows-session-exited";
+
     // Output was dropped unread, so the marker may have been inside it. Lost evidence is not proof.
     if (state.latchEvidenceLost) return "hyper-v-windows-session-exited";
 

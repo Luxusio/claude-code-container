@@ -363,13 +363,37 @@ state in that runspace *because the only code that runs there is the hashed asse
 and its fixed allowlist*. So the integrity check is now load-bearing for owner
 isolation, not only for supply-chain integrity. Read that sentence before
 relaxing the pin or widening the allowlist to admit anything that takes an
-expression.
+expression. `Checkpoint-VM`'s `-SnapshotName` is the one allowlisted operation
+already taking a caller string; it is safe because it is a bound parameter rather
+than interpolated, and that is the property to preserve.
+
+Two amendments a later security review added to this residual. First, the pin is
+verified **once per child, not once per execution**: the one-shot transport calls
+`verifiedAsset` on every `execute`, while the session calls it only inside the
+`starting` closure, and `ensureChild` returns early for every subsequent request.
+An asset tampered with after a session is up is not detected until that child
+dies. This is not a TOCTOU — the digest covers the bytes actually sent, and the
+path is never re-read — but the checking *frequency* dropped, and since the pin is
+what carries owner isolation, that narrows this residual rather than merely
+detailing it. Second, the runspace hygiene between requests clears only
+`$global:CccHyperVJsonInput` and `$global:PSDefaultParameterValues`; global
+functions, aliases, variables and loaded modules persist across owners. Nothing
+exploits that today precisely because no code but the hashed asset ever executes
+there — the same load-bearing claim, stated from the other side.
 
 **Cross-owner interference now exists in availability terms**, where it did not.
 One owner's stale frame hard-fails whoever is in flight, and one owner can hold
 every queue slot and push the others onto the one-shot path. Both degrade to the
 pre-session behaviour rather than denying service — that is what the depth cap
 buys, and it is part of what AC-004's second clause was buying instead.
+
+One concrete instance worth naming, from the same review: the start budget is
+shared and exhaustible. Three unanswered starts inside five minutes make
+`ensureChild` return null, so *every* owner is demoted to the one-shot path for
+the rest of that window, and the counter resets only on an answered response. A
+start counts as unanswered whenever the child dies before replying — including on
+an oversized response frame. Still degradation rather than denial, exactly as this
+residual claims, but the blast radius is fleet-wide rather than per-owner.
 
 **Unverifiable from a container:** whatever process-wide state the Hyper-V
 PowerShell module itself keeps — CIM/WMI handles, internal caching — is now
