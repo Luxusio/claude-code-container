@@ -149,6 +149,17 @@ async function runCommand() {
         return 1;
     }
 
+    if (process.platform !== "win32") {
+        // The host spec below skips itself off Windows, and vitest exits 0 for a skipped test, so
+        // this gate reported success on Linux having verified nothing against a real Hyper-V host —
+        // which is the only thing it exists to do. The exit code is deliberately left alone: this is
+        // a manual gate, it is not wired into ci.yml, and failing it on Linux would break local runs
+        // to duplicate a signal nobody is reading. What was wrong is that the output looked like a
+        // pass, so it now says what did not happen.
+        process.stdout.write(`SKIP Hyper-V Windows library real-host verification: requires Windows, got ${process.platform}.\n`);
+        process.stdout.write("     No VM was created, started, snapshotted or deleted; no provider call count was checked.\n");
+    }
+
     if (process.platform === "win32") {
         try {
             const powerShellPath = resolveTrustedWindowsPowerShell();
