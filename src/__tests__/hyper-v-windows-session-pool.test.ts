@@ -104,13 +104,27 @@ describe("child death classification", () => {
         // accommodate the other. These name events deliberately — which failures are worth retrying
         // is a design choice, and stating it is this test's whole job.
         //
-        // A child that never spawned, on every event: nothing can have run.
+        // A child that never spawned, on every event AND every combination of the two latch inputs:
+        // nothing can have run, and no latch state can change that.
+        //
+        // The full cross-product, not the latch-clean row, because a review measured that the single
+        // row lost 13 of the 18 rows the old equality oracle pinned. Its mutation: narrow the guard to
+        // `!spawned && !announcedReady && !latchEvidenceLost`. Both new tests passed; the old one
+        // caught it. The uncovered rows were exactly `!spawned` crossed with a set latch, which the
+        // single row never reached. Lossy rather than dangerous — a child with no pid never delivers
+        // stdout, so those states are unreachable in production and the adapter would fail the caller
+        // outright rather than re-issue — but it was a real regression and it is four extra iterations
+        // to close.
         for (const event of EVENTS) {
-            expect(hyperVWindowsChildDeathCode(event, {
-                announcedReady: false,
-                latchEvidenceLost: false,
-                spawned: false,
-            })).toBe("hyper-v-windows-session-spawn-failed");
+            for (const announcedReady of [true, false]) {
+                for (const latchEvidenceLost of [true, false]) {
+                    expect(hyperVWindowsChildDeathCode(event, {
+                        announcedReady,
+                        latchEvidenceLost,
+                        spawned: false,
+                    })).toBe("hyper-v-windows-session-spawn-failed");
+                }
+            }
         }
         // A child that spawned, announced nothing, lost nothing, and whose stdio drained: the
         // crash-on-start case, and the reason the one-shot fallback still exists.

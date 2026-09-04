@@ -18,7 +18,11 @@ import type {
 // The retry decision keys off these strings — see SESSION_NEVER_RAN_ERRORS — so a code that is
 // misspelled in one place and not another silently changes whether a privileged mutation is
 // re-issued. Making the union the single source, and typing the producers and the sets by it, turns
-// that class of drift into a compile error.
+// that class of drift into a compile error — but only for the producers actually typed. When this
+// comment was written it named `discard`, `failAll`, `onExit` and the classifier and missed
+// `frameError`, which is the function that manufactures the string the adapter reads; a review
+// found a misspelling there compiled clean. It is typed now. The lesson worth keeping is that
+// "the producers" is a claim to re-check whenever one is added, not a property of the union.
 export const HYPER_V_WINDOWS_SESSION_ERROR_CODES = [
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
@@ -174,7 +178,13 @@ type Pending = {
     delivered: boolean;
 };
 
-function frameError(code: string): HyperVWindowsExecutionResult {
+// Typed, because this is the function that actually MANUFACTURES the result.error string the
+// adapter tests against SESSION_NEVER_RAN_ERRORS. A review caught that typing discard, failAll,
+// onExit and the classifier left this one untyped, which made the union comment's claim to have
+// typed "the producers" an overclaim: a misspelling at any of its call sites compiled clean, the
+// adapter's lookup then missed, and a request that provably never reached a host failed outright
+// instead of falling back one-shot.
+function frameError(code: HyperVWindowsSessionErrorCode): HyperVWindowsExecutionResult {
     // Shaped like a failed one-shot execution rather than thrown, so the client's existing
     // transport classification applies unchanged and no new error path reaches callers.
     return { status: null, stdout: "", error: code };
