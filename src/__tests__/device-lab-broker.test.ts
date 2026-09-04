@@ -83,6 +83,53 @@ describe("device-lab host broker daemon", () => {
             .toEqual([]);
     });
 
+    it("keeps the MCP attestation gate at least as strict as the CLI's, except where divergence is a recorded decision", () => {
+        // The subset assertion above only checks each consumer list against what the broker
+        // advertises, which a SHORTER list always satisfies. That is how the Hyper-V Windows library
+        // capability came to be required by the CLI and level-3 gates but not by the MCP's, leaving
+        // the MCP admitting a broker that re-issued a privileged mutation on a false never-ran. Three
+        // capabilities arrived together in a commit that did not touch device-lab-mcp at all, and
+        // nothing was watching the gap.
+        //
+        // So: every capability the CLI requires must also be required by the MCP, unless it is named
+        // here. The allowlist is the point — a deliberate divergence is a decision someone wrote
+        // down, and anything else is drift that fails this test the moment it appears.
+        // This list is a RATCHET, not an endorsement. It freezes the divergence that already existed
+        // when the invariant was added, so the gate catches the NEXT omission rather than demanding
+        // ten unrelated decisions first. Shrinking it is always safe; growing it needs a reason
+        // written next to the entry.
+        //
+        // The review that prompted this named two entries. The measured answer was ten — worth
+        // recording, because the two-entry figure is what made the gap look small enough to defer.
+        const DELIBERATE_MCP_DIVERGENCES = new Set([
+            // The seven http-* capabilities describe the broker's HTTP surface, which the MCP client
+            // reaches through its own transport checks rather than through capability attestation.
+            "http-host-backend-readiness-api",
+            "http-lifecycle-device-create-command",
+            "http-desktop-device-tool-proxy",
+            "http-desktop-device-tool-timeouts",
+            "http-windows-sandbox-helper-config",
+            "http-android-device-tool-proxy",
+            "http-broker-version-reporting",
+            // These arrived in the same commit as the library capability, which did not touch
+            // device-lab-mcp at all. Unlike the library capability they gate no known
+            // correctness-affecting divergence, so they are left as recorded decisions rather than
+            // swept in alongside a security fix.
+            "hyper-v-windows-unattend-oobe-schema-v2",
+            "hyper-v-powershell-direct-bounded-probe-v1",
+            // Predate the MCP list's Hyper-V entries.
+            "windows-sandbox-best-effort-minimize-v1",
+            "windows-sandbox-runtime-snapshot-ownership-v1",
+            "appium3-scoped-security-npm-cwd-v1",
+            "appium-port-process-identity-fencing-v1",
+        ]);
+        const mcpRequired = new Set<string>(REQUIRED_CCC_HOST_BROKER_CAPABILITIES);
+        const missing = DEVICE_BROKER_REQUIRED_CAPABILITIES
+            .filter((capability) => !mcpRequired.has(capability))
+            .filter((capability) => !DELIBERATE_MCP_DIVERGENCES.has(capability));
+        expect(missing).toEqual([]);
+    });
+
     it("forces hidden windows for provider and broker-inspection PowerShell children", () => {
         const runner = boundedProviderCommandRunnerScript();
         expect(runner).toContain('["-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-Command", script]');

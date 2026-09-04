@@ -210,10 +210,14 @@ describe("broker Hyper-V session pool", () => {
         //
         // Do NOT rewrite this to assert a single code. An earlier draft asserted stdin-failed and
         // failed 1 run in 5; the ordering is not guaranteed, which is exactly why the handler must
-        // not classify. Reverting it to `report("error")` — which compiles, since "error" is the
-        // name the stream event actually has — returns start-failed in the second ordering: a
-        // never-ran verdict on a child that reached its read loop, re-issuing a Remove-VMSnapshot.
-        // This catches that, though only on the runs that take the second ordering.
+        // not classify.
+        //
+        // What this test does NOT do, corrected after it briefly claimed otherwise: it no longer
+        // catches a revert of the stdin handler to `report("error")`. It did when written, because
+        // "error" then fell through to start-failed. The classifier now returns `exited` for "error"
+        // outright, so that revert is safe and this test stays green — the route is closed by
+        // construction rather than by a probabilistic test, which is the better arrangement, but it
+        // means the coverage this comment used to claim has moved into the classifier's own table.
         const result = await runStub(`#!/bin/sh\nexec 0<&-\nsleep 0.1\necho ${MARKER}\nsleep 0.2\n`, 4000);
         expect([
             "hyper-v-windows-session-spawn-failed",

@@ -96,6 +96,19 @@ export const REQUIRED_CCC_HOST_BROKER_CAPABILITIES = [
     "hyper-v-powershell-stage-propagation-v1",
     "hyper-v-provider-image-finalization-v39",
     "hyper-v-network-failure-diagnostics-v9",
+    // Added late, and deliberately: this list had never carried the Hyper-V Windows library
+    // capability at any version, so the MCP gate admitted a broker whose session re-issued a
+    // privileged mutation on a false never-ran — a duplicate Remove-VMSnapshot, reachable from the
+    // device_snapshot_delete tool. The CLI and level-3 gates required it; this one did not.
+    //
+    // It was previously deferred as a fleet-compatibility call, on the reasoning that adding entries
+    // makes an updated MCP refuse older brokers. Two facts retired that. The cost argument was
+    // "degrades to slow rather than to wrong", which is false for an entry admitting a duplicated
+    // mutation. And the population this rejects is currently empty: `master` carries neither this
+    // capability string at any version nor the session pool at all, so no shipped broker advertises
+    // it. Adding it before the branch ships costs nothing; adding it after costs the fleet migration
+    // the old comment described.
+    "hyper-v-windows-library-v6",
 ];
 const DEFAULT_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 const MAX_RPC_TIMEOUT_MS = 21615000;
