@@ -193,6 +193,31 @@ describe("broker Hyper-V session pool", () => {
     });
 
     describe.skipIf(process.platform === "win32")("readiness latch", () => {
+    it("reports a binary that cannot be spawned as never having run", { timeout: 20000 }, async () => {
+        // The `spawned` input is derived from `child.pid !== undefined` rather than latched from a
+        // "spawn" event, and it is the highest-consequence input in the classifier: !spawned returns
+        // spawn-failed, which IS in the adapter's never-ran set and IS re-issued. QA measured that no
+        // test drove it through a real child — runStub always writes a genuine executable — so the
+        // whole argument for it lived in a source comment claiming it was "measured in both
+        // directions". A Node release that changed when `pid` is assigned would have passed every
+        // gate in this repo.
+        //
+        // This spawns a path that does not exist, which is the real production shape: a missing or
+        // broken PowerShell install. Never-ran is the CORRECT answer here — nothing reached a host —
+        // so this pins the safe-and-useful direction, not merely the safe one.
+        const missing = join(mkdtempSync(join(tmpdir(), "ccc-session-missing-")), "not-a-real-binary");
+        const release = retainBrokerHyperVWindowsSessions();
+        try {
+            const result = await brokerHyperVWindowsSession(missing).execute(
+                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+                { timeoutMilliseconds: 4000, maximumOutputBytes: 64 * 1024 },
+            );
+            expect(result.error).toBe("hyper-v-windows-session-spawn-failed");
+        } finally {
+            release();
+        }
+    });
+
     it("classifies a child that never announced itself as never having run anything", { timeout: 20000 }, async () => {
         // `sleep 0.2` before exiting, not an instant exit. An instantly-dead child resolves on the
         // write path — both write callbacks EPIPE — so the test passes with the latch deleted
