@@ -54,9 +54,9 @@ describe("child death classification", () => {
     // every event by construction. A local copy would be free to fall behind — nothing typechecks
     // this directory, so a stale list would fail nothing and silently shrink the table.
     const EVENTS = HYPER_V_WINDOWS_CHILD_DEATH_EVENTS;
-    // The two never-ran codes THIS FUNCTION can return — not the adapter's full set, which has eight
+    // The two never-ran codes THIS FUNCTION can return — not the adapter's full set, which has six
     // and includes codes only the queue and write paths produce. An earlier comment here claimed it
-    // was "kept in step with SESSION_NEVER_RAN_ERRORS" while holding two of its eight members, which
+    // was "kept in step with SESSION_NEVER_RAN_ERRORS" while holding two of its six members, which
     // was the same overclaim this file has corrected twice elsewhere. Both are now members of the
     // exported code union, so a typo in either fails to compile rather than quietly never matching.
     const NEVER_RAN_CODES: ReadonlySet<string> = new Set([
@@ -192,7 +192,6 @@ describe("broker Hyper-V session pool", () => {
         }
     });
 
-    describe.skipIf(process.platform === "win32")("readiness latch", () => {
     it("reports a binary that cannot be spawned as never having run", { timeout: 20000 }, async () => {
         // The `spawned` input is derived from `child.pid !== undefined` rather than latched from a
         // "spawn" event, and it is the highest-consequence input in the classifier: !spawned returns
@@ -202,9 +201,16 @@ describe("broker Hyper-V session pool", () => {
         // directions". A Node release that changed when `pid` is assigned would have passed every
         // gate in this repo.
         //
-        // This spawns a path that does not exist, which is the real production shape: a missing or
-        // broken PowerShell install. Never-ran is the CORRECT answer here — nothing reached a host —
-        // so this pins the safe-and-useful direction, not merely the safe one.
+        // This spawns a path that does not exist, which is the real production shape of a MISSING
+        // PowerShell install. (A *broken* one spawns and dies, which is the ready-marker latch path
+        // returning start-failed — a different branch, covered separately.) Never-ran is the correct
+        // answer here, so this pins the safe-and-useful direction, not merely the safe one.
+        //
+        // Deliberately OUTSIDE the readiness-latch describe below, which skips on Windows. That skip
+        // exists because those tests write `#!/bin/sh` stubs, which Windows cannot spawn — every one
+        // of their assertions would see spawn-failed. This test writes no stub and ASSERTS
+        // spawn-failed, so the rationale does not cover it, and Windows is precisely the platform
+        // this subsystem targets and where a change to when Node assigns `pid` would bite.
         const missing = join(mkdtempSync(join(tmpdir(), "ccc-session-missing-")), "not-a-real-binary");
         const release = retainBrokerHyperVWindowsSessions();
         try {
@@ -217,6 +223,8 @@ describe("broker Hyper-V session pool", () => {
             release();
         }
     });
+
+    describe.skipIf(process.platform === "win32")("readiness latch", () => {
 
     it("classifies a child that never announced itself as never having run anything", { timeout: 20000 }, async () => {
         // `sleep 0.2` before exiting, not an instant exit. An instantly-dead child resolves on the

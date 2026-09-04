@@ -11,7 +11,7 @@ import type {
 
 // Every error code the session transport can report, in one place because three separate consumers
 // were each keeping their own hand-written Set<string> of a subset: SESSION_NEVER_RAN_ERRORS in the
-// lifecycle adapter (8 members), WRITE_PATH_ERRORS below (2), and the pool test's NEVER_RAN_CODES
+// lifecycle adapter (6 members), WRITE_PATH_ERRORS below (2), and the pool test's NEVER_RAN_CODES
 // (2). Nothing bound them to each other or to the producers, so a typo in a code string was caught
 // only where some test happened to assert string equality, and never by tsc.
 //

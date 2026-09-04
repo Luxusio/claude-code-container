@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
     createDeviceLabHyperVWindowsClient,
     createRecordingDeviceLabHyperVWindowsClient,
-    SESSION_NEVER_RAN_ERRORS,
+    hyperVWindowsSessionErrorNeverRan,
 } from "../device-lab/broker/hyper-v/lifecycle-adapter.js";
 import {
     HYPER_V_WINDOWS_SESSION_ERROR_CODES,
@@ -95,8 +95,10 @@ describe("Device Lab Hyper-V session transport", () => {
     // allowlist with no constraint on what could join it. Mutation testing proved the gap — adding
     // `hyper-v-windows-session-closed` to SESSION_NEVER_RAN_ERRORS passed tsc, typecheck:tests, lint
     // and all 1188 hyper-v/device-lab tests, because `satisfies` checks spelling and nothing checked
-    // safety. Only three of the fifteen codes were asserted non-retryable; the other twelve could be
-    // moved into the retry set silently, and a retried `session-closed` is a second Remove-VMSnapshot.
+    // safety. Only three of the fifteen codes were asserted non-retryable, leaving SIX that could be
+    // moved into the retry set silently — fifteen, less the six already in the never-ran set, less
+    // those three. (An earlier version of this comment said twelve, which is 15 minus 3 and forgets
+    // the very set the sentence is about.) A retried `session-closed` is a second Remove-VMSnapshot.
     //
     // Adding a sixteenth code now fails this test until someone decides which half it belongs to.
     // Note the name: MUST_NOT_RETRY, not "may have run". Two different grounds land a code here, and
@@ -107,6 +109,13 @@ describe("Device Lab Hyper-V session transport", () => {
         "hyper-v-windows-session-timeout",
         "hyper-v-windows-session-exited",
         "hyper-v-windows-session-closed",
+        // Classified for completeness; NO producer emits this as a result.error. It is thrown inside
+        // the spawn hook (session-pool.ts:306), ensureChild catches it and returns null, and the
+        // caller receives `unavailable` instead — which the pool's own comment says it wants, since
+        // `unavailable` IS in the never-ran set and serves the request one-shot. So the entry below
+        // records the opposite disposition from the live path, harmlessly today because the string
+        // never reaches the adapter. Anyone wiring it through as a real result.error must revisit
+        // this line rather than assume the classification already reflects a decision.
         "hyper-v-windows-session-pool-closed",
         // A reply arrived but could not be matched or trusted, so what ran is unknown.
         "hyper-v-windows-session-response-uncorrelated",
@@ -127,8 +136,30 @@ describe("Device Lab Hyper-V session transport", () => {
         "hyper-v-windows-session-request-too-large",
     ];
 
+    // What the partition below actually buys, stated precisely because the first version of this
+    // claimed more: it makes a SIXTEENTH code a decision rather than a default, and it raises MOVING
+    // an existing code from a one-line edit to a two-line one. It does not make the move impossible.
+    // A review demonstrated the residue — take `session-closed` OUT of MUST_NOT_RETRY and put it INTO
+    // SESSION_NEVER_RAN_ERRORS and both halves stay internally consistent: no overlap, nothing
+    // unclassified, and the behavioural loop below never iterates the code it no longer contains.
+    //
+    // That is why the never-ran half is asserted by MEMBERSHIP and not only by the partition. A move
+    // now has to delete a line from an explicitly reasoned expected set, which reads as what it is
+    // rather than as a tidy reshuffle. No list-based test can do better than raise the cost.
+    const EXPECTED_NEVER_RAN: readonly HyperVWindowsSessionErrorCode[] = [
+        "hyper-v-windows-session-unavailable",
+        "hyper-v-windows-session-spawn-failed",
+        "hyper-v-windows-session-start-failed",
+        "hyper-v-windows-session-queue-timeout",
+        "hyper-v-windows-session-write-failed",
+        "hyper-v-windows-session-stdin-failed",
+    ];
+
     it("classifies every session error code as either never-ran or must-not-retry", () => {
-        const neverRan = [...SESSION_NEVER_RAN_ERRORS];
+        // Derived through the predicate the retry branch itself calls, so this covers the decision
+        // rather than the container behind it.
+        const neverRan = HYPER_V_WINDOWS_SESSION_ERROR_CODES.filter(hyperVWindowsSessionErrorNeverRan);
+        expect(neverRan.slice().sort()).toEqual([...EXPECTED_NEVER_RAN].sort());
         const mustNotRetry = new Set<string>(MUST_NOT_RETRY);
         const both = neverRan.filter((code) => mustNotRetry.has(code));
         expect({ overlapping: both }).toEqual({ overlapping: [] });

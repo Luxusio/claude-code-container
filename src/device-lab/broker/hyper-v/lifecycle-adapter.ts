@@ -66,11 +66,11 @@ const MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS = 500;
 // may come from either transport, so narrowing the lookup would be wrong; what matters is that a
 // misspelling in THIS list cannot compile.
 // Exported for the partition test. QA mutation testing found that adding an unsafe code to this set
-// — `hyper-v-windows-session-closed`, which a comment three files away calls deliberately
+// — `hyper-v-windows-session-closed`, which a comment in the sibling session-pool.ts calls deliberately
 // non-retryable — passed tsc, typecheck:tests, lint and all 1188 hyper-v/device-lab tests. `satisfies`
 // checks SPELLING, not SAFETY, so a correctly-spelled but unsafe member joins silently. The adapter
 // test now partitions the whole code union against this set, which is why it is exported.
-export const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
+const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
     "hyper-v-windows-session-start-failed",
@@ -105,6 +105,21 @@ export const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
     "hyper-v-windows-session-write-failed",
     "hyper-v-windows-session-stdin-failed",
 ] satisfies HyperVWindowsSessionErrorCode[]);
+
+/**
+ * Whether a session error proves the request never reached the host, and may therefore be re-issued
+ * through the one-shot transport.
+ *
+ * A predicate rather than the set itself, because exporting the set exports the wrong thing twice
+ * over. `ReadonlySet<string>` is a compile-time fiction — any importer can write
+ * `(SESSION_NEVER_RAN_ERRORS as Set<string>).add(...)` and silently widen the retry decision at
+ * runtime. And a test reading the container asserts the container, while this is the actual lookup
+ * the retry branch performs, so a test built on it covers the decision rather than the data behind
+ * it.
+ */
+export function hyperVWindowsSessionErrorNeverRan(code: string): boolean {
+    return SESSION_NEVER_RAN_ERRORS.has(code);
+}
 
 export type DeviceLabHyperVExpectationOptions = {
     readonly ownerId: string;
