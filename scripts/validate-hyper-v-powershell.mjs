@@ -46,7 +46,14 @@ function findPowerShell() {
 const executable = findPowerShell();
 if (!executable) {
     if (requireParser) throw new Error("PowerShell parser is required but unavailable");
-    console.log("SKIP Hyper-V PowerShell parser: PowerShell unavailable");
+    // This runs inside `npm run build` (via test:hyper-v:static), so on a Linux box it is the last
+    // thing standing between an edited .ps1 asset and a green build — and it steps aside. Say so
+    // plainly: the previous message named the cause but not the consequence, and a developer reading
+    // a passing build had no way to know their PowerShell edit was unverified. The real gate is the
+    // windows-latest CI job, which builds and then runs this with --require-parser.
+    console.log("SKIP Hyper-V PowerShell parser: no PowerShell on this host.");
+    console.log("     .ps1 assets and the session bootstrap were NOT syntax-checked by this build.");
+    console.log("     They are checked by the hyper-v-powershell-static job on windows-latest.");
     process.exit(0);
 }
 
