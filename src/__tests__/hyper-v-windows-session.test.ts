@@ -565,7 +565,12 @@ describe("Hyper-V Windows PowerShell session", () => {
         expect((await session.execute(REQUEST, CONTEXT)).stdout).toBe("before-close");
         session.close();
 
-        // Proving the process is gone, not that close() was called.
+        // This proves the session CALLS kill() on the process it adopted — `killed()` reads a boolean
+        // the fake sets — and nothing more. An earlier comment here claimed it proved "the process is
+        // gone, not that close() was called", which is the opposite of what the assertion does and
+        // exactly what PLAN.md's AC-004 risk warns against. The real-process proof lives in
+        // hyper-v-windows-session-pool.test.ts, where a spawned child is reaped and its pid checked
+        // with process.kill(pid, 0); this one pins the wiring, which is all a fake can pin.
         expect(child.killed()).toBe(true);
         expect((await session.execute(REQUEST, CONTEXT)).error).toBe("hyper-v-windows-session-unavailable");
     });
@@ -652,6 +657,26 @@ describe("Hyper-V Windows PowerShell session", () => {
         // Same shape a failed one-shot invocation produces: exit status 1 alongside the ok:false
         // envelope, so nothing downstream can tell the two transports apart.
         expect(await session.execute(REQUEST, CONTEXT)).toEqual({ status: 1, stdout: failure });
+    });
+
+    it("skips the Hyper-V module import when the expected module is already loaded", () => {
+        // AC-001's second half: one child AND one module import per session. The first half is pinned
+        // by "sends the asset source once"; this was the unpinned half, and it is the mechanism that
+        // converts session reuse into an actual saving — without it every request re-imports Hyper-V
+        // into the same runspace and the slice buys nothing but a saved process spawn.
+        //
+        // Deleting the early return leaves every Linux gate green: the only place it is exercised is
+        // the Windows-only level-3 path. So it is asserted here structurally, against the pinned asset
+        // source, the same way the operation-loop and 2>&1 absences are.
+        const source = ASSET.scriptSource;
+        const skip = source.indexOf('if ($Existing.Count -gt 0) { return }');
+        const load = source.indexOf("Import-Module -Name $ModulePath");
+        expect({ hasSkip: skip >= 0, hasLoad: load >= 0 }).toEqual({ hasSkip: true, hasLoad: true });
+        // Order is the property: the skip has to come first, or it skips nothing.
+        expect({ skipPrecedesLoad: skip < load }).toEqual({ skipPrecedesLoad: true });
+        // And the skip must be gated on the module base matching what was verified, not on the name
+        // alone — otherwise a Hyper-V module loaded from anywhere else would satisfy it.
+        expect(source.slice(Math.max(0, skip - 400), skip)).toContain("ExpectedModuleBase");
     });
 
     it("keeps the operation loop out of the pinned asset", () => {

@@ -1,3 +1,4 @@
+import { execFileSync } from "child_process";
 import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -236,6 +237,57 @@ describe("broker Hyper-V session pool", () => {
         } finally {
             release();
         }
+    });
+
+    it.skipIf(process.platform === "win32")("reaps the real child process when the last holder releases", { timeout: 20000 }, async () => {
+        // AC-004 requires proof that the PROCESS IS GONE, not that a close method was called. The
+        // session-level test can only pin the wiring — its `killed()` reads a boolean the fake sets —
+        // and its comment used to claim otherwise. This is the missing half: a genuinely spawned
+        // child, reaped, and its pid probed with signal 0, which reports liveness without delivering
+        // anything.
+        //
+        // The stub prints its own pid and then sleeps well past the assertion, so a pid that has
+        // vanished vanished because it was killed, not because the child exited on its own.
+        const dir = mkdtempSync(join(tmpdir(), "ccc-session-reap-"));
+        const stub = join(dir, "stub.sh");
+        writeFileSync(stub, `#!/bin/sh\necho ${MARKER}\necho CCC_PID=$$\nsleep 30\n`, { mode: 0o755 });
+
+        const release = retainBrokerHyperVWindowsSessions();
+        let pid = 0;
+        try {
+            const session = brokerHyperVWindowsSession(stub);
+            // Any request drives the spawn; it will time out, which is fine — the child is what matters.
+            await session.execute(
+                { schemaVersion: 1, operation: "Get-VM", selector: { kind: "name", name: "ccc" } },
+                { timeoutMilliseconds: 1500, maximumOutputBytes: 64 * 1024 },
+            );
+            const listed = execFileSync("/bin/sh", ["-c", `pgrep -f ${JSON.stringify(stub)} || true`], { encoding: "utf8" });
+            pid = Number(listed.trim().split("\n")[0] || 0);
+            expect(pid).toBeGreaterThan(0);
+            // Alive right now: signal 0 does not throw.
+            expect(() => process.kill(pid, 0)).not.toThrow();
+        } finally {
+            release();
+        }
+
+        // Releasing the last holder closes the session, which kills the child. Give the OS a moment to
+        // reap it, then assert the pid is genuinely gone rather than merely signalled.
+        const gone = await new Promise<boolean>((resolve) => {
+            let attempts = 0;
+            const check = () => {
+                attempts += 1;
+                try {
+                    process.kill(pid, 0);
+                } catch {
+                    resolve(true);
+                    return;
+                }
+                if (attempts >= 40) { resolve(false); return; }
+                setTimeout(check, 50);
+            };
+            check();
+        });
+        expect({ pid, gone }).toEqual({ pid, gone: true });
     });
 
     describe.skipIf(process.platform === "win32")("readiness latch", () => {
