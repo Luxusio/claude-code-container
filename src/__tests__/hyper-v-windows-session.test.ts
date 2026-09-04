@@ -12,6 +12,7 @@ import {
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsExecutionRequest,
     type HyperVWindowsSessionProcess,
+    type HyperVWindowsSessionErrorCode,
 } from "../hyper-v-windows/index.js";
 
 // The real pinned asset: the session verifies integrity before spawning, so a placeholder source
@@ -34,7 +35,7 @@ type FakeChild = HyperVWindowsSessionProcess & {
     readonly written: string[];
     readonly killed: () => boolean;
     emit: (line: string) => void;
-    exit: (reason: string) => void;
+    exit: (reason: HyperVWindowsSessionErrorCode) => void;
     ready: () => void;
     reply: (frame: string, stdout: string, code?: number) => void;
 };
@@ -42,7 +43,7 @@ type FakeChild = HyperVWindowsSessionProcess & {
 function fakeChild(): FakeChild {
     const written: string[] = [];
     const lineListeners: Array<(line: string) => void> = [];
-    const exitListeners: Array<(reason: string) => void> = [];
+    const exitListeners: Array<(reason: HyperVWindowsSessionErrorCode) => void> = [];
     let killed = false;
     const child: FakeChild = {
         written,
@@ -52,7 +53,7 @@ function fakeChild(): FakeChild {
         onExit: (listener) => { exitListeners.push(listener); },
         kill: () => { killed = true; },
         emit: (line) => { for (const listener of [...lineListeners]) listener(line); },
-        exit: (reason) => { for (const listener of [...exitListeners]) listener(reason); },
+        exit: (reason: HyperVWindowsSessionErrorCode) => { for (const listener of [...exitListeners]) listener(reason); },
         ready: () => child.emit(HYPER_V_WINDOWS_SESSION_READY_MARKER),
         reply: (frame, stdout, code = 0) => {
             const id = JSON.parse(Buffer.from(frame.slice(HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX.length), "base64").toString("utf8")).id;

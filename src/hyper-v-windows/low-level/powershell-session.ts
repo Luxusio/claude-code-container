@@ -9,6 +9,36 @@ import type {
     HyperVWindowsExecutor,
 } from "./contracts.js";
 
+// Every error code the session transport can report, in one place because three separate consumers
+// were each keeping their own hand-written Set<string> of a subset: SESSION_NEVER_RAN_ERRORS in the
+// lifecycle adapter (8 members), WRITE_PATH_ERRORS below (2), and the pool test's NEVER_RAN_CODES
+// (2). Nothing bound them to each other or to the producers, so a typo in a code string was caught
+// only where some test happened to assert string equality, and never by tsc.
+//
+// The retry decision keys off these strings — see SESSION_NEVER_RAN_ERRORS — so a code that is
+// misspelled in one place and not another silently changes whether a privileged mutation is
+// re-issued. Making the union the single source, and typing the producers and the sets by it, turns
+// that class of drift into a compile error.
+export const HYPER_V_WINDOWS_SESSION_ERROR_CODES = [
+    "hyper-v-windows-session-unavailable",
+    "hyper-v-windows-session-spawn-failed",
+    "hyper-v-windows-session-start-failed",
+    "hyper-v-windows-session-queue-timeout",
+    "hyper-v-windows-session-write-failed",
+    "hyper-v-windows-session-stdin-failed",
+    "hyper-v-windows-session-exited",
+    "hyper-v-windows-session-closed",
+    "hyper-v-windows-session-pool-closed",
+    "hyper-v-windows-session-cancelled",
+    "hyper-v-windows-session-timeout",
+    "hyper-v-windows-session-request-too-large",
+    "hyper-v-windows-session-response-too-large",
+    "hyper-v-windows-session-response-invalid",
+    "hyper-v-windows-session-response-uncorrelated",
+] as const;
+
+export type HyperVWindowsSessionErrorCode = typeof HYPER_V_WINDOWS_SESSION_ERROR_CODES[number];
+
 // One framed request and one framed response per line, Base64 of UTF-8 JSON. Base64 is what keeps a
 // frame free of newlines without escaping rules, and line framing is what lets the reader resolve a
 // response without knowing the payload length in advance.
@@ -98,7 +128,12 @@ export type HyperVWindowsSessionProcess = {
     // `settled` is treated as having delivered, because that is the conservative reading.
     readonly write: (line: string, settled?: (error?: unknown) => void) => void;
     readonly onLine: (listener: (line: string) => void) => void;
-    readonly onExit: (listener: (reason: string) => void) => void;
+    // The reason is one of the session error codes, not free text: it is what the session hands to
+    // discard(), which hands it to failAll(), which is what the adapter tests against
+    // SESSION_NEVER_RAN_ERRORS to decide whether to re-issue a privileged mutation. Typing it here is
+    // what makes a misspelled code fail to compile at the producer rather than silently fall out of
+    // the never-ran set at the consumer.
+    readonly onExit: (listener: (reason: HyperVWindowsSessionErrorCode) => void) => void;
     readonly kill: () => void;
 };
 
@@ -189,12 +224,12 @@ export function createHyperVWindowsPowerShellSession(
     // duplicate Remove-VMSnapshot a contract on that implementation rather than something anything
     // checks. If the write for this entry already returned, the frame may have been delivered, and
     // the entry is failed as an exit instead — which is not retryable.
-    const WRITE_PATH_ERRORS = new Set([
+    const WRITE_PATH_ERRORS: ReadonlySet<HyperVWindowsSessionErrorCode> = new Set([
         "hyper-v-windows-session-stdin-failed",
         "hyper-v-windows-session-write-failed",
-    ]);
+    ] satisfies HyperVWindowsSessionErrorCode[]);
 
-    function failAll(code: string) {
+    function failAll(code: HyperVWindowsSessionErrorCode) {
         const outstanding = [...pending.values()];
         pending.clear();
         for (const entry of outstanding) {
@@ -206,7 +241,7 @@ export function createHyperVWindowsPowerShellSession(
         }
     }
 
-    function discard(code: string) {
+    function discard(code: HyperVWindowsSessionErrorCode) {
         const previous = child;
         child = null;
         starting = null;

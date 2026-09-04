@@ -3,11 +3,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
 
-import { HYPER_V_WINDOWS_SESSION_READY_MARKER } from "../hyper-v-windows/index.js";
+import {
+    HYPER_V_WINDOWS_SESSION_READY_MARKER,
+    type HyperVWindowsSessionErrorCode,
+} from "../hyper-v-windows/index.js";
 
-// Kept in step with SESSION_NEVER_RAN_ERRORS in lifecycle-adapter.ts. Membership is the property
-// that matters: an error in this set is re-issued through the one-shot transport, one outside it
-// fails the caller outright.
 const MARKER = HYPER_V_WINDOWS_SESSION_READY_MARKER;
 
 // These drive a real spawned process, because the latch is the one piece of the pool that decides
@@ -54,7 +54,15 @@ describe("child death classification", () => {
     // every event by construction. A local copy would be free to fall behind — nothing typechecks
     // this directory, so a stale list would fail nothing and silently shrink the table.
     const EVENTS = HYPER_V_WINDOWS_CHILD_DEATH_EVENTS;
-    const NEVER_RAN_CODES = new Set(["hyper-v-windows-session-start-failed", "hyper-v-windows-session-spawn-failed"]);
+    // The two never-ran codes THIS FUNCTION can return — not the adapter's full set, which has eight
+    // and includes codes only the queue and write paths produce. An earlier comment here claimed it
+    // was "kept in step with SESSION_NEVER_RAN_ERRORS" while holding two of its eight members, which
+    // was the same overclaim this file has corrected twice elsewhere. Both are now members of the
+    // exported code union, so a typo in either fails to compile rather than quietly never matching.
+    const NEVER_RAN_CODES: ReadonlySet<string> = new Set([
+        "hyper-v-windows-session-start-failed",
+        "hyper-v-windows-session-spawn-failed",
+    ] satisfies HyperVWindowsSessionErrorCode[]);
 
     const rows = EVENTS.flatMap((event) => [true, false].flatMap((announcedReady) =>
         [true, false].flatMap((latchEvidenceLost) => [true, false].map((spawned) => ({
@@ -64,22 +72,53 @@ describe("child death classification", () => {
         })))));
 
     it("only calls a request never-ran when nothing proves the child reached its read loop", () => {
+        // SAFETY, as an IMPLICATION — retryable => provablyNeverRan — not an equality.
+        //
+        // It used to assert equality, and that is what corrupted it. Equality makes one predicate
+        // carry both bounds: the upper bound (never retry without proof, the actual safety property)
+        // and the lower bound (retry whenever you could, a design choice). Forced to state the lower
+        // bound too, the predicate had to name which events the classifier happens to treat as
+        // retryable — and `exit` got in on the strength of a precondition held by a handler forty
+        // lines away in the source file, which is not an input to this pure function. A test that
+        // has to read the implementation to state its expectation is not an oracle.
+        //
+        // Below, `close` is justified by Node's stream contract alone: `close` fires after the
+        // streams close, so every complete line has already reached the data handler and the latch
+        // is final. No other event carries that guarantee — the 250ms grace timer is the code's own
+        // admission that `exit` does not. Nothing here refers to what the classifier does.
+        //
+        // A classifier returning `exited` for everything would pass this test. That is correct: it
+        // would be safe, merely useless. Usefulness is the liveness test below, where naming events
+        // is legitimate because choosing when to retry IS a design decision.
         for (const row of rows) {
             const retryable = NEVER_RAN_CODES.has(row.code);
-            // The one safety property, stated once over the whole space: a request may be re-issued
-            // only when the child provably never got far enough to run it. Anything else — it
-            // announced, or the evidence was thrown away, or we never waited for stdio to drain —
-            // must not be retried, because a second Remove-VMSnapshot is not the same as the first.
-            // `exit-grace` and `error` are both excluded because neither guarantees stdio drained,
-            // so a false latch on those paths proves nothing. Only `close` (drained by definition)
-            // and `exit` (which reports early only when the latch is already set, and the latch is
-            // monotone) can support a never-ran verdict.
-            const drained = row.event === "close" || row.event === "exit";
+            if (!retryable) continue;
             const provablyNeverRan = !row.state.spawned
-                ? true
-                : drained && !row.state.latchEvidenceLost && !row.state.announcedReady;
-            expect({ ...row, retryable }).toEqual({ ...row, retryable: provablyNeverRan });
+                || (row.event === "close" && !row.state.latchEvidenceLost && !row.state.announcedReady);
+            expect({ ...row, retryable, provablyNeverRan }).toEqual({ ...row, retryable, provablyNeverRan: true });
         }
+    });
+
+    it("still retries the cases the fallback exists for", () => {
+        // LIVENESS, as explicit rows. Separated from safety above so that neither has to be bent to
+        // accommodate the other. These name events deliberately — which failures are worth retrying
+        // is a design choice, and stating it is this test's whole job.
+        //
+        // A child that never spawned, on every event: nothing can have run.
+        for (const event of EVENTS) {
+            expect(hyperVWindowsChildDeathCode(event, {
+                announcedReady: false,
+                latchEvidenceLost: false,
+                spawned: false,
+            })).toBe("hyper-v-windows-session-spawn-failed");
+        }
+        // A child that spawned, announced nothing, lost nothing, and whose stdio drained: the
+        // crash-on-start case, and the reason the one-shot fallback still exists.
+        expect(hyperVWindowsChildDeathCode("close", {
+            announcedReady: false,
+            latchEvidenceLost: false,
+            spawned: true,
+        })).toBe("hyper-v-windows-session-start-failed");
     });
 
     it("never reports a spawn failure for a child that spawned", () => {
@@ -110,26 +149,6 @@ describe("child death classification", () => {
         }
     });
 
-    it("still lets a crash-on-start child fall back", () => {
-        // The complement, and the reason the latch exists: a child that spawned, announced nothing
-        // and lost nothing did not run the request, so the broker serves it one-shot rather than
-        // failing it outright.
-        //
-        // Derived, not written out. This list previously held a hardcoded "stdin-error" that
-        // outlived the union member: the argument still satisfied the assertion by falling through
-        // every branch, so the test stayed green while asserting something about an input no caller
-        // could produce, and nothing typechecks this directory to say otherwise.
-        // Only the two events that carry a drain guarantee. `exit-grace` means `close` never came,
-        // and `error` carries no drain guarantee either — on both, a false latch proves nothing and
-        // the classifier deliberately declines to call it never-ran.
-        for (const event of EVENTS.filter((candidate) => candidate === "close" || candidate === "exit")) {
-            expect(hyperVWindowsChildDeathCode(event, {
-                announcedReady: false,
-                latchEvidenceLost: false,
-                spawned: true,
-            })).toBe("hyper-v-windows-session-start-failed");
-        }
-    });
 });
 
 describe("broker Hyper-V session pool", () => {

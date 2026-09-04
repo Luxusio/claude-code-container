@@ -5,6 +5,7 @@ import {
     HYPER_V_WINDOWS_SESSION_READY_MARKER,
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsSession,
+    type HyperVWindowsSessionErrorCode,
     type HyperVWindowsSessionProcess,
 } from "../../../hyper-v-windows/index.js";
 import { hiddenWindowsPowerShellArgs } from "../../../windows-system-powershell.js";
@@ -24,18 +25,17 @@ const CLOSE_GRACE_MILLISECONDS = 250;
 // than inlined so the decision below is one function over an enumerated input instead of branches
 // spread across handlers, each reachable only by spawning a real process.
 //
-// Write failures are deliberately NOT in this enum, and two earlier revisions of this comment
+// Write failures are deliberately NOT in this enum, and earlier revisions of this comment
 // overclaimed what that buys. The first said the absence was itself a safeguard, while a
 // `"stdin-error"` member existed and the stdin handler fed it straight to the classifier. The second
-// said removing that member made routing a write failure here a compile error. It does not: the
-// stdin handler could pass `"error"` — the name the stream event actually has, and the literal used
-// by the sibling `child.once("error", ...)` line — and it would compile and return a never-ran for a
-// child that had already reached its read loop.
+// said removing that member made routing a write failure here a compile error — it did not, because
+// the handler could pass `"error"` instead and that compiled and returned a never-ran.
 //
-// So state it accurately: this enum is a list, and it constrains spelling, not routing. What keeps
-// write failures out of this decision is that they are decided elsewhere — by the `settled` protocol
-// in `write` below and WRITE_PATH_ERRORS in the session. That is the load-bearing mechanism, and the
-// pool test "lets the write path, not the death classifier, decide a failed write" is what pins it.
+// That second gap is now closed, though not by the enum: `"error"` returns `exited` below, so every
+// member of this list except `close` is non-retryable and there is no spelling a write path could
+// use to obtain a never-ran verdict from this function. What keeps write failures decided correctly
+// is still elsewhere — the `settled` protocol in `write` below and WRITE_PATH_ERRORS in the session,
+// pinned by the pool test "lets the write path, not the death classifier, decide a failed write".
 // The list is the type, not a copy of it. The table test enumerates this array, so an event added
 // here is covered by the table automatically, and one cannot be added to the type without appearing
 // in the array — they are the same object. (A separate `Event[]` list in the test would have been
@@ -72,7 +72,7 @@ export type HyperVWindowsChildDeathState = {
 export function hyperVWindowsChildDeathCode(
     event: HyperVWindowsChildDeathEvent,
     state: HyperVWindowsChildDeathState,
-): string {
+): HyperVWindowsSessionErrorCode {
     // A child that never came up cannot have run anything, whichever event carried the news. The
     // caller derives `spawned` from the child's pid, which Node assigns synchronously on a successful
     // spawn and never on a failed one, so this holds by construction rather than by the order the
@@ -84,18 +84,24 @@ export function hyperVWindowsChildDeathCode(
     // be stale rather than false. That is not evidence the child never ran.
     if (event === "exit-grace") return "hyper-v-windows-session-exited";
 
-    // A post-spawn "error" carries no drain guarantee — unlike `close`, which fires only after stdio
-    // drains, and unlike `exit`, which arms the grace timer for exactly that reason. So the latch may
-    // be stale here for the same reason it was on the stdin path, and this was the last route left
-    // from a stale latch to a never-ran verdict.
+    // Only `close` carries a stdio-drain guarantee: it fires after the streams close, so every
+    // complete line has already reached the data handler and the latch below is final. Neither
+    // `error` nor `exit` proves that — the 250ms grace timer exists precisely because `exit` does
+    // not — so on those two a false latch is not evidence of anything.
     //
-    // It is unreachable today: Node emits "error" after a successful spawn only for a kill or IPC
-    // failure, every kill() here runs after the session has already nulled its own reference, and the
-    // session's identity guard drops the report. But "no caller currently reaches it" is precisely
-    // the argument that was made for the spawn-event ordering and for the write-callback ordering,
-    // and both turned out to be false — the second one at roughly one run in five. Closing it costs
-    // nothing: a genuine spawn failure has no pid and has already returned above.
-    if (event === "error") return "hyper-v-windows-session-exited";
+    // Neither is reachable with a clean latch today. `error` post-spawn comes only from a kill or
+    // IPC failure, and every kill() here runs after the session has nulled its own reference, so the
+    // identity guard drops the report. `exit` reports directly only when the latch is already set,
+    // and otherwise arms the grace timer without calling report("exit") at all.
+    //
+    // They are here anyway because "no caller currently reaches it" is the argument that was made
+    // for the spawn-event ordering and for the write-callback ordering, and both turned out to be
+    // false — the second at roughly one run in five. More concretely: `exit`'s safety was a
+    // precondition held by a handler forty lines below, which is not an input to this function. That
+    // is the same coupling this function was extracted to remove, arriving through the back door.
+    // Runtime behaviour is unchanged by either line; what changes is that the contract no longer
+    // depends on reading a second place.
+    if (event === "error" || event === "exit") return "hyper-v-windows-session-exited";
 
     // Output was dropped unread, so the marker may have been inside it. Lost evidence is not proof.
     if (state.latchEvidenceLost) return "hyper-v-windows-session-exited";
@@ -122,7 +128,7 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     ]), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
 
     const lineListeners: Array<(line: string) => void> = [];
-    const exitListeners: Array<(reason: string) => void> = [];
+    const exitListeners: Array<(reason: HyperVWindowsSessionErrorCode) => void> = [];
     let buffered = "";
 
     // Whether this child announced itself. It is what separates "never consumed the request" from
@@ -187,11 +193,11 @@ function sessionProcess(executable: string, bootstrap: string): HyperVWindowsSes
     // about whether the read loop was reached.
     child.stderr?.resume();
 
-    const notifyExit = (reason: string) => {
+    const notifyExit = (reason: HyperVWindowsSessionErrorCode) => {
         for (const listener of [...exitListeners]) listener(reason);
     };
     let reportedGone = false;
-    const reportGone = (reason: string) => {
+    const reportGone = (reason: HyperVWindowsSessionErrorCode) => {
         // At most once. Several of these events fire for the same death, and the first is the one
         // with the freshest evidence.
         if (reportedGone) return;

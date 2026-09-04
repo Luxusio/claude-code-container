@@ -14,6 +14,7 @@ import {
     type HyperVWindowsClient,
     type HyperVWindowsExecutionResult,
     type HyperVWindowsExecutor,
+    type HyperVWindowsSessionErrorCode,
 } from "../../../hyper-v-windows/index.js";
 import type { HyperVProviderCommand } from "../../../host-control/hyper-v/index.js";
 import type { HyperVOperationJournal } from "./operation-journal.js";
@@ -60,7 +61,11 @@ const MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS = 500;
 // host, so re-issuing cannot apply a mutation twice. A timeout, an exit mid-request and an
 // uncorrelated frame are all deliberately excluded — the request may well have run, and a second
 // Remove-VMSnapshot is not the same as the first.
-const SESSION_NEVER_RAN_ERRORS = new Set([
+// Typed ReadonlySet<string> for the lookup, but built from a `satisfies` list so every member is
+// checked against the code union. `result.error` arrives from the shared executor contract and
+// may come from either transport, so narrowing the lookup would be wrong; what matters is that a
+// misspelling in THIS list cannot compile.
+const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
     "hyper-v-windows-session-start-failed",
@@ -94,7 +99,7 @@ const SESSION_NEVER_RAN_ERRORS = new Set([
     // because they are sound where they do fire, not because they are the mechanism.
     "hyper-v-windows-session-write-failed",
     "hyper-v-windows-session-stdin-failed",
-]);
+] satisfies HyperVWindowsSessionErrorCode[]);
 
 export type DeviceLabHyperVExpectationOptions = {
     readonly ownerId: string;

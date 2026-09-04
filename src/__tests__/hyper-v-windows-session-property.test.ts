@@ -9,6 +9,7 @@ import {
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
     type HyperVWindowsExecutionRequest,
     type HyperVWindowsSessionProcess,
+    type HyperVWindowsSessionErrorCode,
 } from "../hyper-v-windows/index.js";
 
 // Every other session test was written after the defect it names, so the suite documents fixes
@@ -56,7 +57,7 @@ type Recorder = HyperVWindowsSessionProcess & {
 // the pipe is still held — the state in which the queue and the caller timers race.
 function flakyChild(next: () => number, dropRate: number, maxDelayMs: number): Recorder {
     const lineListeners: Array<(line: string) => void> = [];
-    const exitListeners: Array<(reason: string) => void> = [];
+    const exitListeners: Array<(reason: HyperVWindowsSessionErrorCode) => void> = [];
     let frames = 0;
     let outstanding = 0;
     let peakOutstanding = 0;

@@ -11,12 +11,14 @@ export {
 export {
     createHyperVWindowsPowerShellSession,
     HYPER_V_WINDOWS_SESSION_BOOTSTRAP,
+    HYPER_V_WINDOWS_SESSION_ERROR_CODES,
     HYPER_V_WINDOWS_SESSION_READY_MARKER,
     HYPER_V_WINDOWS_SESSION_REQUEST_PREFIX,
     HYPER_V_WINDOWS_SESSION_RESPONSE_PREFIX,
 } from "./powershell-session.js";
 export type {
     HyperVWindowsSession,
+    HyperVWindowsSessionErrorCode,
     HyperVWindowsSessionOptions,
     HyperVWindowsSessionProcess,
     HyperVWindowsSessionSpawn,
