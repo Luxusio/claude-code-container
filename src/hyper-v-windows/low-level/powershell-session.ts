@@ -410,6 +410,31 @@ export function createHyperVWindowsPowerShellSession(
                 // From here a timer guarantees the entry is cleared, so the pipe is owned rather than
                 // leaked no matter what happens next.
                 owned = true;
+                // `active` was captured before `await ensureChild()`, so re-check it is still the
+                // adopted child.
+                //
+                // NOT COVERED BY ANY TEST, and it cannot be: after the spawn resolves, every step to
+                // the write below is synchronous, so the only remaining gap is the microtask on which
+                // `await ensureChild()` resumes. A child death is delivered by an I/O callback, which
+                // is a macrotask and cannot interleave there. Traced, not assumed — and it holds even
+                // if `spawn` is made async, because that await is inside ensureChild, before the
+                // listeners are attached.
+                //
+                // It is here because the hook's type is `=> Process | Promise<Process>` and the
+                // reasoning above depends entirely on the current call graph, not on the type. If a
+                // future spawn awaits anything after adopting the child, a death in that window
+                // leaves this writing to a discarded one: failAll has already drained an empty map,
+                // the pool's stdin failure is dropped by the session's identity guard, and this entry
+                // sits in `pending` holding the one process-wide pipe until the 120s health floor,
+                // then fails non-retryably — for a request that provably never reached a host, with
+                // every other owner queued behind it. `start-failed` is the sound code: the frame was
+                // never written, so re-issuing it cannot duplicate a mutation.
+                if (child !== active) {
+                    pending.delete(id);
+                    clear();
+                    settle(frameError("hyper-v-windows-session-start-failed"));
+                    return;
+                }
                 try {
                     // Optimistic and then corrected, in that order, because the correction is the
                     // only one that can move a request toward being retried. Returning from write()
