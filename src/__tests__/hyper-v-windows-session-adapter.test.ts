@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
     createDeviceLabHyperVWindowsClient,
     createRecordingDeviceLabHyperVWindowsClient,
+    SESSION_NEVER_RAN_ERRORS,
 } from "../device-lab/broker/hyper-v/lifecycle-adapter.js";
+import {
+    HYPER_V_WINDOWS_SESSION_ERROR_CODES,
+    type HyperVWindowsSessionErrorCode,
+} from "../hyper-v-windows/index.js";
 import { redactProviderCommandInput } from "../device-lab/broker/hyper-v/public-response.js";
 import type {
     HyperVWindowsError,
@@ -85,13 +90,45 @@ describe("Device Lab Hyper-V session transport", () => {
         }
     });
 
+    // Every session error code, split into the two halves of the retry decision. This is a PARTITION,
+    // asserted total and disjoint below, and that is the point: the never-ran set used to be an
+    // allowlist with no constraint on what could join it. Mutation testing proved the gap — adding
+    // `hyper-v-windows-session-closed` to SESSION_NEVER_RAN_ERRORS passed tsc, typecheck:tests, lint
+    // and all 1188 hyper-v/device-lab tests, because `satisfies` checks spelling and nothing checked
+    // safety. Only three of the fifteen codes were asserted non-retryable; the other twelve could be
+    // moved into the retry set silently, and a retried `session-closed` is a second Remove-VMSnapshot.
+    //
+    // Adding a sixteenth code now fails this test until someone decides which half it belongs to.
+    const MUST_NOT_RETRY: readonly HyperVWindowsSessionErrorCode[] = [
+        // The child may have executed the request before dying or timing out.
+        "hyper-v-windows-session-timeout",
+        "hyper-v-windows-session-exited",
+        "hyper-v-windows-session-closed",
+        "hyper-v-windows-session-pool-closed",
+        // A reply arrived but could not be matched or trusted, so what ran is unknown.
+        "hyper-v-windows-session-response-uncorrelated",
+        "hyper-v-windows-session-response-invalid",
+        "hyper-v-windows-session-response-too-large",
+        // Rejected before dispatch, but not by proof that nothing ran — cancellation races the write,
+        // and an oversized request is refused locally yet says nothing about a prior in-flight one.
+        "hyper-v-windows-session-cancelled",
+        "hyper-v-windows-session-request-too-large",
+    ];
+
+    it("classifies every session error code as either never-ran or must-not-retry", () => {
+        const neverRan = [...SESSION_NEVER_RAN_ERRORS];
+        const mustNotRetry = new Set<string>(MUST_NOT_RETRY);
+        const both = neverRan.filter((code) => mustNotRetry.has(code));
+        expect({ overlapping: both }).toEqual({ overlapping: [] });
+        const classified = new Set([...neverRan, ...MUST_NOT_RETRY]);
+        const unclassified = HYPER_V_WINDOWS_SESSION_ERROR_CODES.filter((code) => !classified.has(code));
+        expect({ unclassified }).toEqual({ unclassified: [] });
+        expect(classified.size).toBe(HYPER_V_WINDOWS_SESSION_ERROR_CODES.length);
+    });
+
     it("never retries a failure that may already have run on the host", async () => {
         const run = vi.fn(async () => ({ status: 0, stdout: envelope([machine]) }));
-        for (const error of [
-            "hyper-v-windows-session-timeout",
-            "hyper-v-windows-session-exited",
-            "hyper-v-windows-session-response-uncorrelated",
-        ]) {
+        for (const error of MUST_NOT_RETRY) {
             run.mockClear();
             const client = createDeviceLabHyperVWindowsClient({
                 executable: "powershell.exe",

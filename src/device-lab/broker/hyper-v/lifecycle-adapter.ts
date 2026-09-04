@@ -65,7 +65,12 @@ const MINIMUM_ONE_SHOT_BUDGET_MILLISECONDS = 500;
 // checked against the code union. `result.error` arrives from the shared executor contract and
 // may come from either transport, so narrowing the lookup would be wrong; what matters is that a
 // misspelling in THIS list cannot compile.
-const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
+// Exported for the partition test. QA mutation testing found that adding an unsafe code to this set
+// — `hyper-v-windows-session-closed`, which a comment three files away calls deliberately
+// non-retryable — passed tsc, typecheck:tests, lint and all 1188 hyper-v/device-lab tests. `satisfies`
+// checks SPELLING, not SAFETY, so a correctly-spelled but unsafe member joins silently. The adapter
+// test now partitions the whole code union against this set, which is why it is exported.
+export const SESSION_NEVER_RAN_ERRORS: ReadonlySet<string> = new Set([
     "hyper-v-windows-session-unavailable",
     "hyper-v-windows-session-spawn-failed",
     "hyper-v-windows-session-start-failed",
