@@ -99,8 +99,11 @@ describe("Device Lab Hyper-V session transport", () => {
     // moved into the retry set silently, and a retried `session-closed` is a second Remove-VMSnapshot.
     //
     // Adding a sixteenth code now fails this test until someone decides which half it belongs to.
+    // Note the name: MUST_NOT_RETRY, not "may have run". Two different grounds land a code here, and
+    // conflating them is how a wrong classification would slip in.
     const MUST_NOT_RETRY: readonly HyperVWindowsSessionErrorCode[] = [
-        // The child may have executed the request before dying or timing out.
+        // GROUND 1 — safety. The child may already have executed the request, so re-issuing could
+        // apply a mutation twice. This is the group the never-ran set exists to exclude.
         "hyper-v-windows-session-timeout",
         "hyper-v-windows-session-exited",
         "hyper-v-windows-session-closed",
@@ -109,9 +112,18 @@ describe("Device Lab Hyper-V session transport", () => {
         "hyper-v-windows-session-response-uncorrelated",
         "hyper-v-windows-session-response-invalid",
         "hyper-v-windows-session-response-too-large",
-        // Rejected before dispatch, but not by proof that nothing ran — cancellation races the write,
-        // and an oversized request is refused locally yet says nothing about a prior in-flight one.
+
+        // GROUND 2 — provably never ran, but re-issuing is still wrong. Both of these return before
+        // any frame is written (powershell-session.ts:392 and :398/:404), so they are as safe to
+        // retry as anything in the never-ran set. They are excluded for reasons that have nothing to
+        // do with safety, and an earlier version of this comment got that wrong by claiming
+        // cancellation "races the write" — it does not; the abort check runs before ensureChild.
+        //
+        // A cancelled request must not be re-issued because the caller asked for it to stop; a
+        // one-shot fallback would run exactly what they cancelled.
         "hyper-v-windows-session-cancelled",
+        // An oversized request is refused against a limit the one-shot path enforces too, so a
+        // fallback fails identically while spending the caller's remaining budget to do it.
         "hyper-v-windows-session-request-too-large",
     ];
 
