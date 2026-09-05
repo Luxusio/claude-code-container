@@ -52,25 +52,26 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 8. When setup fails, the reason reported from inside the container is included.
    A read-only volume, a full disk, and a bind mount in the way all produce the
    same bare "probe failed" otherwise, and the difference is only on stderr.
-9. When ccc removes a version name held by a link, or refuses to remove one it
-   cannot, it says so — on any start
-   that succeeds, and by whichever path removed it. That removal is the one
-   shared-volume change a user can be surprised by: it can move them to a
-   different version, or leave another project's launcher pointing at nothing.
-   Clearing an entry that is not a file at all — a directory, a fifo, a socket
-   — is reported too. The argument for saying nothing was that nothing anyone
-   runs was inside it, which holds for a junk directory at a real version name
-   and not for an export named for a date, which wears the same shape and
-   cannot be told apart. A clear that destroys bytes in a volume every project
-   shares should not be the one thing said quietly.
-   said once. Every name ccc reads out of the volume and prints — in a note, in
-   a reuse line, in an error, in what `ccc doctor` shows — is stripped of
-   control and direction-marking characters first, because a name is data and
-   can otherwise repaint or reverse the line reporting it. In `ccc doctor` that
-   happens where a check is printed rather than where each one is built: a rule
-   applied at every call site is a rule the next call site forgets. A start that fails
-   carries its reason in the error rather than as a note, and that error keeps
-   only the last few lines of what the container said.
+9. When ccc removes a version name held by a link, or refuses to remove one
+   it cannot, it says so — on any start that succeeds, and by whichever path
+   removed it. That removal is the one shared-volume change a user can be
+   surprised by: it can move them to a different version, or leave another
+   project's launcher pointing at nothing. Clearing an entry that is not a
+   file at all — a directory, a fifo, a socket — is reported too. The
+   argument for saying nothing was that nothing anyone runs was inside it,
+   which holds for a junk directory at a real version name and not for an
+   export named for a date, which wears the same shape and cannot be told
+   apart. A clear that destroys bytes in a volume every project shares
+   should not be the one thing said quietly. A change reported by more than
+   one probe of the same start is said once. Every name ccc reads out of the
+   volume and prints — in a note, in a reuse line, in an error, in what `ccc
+   doctor` shows — is stripped of control and direction-marking characters
+   first, because a name is data and can otherwise repaint or reverse the
+   line reporting it. In `ccc doctor` that happens where a check is printed
+   rather than where each one is built: a rule applied at every call site is
+   a rule the next call site forgets. A start that fails carries its reason
+   in the error rather than as a note, and that error keeps only the last
+   few lines of what the container said.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
    I on an old claude" is the question that line exists to answer, and the
    previous wording ("Restored claude from cache") was also no longer true —
@@ -145,7 +146,8 @@ the install directory is shared. That makes several things observable:
     dots — `2026.09.05` — is three dot-separated numbers and is treated as one.
     Something could separate it, a bound on the first component say, but that
     is a rule about what a claude version looks like, maintained here, and
-    wrong the day it is not. The cost is recorded rather than traded away. Both recursive clears read that same rule — the one that
+    wrong the day it is not. The cost is recorded rather than traded away.
+    Both recursive clears read that same rule — the one that
     frees a blocked name, and the one that runs while publishing, whose licence
     is that it is about to write that exact name and only ever writes
     versions. A link is taken under any name,
