@@ -190,17 +190,29 @@ adopt_into_volume() {
     # host, so a version already there may be the binary another container is
     # executing — forcing over it fails with ETXTBSY and takes down a working
     # project, and version files are named by their content, so a matching
-    # regular file needs no replacing. Anything ELSE holding the name means this
-    # entry did not reach the volume, and the caller deletes the original on
-    # success: a directory, a foreign symlink, or a dangling link there has to
-    # be a failure, not a skip.
+    # regular file needs no replacing. That case is a skip, and stays one.
+    #
+    # Anything else holding the name is a different situation. We only reach
+    # here when our side has a file, so a directory or a symlink under that name
+    # is not something a version binary can be: no process is executing it, and
+    # no later run could ever clear it. Refusing was the first fix and it turned
+    # a recoverable loss into a permanent one — every subsequent start failed
+    # identically, with no path back short of hand surgery on a shared volume.
+    #
+    # Removing is safe even for a name in use: unlink() has no ETXTBSY, and a
+    # process already running a binary holds its inode, so it keeps running
+    # while the name is rebound. The removal itself must succeed though — the
+    # caller deletes the original on success, so a read-only volume is still a
+    # refusal, not a fall-through.
     if [ -e "$target" ] || [ -L "$target" ]; then
       if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
         continue
       fi
-      echo "cannot adopt $relpath: the volume already holds something else at that name" >&2
-      : > "$adopt_failed"
-      continue
+      if ! rm -rf "$target" || [ -e "$target" ] || [ -L "$target" ]; then
+        echo "cannot adopt $relpath: the volume holds something else at that name and it could not be removed" >&2
+        : > "$adopt_failed"
+        continue
+      fi
     fi
     # Copy to a staging name, then link it into place. Copying straight to the
     # final name publishes a truncated but still-executable file if the process

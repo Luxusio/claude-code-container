@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "child_process"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
+    realpathSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -94,19 +95,27 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
         })
 
-        it("does not call a name taken by the wrong thing adopted, and keep the original", () => {
+        it("replaces a volume entry that cannot be a version binary at all", () => {
             // `-e` answers "is this name taken", not "is the right content
-            // there". A directory, a truncated file or a foreign symlink at the
-            // target made adopt skip the entry and return 0 — and the caller
-            // deletes the original on success, so the working binary was
-            // destroyed and the bad entry left in place.
+            // there", so adopt used to skip the entry and return 0 — and the
+            // caller deletes the original on success, destroying the working
+            // binary. Refusing instead fixed that but wedged the container
+            // permanently: nothing in the loop can ever clear the bad name, so
+            // every later start fails the same way with no recovery path.
+            //
+            // A directory here means OUR side has a file and the volume has a
+            // directory under the same version name. Nothing can be executing
+            // it, so the name is free to take. Removing is safe even for a name
+            // in use — unlink() has no ETXTBSY, and a process already running a
+            // binary keeps its inode.
             writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
             mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
 
             const result = run()
 
-            expect(result.status).not.toBe(0)
-            expect(existsSync(join(paths.dataDir, "versions", "2.1.261"))).toBe(true)
+            expect(result.status).toBe(0)
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
         })
 
         it("refuses to publish a directory under a version name", () => {
@@ -123,15 +132,50 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
         })
 
-        it("fails on a dangling symlink in the volume and names the entry", () => {
+        it("recovers on the first start and stays recovered on later ones", () => {
+            // The measured regression this replaces: with a bad entry in the
+            // volume, three consecutive starts all failed rc=1 and no run could
+            // clear it. Repeating the probe is what a user does — `ccc` again —
+            // so the recovery has to hold across runs, not just once.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
+
+            const statuses = [run(), run(), run()].map(r => r.status)
+
+            expect(statuses).toEqual([0, 0, 0])
+            // The launcher points through the data-dir symlink, so what matters
+            // is where it resolves: the version that is actually in the volume.
+            expect(realpathSync(paths.bin)).toBe(join(paths.volumeDataDir, "versions", "2.1.261"))
+        })
+
+        it("replaces a dangling symlink in the volume instead of blocking on it", () => {
+            // A link to nothing cannot be what another container is running,
+            // and it is a name no later run could ever free on its own.
             writeFakeClaude(join(paths.dataDir, "statsig"), "2.1.5")
             mkdirSync(paths.volumeDataDir, { recursive: true })
             symlinkSync(join(root, "nonexistent"), join(paths.volumeDataDir, "statsig"))
 
             const result = run()
 
+            expect(result.status).toBe(0)
+            expect(lstatSync(join(paths.volumeDataDir, "statsig")).isFile()).toBe(true)
+        })
+
+        it("still refuses when the bad entry cannot be removed", () => {
+            // Replacing is only correct when it actually happens. On a
+            // read-only volume the removal fails, and the caller deletes the
+            // original on success — so this has to stay a refusal.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            const versions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(versions, "2.1.261"), { recursive: true })
+            chmodSync(versions, 0o555)
+
+            const result = run()
+
+            chmodSync(versions, 0o755)
             expect(result.status).not.toBe(0)
-            expect(result.stderr).toContain("statsig")
+            expect(result.stderr).toContain("versions/2.1.261")
+            expect(existsSync(join(paths.dataDir, "versions", "2.1.261"))).toBe(true)
         })
 
         it("does not overwrite a version another container may be executing", () => {
