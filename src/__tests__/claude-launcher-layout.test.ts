@@ -740,7 +740,7 @@ describe("claude launcher layout", () => {
             // what it cannot unlink — and that is why a mount there is checked
             // for before any of this, not after.
             expect(lstatSync(occupied).isDirectory()).toBe(true)
-            expect(result.stderr).toMatch(/^cannot remove 2\.1\.241:/m)
+            expect(result.stderr).toMatch(/^cannot remove 2\.1\.241: a version must be a regular file/m)
         })
 
         it.skipIf(!canBindMount)("refuses to clear a version name that is a mount point, with nothing to adopt", () => {
@@ -789,6 +789,57 @@ describe("claude launcher layout", () => {
             expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
             expect(result.status).toBe(0)
             expect((result.stderr ?? "")).toMatch(/^removed 2\.1\.150:/m)
+        })
+
+        it("does not reach into a non-version name while adopting either", () => {
+            // The other recursive clear, reached from the publishing side. Its
+            // licence is that it is about to write this exact name — and it
+            // only ever writes versions, so a name that is not one is not its
+            // business either. Measured destroying another project's data
+            // silently before the two paths were given one rule.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            writeFileSync(join(paths.dataDir, "versions", "keepsafe"), "ours")
+            const shared = join(paths.volumeDataDir, "versions", "keepsafe")
+            mkdirSync(join(shared, "deep"), { recursive: true })
+            writeFileSync(join(shared, "deep", "data"), "another project's data")
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(readFileSync(join(shared, "deep", "data"), "utf8"))
+                .toBe("another project's data")
+        })
+
+        it("does not reach into a name that merely starts with a digit", () => {
+            // A leading digit was not licence enough: 2026-notes starts with
+            // one, and so does a dated export. What the installer writes is
+            // three dot-separated numbers, and that is what may be cleared.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(volVersions, "2026-notes", "deep"), { recursive: true })
+            writeFileSync(join(volVersions, "2026-notes", "deep", "data"), "somebody's notes")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(join(volVersions, "2026-notes", "deep", "data"), "utf8"))
+                .toBe("somebody's notes")
+        })
+
+        it("does not run an installer staging file left under versions/", () => {
+            // The installer stages as versions/<v>.tmp.<pid>.<ts>.<n>, and a
+            // complete one sorts ABOVE the version it was becoming — so it was
+            // selected, and the launcher pointed at a name the next install
+            // overwrites without warning.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, "2.1.261.tmp.115.1788642186582.1"), "2.1.261")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(realpathSync(paths.bin)).toBe(join(volVersions, "2.1.261"))
         })
 
         it("does not reach into a directory whose name no installer would want", () => {

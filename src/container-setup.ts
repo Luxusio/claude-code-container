@@ -268,7 +268,11 @@ adopt_into_volume() {
         clear_why=""
         case "$relpath" in
           versions/*/*) ;;
-          versions/*)
+          versions/[0-9]*.[0-9]*.[0-9]*)
+            # Version-shaped names only, the same licence the other clear uses:
+            # what allows a recursive delete here is that we are about to write
+            # this exact name, and we only ever write versions.
+            #
             # A directory at versions/<v> is junk by construction: the mirror
             # branch refuses to create one, pick_best skips it and seed_from
             # refuses it, so nothing anyone runs lives inside. Leaving it there
@@ -413,6 +417,13 @@ pick_best() {
     # probe reported success on a layout ccc doctor calls NOT updatable, which
     # is the exact shape this whole change exists to remove. ccc never publishes
     # one, but a hand-made or foreign entry in a shared volume can be one.
+    # The installer stages as versions/<v>.tmp.<pid>.<ts>.<n>, and a complete
+    # one left by a killed install sorts ABOVE the version it was becoming — so
+    # it was selected, and the probe reported a launcher on a name the next
+    # install overwrites.
+    case "$cand" in
+      *.tmp.*) continue ;;
+    esac
     # A last guard. free_unusable_versions has normally already removed these;
     # this catches the one it could not, on a volume it cannot write to, where
     # running the link would be worse than not starting.
@@ -488,12 +499,13 @@ free_unusable_versions() {
       # Unlinking a link destroys no bytes; a recursive delete destroys whatever
       # is inside, on every start, in a volume every project on the host shares.
       # The licence for it is that the entry is holding a name the installer
-      # needs, and the installer writes versions. A name that starts with
-      # anything else — somebody's notes, somebody's state, a staging directory
-      # — is holding nothing anyone is waiting for, so there is no reason to
-      # reach into it.
+      # needs, and the installer writes versions — three dot-separated numbers,
+      # and its own staging names underneath them. Anything else — somebody's
+      # notes, somebody's export, a hidden state directory — is holding nothing
+      # anyone is waiting for, so there is no reason to reach into it. A leading
+      # digit alone was not enough: 2026-notes starts with one.
       case "$cand" in
-        [0-9]*) ;;
+        [0-9]*.[0-9]*.[0-9]*) ;;
         *) continue ;;
       esac
       # Anything that is not a regular file and not a link — a directory, a

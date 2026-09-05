@@ -83,8 +83,11 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
-12. ccc runs a version only when it is a real file under `versions/`, and it
-    removes a link found there rather than passing over it. A link may resolve
+12. ccc runs a version only when it is a real file under `versions/` that the
+    installer did not leave behind mid-write — its staging names sort above the
+    version they are becoming, so one left by a killed install used to be
+    chosen, and the launcher then pointed at a name the next install
+    overwrites. It removes a link found there rather than passing over it. A link may resolve
     to a binary outside the directory the updater manages, which rebuilds the
     original bug — the version works, reports its number correctly, and cannot
     be updated. Passing over it is not enough: the link also holds a name, and
@@ -122,10 +125,15 @@ the install directory is shared. That makes several things observable:
     is not.
 
     What licenses the clear is that the entry is holding a name the installer
-    needs, so it is only ever applied to a name that could be a version. A
-    directory of somebody's notes or state under `versions/` is left where it
-    is: it blocks nothing, and reaching into it would destroy bytes on a volume
-    every project shares for no reason at all. A link is taken under any name,
+    needs, so it is only ever applied to a name shaped like a version: three
+    dot-separated numbers, and the installer's own staging names beneath them.
+    A directory of somebody's notes or a dated export under `versions/` is left
+    where it is, even though it starts with a digit: it blocks nothing, and
+    reaching into it would destroy bytes on a volume every project shares for
+    no reason at all. Both recursive clears read that same rule — the one that
+    frees a blocked name, and the one that runs while publishing, whose licence
+    is that it is about to write that exact name and only ever writes
+    versions. A link is taken under any name,
     because unlinking one destroys nothing — that asymmetry is the rule, not an
     oversight. A name holding a newline is left alone too, which is a limit of
     reading entries a line at a time rather than a decision.
@@ -146,15 +154,13 @@ the install directory is shared. That makes several things observable:
     A directory under a version name is junk by construction — ccc refuses to
     create one, skips one when choosing a version, and refuses to seed from
     one — so nothing anyone runs is inside it and it is cleared whole, except
-    where a user has put a mount there (behavior 18). Under `versions/` that
-    holds for any name that could be a version; the cautious rule below governs
-    the names outside it. Refusing
+    where a user has put a mount there (behavior 18). That holds for a
+    version-shaped name under `versions/`; the cautious rule below governs
+    every other name, inside `versions/` and out. Refusing
     it instead left a container with a working local install failing on every
     start with no way back. Every other name is cleared only when it holds
     nothing, because ccc cannot tell its contents from what other projects are
-    using, and the refusal says why it could not be cleared. That cautious rule
-    is what the adoption path applies; the pass that frees a blocked name reads
-    the same distinction off the name instead. A regular file
+    using, and the refusal says why it could not be cleared. A regular file
     already under a version name is left alone: it may be what another
     container is executing, and version names are content-addressed, so it is
     already correct.
@@ -305,7 +311,9 @@ would be wrong precisely where it is permanent.
   the user, not only where the container prints it: these refusals do not fail
   the start, so nothing carries them into an error, and a test on the script's
   own stderr cannot tell whether anybody is told.
-- That the recursive clear leaves a hidden directory alone is pinned, and so is
+- That neither recursive clear reaches a name the installer would not write —
+  a hidden directory, a dated export, somebody's notes — is pinned on both
+  paths, and so is
   the volume root's half of the staging reaper, which collects a stale entry of
   any type where the `versions/` half takes only files. So is the mount guard on
   the check that runs first, before staging: guarding only the later one left
