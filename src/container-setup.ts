@@ -279,7 +279,16 @@ adopt_into_volume() {
               : > "$adopt_failed"
               continue
             fi
-            clear_why="$(rm -rf "$target" 2>&1)"
+            if [ -L "$target" ]; then
+              # Same removal as drop_linked_versions, reached from the other
+              # side, and the same thing is at stake: a link here can be what
+              # another container's launcher resolves through, so a start that
+              # takes it away has to say so.
+              clear_why="$(rm -f "$target" 2>&1)"
+              [ -e "$target" ] || [ -L "$target" ] || echo "removed $relpath: a version must be a real file, not a symlink" >&2
+            else
+              clear_why="$(rm -rf "$target" 2>&1)"
+            fi
             ;;
         esac
         if [ -e "$target" ] || [ -L "$target" ]; then
@@ -369,9 +378,15 @@ pick_best() {
   # split into two nonexistent candidates and one holding * is expanded against
   # the working directory.
   old_ifs="$IFS"
+  old_flags="$-"
   IFS="$(printf '\\n_')"; IFS="\${IFS%_}"
   set -f
-  for cand in $(ls -A "$DATA/versions" 2>/dev/null | sort -Vr); do
+  # Not -A. Hidden links are already removed by drop_linked_versions, which
+  # enumerates with find, so -A bought nothing there — and it made a seed_from
+  # staging file left behind by a killed start selectable: complete, executable,
+  # claude-shaped, reported as a version and called updatable, until the reaper
+  # deletes it out from under whoever is running it.
+  for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr); do
     f="$DATA/versions/$cand"
     # -f follows links, so a symlink here used to be selected and blessed: the
     # probe reported success on a layout ccc doctor calls NOT updatable, which
@@ -383,11 +398,18 @@ pick_best() {
     [ ! -L "$f" ] || continue
     [ -f "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
-    if is_claude "$f"; then BEST="$f"; set +f; IFS="$old_ifs"; return 0; fi
+    if is_claude "$f"; then BEST="$f"; restore_scan_flags; return 0; fi
   done
-  set +f
-  IFS="$old_ifs"
+  restore_scan_flags
   return 1
+}
+
+restore_scan_flags() {
+  case "$old_flags" in
+    *f*) ;;
+    *) set +f ;;
+  esac
+  IFS="$old_ifs"
 }
 
 # Seed versions/<v> from a plain binary left by an older ccc, a hand install, or
@@ -512,8 +534,8 @@ function reportProbeNotes(stderr: string | undefined, seen: Set<string>): void {
  * so both go before anything prints — on the failure channel too, where the
  * same name travels inside an Error message.
  */
-function sanitizeForTerminal(text: string): string {
-    return text.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "?");
+export function sanitizeForTerminal(text: string): string {
+    return text.replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "?");
 }
 
 function probeDiagnostic(stderr: string | undefined): string {
@@ -617,7 +639,7 @@ export function ensureClaudeInContainer(containerName: string): void {
         // Nothing is copied out of a cache any more — the launcher is pointed at
         // a version already in the shared volume. Name it, because "why am I on
         // an old claude" is the question this line exists to answer.
-        const version = status.slice("RESTORED".length).trim();
+        const version = sanitizeForTerminal(status.slice("RESTORED".length).trim());
         console.log(version
             ? `Reusing claude ${version} from the shared volume.`
             : "Reusing claude from the shared volume.");

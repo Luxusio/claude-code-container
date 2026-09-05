@@ -14,7 +14,7 @@ import {
 import { getProjectId, DATA_DIR, MISE_VOLUME_NAME, CLI_VERSION } from "./utils.js";
 import { getActiveSessionsForProject } from "./session.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
-import { buildClaudeLauncherReportCommand, CLAUDE_BIN_PATH } from "./container-setup.js";
+import { buildClaudeLauncherReportCommand, sanitizeForTerminal, CLAUDE_BIN_PATH } from "./container-setup.js";
 
 interface DoctorCheck {
     name: string;
@@ -197,17 +197,20 @@ export function runDoctor(projectPath: string): boolean {
         // updater refuses to manage — `claude update` will report success and
         // change nothing. Reporting that as ok is how the state stayed
         // invisible; it is a warning, and the message says why.
+        // The line carries a path read out of a volume any container can write,
+        // so it reaches the terminal as data — the same reason the probe's own
+        // notes are sanitized before they are printed.
         if (claudeCheck.status === 2 && claudeCheck.stdout?.trim()) {
             checks.push({
                 name: "Claude",
                 status: "warn",
-                message: claudeCheck.stdout.trim(),
+                message: sanitizeForTerminal(claudeCheck.stdout.trim()),
             });
         } else if (claudeCheck.status === 0 && claudeCheck.stdout?.trim()) {
             checks.push({
                 name: "Claude",
                 status: "ok",
-                message: claudeCheck.stdout.trim(),
+                message: sanitizeForTerminal(claudeCheck.stdout.trim()),
             });
         } else {
             checks.push({

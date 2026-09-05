@@ -53,16 +53,17 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    A read-only volume, a full disk, and a bind mount in the way all produce the
    same bare "probe failed" otherwise, and the difference is only on stderr.
 9. When ccc removes a version name held by a link, it says so — on any start
-   that succeeds, not only one that goes on to fail. That removal is the one
+   that succeeds, and by whichever path removed it. That removal is the one
    shared-volume change a user can be surprised by: it can move them to a
-   different version, or break another project. The other clearing this
-   document describes is not reported, because nothing anyone runs was inside
-   what it removed. A change reported by more than one probe of the same start
-   is said once. Names read out of the volume are stripped of control and
-   direction-marking characters before they reach a terminal, on the failure
-   channel as well, because a name is data and can otherwise repaint the line
-   reporting it. A start that fails carries its reason in the error rather than
-   as a note, bounded to the last few lines of it.
+   different version, or leave another project's launcher pointing at nothing.
+   Clearing a junk directory is not reported, because nothing anyone runs was
+   inside it. A change reported by more than one probe of the same start is
+   said once. Every name ccc reads out of the volume and prints — in a note, in
+   a reuse line, in an error, in what `ccc doctor` shows — is stripped of
+   control and direction-marking characters first, because a name is data and
+   can otherwise repaint or reverse the line reporting it. A start that fails
+   carries its reason in the error rather than as a note, and that error keeps
+   only the last few lines of what the container said.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
    I on an old claude" is the question that line exists to answer, and the
    previous wording ("Restored claude from cache") was also no longer true —
@@ -89,7 +90,8 @@ the install directory is shared. That makes several things observable:
     start work. Where the volume cannot be written, ccc still will not run the
     link — it says so and installs instead. ccc never publishes such an entry;
     a shared volume can hold one somebody put there, under any name including a
-    hidden one. Removing it carries the
+    hidden one, and adopting over it removes it just as a start finding it does.
+    Removing it carries the
     same inode argument as clearing any version name — a process running the
     target is unaffected — but not the rest of it: unlike the junk names in
     behavior 15, a link can be what another container's launcher resolves
@@ -248,9 +250,13 @@ would be wrong precisely where it is permanent.
   no mount at all: the start must fail and must not print RESTORED, and no
   symlink may be left inside the directory that survived.
 - Behavior 9 is pinned on each success path a start can take — nothing else
-  needed, a reuse, and an install — plus once-per-start reporting, the tools'
-  own stderr staying out of it, and control bytes stripped from a name on both
-  the reporting and the failure channel.
+  needed, a reuse, and an install — on both paths that remove a link, and for
+  once-per-start reporting, the tools' own stderr staying out of it, and every
+  channel that prints a name: the note, the reuse line and the error.
+- ccc never runs a staging file a killed start left under `versions/`: those
+  are hidden names, and the selection deliberately does not look at hidden
+  names. Pinned, because making it look at them is a one-character change that
+  puts the launcher on a file the reaper later deletes.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot

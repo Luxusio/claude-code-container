@@ -99,6 +99,31 @@ describe("container-setup.ts module", () => {
             expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Permission denied"))
         })
 
+        it("strips the marks that reorder how a name renders", () => {
+            // A right-to-left override is not a control byte, and it makes the
+            // rest of the line read backwards — enough to disguise which entry
+            // a message is about.
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n",
+                "removed 2.1.261\u202eDEHCAH: a version must be a real file, not a symlink\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(
+                "removed 2.1.261?DEHCAH: a version must be a real file, not a symlink")
+        })
+
+        it("strips a volume-derived name out of the reuse line as well", () => {
+            // The version in that line is a directory entry read from the
+            // shared volume, printed by name. Sanitizing the notes and leaving
+            // this raw closed two channels of three.
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.261\u001b[2KX\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(
+                "Reusing claude 2.1.261?[2KX from the shared volume.")
+        })
+
         it("strips control bytes out of a name inside a failure too", () => {
             // The same name travels on the failure channel, inside the Error,
             // where stripping it on the reporting path alone does nothing.

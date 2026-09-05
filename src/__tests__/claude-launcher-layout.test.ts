@@ -202,6 +202,23 @@ describe("claude launcher layout", () => {
             expect(volumeSymlinks()).toEqual([])
         })
 
+        it("says so when adoption is what removed the link", () => {
+            // The same removal reached from the other side. Reporting it on one
+            // path and not the other means a start can take away the entry
+            // another project's launcher resolves through and say nothing.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "2.1.261")
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(paths.volumeDataDir, "versions", "2.1.261"))
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stderr).toContain("removed versions/2.1.261")
+            expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
+        })
+
         it("never publishes a symlink into the shared volume", () => {
             // A symlink published there points at a path that exists only in
             // the container that wrote it, so every other container reads a
@@ -818,7 +835,43 @@ describe("claude launcher layout", () => {
             expect(existsSync(paths.bin)).toBe(false)
         })
 
-        it("finds a version whose name holds a space or a glob character", () => {
+        it("never selects a staging file a killed start left behind", () => {
+            // seed_from stages into versions/.seed.XXXXXX, chmods it executable
+            // and then renames it. A start killed between those two steps leaves
+            // a complete, claude-shaped file there — and once it is selectable
+            // the launcher points at it, doctor calls it updatable, and the
+            // reaper deletes it out from under whoever is running it.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, ".seed.AbCdEf"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("INSTALL")
+        })
+
+        it("finds a version whose name holds a glob character", () => {
+            // set -f, separately from IFS. Expansion happens against the
+            // process's working directory, so the case only bites when that
+            // directory holds a name the pattern matches — which is why this
+            // one runs the probe from a directory built to match.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, "2.1.26?"), "2.1.26?")
+            const elsewhere = join(root, "cwd")
+            mkdirSync(elsewhere, { recursive: true })
+            writeFileSync(join(elsewhere, "2.1.261"), "a name the pattern matches")
+
+            const result = spawnSync("sh", ["-c", buildClaudeProbeScript(paths)],
+                { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" }, cwd: elsewhere })
+
+            // Expanded, the candidate becomes 2.1.261, which is not in the
+            // volume, so the only real version is passed over and ccc downloads
+            // 215MB it already has.
+            expect((result.stdout ?? "").trim()).toBe("RESTORED 2.1.26?")
+        })
+
+        it("finds a version whose name holds a space", () => {
             // The selection loop read its candidates through $(ls), so a name
             // holding a space was split into two that do not exist and one
             // holding * was expanded against the working directory. Neither can
