@@ -142,6 +142,14 @@ mkdir -p "$VOL" || exit 1
 # mount. A name holding a newline is worse still and never reaches this check:
 # find -print and read -r break the record on it, so the loop acts on two
 # fragments instead. That is the known edge of this check.)
+# A glob cannot say "digits", so this is where the shape is decided. Three
+# dot-separated numbers, optionally followed by a suffix the installer uses for
+# its own staging. A dot-dated name like 2026.09.05 is that shape and cannot be
+# told from a version — recorded in the REQ rather than guessed at here.
+is_version_name() {
+  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([-.].*)?$'
+}
+
 is_mountpoint() {
   [ -d "$1" ] || return 1
   p="$(readlink -f "$1" 2>/dev/null)" || return 1
@@ -231,12 +239,16 @@ adopt_into_volume() {
     case "$relpath" in
       versions/*/*) ;;
       versions/*)
+        # Only where the clear this guards would actually run, so the refusal
+        # cannot claim a delete that would never have happened.
+        #
         # Not through a link, same as the guard after staging: is_mountpoint
         # follows, so a symlink whose target is a mount read as a mount and
         # refused here — first, before the other guard could be reached — and
         # every start failed permanently on a message that was false, since
         # unlinking a link empties nothing.
-        if [ ! -L "$target" ] && is_mountpoint "$target"; then
+        if is_version_name "\${relpath#versions/}" \\
+          && [ ! -L "$target" ] && is_mountpoint "$target"; then
           echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
           : > "$adopt_failed"
           continue
@@ -268,7 +280,7 @@ adopt_into_volume() {
         clear_why=""
         case "$relpath" in
           versions/*/*) ;;
-          versions/[0-9]*.[0-9]*.[0-9]*)
+          versions/*)
             # Version-shaped names only, the same licence the other clear uses:
             # what allows a recursive delete here is that we are about to write
             # this exact name, and we only ever write versions.
@@ -285,12 +297,16 @@ adopt_into_volume() {
             # Not through a link: is_mountpoint follows, so a symlink whose
             # target is a mount read as a mount here and refused permanently —
             # unlinking a link empties nothing.
-            if [ ! -L "$target" ] && is_mountpoint "$target"; then
+            if ! is_version_name "\${relpath#versions/}"; then
+              # Not a name we would write. Fall through to the cautious rule
+              # below, which takes only something holding nothing.
+              :
+            elif [ ! -L "$target" ] && is_mountpoint "$target"; then
               echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
               rm -f "$stage"
               : > "$adopt_failed"
               continue
-            fi
+            else
             # rm never follows a symlink argument, -r included, so one call
             # serves both. What differs is that a link has to be announced: it
             # can be what another container's launcher resolves through, so a
@@ -306,6 +322,7 @@ adopt_into_volume() {
             if [ "$was_link" = yes ] && [ "$cleared" = yes ]; then
               echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
             fi
+            fi
             ;;
         esac
         if [ -e "$target" ] || [ -L "$target" ]; then
@@ -315,7 +332,15 @@ adopt_into_volume() {
           if [ -d "$target" ] && [ ! -L "$target" ]; then
             clear_why="$(rmdir "$target" 2>&1)"
           else
-            clear_why="$(rm -f "$target" 2>&1)"
+            # A link removed here is a link removed, whatever the name. The
+            # version arm above announces one and this branch did not, so
+            # narrowing that arm silently took the announcement away from every
+            # other name — the one thing the two paths must agree on.
+            cautious_was_link=no
+            [ -L "$target" ] && cautious_was_link=yes
+            if clear_why="$(rm -f "$target" 2>&1)"; then
+              [ "$cautious_was_link" = no ] || echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
+            fi
           fi
         fi
         if [ -e "$target" ] || [ -L "$target" ]; then
@@ -387,6 +412,11 @@ fi
 # alone, free_unusable_versions takes it and reports it.
 find "$VOL" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/dev/null || true
 find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/dev/null || true
+# The native installer's own staging name. A killed install leaves one behind —
+# up to 215MB, in a volume every project shares — and nothing else collects it:
+# the clear takes only what is not a regular file, and the selection now skips
+# it. Age-gated like the rest, so an install in flight is never touched.
+find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -delete 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
@@ -504,10 +534,7 @@ free_unusable_versions() {
       # notes, somebody's export, a hidden state directory — is holding nothing
       # anyone is waiting for, so there is no reason to reach into it. A leading
       # digit alone was not enough: 2026-notes starts with one.
-      case "$cand" in
-        [0-9]*.[0-9]*.[0-9]*) ;;
-        *) continue ;;
-      esac
+      is_version_name "$cand" || continue
       # Anything that is not a regular file and not a link — a directory, a
       # fifo, a socket — is junk by construction: ccc publishes only regular
       # files here, the selection takes only regular files, seeding refuses

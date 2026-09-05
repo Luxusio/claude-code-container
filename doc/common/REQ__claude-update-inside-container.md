@@ -126,11 +126,14 @@ the install directory is shared. That makes several things observable:
 
     What licenses the clear is that the entry is holding a name the installer
     needs, so it is only ever applied to a name shaped like a version: three
-    dot-separated numbers, and the installer's own staging names beneath them.
-    A directory of somebody's notes or a dated export under `versions/` is left
-    where it is, even though it starts with a digit: it blocks nothing, and
-    reaching into it would destroy bytes on a volume every project shares for
-    no reason at all. Both recursive clears read that same rule — the one that
+    dot-separated numbers, optionally with the suffix the installer uses for
+    its own staging. A directory of somebody's notes, or an export named for a
+    date with dashes, is left where it is even though it starts with a digit:
+    it blocks nothing, and reaching into it would destroy bytes on a volume
+    every project shares for no reason at all. An export named for a date with
+    dots — `2026.09.05` — is not distinguishable from a version by any rule
+    ccc could apply, and is treated as one; that is a cost of the name being
+    the only thing there is to go on. Both recursive clears read that same rule — the one that
     frees a blocked name, and the one that runs while publishing, whose licence
     is that it is about to write that exact name and only ever writes
     versions. A link is taken under any name,
@@ -142,10 +145,12 @@ the install directory is shared. That makes several things observable:
     allow the removal. Both are reported even though the start goes on to
     succeed or to install — a refusal that changes what the start will do, with
     nothing said, is how the wedge above stayed invisible. A refusal for the
-    second reason may not be clean: a recursive delete empties what it can
-    before failing on what it cannot, so a directory refused because part of it
-    was unwritable has lost the rest. A read-only volume refuses before
-    anything goes. Only the mount is checked before anything is touched at all.
+    second reason is not clean: a recursive delete empties what it can before
+    failing on what it cannot, so a directory ccc could not remove has already
+    lost its contents. Only the mount is checked before anything is touched at
+    all — that is the difference between the two refusals, and it is why the
+    mount is the one checked first.
+
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
     keeps its inode and cannot be interrupted the way an overwrite interrupts
@@ -311,9 +316,12 @@ would be wrong precisely where it is permanent.
   the user, not only where the container prints it: these refusals do not fail
   the start, so nothing carries them into an error, and a test on the script's
   own stderr cannot tell whether anybody is told.
-- That neither recursive clear reaches a name the installer would not write —
-  a hidden directory, a dated export, somebody's notes — is pinned on both
-  paths, and so is
+- That neither recursive clear reaches a name the installer would not write is
+  pinned: a hidden directory, a dash-dated export, somebody's notes and a
+  dotted name that is not three numbers on the pass that frees a blocked name,
+  and a plain non-version name on the publishing pass — where what is pinned is
+  also that removing a link there is still announced, which narrowing that
+  pass's licence had silently taken away. So is
   the volume root's half of the staging reaper, which collects a stale entry of
   any type where the `versions/` half takes only files. So is the mount guard on
   the check that runs first, before staging: guarding only the later one left

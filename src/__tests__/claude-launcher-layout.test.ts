@@ -806,8 +806,44 @@ describe("claude launcher layout", () => {
             const result = run()
 
             expect(result.status).not.toBe(0)
+            expect(result.stderr).toMatch(/^cannot adopt versions\/keepsafe: /m)
             expect(readFileSync(join(shared, "deep", "data"), "utf8"))
                 .toBe("another project's data")
+        })
+
+        it("says so when adoption removes a link at a name that is not a version", () => {
+            // Narrowing the announcing arm to version-shaped names took the
+            // announcement away from every other name, because the cautious
+            // branch below reaches a link too and said nothing. The two paths
+            // have to agree: a link removed is a link removed, whatever it is
+            // called, because it can be what another project's launcher
+            // resolves through.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            writeFileSync(join(paths.dataDir, "versions", "keepsafe"), "ours")
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "9.9.9")
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(paths.volumeDataDir, "versions", "keepsafe"))
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stderr).toMatch(/^removed keepsafe: a version must be a real file, not a symlink$/m)
+        })
+
+        it("does not clear a dotted name that is not three numbers", () => {
+            // The glob that licensed this admitted "2.1.3 (copy)" — anything
+            // after the third group, not only the installer's staging suffix.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(volVersions, "2.1.3 (copy)", "deep"), { recursive: true })
+            writeFileSync(join(volVersions, "2.1.3 (copy)", "deep", "data"), "a copied export")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(join(volVersions, "2.1.3 (copy)", "deep", "data"), "utf8"))
+                .toBe("a copied export")
         })
 
         it("does not reach into a name that merely starts with a digit", () => {
@@ -824,6 +860,27 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("RESTORED 2.1.261")
             expect(readFileSync(join(volVersions, "2026-notes", "deep", "data"), "utf8"))
                 .toBe("somebody's notes")
+        })
+
+        it("collects an installer staging file a killed install left behind", () => {
+            // Skipping it stops it being run; nothing was collecting it, so it
+            // sat in a shared volume at up to 215MB a time. Age-gated, so an
+            // install in flight is never touched.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const stale = join(volVersions, "2.1.261.tmp.115.1788642186582.1")
+            writeFakeClaude(stale, "2.1.261")
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(stale, old, old)
+            const fresh = join(volVersions, "2.1.261.tmp.116.1788642186583.1")
+            writeFakeClaude(fresh, "2.1.261")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(existsSync(stale)).toBe(false)
+            expect(existsSync(fresh)).toBe(true)
         })
 
         it("does not run an installer staging file left under versions/", () => {
