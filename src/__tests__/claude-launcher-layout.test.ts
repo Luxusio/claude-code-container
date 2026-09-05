@@ -132,6 +132,34 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
         })
 
+        it("does not empty a shared directory to make room for an entry", () => {
+            // Measured against the first version of the clearing rule, which
+            // reported `RESTORED 2.1.300` after deleting every version the
+            // volume held. `versions` is a directory on our side in every
+            // normal install, so the loop mirrors it and never reaches the
+            // clearing branch — but as a SYMLINK it is a leaf, `$target`
+            // becomes the volume's whole `versions` directory, and `rm -rf`
+            // takes out what every other project on the host is running.
+            //
+            // Clearing a name is only ever safe for something that holds
+            // nothing. A non-empty directory is refused, and refusing here
+            // costs this container a start it could not have completed anyway.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, "2.1.100"), "2.1.100")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "2.1.300"), "2.1.300")
+            mkdirSync(paths.dataDir, { recursive: true })
+            symlinkSync(elsewhere, join(paths.dataDir, "versions"))
+
+            const result = run()
+
+            expect(existsSync(join(volVersions, "2.1.100"))).toBe(true)
+            expect(existsSync(join(volVersions, "2.1.261"))).toBe(true)
+            expect(result.status).not.toBe(0)
+        })
+
         it("recovers on the first start and stays recovered on later ones", () => {
             // The measured regression this replaces: with a bad entry in the
             // volume, three consecutive starts all failed rc=1 and no run could

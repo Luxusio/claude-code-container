@@ -208,7 +208,18 @@ adopt_into_volume() {
       if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
         continue
       fi
-      if ! rm -rf "$target" || [ -e "$target" ] || [ -L "$target" ]; then
+      # Only a name holding NOTHING can be cleared. A recursive delete here
+      # took out the volume's entire versions/ directory — every version every
+      # other project on the host runs — and still reported success, because
+      # our own side can present versions/ as a symlink, which makes it a leaf
+      # and puts the shared directory itself under \$target. rmdir refuses a
+      # non-empty directory, so the blast radius is one empty name.
+      if [ -d "$target" ] && [ ! -L "$target" ]; then
+        rmdir "$target" 2>/dev/null
+      else
+        rm -f "$target"
+      fi
+      if [ -e "$target" ] || [ -L "$target" ]; then
         echo "cannot adopt $relpath: the volume holds something else at that name and it could not be removed" >&2
         : > "$adopt_failed"
         continue

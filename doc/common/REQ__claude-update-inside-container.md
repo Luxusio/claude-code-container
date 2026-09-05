@@ -70,9 +70,12 @@ the install directory is shared. That makes several things observable:
 11. A version name written by current ccc appears in the volume only when its
     bytes are all there: a copy interrupted partway leaves no published name,
     because nothing would ever replace a truncated file once it existed.
-12. A start recovers from a volume entry that no version binary could be — a
-    directory or a link under a version name. ccc removes it and publishes the
-    real version. Nothing can be executing such an entry, and unlike an
+12. A start recovers from a volume entry that no version binary could be — an
+    empty directory or a link under a version name. ccc clears it and publishes
+    the real version. Only a name that holds nothing is ever cleared: a
+    non-empty directory is refused, because ccc cannot tell its contents from
+    what other projects are running, and a container whose own layout leads it
+    there could not have completed the start anyway. Nothing can be executing such an entry, and unlike an
     overwrite a removal cannot fail with ETXTBSY: `unlink` only unbinds the
     name, and a process already running a binary keeps its inode. Refusing
     instead would make the name unclearable, since no later run has any way to
@@ -152,7 +155,9 @@ or
   regular-file launcher is repaired, a legacy single-file cache is migrated, and
   shims / non-Claude binaries are rejected. Behavior 12 is pinned by three
   consecutive probe runs against a poisoned volume, all of which must succeed,
-  and by a read-only volume case that must still refuse.
+  by a read-only volume case that must still refuse, and by a case where this
+  container presents versions/ as a symlink — the volume's other versions must
+  survive it.
 - Behaviors 1–4 as stated are host-tier: they need a real Docker daemon whose
   path resolution matches the caller's, which is not satisfiable from inside a
   container (see the header of `src/__tests__/e2e.test.ts`).
