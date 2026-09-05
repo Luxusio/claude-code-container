@@ -482,6 +482,28 @@ describe("what ccc doctor says about the launcher", () => {
         expect(out).toContain("NOT updatable")
     })
 
+    it("does not report a launcher in a different directory as updatable", () => {
+        // The check must answer "does this launcher resolve INTO versions/".
+        // `${target#$expected/}` treats the expected path as a glob, so a data
+        // dir literally named `a*b` matches a sibling `aXXXb` and a launcher
+        // pointing at that sibling is announced as updatable — the check
+        // reporting success about a directory it has never seen.
+        const globbyData = join(root, "a*b")
+        const sibling = join(root, "aXXXb")
+        mkdirSync(join(globbyData, "versions"), { recursive: true })
+        writeFakeClaude(join(sibling, "versions", "2.1.5"), "2.1.5")
+        const launcher = join(root, "bin", "claude-elsewhere")
+        symlinkSync(join(sibling, "versions", "2.1.5"), launcher)
+
+        const out = execFileSync(
+            "sh",
+            ["-c", buildClaudeLauncherReportCommand(launcher, globbyData)],
+            { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } },
+        )
+
+        expect(out).toContain("NOT updatable")
+    })
+
     it("fails rather than reporting a version when there is no launcher", () => {
         expect(report(paths.bin).status).not.toBe(0)
     })

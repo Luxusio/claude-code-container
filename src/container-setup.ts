@@ -295,11 +295,15 @@ export function buildClaudeLauncherReportCommand(
         // path reports every healthy container as broken — measured, not
         // guessed: the first version of this check did exactly that.
         `expected="$(readlink -f ${versionsDir} 2>/dev/null || true)"`,
-        `if [ -n "$expected" ] && [ "\${target#$expected/}" != "$target" ]; then`,
-        `  printf '%s (updatable, -> %s)\\n' "$v" "$target"`,
-        `else`,
-        `  printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir}`,
-        `fi`,
+        // `case` with a quoted pattern, not `${target#$expected/}`: in that
+        // expansion the pattern is a glob, so a path holding `*`, `?` or `[`
+        // silently matches the wrong thing. Quoting inside a case pattern makes
+        // those characters literal.
+        `[ -n "$expected" ] || expected="__no_versions_dir__"`,
+        `case "$target" in`,
+        `  "$expected"/*) printf '%s (updatable, -> %s)\\n' "$v" "$target" ;;`,
+        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir} ;;`,
+        `esac`,
     ].join("\n");
 }
 
