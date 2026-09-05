@@ -154,6 +154,17 @@ adopt_into_volume() {
   # putting it in the shared volume made the one failure it exists to report —
   # the volume being unwritable — the one it could not record, while leaving an
   # invisible dotfile behind in a volume nobody thinks to inspect.
+  #
+  # Assigned HERE, in the parent, before the pipe below. The loop body runs in a
+  # subshell, so it can only signal failure through a file — and only through a
+  # name the parent already knows. With a deterministic name the placement was
+  # incidental; with mktemp it is load-bearing, because a name computed inside
+  # the subshell would leave the parent checking a path that never existed and
+  # reporting success on every failure.
+  #
+  # The "|| return 1" is what makes an unusable temp directory a refusal, not
+  # a silent success. The caller deletes the original on success, so dropping
+  # it destroys working installs; a test pins it.
   adopt_failed="$(mktemp)" || return 1
   rm -f "$adopt_failed"
   ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do

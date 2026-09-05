@@ -28,6 +28,16 @@ let paths: ClaudeLayoutPaths
 // "nothing usable" case came back RESTORED. Isolating PATH is what makes the
 // INSTALL branch reachable, and keeps the suite from depending on whether the
 // machine running it happens to have claude installed.
+function runWithEnv(env: Record<string, string>): { status: number, stdout: string } {
+    try {
+        const stdout = execFileSync("sh", ["-c", buildClaudeProbeScript(paths)], { encoding: "utf-8", env })
+        return { status: 0, stdout: stdout.trim() }
+    } catch (error) {
+        const e = error as { status?: number, stdout?: string }
+        return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim() }
+    }
+}
+
 function run(): { status: number, stdout: string } {
     const options = { encoding: "utf-8" as const, env: { PATH: "/usr/bin:/bin" } }
     try {
@@ -356,6 +366,21 @@ describe("claude launcher layout", () => {
             expect(result.status).not.toBe(0)
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.9"))).toBe(false)
             expect(readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".seed."))).toEqual([])
+        })
+
+        it("refuses up front when it cannot create its failure marker", () => {
+            // Review flagged this as the one line worth pinning: without the
+            // guard on the marker's own creation, adopt cannot record any
+            // failure and returns success — and the caller deletes the original
+            // on success. Driven by making the temp directory unusable, which is
+            // where the marker is created.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.5"), "2.1.5")
+
+            const result = runWithEnv({ PATH: "/usr/bin:/bin", TMPDIR: join(root, "no-such-dir") })
+
+            expect(result.status).not.toBe(0)
+            expect(result.stdout).toBe("")
+            expect(existsSync(join(paths.dataDir, "versions", "2.1.5"))).toBe(true)
         })
 
         it("keeps its failure marker out of the volume every project shares", () => {
