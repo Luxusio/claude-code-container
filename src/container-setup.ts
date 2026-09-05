@@ -192,6 +192,16 @@ adopt_into_volume() {
       mkdir -p "$target" || : > "$adopt_failed"
       continue
     fi
+    # Reaching here with relpath "versions" means our side has that name as
+    # something other than a directory. Publishing it wedges every container on
+    # the host permanently: once the data dir is the symlink, this loop is never
+    # entered again, so nothing can ever undo it — and it is the one name whose
+    # contents belong to every other project.
+    if [ "$relpath" = "versions" ]; then
+      echo "refusing to publish versions: it must be a directory" >&2
+      : > "$adopt_failed"
+      continue
+    fi
     # Existence is not adoption. The volume is shared by every project on the
     # host, so a version already there may be the binary another container is
     # executing — forcing over it fails with ETXTBSY and takes down a working
@@ -230,7 +240,15 @@ adopt_into_volume() {
             # branch refuses to create one, pick_best skips it and seed_from
             # refuses it, so nothing anyone runs lives inside. Leaving it there
             # wedges this container on every future start with no way back.
-            clear_why="$(rm -rf "$target" 2>&1)"
+            #
+            # A mount point is the exception, as it is for the data dir and the
+            # launcher: rm -rf across that boundary empties whatever the user
+            # put on the other side.
+            if is_mountpoint "$target"; then
+              clear_why="refusing to clear a mount point"
+            else
+              clear_why="$(rm -rf "$target" 2>&1)"
+            fi
             ;;
         esac
         if [ -e "$target" ] || [ -L "$target" ]; then

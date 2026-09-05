@@ -202,6 +202,41 @@ describe("claude launcher layout", () => {
             expect(lstatSync(join(paths.volumeDataDir, "statsig")).isFile()).toBe(true)
         })
 
+        it("refuses a non-empty directory at a name that is not a version", () => {
+            // The recursive clear is licensed by what a version name means, not
+            // by convenience: only versions/<v> is junk by construction. Every
+            // other name in the volume may hold something another project put
+            // there, and ccc cannot tell the difference — so it refuses rather
+            // than deleting. Without this, widening the cautious branch to a
+            // recursive delete passes the whole suite while destroying shared
+            // state and reporting success.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            writeFileSync(join(paths.dataDir, "statsig"), "local")
+            const shared = join(paths.volumeDataDir, "statsig")
+            mkdirSync(shared, { recursive: true })
+            writeFileSync(join(shared, "cache.json"), "shared state")
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(readFileSync(join(shared, "cache.json"), "utf8")).toBe("shared state")
+            expect(existsSync(join(paths.dataDir, "statsig"))).toBe(true)
+        })
+
+        it("refuses to publish over the versions directory itself", () => {
+            // A regular file at that name is a wedge nothing can undo: once the
+            // data dir is the symlink, this loop is never entered again, so no
+            // later run can clear it — for any project on the host.
+            mkdirSync(paths.dataDir, { recursive: true })
+            writeFileSync(join(paths.dataDir, "versions"), "not a directory")
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(lstatSync(join(paths.volumeDataDir, "versions")).isDirectory()).toBe(true)
+        })
+
         it("clears a junk directory under a version name even when it is not empty", () => {
             // versions/<v> as a directory is junk by construction — the mirror
             // branch refuses to create one, pick_best skips it, seed_from

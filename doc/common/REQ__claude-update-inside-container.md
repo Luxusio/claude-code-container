@@ -76,26 +76,35 @@ the install directory is shared. That makes several things observable:
     ccc reads its own install through symlinks rather than copying them, so a
     data directory that reaches versions/ by a link publishes the same regular
     files as one that does not.
-13. A start recovers from a volume entry that no version binary could be. A
-    directory under a version name is junk by construction — ccc refuses to
+13. A start recovers from a volume entry that no version binary could be.
+    Clearing a name is safe where overwriting is not: `unlink` only unbinds the
+    name, so a process already running that binary keeps its inode and cannot
+    be interrupted the way an overwrite interrupts it with ETXTBSY.
+    A directory under a version name is junk by construction — ccc refuses to
     create one, skips one when choosing a version, and refuses to seed from
-    one — so nothing anyone runs is inside it and it is cleared whole.
-    Refusing it instead left a container with a working local install failing
-    on every start with no way back. Every other name is cleared only when it
-    holds nothing, because ccc cannot tell its contents from what other
-    projects are using, and the refusal says why it could not be cleared. Nothing can be executing such an entry, and unlike an
-    overwrite a removal cannot fail with ETXTBSY: `unlink` only unbinds the
-    name, and a process already running a binary keeps its inode. Refusing
-    instead would make the name unclearable, since no later run has any way to
-    free it — the first start to hit it and every start after would fail
-    identically. A regular file already under a version name is left alone:
-    that one may be what another container is executing, and version names are
-    content-addressed, so it is already correct.
-14. ccc refuses to delete through a mount point, at the data directory and at
-    the launcher path, and says which one it refused. ccc never places a mount
+    one — so nothing anyone runs is inside it and it is cleared whole. Refusing
+    it instead left a container with a working local install failing on every
+    start with no way back. Every other name is cleared only when it holds
+    nothing, because ccc cannot tell its contents from what other projects are
+    using, and the refusal says why it could not be cleared. A regular file
+    already under a version name is left alone: it may be what another
+    container is executing, and version names are content-addressed, so it is
+    already correct.
+14. ccc never publishes anything over `versions/` itself. That name holds every
+    other project's binaries, and a file written there could not be undone by
+    any later start: once the data directory is the symlink, the adoption path
+    is never entered again. A container whose own layout puts something other
+    than a directory at that name fails to start and says so.
+15. An entry under the data directory that cannot be read — a link pointing at
+    nothing, a socket, a file ccc has no permission for — fails the start
+    rather than being published as-is, and the message names the entry. There
+    is no automatic recovery from that state; the volume is left untouched and
+    the local install is preserved, so it is repairable by hand.
+16. ccc refuses to delete through a mount point — at the data directory, at
+    the launcher path, and at a version name it would otherwise clear. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
-15. Setup fails rather than reporting success whenever the install could not
+17. Setup fails rather than reporting success whenever the install could not
     actually be adopted into the volume — a read-only or full volume, and a
     name held by something that could not be removed. The caller removes the
     original on success, so a false success destroys a working install;
@@ -161,12 +170,22 @@ or
   script against a temp directory and asserts the resulting layout: launcher is
   a symlink into `versions/`, newest version wins by version order, a flattened
   regular-file launcher is repaired, a legacy single-file cache is migrated, and
-  shims / non-Claude binaries are rejected. Behavior 12 is pinned by three
-  consecutive probe runs against a poisoned volume, all of which must succeed,
-  by a read-only volume case that must still refuse, and by a case where this
-  container reaches versions/ through a symlink — the volume's other versions
-  must survive, the new one must publish, and nothing under the volume may be
-  a symlink afterwards.
+  shims / non-Claude binaries are rejected.
+- Behavior 12 is pinned by a case where this container reaches versions/
+  through a symlink: the volume's other versions must survive, the new one must
+  publish, and nothing under the volume may be a symlink afterwards.
+- Behavior 13 is pinned by three consecutive probe runs against a poisoned
+  volume, all of which must succeed; by a non-empty junk directory under a
+  version name, which must be cleared; by a non-empty directory at a name that
+  is *not* a version, which must be refused with the shared file intact; and by
+  a read-only volume, which must refuse. The middle two are what separate a
+  clear from a delete, and widening either one is caught.
+- Behavior 14 is pinned by a regular file at versions/ against a volume that
+  holds the shared directory: the start must fail and the directory must
+  survive.
+- Behavior 16's third site is not covered: creating a bind mount needs
+  privileges the test suite does not have, which is why the two older
+  mount-point guards are uncovered as well.
 - Behaviors 1–4 as stated are host-tier: they need a real Docker daemon whose
   path resolution matches the caller's, which is not satisfiable from inside a
   container (see the header of `src/__tests__/e2e.test.ts`).
