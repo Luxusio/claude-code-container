@@ -150,7 +150,7 @@ is_mountpoint() {
 # install it abandoned sat untouched on disk.
 adopt_into_volume() {
   [ -d "$DATA" ] || return 0
-  adopt_failed="$VOL/.adopt-failed.$$"
+  adopt_failed="$(mktemp "$VOL/.adopt-failed.XXXXXX")" || return 1
   rm -f "$adopt_failed"
   ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do
     target="$VOL/\${rel#./}"
@@ -171,7 +171,12 @@ adopt_into_volume() {
     # EEXIST in the kernel, so two containers cannot both win the same name.
     stage="$(mktemp "$VOL/.seed.XXXXXX")" || { : > "$adopt_failed"; continue; }
     if cp -a "$DATA/$rel" "$stage"; then
-      ln "$stage" "$target" 2>/dev/null || true
+      # A losing race is fine — the winner published the same content under a
+      # content-named path. Any other ln failure means the file was NOT adopted,
+      # and the caller deletes the original on success, so it has to be recorded.
+      if ! ln "$stage" "$target" 2>/dev/null && [ ! -e "$target" ]; then
+        : > "$adopt_failed"
+      fi
     else
       : > "$adopt_failed"
     fi

@@ -358,6 +358,29 @@ describe("claude launcher layout", () => {
             expect(readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".seed."))).toEqual([])
         })
 
+        it("reports a link failure instead of letting the caller delete an unadopted original", () => {
+            // adopt swallowed every ln failure, not only "another container won
+            // this name". A cross-device or ENOSPC failure left the file NOT in
+            // the volume while adopt still returned 0 — and the caller deletes
+            // the original on success. Driven here by making the destination
+            // directory unwritable after the tree walk has something to place.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.5"), "2.1.5")
+            mkdirSync(paths.volumeDataDir, { recursive: true })
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            chmodSync(join(paths.volumeDataDir, "versions"), 0o500)
+
+            const result = run()
+
+            try {
+                expect(result.status).not.toBe(0)
+                expect(result.stdout).toBe("")
+                // the original must still be there for a later run to adopt
+                expect(existsSync(join(paths.dataDir, "versions", "2.1.5"))).toBe(true)
+            } finally {
+                chmodSync(join(paths.volumeDataDir, "versions"), 0o700)
+            }
+        })
+
         it("fails when a foreign data-dir symlink cannot be adopted, instead of reporting success", () => {
             // The sibling directory case was covered; this one was not, and it
             // failed OPEN. A failed copy leaves $DATA a symlink pointing
