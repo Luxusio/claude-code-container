@@ -141,12 +141,18 @@ is_mountpoint() {
 # install it abandoned sat untouched on disk.
 adopt_into_volume() {
   [ -d "$DATA" ] || return 0
-  # -n, never -f. The volume is shared by every project on the host, so a
-  # version file already sitting there may be the binary another container is
-  # executing right now — overwriting it fails with ETXTBSY and takes down ccc
-  # startup for a project that was working fine. Version files are named by
-  # their content, so an existing one needs no replacing.
-  cp -an "$DATA/." "$VOL/"
+  # Skip what exists; never overwrite. The volume is shared by every project on
+  # the host, so a version file already sitting there may be the binary another
+  # container is executing right now — forcing over it fails with ETXTBSY and
+  # takes down ccc startup for a project that was working fine. Version files
+  # are named by their content, so an existing one needs no replacing, and this
+  # directory holds nothing but versions/ (checked on a live container), so
+  # skipping wholesale loses no state that would otherwise be refreshed.
+  #
+  # --update=none rather than -n: coreutils warns on every -n that its
+  # "behavior is non-portable and may change in future", and a safety guard
+  # whose semantics are advertised as unstable is the wrong thing to depend on.
+  cp -a --update=none "$DATA/." "$VOL/"
 }
 if [ -L "$DATA" ] && [ "$(readlink "$DATA")" = "$VOL" ]; then
   :
