@@ -6,6 +6,15 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 // Gracefully skipped when Chromium is not available (e.g. pure unit test CI).
 const TIMEOUT = 90000;
 
+// The MCP SDK applies its own 60s request timeout, which is shorter than the
+// 90s these tests declare — so the client always gave up first and the test's
+// stated budget was never the one in force. Run alone that gap never shows;
+// under the full suite's eight workers a real headless-Chromium screenshot
+// crosses 60s and the run fails with `MCP error -32001: Request timed out` at
+// 60056ms, in a file that passes on its own in nine seconds. Passing the same
+// number to both makes the declared budget the real one.
+const REQUEST_OPTIONS = { timeout: TIMEOUT };
+
 const chromiumAvailable = (() => {
     try { resolveChromiumPath(); return true; } catch { return false; }
 })();
@@ -40,7 +49,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
         const result = await client.callTool({
             name: "new_page",
             arguments: { url: "about:blank" },
-        });
+        }, undefined, REQUEST_OPTIONS);
         expect(result.content).toBeDefined();
         expect((result.content as Array<{ type: string; text?: string }>)[0].text).toBeTruthy();
     });
@@ -63,7 +72,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
         const result = await client.callTool({
             name: "navigate_page",
             arguments: { pageId: PAGE_ID, url: "data:text/html,<h1>ccc-test</h1>", type: "url" },
-        });
+        }, undefined, REQUEST_OPTIONS);
         expect(result.isError).not.toBe(true);
     });
 
@@ -71,7 +80,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
         const result = await client.callTool({
             name: "evaluate_script",
             arguments: { pageId: PAGE_ID, function: "() => 6 * 7" },
-        });
+        }, undefined, REQUEST_OPTIONS);
         const content = result.content as Array<{ type: string; text?: string }>;
         expect(content[0].text).toContain("42");
     });
@@ -80,7 +89,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
         const result = await client.callTool({
             name: "take_screenshot",
             arguments: { pageId: PAGE_ID },
-        });
+        }, undefined, REQUEST_OPTIONS);
         const content = result.content as Array<{ type: string; mimeType?: string }>;
         // content[0] is always text summary, content[1] is the image
         expect(content[1]).toBeDefined();
