@@ -893,6 +893,46 @@ describe("claude launcher layout", () => {
                 .toBe("somebody's notes")
         })
 
+        it("does not let a version-shaped fragment bypass the age gate", () => {
+            // The gates on the reconstructed name closed the demonstrated case,
+            // but a fragment that is itself version-shaped and carries .tmp.
+            // passed them — and it was never the entry find aged. Handing the
+            // path through argv removes the class rather than the instance.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const stale = join(volVersions, "junk.tmp.x\n2.1.9.tmp.1.2.3")
+            writeFileSync(stale, "not a version")
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(stale, old, old)
+            const fresh = join(volVersions, "2.1.9.tmp.1.2.3")
+            writeFakeClaude(fresh, "2.1.9")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            // fresh: minutes old, so the reaper must not have taken it
+            expect(existsSync(fresh)).toBe(true)
+        })
+
+        it("says the right thing about a link nested under a version name", () => {
+            // The cautious branch's case lacked the nested arm its siblings
+            // have, so versions/<x>/<y> took the version sentence — the right
+            // removal with a wrong name and a wrong reason.
+            mkdirSync(join(paths.dataDir, "versions", "2.1.261"), { recursive: true })
+            writeFileSync(join(paths.dataDir, "versions", "2.1.261", "sub"), "ours")
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "9.9.9")
+            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
+            symlinkSync(join(elsewhere, "real"),
+                join(paths.volumeDataDir, "versions", "2.1.261", "sub"))
+
+            const result = run()
+
+            expect(result.stderr).toMatch(/^removed versions\/2\.1\.261\/sub: a link cannot be published/m)
+            expect(result.stderr).not.toMatch(/^removed sub: /m)
+        })
+
         it("does not delete a name a split record made up", () => {
             // find -delete could only ever remove a path it matched. Reading
             // records back gave that up: a name holding a newline splits, and

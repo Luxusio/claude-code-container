@@ -152,8 +152,9 @@ mkdir -p "$VOL" || exit 1
 # could separate it — a bound on the first component, say — but that is a rule
 # about what claude versions look like, maintained here, wrong the day it is
 # not. Treating it as a version is the choice; the REQ records the cost.
+VERSION_RE='^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.][0-9]+[.][0-9]+[.][0-9]+)?$'
 is_version_name() {
-  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.][0-9]+[.][0-9]+[.][0-9]+)?$'
+  printf '%s' "$1" | grep -qE "$VERSION_RE"
 }
 
 is_mountpoint() {
@@ -448,19 +449,14 @@ find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/d
 # Shape-gated too, through the same function the clears use rather than a glob
 # of its own: a bare *.tmp.* took my.tmp.notes, and a glob cannot say "digits",
 # so it would have taken 2a.1b.3c.tmp.x as well. One rule, every site.
-( cd "$DATA/versions" && find . -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -print ) 2>/dev/null | while IFS= read -r ent; do
-  cand="\${ent#./}"
-  # find -delete could only ever remove a path it matched; reading records back
-  # gave that up, and a name holding a newline splits into fragments that were
-  # never matched. One of those was "2.1.261" — a working 215MB binary deleted
-  # out of the volume every project shares. Every candidate must still carry
-  # the name find selected on, which a plain version never does.
-  case "$cand" in
-    *.tmp.*) ;;
-    *) continue ;;
-  esac
-  is_version_name "$cand" && rm -f "$DATA/versions/$cand" 2>/dev/null
-done
+# -exec, not a read loop. Reading records back gave up the one property
+# find -delete had for free — that only a path find matched can be removed —
+# because a name holding a newline splits, and a fragment was a real version:
+# a working 215MB binary deleted out of the volume every project shares. In
+# argv the path arrives whole. The pattern travels as $0 so there is still one
+# definition of what a version name is.
+find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 \\
+  -exec sh -c 'for p do printf "%s" "\${p##*/}" | grep -qE "$0" && rm -f "$p"; done' "$VERSION_RE" {} + 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
