@@ -69,21 +69,27 @@ the install directory is shared. That makes several things observable:
     one is already correct.
 11. A version name written by current ccc appears in the volume only when its
     bytes are all there: a copy interrupted partway leaves no published name,
-    because nothing would ever replace a truncated file once it existed. This
-    is a guarantee about what ccc writes, not about what a volume contains —
-    volumes written by earlier versions can already hold truncated or
-    wrong-typed entries, and ccc will not replace them. It refuses rather than
-    reporting success when it finds one.
-12. ccc refuses to delete through a mount point, at the data directory and at
+    because nothing would ever replace a truncated file once it existed.
+12. A start recovers from a volume entry that no version binary could be — a
+    directory or a link under a version name. ccc removes it and publishes the
+    real version. Nothing can be executing such an entry, and unlike an
+    overwrite a removal cannot fail with ETXTBSY: `unlink` only unbinds the
+    name, and a process already running a binary keeps its inode. Refusing
+    instead would make the name unclearable, since no later run has any way to
+    free it — the first start to hit it and every start after would fail
+    identically. A regular file already under a version name is left alone:
+    that one may be what another container is executing, and version names are
+    content-addressed, so it is already correct.
+13. ccc refuses to delete through a mount point, at the data directory and at
     the launcher path, and says which one it refused. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
-13. Setup fails rather than reporting success whenever the install could not
-    actually be adopted into the volume — a read-only or full volume, and also
-    a name already held by something that is not the matching binary. The
-    caller removes the original on success, so a false success destroys a
-    working install; existence of the name is not adoption, and the failure
-    message says which entry could not be adopted.
+14. Setup fails rather than reporting success whenever the install could not
+    actually be adopted into the volume — a read-only or full volume, and a
+    name held by something that could not be removed. The caller removes the
+    original on success, so a false success destroys a working install;
+    existence of the name is not adoption, and the failure message says which
+    entry could not be adopted.
 
 ## What stopped being pinned
 
@@ -144,7 +150,9 @@ or
   script against a temp directory and asserts the resulting layout: launcher is
   a symlink into `versions/`, newest version wins by version order, a flattened
   regular-file launcher is repaired, a legacy single-file cache is migrated, and
-  shims / non-Claude binaries are rejected.
+  shims / non-Claude binaries are rejected. Behavior 12 is pinned by three
+  consecutive probe runs against a poisoned volume, all of which must succeed,
+  and by a read-only volume case that must still refuse.
 - Behaviors 1–4 as stated are host-tier: they need a real Docker daemon whose
   path resolution matches the caller's, which is not satisfiable from inside a
   container (see the header of `src/__tests__/e2e.test.ts`).
