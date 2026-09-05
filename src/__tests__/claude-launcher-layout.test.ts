@@ -831,6 +831,26 @@ describe("claude launcher layout", () => {
             expect(result.stderr).toMatch(/^removed keepsafe: a version must be a real file, not a symlink$/m)
         })
 
+        it("does not clear a version name carrying somebody else's suffix", () => {
+            // Allowing any suffix after the third number let 2.1.261.backup and
+            // 1.0.0-my-notes through. The installer writes a version, or a
+            // version with its own staging suffix, and nothing else.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            for (const name of ["2.1.261.backup", "1.0.0-my-notes"]) {
+                mkdirSync(join(volVersions, name, "deep"), { recursive: true })
+                writeFileSync(join(volVersions, name, "deep", "data"), `kept: ${name}`)
+            }
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            for (const name of ["2.1.261.backup", "1.0.0-my-notes"]) {
+                expect(readFileSync(join(volVersions, name, "deep", "data"), "utf8"))
+                    .toBe(`kept: ${name}`)
+            }
+        })
+
         it("does not clear a dotted name that is not three numbers", () => {
             // The glob that licensed this admitted "2.1.3 (copy)" — anything
             // after the third group, not only the installer's staging suffix.

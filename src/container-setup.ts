@@ -142,12 +142,16 @@ mkdir -p "$VOL" || exit 1
 # mount. A name holding a newline is worse still and never reaches this check:
 # find -print and read -r break the record on it, so the loop acts on two
 # fragments instead. That is the known edge of this check.)
-# A glob cannot say "digits", so this is where the shape is decided. Three
-# dot-separated numbers, optionally followed by a suffix the installer uses for
-# its own staging. A dot-dated name like 2026.09.05 is that shape and cannot be
-# told from a version — recorded in the REQ rather than guessed at here.
+# A glob cannot say "digits", so this is where the shape is decided. Exactly
+# what the installer writes and nothing else: three dot-separated numbers, or
+# one of those with its staging suffix. Allowing any suffix let 2.1.261.backup
+# and 1.0.0-my-notes through, and what is on the other side of this test is a
+# recursive delete in a volume every project shares.
+#
+# A dot-dated name like 2026.09.05 IS three dot-separated numbers and cannot be
+# told from a version by any rule — recorded in the REQ rather than guessed at.
 is_version_name() {
-  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([-.].*)?$'
+  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.].*)?$'
 }
 
 is_mountpoint() {
@@ -421,9 +425,10 @@ find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -delete 2>/d
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
 # broken entries into a fresh 215MB download for every project on the host even
-# though a working version sat just below the cut. The updater prunes old
-# versions once it manages the launcher, so the directory stays small; bounding
-# each call is the protection that was actually wanted.
+# though a working version sat just below the cut. Measured, the updater does
+# NOT prune what it replaces — 2.1.259 was still there after updating to
+# 2.1.261, and after a second update and a reinstall — so the directory grows;
+# bounding each call, not the number of candidates, is the protection wanted.
 BEST=""
 pick_best() {
   BEST=""

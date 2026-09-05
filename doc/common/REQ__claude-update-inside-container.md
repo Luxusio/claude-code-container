@@ -83,11 +83,14 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
-12. ccc runs a version only when it is a real file under `versions/` that the
-    installer did not leave behind mid-write — its staging names sort above the
-    version they are becoming, so one left by a killed install used to be
-    chosen, and the launcher then pointed at a name the next install
-    overwrites. It removes a link found there rather than passing over it. A link may resolve
+12. ccc runs a version only when it is a real file under `versions/` that is a
+    version rather than the installer's own staging. Those names sort above the
+    version they are becoming, so one left behind by a killed install was
+    chosen — and being complete is what made that dangerous, not being partial.
+    Nothing else would have reclaimed it either: the installer neither
+    overwrites nor removes it, because the name carries a pid and a timestamp.
+    ccc collects one once it is old enough to be nobody's install in flight.
+    It removes a link found there rather than passing over it. A link may resolve
     to a binary outside the directory the updater manages, which rebuilds the
     original bug — the version works, reports its number correctly, and cannot
     be updated. Passing over it is not enough: the link also holds a name, and
@@ -130,10 +133,12 @@ the install directory is shared. That makes several things observable:
     its own staging. A directory of somebody's notes, or an export named for a
     date with dashes, is left where it is even though it starts with a digit:
     it blocks nothing, and reaching into it would destroy bytes on a volume
-    every project shares for no reason at all. An export named for a date with
-    dots — `2026.09.05` — is not distinguishable from a version by any rule
-    ccc could apply, and is treated as one; that is a cost of the name being
-    the only thing there is to go on. Both recursive clears read that same rule — the one that
+    every project shares for no reason at all. So is a version name carrying
+    somebody else's suffix — `2.1.261.backup`, `1.0.0-my-notes` — since the
+    installer's only suffix is its staging one. An export named for a date with
+    dots — `2026.09.05` — is not distinguishable from a version by any rule ccc
+    could apply, and is treated as one; that is a cost of the name being the
+    only thing there is to go on. Both recursive clears read that same rule — the one that
     frees a blocked name, and the one that runs while publishing, whose licence
     is that it is about to write that exact name and only ever writes
     versions. A link is taken under any name,
@@ -304,10 +309,11 @@ would be wrong precisely where it is permanent.
   once-per-start reporting, the tools' own stderr staying out of it, and all
   four channels that print a name: the note, the reuse line, the error, and
   `ccc doctor`'s own output on both of its branches.
-- ccc never runs a staging file a killed start left under `versions/`: those
-  are hidden names, and the selection deliberately does not look at hidden
-  names. Pinned, because making it look at them is a one-character change that
-  puts the launcher on a file the reaper later deletes.
+- ccc never runs a staging file a killed start left under `versions/`. There
+  are two kinds and they are protected differently: ccc's own are hidden, and
+  the selection does not look at hidden names; the installer's are not hidden
+  and are skipped by name. Both are pinned, and so is collecting the
+  installer's once it is old enough — it is the one that can be 215MB.
 - Behavior 15's recovery is pinned with nothing to adopt as well as with a
   local install, for a directory and for a fifo, and its two refusals — a mount
   at that name, and a name that could not be cleared — are pinned separately,
