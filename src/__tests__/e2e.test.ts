@@ -10,6 +10,23 @@ function isDockerAvailable(): boolean {
     return result.status === 0
 }
 
+// These drive the real `ccc` CLI against a real daemon, so they need to run where that daemon
+// resolves paths the same way this process does — i.e. on the Docker host.
+//
+// Run from inside a container and they fail rather than skip, which is how they read for a while as
+// "Docker is missing" when Docker is reachable and the daemon is fine. The actual refusal comes from
+// ccc's own safety check: it creates the container, verifies the bind mounts point where it asked,
+// and finds "bind source changed for /home/ccc/.claude" — because the paths it passed are paths in
+// THIS container and the daemon resolved them on the host. That check is doing its job; the tests
+// simply cannot be satisfied from here.
+//
+// Detected the way systemd conventions and Docker itself mark a container, both of which ccc already
+// relies on elsewhere (`container=docker` is set into every ccc container; /.dockerenv is Docker's
+// own marker).
+function isInsideContainer(): boolean {
+    return process.env.container === 'docker' || existsSync('/.dockerenv')
+}
+
 // Run ccc command from the project root
 const CCC_PATH = join(__dirname, '../../dist/index.js')
 
@@ -46,6 +63,17 @@ function runCcc(args: string[], options: { cwd?: string, timeout?: number, env?:
     }
 }
 
+// Every assertion below reads stdout, while the reason a ccc invocation failed is on stderr — so a
+// failure printed the expected/received diff and nothing about the cause. Diagnosing one of these
+// required reproducing the command by hand outside the suite; this makes the next one self-serving.
+function cccDiagnostic(result: { stdout: string, stderr: string, status: number | null }): string {
+    const stderr = result.stderr.trim()
+    return [
+        `ccc exited ${result.status}`,
+        stderr ? `stderr:\n${stderr}` : 'stderr: (empty)',
+    ].join('\n')
+}
+
 // Get test project path with unique hash
 let testProjectDir: string
 let cccHomeDir: string
@@ -74,7 +102,7 @@ function stopIsolatedTestBroker(): void {
     }
 }
 
-describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
+describe.skipIf(!isDockerAvailable() || isInsideContainer())('E2E: Docker Integration', () => {
 
     beforeAll(() => {
         ensureBuilt()
@@ -148,12 +176,12 @@ describe.skipIf(!isDockerAvailable())('E2E: Docker Integration', () => {
             const result = runCcc(['echo', 'hello'], { cwd: testProjectDir, timeout: 120000 })
             // Container should be created (check with docker ps)
             const ps = spawnSync('docker', ['ps', '-a', '--filter', 'name=^ccc-ccc-test-', '--format', '{{.Names}}'], { encoding: 'utf-8' })
-            expect(ps.stdout?.trim()).toMatch(/^ccc-ccc-test-/)
+            expect(ps.stdout?.trim(), cccDiagnostic(result)).toMatch(/^ccc-ccc-test-/)
         })
 
         it('executes command and returns output', { timeout: 60000 }, () => {
             const result = runCcc(['echo', 'test-output'], { cwd: testProjectDir, timeout: 60000 })
-            expect(result.stdout).toContain('test-output')
+            expect(result.stdout, cccDiagnostic(result)).toContain('test-output')
         })
 
         it('mounts host git identity into the container', { timeout: 120000 }, () => {

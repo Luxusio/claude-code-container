@@ -45,10 +45,19 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
         expect((result.content as Array<{ type: string; text?: string }>)[0].text).toBeTruthy();
     });
 
+    // chrome-devtools-mcp made pageId REQUIRED on the page-scoped tools, and numeric — these three
+    // tests had been failing on every run here since, with the failure reading like "Chrome is
+    // missing" when Chromium is in fact installed at CHROME_BIN and the server starts fine. The
+    // server reports pages as an indexed list ("1: about:blank"), and passing a string is rejected
+    // with "Expected number, received string", so the index is the id.
+    //
+    // `new_page` above leaves at least one page open, so index 1 always exists by the time these run.
+    const PAGE_ID = 1;
+
     it("navigates to a data URI page", { timeout: TIMEOUT }, async () => {
         const result = await client.callTool({
             name: "navigate_page",
-            arguments: { url: "data:text/html,<h1>ccc-test</h1>", type: "url" },
+            arguments: { pageId: PAGE_ID, url: "data:text/html,<h1>ccc-test</h1>", type: "url" },
         });
         expect(result.isError).not.toBe(true);
     });
@@ -56,7 +65,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
     it("evaluates a script and returns the result", { timeout: TIMEOUT }, async () => {
         const result = await client.callTool({
             name: "evaluate_script",
-            arguments: { function: "() => 6 * 7" },
+            arguments: { pageId: PAGE_ID, function: "() => 6 * 7" },
         });
         const content = result.content as Array<{ type: string; text?: string }>;
         expect(content[0].text).toContain("42");
@@ -65,7 +74,7 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
     it("takes a screenshot and returns an image", { timeout: TIMEOUT }, async () => {
         const result = await client.callTool({
             name: "take_screenshot",
-            arguments: {},
+            arguments: { pageId: PAGE_ID },
         });
         const content = result.content as Array<{ type: string; mimeType?: string }>;
         // content[0] is always text summary, content[1] is the image
