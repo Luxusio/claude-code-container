@@ -139,7 +139,9 @@ mkdir -p "$VOL" || exit 1
 # space, tab, newline and backslash in field 5. That is irrelevant for the data
 # dir and the launcher, whose paths are fixed, but a version name is not fixed:
 # one holding whitespace would miss the match and the clear would go through the
-# mount. That is the known edge of this check.)
+# mount. A name holding a newline is worse still and never reaches this check:
+# find -print and read -r break the record on it, so the loop acts on two
+# fragments instead. That is the known edge of this check.)
 is_mountpoint() {
   [ -d "$1" ] || return 1
   p="$(readlink -f "$1" 2>/dev/null)" || return 1
@@ -212,6 +214,23 @@ adopt_into_volume() {
     if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
       continue
     fi
+    # The mount check belongs here rather than beside the clearing it guards:
+    # it reads and nothing else, so it races with nothing, and asking first
+    # spares a container with a mount at that name a full 215MB copy on every
+    # start before the same refusal. Named like the data-dir and launcher
+    # guards, because without it this refusal is indistinguishable from the
+    # ordinary "could not be removed" one — and the difference is whether the
+    # user's mounted data still exists.
+    case "$relpath" in
+      versions/*/*) ;;
+      versions/*)
+        if is_mountpoint "$target"; then
+          echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
+          : > "$adopt_failed"
+          continue
+        fi
+        ;;
+    esac
     # Copy to a staging name, then link it into place. Copying straight to the
     # final name publishes a truncated but still-executable file if the process
     # dies mid-copy, and nothing ever replaces it because copies skip what
@@ -246,15 +265,6 @@ adopt_into_volume() {
             # A mount point is the exception, as it is for the data dir and the
             # launcher: rm -rf across that boundary empties whatever the user
             # put on the other side.
-            if is_mountpoint "$target"; then
-              # Say which entry, like the data-dir and launcher guards do. The
-              # cautious branch below reassigns clear_why, so a refusal recorded
-              # in it would never be printed — this one has to leave here.
-              echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
-              rm -f "$stage"
-              : > "$adopt_failed"
-              continue
-            fi
             clear_why="$(rm -rf "$target" 2>&1)"
             ;;
         esac
@@ -390,7 +400,7 @@ mkdir -p "$(dirname "$BIN")" || exit 1
 # one step, so a concurrent probe never sees the launcher missing.
 if [ -d "$BIN" ] && [ ! -L "$BIN" ]; then
   if is_mountpoint "$BIN"; then
-    echo "refusing to replace $BIN: it is a mount point" >&2
+    echo "refusing to replace $BIN: it is a mount point, and rm -rf would empty the other side" >&2
     exit 1
   fi
   rm -rf "$BIN"

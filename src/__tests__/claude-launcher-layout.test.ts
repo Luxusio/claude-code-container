@@ -88,12 +88,19 @@ beforeEach(() => {
 // kernel or the image will not give us one.
 const canBindMount = (() => {
     try {
+        // The failure path is the one that arms the skip, so the cleanup has to
+        // survive it. It does not probe /proc/self/mountinfo, which the guard
+        // itself reads: where /proc is masked this reports "can mount" and the
+        // test fails rather than skipping.
         const probe = mkdtempSync(join(tmpdir(), "ccc-bindmount-probe-"))
-        mkdirSync(join(probe, "a"))
-        mkdirSync(join(probe, "b"))
-        execFileSync("unshare", ["-Umr", "sh", "-c", `mount --bind '${join(probe, "a")}' '${join(probe, "b")}'`],
-            { stdio: "ignore", env: { PATH: "/usr/bin:/bin" } })
-        rmSync(probe, { recursive: true, force: true })
+        try {
+            mkdirSync(join(probe, "a"))
+            mkdirSync(join(probe, "b"))
+            execFileSync("unshare", ["-Umr", "sh", "-c", `mount --bind '${join(probe, "a")}' '${join(probe, "b")}'`],
+                { stdio: "ignore", env: { PATH: "/usr/bin:/bin" } })
+        } finally {
+            rmSync(probe, { recursive: true, force: true })
+        }
         return true
     } catch {
         return false
@@ -220,6 +227,58 @@ describe("claude launcher layout", () => {
             expect(lstatSync(join(paths.volumeDataDir, "statsig")).isFile()).toBe(true)
         })
 
+        it.skipIf(!canBindMount)("refuses to replace a data directory that is a mount point", () => {
+            // The oldest of the three guards, and until now the only family
+            // member with no test — not because a mount was unobtainable, which
+            // this document once claimed, but because nobody had written it.
+            mkdirSync(paths.dataDir, { recursive: true })
+            const source = join(root, "mounted-data")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            let stderr = ""
+            try {
+                execFileSync("unshare", ["-Umr", "sh", "-c",
+                    `mount --bind '${source}' '${paths.dataDir}' && sh '${script}'`],
+                    { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+            } catch (error) {
+                stderr = ((error as { stderr?: string }).stderr ?? "")
+            }
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(stderr).toContain("refusing to replace")
+            expect(stderr).toContain(paths.dataDir)
+        })
+
+        it.skipIf(!canBindMount)("refuses to replace a launcher path that is a mount point", () => {
+            // A directory at the launcher path is pathological and gets removed
+            // — unless the user mounted something there, in which case the
+            // removal reaches through it.
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+            rmSync(paths.bin, { force: true })
+            mkdirSync(paths.bin, { recursive: true })
+            const source = join(root, "mounted-bin")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            let stderr = ""
+            try {
+                execFileSync("unshare", ["-Umr", "sh", "-c",
+                    `mount --bind '${source}' '${paths.bin}' && sh '${script}'`],
+                    { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+            } catch (error) {
+                stderr = ((error as { stderr?: string }).stderr ?? "")
+            }
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(stderr).toContain("refusing to replace")
+            expect(stderr).toContain(paths.bin)
+        })
+
         it("does not copy a version the volume already holds", () => {
             // The skip before staging looks redundant with the one inside the
             // clearing block — same condition, same outcome — so removing it
@@ -267,7 +326,10 @@ describe("claude launcher layout", () => {
             }
 
             expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
-            expect(stderr).toContain("versions/2.1.261")
+            // "mount point" alone is satisfied by mount's own failure text
+            // ("mount point does not exist"), which would let a mount that
+            // never happened pass all three assertions.
+            expect(stderr).toContain("cannot adopt versions/2.1.261")
             expect(stderr).toContain("mount point")
         })
 

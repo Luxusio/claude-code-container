@@ -112,9 +112,11 @@ the install directory is shared. That makes several things observable:
     the same whether or not the user's data survived. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
-17. Setup fails rather than reporting success whenever the install could not
-    actually be adopted into the volume — a read-only or full volume, and a
-    name held by something that could not be removed. The caller removes the
+17. Setup fails rather than reporting success whenever something that needed
+    adopting could not be — a read-only or full volume with an install to
+    publish, and a name held by something that could not be removed. A volume
+    that already holds every version is not such a case: there is nothing to
+    write, so a read-only one is a success. The caller removes the
     original on success, so a false success destroys a working install;
     existence of the name is not adoption, and the failure message says which
     entry could not be adopted.
@@ -191,17 +193,20 @@ or
 - Behavior 14 is pinned by a regular file at versions/ against a volume that
   holds the shared directory: the start must fail and the directory must
   survive.
-- Behavior 16 is pinned at the version-name site by a real bind mount, made
-  inside a user namespace with `unshare -Umr`, which needs no privileges. The
-  test skips where the kernel or image will not provide one. It is the guard
-  worth the trouble: without it the run exits with the same code and the same
-  message, and the only difference is that the user's mounted data is gone.
-  The two older sites remain uncovered — not because a mount is unobtainable,
-  which was an earlier claim in this document and was false, but because
-  neither has been written yet.
-- Behavior 17 is pinned in part by a read-only volume that already holds the
-  version: the start must succeed, because nothing needs writing. That is what
-  keeps ccc from re-copying 215MB per version on every start.
+- Behavior 16 is pinned at all three sites by a real bind mount, made inside a
+  user namespace with `unshare -Umr`, which needs no privileges; the tests skip
+  where the kernel or image will not provide one. An earlier version of this
+  document claimed such a mount was unobtainable and used that to excuse
+  leaving the guards untested. It was not true. The guards are worth the
+  trouble because without them the run still exits non-zero — it fails on the
+  mount point itself after the delete has already reached through it — so the
+  refusal is indistinguishable from an ordinary removal failure and nothing
+  tells the user their mounted data was destroyed.
+- Behavior 10 is pinned in part by a read-only volume that already holds the
+  version: the start must succeed, because a version already there is left
+  alone and so nothing needs writing. The test observes a refused write rather
+  than a refused copy — it is what keeps the skip from being deleted, not a
+  measurement of copying.
 - Behaviors 1–4 as stated are host-tier: they need a real Docker daemon whose
   path resolution matches the caller's, which is not satisfiable from inside a
   container (see the header of `src/__tests__/e2e.test.ts`).
