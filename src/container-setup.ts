@@ -7,8 +7,30 @@ import { spawnSync } from "child_process";
 import { getNpmTools, getToolByName, type ToolDefinition } from "./tool-registry.js";
 import { runtimeCli } from "./container-runtime.js";
 
-// Claude binary persist path inside the mise volume
-export const CLAUDE_PERSIST_DIR = "/home/ccc/.local/share/mise/.claude-bin";
+// Claude's native install layout inside the container.
+//
+// The native updater manages ~/.local/bin/claude ONLY when it is a symlink into
+// <data-dir>/versions/. ccc used to `cp` the binary to that path instead, and
+// the consequence was silent: `claude update` installed the new version under
+// versions/, printed "Successfully updated", declined to touch the launcher it
+// had not created, and every later run executed the same stale copy. Measured
+// on this project's own container — launcher 2.1.241 while versions/2.1.261 sat
+// unreferenced, the volume cache byte-identical to the stale launcher.
+//
+// So ccc persists the native install DIRECTORY rather than a single binary:
+//
+//   <volume>/.claude-data                      persistent, shared across projects
+//   ~/.local/share/claude -> <volume>/.claude-data      container fs, recreated
+//   ~/.local/bin/claude   -> ~/.local/share/claude/versions/<v>
+//
+// An in-container `claude update` then lands directly in the volume, and the
+// updater's own version cleanup resumes — it is disabled precisely because the
+// launcher is not a symlink.
+export const CLAUDE_DATA_VOLUME_DIR = "/home/ccc/.local/share/mise/.claude-data";
+export const CLAUDE_DATA_DIR = "/home/ccc/.local/share/claude";
+// Pre-symlink layout: one binary cached as a plain file. Volumes created before
+// this change still hold it, so it is a migration donor, never a launcher source.
+export const CLAUDE_LEGACY_CACHE_FILE = "/home/ccc/.local/share/mise/.claude-bin/claude";
 export const CLAUDE_EXECUTABLE = "claude";
 export const CLAUDE_BIN_PATH = "/home/ccc/.local/bin/claude";
 export const CONTAINER_TOOL_PROBE_TIMEOUT_MS = 15_000;
@@ -43,96 +65,142 @@ function assertMutationSucceeded(
     if (result.error || result.status !== 0) throw new Error(`${operation} failed`);
 }
 
-export function isClaudeVersionLine(line: string): boolean {
-    const trimmed = line.trim();
-    return /^(claude(\s+code)?\s+v?\d+\.\d+\.\d+|v?\d+\.\d+\.\d+(\s|$)|v?\d+\.\d+\.\d+.*\bclaude(\s+code)?\b)/i.test(trimmed);
+export interface ClaudeLayoutPaths {
+    /** PATH entry the launcher symlink lives at. */
+    bin: string;
+    /** XDG data dir the native installer writes to; becomes a symlink to `volumeDataDir`. */
+    dataDir: string;
+    /** Directory inside the persistent named volume that backs `dataDir`. */
+    volumeDataDir: string;
+    /** Pre-symlink single-file cache, used only as a migration donor. */
+    legacyCacheFile: string;
 }
 
-/**
- * Check if a file in the container is a mise shim (shell script referencing mise)
- * rather than a real native binary.
- */
-export function isMiseShim(containerName: string, path: string): boolean {
-    const result = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "sh", "-c", `head -c 500 '${path.replace(/'/g, "'\\''")}' 2>/dev/null | grep -q mise`],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
-    );
-    return result.status === 0;
-}
+export const CLAUDE_LAYOUT_PATHS: ClaudeLayoutPaths = {
+    bin: CLAUDE_BIN_PATH,
+    dataDir: CLAUDE_DATA_DIR,
+    volumeDataDir: CLAUDE_DATA_VOLUME_DIR,
+    legacyCacheFile: CLAUDE_LEGACY_CACHE_FILE,
+};
+
+// Bounded so a corrupt newest version cannot make the probe walk the whole
+// directory spawning a 200MB binary per candidate.
+const CLAUDE_VERSION_SCAN_LIMIT = 5;
+
+// The probe is milliseconds on the happy path, but its migration branch copies
+// the ~215MB binary into the volume. Measured here at 0.19s for a real 215MB
+// migration within one filesystem, so the 8s budget the other short mutations
+// use would very likely have held — this is headroom, not a fix for an observed
+// timeout. It buys the case that branch cannot afford to lose: the first run
+// after upgrading ccc, where timing out means re-downloading a cache that was
+// already on disk.
+const CLAUDE_PROBE_INNER_TIMEOUT_SECONDS = 120;
+export const CLAUDE_PROBE_TIMEOUT_MS = 150_000;
 
 /**
- * Verify the binary at the given path is actually claude by checking --version output.
- * Guards against bun or other binaries accidentally cached at the claude path.
- */
-export function isValidClaudeBinary(containerName: string, path: string): boolean {
-    const escapedPath = path.replace(/'/g, "'\\''");
-    const result = spawnSync(
-        runtimeCli(),
-        [
-            "exec", containerName, "sh", "-c",
-            `first_line="$('${escapedPath}' --version 2>/dev/null | head -n 1 || true)"; printf '%s\\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\\bclaude([[:space:]]+code)?\\b)'`,
-        ],
-        { encoding: "utf-8", timeout: 10000 },
-    );
-    return result.status === 0;
-}
-
-/**
- * Ensure claude binary is available in the container.
- * 1. If real claude binary exists at known path → do nothing
- * 2. If claude exists elsewhere on PATH → copy it into the fixed path + cache
- * 3. If volume has a valid cached copy → restore it to the fixed path
- * 4. Otherwise → fresh install, then copy into fixed path + cache
+ * Build the in-container script that puts the native layout in place and
+ * reports what it did: VALID (already correct), RESTORED (launcher re-pointed
+ * at a version already in the volume, including a migrated legacy cache), or
+ * INSTALL (nothing usable — caller must run the installer).
  *
- * Uses a single docker exec to probe both paths, reducing round-trips
- * from 3-5 to 1 for the common happy path.
+ * Pure and path-parameterized so tests can execute it under `sh` against a
+ * temp directory. That matters here: the predecessor was asserted only by
+ * substring match on the generated text, which is exactly why a script that
+ * did the wrong thing passed its tests for the life of this bug.
+ *
+ * POSIX sh only — /bin/sh is dash in this image.
  */
-export function ensureClaudeInContainer(containerName: string): void {
-    // Single docker exec: check main path, fall through to cache, handle cleanup
-    const probeScript = `
-BIN="${CLAUDE_BIN_PATH}"
-CACHE="${CLAUDE_PERSIST_DIR}/claude"
-FOUND="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)"
+export function buildClaudeProbeScript(paths: ClaudeLayoutPaths): string {
+    return `
+BIN=${shellQuote(paths.bin)}
+DATA=${shellQuote(paths.dataDir)}
+VOL=${shellQuote(paths.volumeDataDir)}
+LEGACY=${shellQuote(paths.legacyCacheFile)}
+SCAN_LIMIT=${CLAUDE_VERSION_SCAN_LIMIT}
+
 is_shim() { head -c 500 "$1" 2>/dev/null | grep -q mise; }
 is_claude() {
   first_line="$("$1" --version 2>/dev/null | head -n 1 || true)"
   printf '%s\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\bclaude([[:space:]]+code)?\b)'
 }
 
-if [ -x "$BIN" ]; then
-  if is_shim "$BIN"; then
-    rm -f "$BIN"
-  elif is_claude "$BIN"; then
-    echo VALID; exit 0
-  else
-    rm -f "$BIN"
-  fi
+# The data dir must resolve into the named volume, or an in-container update is
+# lost the moment the container is recreated.
+mkdir -p "$VOL" || exit 1
+if [ -L "$DATA" ]; then
+  [ "$(readlink "$DATA")" = "$VOL" ] || { rm -f "$DATA"; ln -s "$VOL" "$DATA"; }
+elif [ -d "$DATA" ]; then
+  # A real directory here predates this layout (or a bind mount put it there).
+  # Move its contents into the volume rather than discarding an install — so the
+  # copy has to succeed before the original is removed. On failure $DATA stays a
+  # real directory and the check below fails the probe, which is the honest
+  # outcome: better a visible error than a silently deleted install.
+  cp -a "$DATA/." "$VOL/" && rm -rf "$DATA" && ln -s "$VOL" "$DATA"
+else
+  rm -f "$DATA" 2>/dev/null || true
+  mkdir -p "$(dirname "$DATA")" && ln -s "$VOL" "$DATA"
 fi
-if [ -n "$FOUND" ] && [ -x "$FOUND" ]; then
-  if is_shim "$FOUND"; then
-    :
-  elif is_claude "$FOUND"; then
-    mkdir -p "$(dirname "$BIN")" "$(dirname "$CACHE")" && cp -L "$FOUND" "$CACHE" && cp -L "$CACHE" "$BIN"
-    echo VALID; exit 0
-  fi
+[ -L "$DATA" ] || exit 1
+
+# Newest-first, first valid wins: normally one --version spawn.
+BEST=""
+pick_best() {
+  BEST=""
+  for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr | head -n "$SCAN_LIMIT"); do
+    f="$DATA/versions/$cand"
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    if is_shim "$f"; then continue; fi
+    if is_claude "$f"; then BEST="$f"; return 0; fi
+  done
+  return 1
+}
+
+# Seed versions/<v> from a plain binary left by an older ccc, a hand install, or
+# whatever is on PATH — so upgrading ccc does not force a re-download.
+seed_from() {
+  src="$1"
+  [ -n "$src" ] && [ -f "$src" ] && [ -x "$src" ] || return 1
+  is_shim "$src" && return 1
+  is_claude "$src" || return 1
+  v="$("$src" --version 2>/dev/null | head -n 1 | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n 1)"
+  [ -n "$v" ] || return 1
+  mkdir -p "$DATA/versions" || return 1
+  cp -L "$src" "$DATA/versions/.seed.$$" || return 1
+  chmod +x "$DATA/versions/.seed.$$"
+  mv -f "$DATA/versions/.seed.$$" "$DATA/versions/$v"
+}
+
+if ! pick_best; then
+  for donor in "$BIN" "$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" "$LEGACY"; do
+    if seed_from "$donor"; then break; fi
+  done
+  pick_best || { echo INSTALL; exit 0; }
 fi
-if [ -x "$CACHE" ]; then
-  if is_shim "$CACHE"; then
-    rm -f "$CACHE"
-  elif is_claude "$CACHE"; then
-    mkdir -p "$(dirname "$BIN")" && cp -L "$CACHE" "$BIN"
-    echo RESTORED; exit 0
-  else
-    rm -f "$CACHE"
-  fi
+
+if [ -L "$BIN" ] && [ "$(readlink "$BIN")" = "$BEST" ]; then
+  echo VALID
+  exit 0
 fi
-echo INSTALL`.trim();
+mkdir -p "$(dirname "$BIN")" || exit 1
+rm -rf "$BIN"
+ln -s "$BEST" "$BIN" || exit 1
+echo RESTORED`.trim();
+}
+
+/**
+ * Ensure claude is available in the container, in the shape the native updater
+ * will keep managing: launcher symlink → versions/<v> inside the shared volume.
+ *
+ * One docker exec on the happy path; a second only on first install, to prove
+ * the installer actually produced a usable launcher instead of trusting it.
+ */
+export function ensureClaudeInContainer(containerName: string): void {
+    const probeScript = buildClaudeProbeScript(CLAUDE_LAYOUT_PATHS);
 
     const result = spawnSync(
         runtimeCli(),
-        ["exec", containerName, "sh", "-c", boundedShortContainerMutation(probeScript)],
-        { encoding: "utf-8", timeout: CONTAINER_TOOL_PROBE_TIMEOUT_MS },
+        ["exec", containerName, "sh", "-c", boundedContainerMutation(probeScript, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
+        { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
     );
     if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
         || result.status === 124
@@ -155,7 +223,9 @@ echo INSTALL`.trim();
         throw new Error("Claude readiness probe returned an invalid result");
     }
 
-    // Fresh install and save to volume
+    // The data dir is already a symlink into the volume by the time the probe
+    // returns INSTALL, so the installer writes versions/ straight into the
+    // volume and creates the launcher symlink itself. Nothing to copy after.
     console.log("Installing claude (first run)...");
     const installResult = spawnSync(
         runtimeCli(),
@@ -164,11 +234,24 @@ echo INSTALL`.trim();
             containerName,
             "sh",
             "-c",
-            boundedContainerMutation(`${getToolByName("claude")!.installCommand} && ACTUAL="$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" && [ -n "$ACTUAL" ] && [ -x "$ACTUAL" ] && mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && cp -L "$ACTUAL" ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH}`),
+            boundedContainerMutation(getToolByName("claude")!.installCommand),
         ],
         { stdio: "inherit", timeout: CONTAINER_TOOL_MUTATION_TIMEOUT_MS },
     );
     assertMutationSucceeded(installResult, "Claude installation");
+
+    // Re-probe rather than trust the installer: a `curl | bash` that exits 0
+    // without leaving a usable launcher would otherwise surface much later, as
+    // an unexplained "tool is unavailable after setup".
+    const confirm = spawnSync(
+        runtimeCli(),
+        ["exec", containerName, "sh", "-c", boundedContainerMutation(probeScript, CLAUDE_PROBE_INNER_TIMEOUT_SECONDS)],
+        { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
+    );
+    const confirmStatus = (confirm.stdout ?? "").trim();
+    if (confirm.error || confirm.status !== 0 || (confirmStatus !== "VALID" && confirmStatus !== "RESTORED")) {
+        throw new Error("Claude installation left no usable launcher");
+    }
 }
 
 /**
@@ -288,35 +371,12 @@ function ensureNpmTool(containerName: string, activeTool: ToolDefinition): void 
     assertMutationSucceeded(wrapperResult, `Container ${tool.cmd} wrapper creation`);
 }
 
-/**
- * Save claude binary back to volume and refresh the fixed install path.
- */
-export function saveClaudeBinaryToVolume(containerName: string): void {
-    const resolveResult = spawnSync(
-        runtimeCli(),
-        ["exec", containerName, "sh", "-c", `command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true`],
-        { encoding: "utf-8", timeout: 10000 },
-    );
-    const actualPath = (resolveResult.stdout ?? "").trim() || CLAUDE_BIN_PATH;
-
-    if (isMiseShim(containerName, actualPath)) {
-        return;
-    }
-    if (!isValidClaudeBinary(containerName, actualPath)) {
-        return;
-    }
-    spawnSync(
-        runtimeCli(),
-        [
-            "exec",
-            containerName,
-            "sh",
-            "-c",
-            `mkdir -p ${CLAUDE_PERSIST_DIR} "$(dirname ${CLAUDE_BIN_PATH})" && [ -x '${actualPath.replace(/'/g, "'\\''")}' ] && cp -L '${actualPath.replace(/'/g, "'\\''")}' ${CLAUDE_PERSIST_DIR}/claude && cp -L ${CLAUDE_PERSIST_DIR}/claude ${CLAUDE_BIN_PATH} || true`,
-        ],
-        { stdio: "ignore" },
-    );
-}
+// saveClaudeBinaryToVolume() used to run on every session exit: it copied
+// `command -v claude` into the volume and then copied that back over the
+// launcher. Both halves are gone. The launcher is now a symlink and that second
+// copy was what flattened it back into a regular file; the first is redundant
+// because versions/ already lives in the volume. Removing it also drops a
+// ~200MB copy from the shutdown path of every session.
 
 /**
  * Ensure uv is available globally in the container via mise.

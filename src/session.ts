@@ -3,7 +3,6 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync,
 import { basename, join } from "path";
 import { randomBytes } from "crypto";
 import { getProjectId, DATA_DIR } from "./utils.js";
-import { saveClaudeBinaryToVolume } from "./container-setup.js";
 import { runtimeCli } from "./container-runtime.js";
 import { cleanupOwnerDevices } from "./device-lab-admin.js";
 import { withSharedMutationLock, withSharedMutationLockAsync } from "./device-lab-shared-state.js";
@@ -314,9 +313,6 @@ export function cleanupSession(): void {
         if (!hasOthers) {
             cleanupDevicesBestEffort(currentProjectPath!, currentProfile);
             if (currentContainerId) {
-                if (currentToolName === "claude") {
-                    saveClaudeBinaryToVolume(currentContainerId);
-                }
                 spawnSync(runtimeCli(), ["stop", currentContainerId], { stdio: "ignore" });
             }
         }
