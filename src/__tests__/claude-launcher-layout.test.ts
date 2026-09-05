@@ -721,7 +721,11 @@ describe("claude launcher layout", () => {
 
             expect(result.stdout).toBe("RESTORED 2.1.241")
             expect(lstatSync(occupied).isFile()).toBe(true)
-            expect(result.stderr).not.toMatch(/^removed /m)
+            // Announced. A clear that destroys bytes in a shared volume should
+            // not be the one thing said quietly — the "nothing anyone runs was
+            // inside" argument holds for a junk directory at a real version
+            // name and not for a dot-dated export wearing the same shape.
+            expect(result.stderr).toMatch(/^removed 2\.1\.241: a version must be a regular file$/m)
         })
 
         it("refuses to seed on top of a directory it could not clear", () => {
@@ -887,13 +891,30 @@ describe("claude launcher layout", () => {
                 .toBe("somebody's notes")
         })
 
+        it("does not clear a .tmp. name whose suffix the installer would not write", () => {
+            // The staging clause allowed any suffix after .tmp., so
+            // 2.1.3.tmp.mynotes was recursively deleted. The real one is
+            // <version>.tmp.<pid>.<timestamp>.<n> — all numbers.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(volVersions, "2.1.3.tmp.mynotes", "deep"), { recursive: true })
+            writeFileSync(join(volVersions, "2.1.3.tmp.mynotes", "deep", "data"), "somebody's notes")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(join(volVersions, "2.1.3.tmp.mynotes", "deep", "data"), "utf8"))
+                .toBe("somebody's notes")
+        })
+
         it("does not collect a .tmp. name the installer would never write", () => {
             // The reaper had a name rule and no shape rule, so my.tmp.notes was
-            // taken, silently, on a shared volume. It blocks nothing — the
-            // selection skips it either way — so there is no licence for it.
+            // taken, silently, on a shared volume; a glob cannot say "digits"
+            // either, so the first narrowing would still have taken this one.
+            // It blocks nothing, so there is no licence for it.
             const volVersions = join(paths.volumeDataDir, "versions")
             mkdirSync(volVersions, { recursive: true })
-            const theirs = join(volVersions, "my.tmp.notes")
+            const theirs = join(volVersions, "2a.1b.3c.tmp.9.9.9")
             writeFileSync(theirs, "somebody's notes")
             const old = new Date(Date.now() - 3600_000)
             lutimesSync(theirs, old, old)
@@ -1039,9 +1060,7 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("INSTALL")
             // INSTALL is only useful if the installer can write that name
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
-            // and it stays unannounced, on this path as on the other: nothing
-            // was running out of a directory
-            expect(result.stderr).not.toMatch(/^removed /m)
+            expect(result.stderr).toMatch(/^removed 2\.1\.261: a version must be a regular file$/m)
         })
 
         it("prefers an existing version over the legacy cache", () => {

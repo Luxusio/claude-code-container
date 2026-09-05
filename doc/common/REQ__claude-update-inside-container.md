@@ -58,8 +58,11 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    shared-volume change a user can be surprised by: it can move them to a
    different version, or leave another project's launcher pointing at nothing.
    Clearing an entry that is not a file at all — a directory, a fifo, a socket
-   — is not reported when it succeeds, because nothing anyone runs was inside
-   it. A change reported by more than one probe of the same start is
+   — is reported too. The argument for saying nothing was that nothing anyone
+   runs was inside it, which holds for a junk directory at a real version name
+   and not for an export named for a date, which wears the same shape and
+   cannot be told apart. A clear that destroys bytes in a volume every project
+   shares should not be the one thing said quietly.
    said once. Every name ccc reads out of the volume and prints — in a note, in
    a reuse line, in an error, in what `ccc doctor` shows — is stripped of
    control and direction-marking characters first, because a name is data and
@@ -131,8 +134,9 @@ the install directory is shared. That makes several things observable:
 
     What licenses the clear is that the entry is holding a name the installer
     needs, so it is only ever applied to a name shaped like a version: three
-    dot-separated numbers, optionally with the suffix the installer uses for
-    its own staging. A directory of somebody's notes, or an export named for a
+    dot-separated numbers, optionally with the installer's own staging suffix —
+    which is `.tmp.` followed by three more numbers, not `.tmp.` followed by
+    anything. A directory of somebody's notes, or an export named for a
     date with dashes, is left where it is even though it starts with a digit:
     it blocks nothing, and reaching into it would destroy bytes on a volume
     every project shares for no reason at all. So is a version name carrying
@@ -320,7 +324,11 @@ would be wrong precisely where it is permanent.
   are two kinds and they are protected differently: ccc's own are hidden, and
   the selection does not look at hidden names; the installer's are not hidden
   and are skipped by name. Both are pinned, and so is collecting the
-  installer's once it is old enough — it is the one that can be 215MB.
+  installer's once it is old enough — it is the one that can be 215MB. Both
+  collectors read the same shape rule as the clears, so a name the installer
+  would not write is not swept either. A directory wearing a staging name is
+  collected by nothing, which is a gap in the claim rather than in the cleanup:
+  ccc writes no directory there.
 - Behavior 15's recovery is pinned with nothing to adopt as well as with a
   local install, for a directory and for a fifo, and its two refusals — a mount
   at that name, and a name that could not be cleared — are pinned separately,

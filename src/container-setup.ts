@@ -153,7 +153,7 @@ mkdir -p "$VOL" || exit 1
 # about what claude versions look like, maintained here, wrong the day it is
 # not. Treating it as a version is the choice; the REQ records the cost.
 is_version_name() {
-  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.].*)?$'
+  printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.][0-9]+[.][0-9]+[.][0-9]+)?$'
 }
 
 is_mountpoint() {
@@ -436,10 +436,13 @@ find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/d
 # advances while the installer writes, so no unfinished file can be ten minutes
 # idle.
 #
-# Shape-gated too. A bare *.tmp.* took my.tmp.notes, which the installer would
-# never write and which blocks nothing — the same defect this file has already
-# closed twice on other paths.
-find "$DATA/versions" -maxdepth 1 -name '[0-9]*.[0-9]*.[0-9]*.tmp.*' -type f -mmin +10 -delete 2>/dev/null || true
+# Shape-gated too, through the same function the clears use rather than a glob
+# of its own: a bare *.tmp.* took my.tmp.notes, and a glob cannot say "digits",
+# so it would have taken 2a.1b.3c.tmp.x as well. One rule, three sites.
+( cd "$DATA/versions" && find . -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -print ) 2>/dev/null | while IFS= read -r ent; do
+  cand="\${ent#./}"
+  is_version_name "$cand" && rm -f "$DATA/versions/$cand"
+done
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
@@ -568,12 +571,16 @@ free_unusable_versions() {
       # every start, forever, because the only code that cleared this ran inside
       # adoption and adoption needs a local install to adopt.
       #
-      # A successful clear is not announced. Behavior 9 reports what a user can
-      # be surprised by, and nothing was running out of a directory. A refusal
-      # is: it is a start that will now do something expensive and pointless.
+      # Announced, including when it succeeds. The argument for silence was
+      # that nothing anyone runs lives inside a junk directory — true of one at
+      # a real version name, and precisely wrong for a dot-dated export, which
+      # is that shape and cannot be told apart. Something that destroys bytes
+      # in a shared volume should not be the one thing said quietly.
       if is_mountpoint "$f"; then
         echo "cannot remove $cand: it is a mount point in the volume, and clearing it would empty the other side" >&2
-      elif ! clear_err="$(rm -rf "$f" 2>&1)"; then
+      elif clear_err="$(rm -rf "$f" 2>&1)"; then
+        echo "removed $cand: a version must be a regular file" >&2
+      else
         # Trim after, not in the pipeline: a pipe reports the LAST command's
         # status, so head would have swallowed rm's failure and the refusal
         # would never have been printed at all.
