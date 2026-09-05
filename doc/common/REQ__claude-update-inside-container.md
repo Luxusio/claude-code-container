@@ -67,6 +67,11 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
+10b. ccc runs a version only when it is a real file under `versions/`. A
+    symlink there resolves to a binary outside the directory the updater
+    manages, so running it reproduces the original bug: the version works,
+    reports correctly, and cannot be updated. ccc never publishes one; a shared
+    volume can still hold one somebody put there.
 11. A version name written by current ccc appears in the volume only when its
     bytes are all there: a copy interrupted partway leaves no published name,
     because nothing would ever replace a truncated file once it existed.
@@ -171,17 +176,23 @@ Recorded as the updater's stated behavior.
 
 ## Diagnosis
 
+Both lines name the same directory, resolved: the data dir is itself a symlink
+into the shared volume, and printing the literal path on one branch and the
+resolved one on the other described two places for one. The warning also says
+what to do, because an ordinary `ccc` start is what repairs it — measured, not
+assumed.
+
 `ccc doctor` reports the launcher's shape, not only its version, because the
 version alone is what looks fine in the broken state: a real version printed by
 a real binary at the right path. What it checks is where the launcher resolves,
 not merely whether it is a symlink — a symlink pointing outside `versions/` is
 exactly as unmanaged as a plain copy. It reads either
 
-    2.1.261 (Claude Code) (updatable, -> /home/ccc/.local/share/claude/versions/2.1.261)
+    2.1.261 (Claude Code) (updatable, -> /home/ccc/.local/share/mise/.claude-data/versions/2.1.261)
 
 or
 
-    2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/claude/versions, so claude update cannot replace it)
+    2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/mise/.claude-data/versions, so claude update cannot replace it. Starting ccc again repairs this)
 
 ## Verification
 

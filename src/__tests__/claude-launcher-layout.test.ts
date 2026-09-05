@@ -815,6 +815,24 @@ describe("claude launcher layout", () => {
             expect(existsSync(paths.bin)).toBe(false)
         })
 
+        it("does not select a version that is a symlink", () => {
+            // -f follows links, so a symlink under versions/ used to be chosen
+            // and reported as a successful start — on precisely the layout the
+            // doctor calls NOT updatable, which is the bug this whole change
+            // removes. ccc never publishes one; a shared volume can still hold
+            // one that a person put there.
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "9.9.9")
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(paths.volumeDataDir, "versions", "9.9.9"))
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(realpathSync(paths.bin)).toBe(join(paths.volumeDataDir, "versions", "2.1.261"))
+        })
+
         it("does not adopt a mise shim as a claude binary", () => {
             writeMiseShim(paths.bin)
 

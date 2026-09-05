@@ -365,7 +365,11 @@ pick_best() {
   BEST=""
   for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr); do
     f="$DATA/versions/$cand"
-    [ -f "$f" ] && [ -x "$f" ] || continue
+    # -f follows links, so a symlink here used to be selected and blessed: the
+    # probe reported success on a layout ccc doctor calls NOT updatable, which
+    # is the exact shape this whole change exists to remove. ccc never publishes
+    # one, but a hand-made or foreign entry in a shared volume can be one.
+    [ -f "$f" ] && [ ! -L "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
     if is_claude "$f"; then BEST="$f"; return 0; fi
   done
@@ -477,14 +481,21 @@ export function buildClaudeLauncherReportCommand(
         // expansion the pattern is a glob, so a path holding `*`, `?` or `[`
         // silently matches the wrong thing. Quoting inside a case pattern makes
         // those characters literal.
-        `[ -n "$expected" ] || expected="__no_versions_dir__"`,
+        // What to print, versus what to match on. The sentinel exists so an
+        // absent versions dir matches nothing; printing it would tell the user
+        // about a directory that does not exist.
+        `shown="$expected"`,
+        `[ -n "$expected" ] || { expected="__no_versions_dir__"; shown=${versionsDir}; }`,
         `case "$target" in`,
         `  "$expected"/*) printf '%s (updatable, -> %s)\\n' "$v" "$target" ;;`,
         // Exit 2, not 0. A caller that keys off "the command succeeded" would
         // render this as a passing check — which is what ccc doctor did, showing
         // a green tick and "All checks passed" for the exact state this exists
         // to surface.
-        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir}; exit 2 ;;`,
+        // Report the resolved directory here too. Printing the literal path on
+        // one branch and the resolved one on the other told a user about two
+        // different directories for the same place.
+        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it. Starting ccc again repairs this)\\n' "$v" "$shown"; exit 2 ;;`,
         `esac`,
     ].join("\n");
 }
