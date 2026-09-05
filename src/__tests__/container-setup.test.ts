@@ -25,8 +25,8 @@ const {
 
 const { getDefaultTool, getToolByName } = await import("../tool-registry.js");
 
-function makeResult(status: number, stdout = ""): SpawnSyncReturns<string> {
-    return { pid: 1, output: [], stdout, stderr: "", status, signal: null };
+function makeResult(status: number, stdout = "", stderr = ""): SpawnSyncReturns<string> {
+    return { pid: 1, output: [], stdout, stderr, status, signal: null };
 }
 
 describe("container-setup.ts module", () => {
@@ -41,6 +41,76 @@ describe("container-setup.ts module", () => {
     afterEach(() => {
         vi.restoreAllMocks();
     });
+
+    describe("what a successful start still tells the user", () => {
+        // The probe can change state every project on the host shares — removing
+        // a version name held by a link — and succeed. That was reported on
+        // none of the paths where it happens: dropped on VALID, dropped on the
+        // first probe of an INSTALL, which is the one that does the removing.
+        const note = "removed 2.1.261: a version must be a real file, not a symlink"
+
+        it("reports a shared-volume change on a start that needed nothing else", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n", `${note}\n`))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(note)
+        })
+
+        it("reports it on the reuse path", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.261\n", `${note}\n`))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(note)
+        })
+
+        it("reports the removal that unblocked an install, from the probe that did it", () => {
+            // The confirm probe cannot report it: by then the entry is gone and
+            // it has nothing to say. Only the first probe knows.
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "INSTALL\n", `${note}\n`))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.261\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(note)
+        })
+
+        it("says a persisting failure once, not once per probe", () => {
+            const stuck = "cannot remove 2.1.261: a version must be a real file, not a symlink"
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "INSTALL\n", `${stuck}\n`))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.261\n", `${stuck}\n`))
+
+            ensureClaudeInContainer(container)
+
+            const said = (console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
+                .filter(call => call[0] === stuck)
+            expect(said).toHaveLength(1)
+        })
+
+        it("does not relay the noise of the tools the probe calls", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n",
+                "rm: cannot remove '/vol/versions/2.1.261': Permission denied\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Permission denied"))
+        })
+
+        it("strips control bytes out of a name it repeats", () => {
+            // The name comes from a volume every project can write to, so it is
+            // data on its way to a terminal, not text to trust.
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n",
+                "removed 2.1.261\u001b[31mHACK: a version must be a real file, not a symlink\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(
+                "removed 2.1.261?[31mHACK: a version must be a real file, not a symlink")
+        })
+    })
 
     describe("constants", () => {
         it("puts the claude data dir inside the persistent named volume", () => {

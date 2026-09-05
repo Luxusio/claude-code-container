@@ -408,7 +408,16 @@ seed_from() {
 
 drop_linked_versions() {
   [ -d "$DATA/versions" ] || return 0
-  for cand in $(ls "$DATA/versions" 2>/dev/null); do
+  # find + read -r, not $(ls): word splitting drops a name holding whitespace
+  # and glob expansion turns one holding * into something else entirely, so
+  # those names were silently left behind. They cannot collide with an X.Y.Z
+  # installer target, so this is consistency rather than a second wedge.
+  #
+  # Between the test and the unlink another container could publish a real file
+  # at this name. The window is microseconds, POSIX sh has no unlink-if-symlink,
+  # and a process already running that file keeps its inode.
+  ( cd "$DATA/versions" && find . -mindepth 1 -maxdepth 1 -print ) 2>/dev/null | while IFS= read -r ent; do
+    cand="\${ent#./}"
     f="$DATA/versions/$cand"
     [ -L "$f" ] || continue
     # A version has to be a real file: a symlink resolves to a binary outside
@@ -471,12 +480,19 @@ echo "RESTORED $(basename "$BEST")"`.trim();
  * to shared state or a version passed over — the probe's other stderr is noise
  * from tools it calls, and a start that worked should not read like a failure.
  */
-function reportProbeNotes(stderr: string | undefined): void {
+function reportProbeNotes(stderr: string | undefined, seen: Set<string>): void {
     for (const line of (stderr ?? "").split(/\r?\n/)) {
         const text = line.trim();
-        if (text.startsWith("removed ") || text.startsWith("cannot remove ")) {
-            console.log(text);
-        }
+        if (!text.startsWith("removed ") && !text.startsWith("cannot remove ")) continue;
+        // The name comes from a volume every project on the host can write, so
+        // it reaches the terminal as data: control bytes out, or a filename
+        // can repaint the line it is reported on.
+        const safe = text.replace(/[\u0000-\u001f\u007f]/g, "?");
+        // A note that survives into the confirm probe — an entry that could not
+        // be removed — would otherwise be reported twice for one start.
+        if (seen.has(safe)) continue;
+        seen.add(safe);
+        console.log(safe);
     }
 }
 
@@ -565,6 +581,15 @@ export function ensureClaudeInContainer(containerName: string): void {
         throw new Error(`Claude readiness probe failed${probeDiagnostic(result.stderr)}`);
     }
     const status = (result.stdout ?? "").trim();
+    // One set for the whole start: an entry that could not be removed appears
+    // in the confirm probe's stderr as well, and one start should report it
+    // once.
+    const reported = new Set<string>();
+    // Every success path, not only RESTORED. VALID is the common path for a
+    // container that is simply restarting, and INSTALL is the path where the
+    // removal that unblocked the install actually happened — reporting on
+    // neither meant the repair this exists for was the one thing never said.
+    reportProbeNotes(result.stderr, reported);
 
     if (status === "VALID") return;
 
@@ -576,11 +601,6 @@ export function ensureClaudeInContainer(containerName: string): void {
         console.log(version
             ? `Reusing claude ${version} from the shared volume.`
             : "Reusing claude from the shared volume.");
-        // A start that succeeded can still have changed something the user
-        // needs to know about — an entry removed from a volume every project
-        // shares, or a version passed over. Dropping stderr on success meant a
-        // silent downgrade with nothing said.
-        reportProbeNotes(result.stderr);
         return;
     }
 
@@ -618,7 +638,7 @@ export function ensureClaudeInContainer(containerName: string): void {
         || (confirmStatus !== "VALID" && !confirmStatus.startsWith("RESTORED"))) {
         throw new Error(`Claude installation left no usable launcher${probeDiagnostic(confirm.stderr)}`);
     }
-    reportProbeNotes(confirm.stderr);
+    reportProbeNotes(confirm.stderr, reported);
 }
 
 /**

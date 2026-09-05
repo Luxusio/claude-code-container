@@ -52,10 +52,13 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 8. When setup fails, the reason reported from inside the container is included.
    A read-only volume, a full disk, and a bind mount in the way all produce the
    same bare "probe failed" otherwise, and the difference is only on stderr.
-9. A start that changed shared state says so even when it succeeded. Removing
-   an entry from a volume every project on the host reads is not something to
-   report only when the start fails; it used to be dropped on every success
-   path, so a user could be moved to an older version with nothing said.
+9. A start that changed shared state says so even when it succeeded, on every
+   path a start can take. Removing an entry from a volume every project on the
+   host reads is not something to report only when the start fails; a user
+   moved to a different version deserves the reason. A change reported by more
+   than one probe of the same start is said once, and the entry's name reaches
+   the terminal with control bytes stripped, because it came from a volume
+   anyone with a container can write to.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
    I on an old claude" is the question that line exists to answer, and the
    previous wording ("Restored claude from cache") was also no longer true —
@@ -81,8 +84,13 @@ the install directory is shared. That makes several things observable:
     identically with nothing changed. Freeing the name is what makes the next
     start work. Where the volume cannot be written, ccc still will not run the
     link — it says so and installs instead. ccc never publishes such an entry;
-    a shared volume can hold one somebody put there, and removing it is safe
-    for the same reason clearing any version name is.
+    a shared volume can hold one somebody put there. Removing it carries the
+    same inode argument as clearing any version name — a process running the
+    target is unaffected — but not the rest of it: unlike the junk names in
+    behavior 15, a link can be what another container's launcher resolves
+    through, and that container's `claude` stops working until its next ccc
+    start repairs it. Accepted, because the alternative is every project on the
+    host wedged for as long as the link exists.
 13. A version name written by current ccc appears in the volume only when its
     bytes are all there: a copy interrupted partway leaves no published name,
     because nothing would ever replace a truncated file once it existed.
@@ -231,6 +239,9 @@ what repairs the states a user reaches by accident.
 - Behavior 19 is pinned by a read-only parent at the launcher path, which needs
   no mount at all: the start must fail and must not print RESTORED, and no
   symlink may be left inside the directory that survived.
+- Behavior 9 is pinned on each success path a start can take — nothing else
+  needed, a reuse, and an install — plus once-per-start reporting, the tools'
+  own stderr staying out of it, and control bytes stripped from a name.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot
