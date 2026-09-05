@@ -186,7 +186,14 @@ adopt_into_volume() {
       # project on the host — pick_best skips it, seed_from refuses it, adopt
       # skips it — while each container keeps deleting its own good copy.
       case "$relpath" in
-        versions/*/*) ;;
+        versions/*/*)
+          # Refusing the version directory and then creating it here is how the
+          # announced refusal used to be undone: the volume ended up holding
+          # exactly the state the message said was refused.
+          echo "refusing to publish $relpath: it is inside a name that cannot be a version" >&2
+          : > "$adopt_failed"
+          continue
+          ;;
         versions/*)
           echo "refusing to publish $relpath: a directory cannot be a version" >&2
           : > "$adopt_failed"
@@ -214,10 +221,10 @@ adopt_into_volume() {
     if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
       continue
     fi
-    # The mount check belongs here rather than beside the clearing it guards:
-    # it reads and nothing else, so it races with nothing, and asking first
-    # spares a container with a mount at that name a full 215MB copy on every
-    # start before the same refusal. Named like the data-dir and launcher
+    # Asked before staging so a container with a mount at that name is spared a
+    # full 215MB copy on every start before the same refusal. It only reads, so
+    # asking early costs nothing — but it is not the guarantee: the copy sits
+    # between here and the delete, so the check is repeated there. Named like the data-dir and launcher
     # guards, because without it this refusal is indistinguishable from the
     # ordinary "could not be removed" one — and the difference is whether the
     # user's mounted data still exists.
@@ -262,9 +269,16 @@ adopt_into_volume() {
             # refuses it, so nothing anyone runs lives inside. Leaving it there
             # wedges this container on every future start with no way back.
             #
-            # A mount point is the exception, as it is for the data dir and the
-            # launcher: rm -rf across that boundary empties whatever the user
-            # put on the other side.
+            # Asked again here, not only in the arm before staging. That one
+            # exists to refuse before copying 215MB; this one is the guarantee,
+            # and between them lies the whole copy. A mount that appears in that
+            # window would otherwise be deleted through.
+            if is_mountpoint "$target"; then
+              echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
+              rm -f "$stage"
+              : > "$adopt_failed"
+              continue
+            fi
             clear_why="$(rm -rf "$target" 2>&1)"
             ;;
         esac
@@ -404,6 +418,14 @@ if [ -d "$BIN" ] && [ ! -L "$BIN" ]; then
     exit 1
   fi
   rm -rf "$BIN"
+  # The data dir has a post-check and this did not, so a removal that failed
+  # — a read-only parent, or a mount the guard above did not recognise — let
+  # ln write the launcher INSIDE the surviving directory, where nothing runs
+  # it, and the probe still printed RESTORED and exited 0.
+  if [ -e "$BIN" ] || [ -L "$BIN" ]; then
+    echo "cannot replace $BIN: it could not be removed" >&2
+    exit 1
+  fi
 fi
 ln -sfn "$BEST" "$BIN" || exit 1
 echo "RESTORED $(basename "$BEST")"`.trim();

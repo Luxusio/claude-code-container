@@ -137,27 +137,18 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
         })
 
-        it("replaces a volume entry that cannot be a version binary at all", () => {
-            // `-e` answers "is this name taken", not "is the right content
-            // there", so adopt used to skip the entry and return 0 — and the
-            // caller deletes the original on success, destroying the working
-            // binary. Refusing instead fixed that but wedged the container
-            // permanently: nothing in the loop can ever clear the bad name, so
-            // every later start fails the same way with no recovery path.
-            //
-            // A directory here means OUR side has a file and the volume has a
-            // directory under the same version name. Nothing can be executing
-            // it, so the name is free to take. Removing is safe even for a name
-            // in use — unlink() has no ETXTBSY, and a process already running a
-            // binary keeps its inode.
-            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
-            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
+        it("does not create the version directory it just refused", () => {
+            // The refusal was announced and then undone one entry later: the
+            // deeper path took the mirror branch, mkdir -p recreated the name,
+            // and the shared volume ended up holding exactly the state the
+            // message said was refused.
+            mkdirSync(join(paths.dataDir, "versions", "2.1.261", "sub"), { recursive: true })
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261", "sub", "claude"), "2.1.261")
 
             const result = run()
 
-            expect(result.status).toBe(0)
-            expect(result.stdout).toBe("RESTORED 2.1.261")
-            expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
+            expect(result.status).not.toBe(0)
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
         })
 
         it("refuses to publish a directory under a version name", () => {
@@ -250,33 +241,7 @@ describe("claude launcher layout", () => {
             expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
             expect(stderr).toContain("refusing to replace")
             expect(stderr).toContain(paths.dataDir)
-        })
-
-        it.skipIf(!canBindMount)("refuses to replace a launcher path that is a mount point", () => {
-            // A directory at the launcher path is pathological and gets removed
-            // — unless the user mounted something there, in which case the
-            // removal reaches through it.
-            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
-            rmSync(paths.bin, { force: true })
-            mkdirSync(paths.bin, { recursive: true })
-            const source = join(root, "mounted-bin")
-            mkdirSync(source, { recursive: true })
-            writeFileSync(join(source, "precious"), "the other side of the mount")
-
-            const script = join(root, "probe.sh")
-            writeFileSync(script, buildClaudeProbeScript(paths))
-            let stderr = ""
-            try {
-                execFileSync("unshare", ["-Umr", "sh", "-c",
-                    `mount --bind '${source}' '${paths.bin}' && sh '${script}'`],
-                    { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
-            } catch (error) {
-                stderr = ((error as { stderr?: string }).stderr ?? "")
-            }
-
-            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
-            expect(stderr).toContain("refusing to replace")
-            expect(stderr).toContain(paths.bin)
+            expect(existsSync(paths.bin)).toBe(false)
         })
 
         it("does not copy a version the volume already holds", () => {
@@ -331,6 +296,7 @@ describe("claude launcher layout", () => {
             // never happened pass all three assertions.
             expect(stderr).toContain("cannot adopt versions/2.1.261")
             expect(stderr).toContain("mount point")
+            expect(stderr).not.toContain("RESTORED")
         })
 
         it("refuses a non-empty directory at a name that is not a version", () => {
@@ -482,6 +448,57 @@ describe("claude launcher layout", () => {
     })
 
     describe("launcher shape", () => {
+        it.skipIf(!canBindMount)("refuses to replace a launcher path that is a mount point", () => {
+            // A directory at the launcher path is pathological and gets removed
+            // — unless the user mounted something there, in which case the
+            // removal reaches through it.
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+            mkdirSync(paths.bin, { recursive: true })
+            const source = join(root, "mounted-bin")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            let stderr = ""
+            try {
+                execFileSync("unshare", ["-Umr", "sh", "-c",
+                    `mount --bind '${source}' '${paths.bin}' && sh '${script}'`],
+                    { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+            } catch (error) {
+                stderr = ((error as { stderr?: string }).stderr ?? "")
+            }
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(stderr).toContain("refusing to replace")
+            expect(stderr).toContain(paths.bin)
+            expect(stderr).not.toContain("RESTORED")
+        })
+
+        it("does not report success when the launcher path could not be removed", () => {
+            // rm -rf was unchecked, so a removal that failed left ln writing the
+            // launcher INSIDE the surviving directory — where nothing runs it —
+            // while the probe printed RESTORED and exited 0. No mount needed: a
+            // read-only parent is enough.
+            //
+            // What is at stake is the report, not the contents: rm -rf empties
+            // a directory it cannot unlink, so by this point they are already
+            // gone. That is what the mount guard exists to prevent, earlier;
+            // this one exists so a start that failed says so.
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+            mkdirSync(paths.bin, { recursive: true })
+            const parent = join(root, "bin")
+            chmodSync(parent, 0o555)
+
+            const result = run()
+
+            chmodSync(parent, 0o755)
+            expect(result.status).not.toBe(0)
+            expect(result.stdout).not.toContain("RESTORED")
+            // and no launcher hidden inside the directory that survived
+            expect(existsSync(join(paths.bin, "2.1.261"))).toBe(false)
+        })
+
         it("makes the launcher a symlink into versions/, which is what the native updater requires", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 

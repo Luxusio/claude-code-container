@@ -106,17 +106,26 @@ the install directory is shared. That makes several things observable:
     already published. Adoption is not atomic, and nothing here claims it is.
 16. ccc refuses to delete through a mount point — at the data directory, at
     the launcher path, and at a version name it would otherwise clear — and
-    says which one it refused. Without that, the refusal is indistinguishable
-    from the ordinary one: deleting through a mount empties the other side and
-    then fails on the directory itself, so the exit code and the message look
-    the same whether or not the user's data survived. ccc never places a mount
+    says which one it refused. Deleting through a mount empties the other side
+    and only then fails on the directory itself, which is a failure ccc cannot
+    tell from an ordinary one, so nothing after the fact could report what was
+    lost. At the launcher there was not even a failure to read: the removal
+    went unchecked, the launcher was written inside the directory that
+    survived, and the start reported success.
+17. A start that could not put the launcher where it belongs fails rather than
+    reporting success. Removing whatever occupies that path can fail — a mount,
+    a read-only parent — and a symlink created inside the survivor is not a
+    launcher anyone will run. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
-17. Setup fails rather than reporting success whenever something that needed
-    adopting could not be — a read-only or full volume with an install to
+18. Setup fails rather than reporting success whenever something that needed
+    adopting could not be — a read-only or full volume with anything left to
     publish, and a name held by something that could not be removed. A volume
-    that already holds every version is not such a case: there is nothing to
-    write, so a read-only one is a success. The caller removes the
+    that already holds everything this container would publish is not such a
+    case: there is nothing to write, so a read-only one is a success. That is
+    the whole data directory, not only its versions; a real one carries other
+    state beside them, and one missing entry is enough to make a read-only
+    volume a failure. The caller removes the
     original on success, so a false success destroys a working install;
     existence of the name is not adoption, and the failure message says which
     entry could not be adopted.
@@ -197,11 +206,10 @@ or
   user namespace with `unshare -Umr`, which needs no privileges; the tests skip
   where the kernel or image will not provide one. An earlier version of this
   document claimed such a mount was unobtainable and used that to excuse
-  leaving the guards untested. It was not true. The guards are worth the
-  trouble because without them the run still exits non-zero — it fails on the
-  mount point itself after the delete has already reached through it — so the
-  refusal is indistinguishable from an ordinary removal failure and nothing
-  tells the user their mounted data was destroyed.
+  leaving the guards untested. It was not true.
+- Behavior 17 is pinned by a read-only parent at the launcher path, which needs
+  no mount at all: the start must fail and must not print RESTORED, and no
+  symlink may be left inside the directory that survived.
 - Behavior 10 is pinned in part by a read-only volume that already holds the
   version: the start must succeed, because a version already there is left
   alone and so nothing needs writing. The test observes a refused write rather
