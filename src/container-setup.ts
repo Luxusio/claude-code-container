@@ -273,7 +273,10 @@ adopt_into_volume() {
             # exists to refuse before copying 215MB; this one is the guarantee,
             # and between them lies the whole copy. A mount that appears in that
             # window would otherwise be deleted through.
-            if is_mountpoint "$target"; then
+            # Not through a link: is_mountpoint follows, so a symlink whose
+            # target is a mount read as a mount here and refused permanently —
+            # unlinking a link empties nothing.
+            if [ ! -L "$target" ] && is_mountpoint "$target"; then
               echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
               rm -f "$stage"
               : > "$adopt_failed"
@@ -367,7 +370,9 @@ fi
 # pointing at the cause. The age guard is what makes this safe: another
 # container's live staging file is minutes younger than the probe's own budget.
 # Two roots, two rules. At the volume root a stale stage is the only thing that
-# name can be, so anything wearing it goes. Under versions/ the name is also a
+# name can be, so anything wearing it goes — except a directory holding
+# something, which -delete rmdirs and cannot remove. Nothing ccc writes there is
+# a directory, so that is a gap in the claim rather than in the cleanup. Under versions/ the name is also a
 # version name: a link there is a link like any other, and deleting it here took
 # it away with nothing said — the one path that removed one in silence. Left
 # alone, free_unusable_versions takes it and reports it.
@@ -392,7 +397,7 @@ pick_best() {
   old_flags="$-"
   IFS="$(printf '\\n_')"; IFS="\${IFS%_}"
   set -f
-  # Not -A. Hidden links are already removed by drop_linked_versions, which
+  # Not -A. Hidden links are already removed by free_unusable_versions, which
   # enumerates with find, so -A bought nothing there — and it made a seed_from
   # staging file left behind by a killed start selectable: complete, executable,
   # claude-shaped, reported as a version and called updatable, until the reaper
@@ -472,21 +477,33 @@ free_unusable_versions() {
   ( cd "$DATA/versions" && find . -mindepth 1 -maxdepth 1 -print ) 2>/dev/null | while IFS= read -r ent; do
     cand="\${ent#./}"
     f="$DATA/versions/$cand"
-    if [ ! -L "$f" ] && [ -d "$f" ]; then
-      # A directory under a version name is junk by construction — ccc refuses
-      # to publish one, the selection skips it, seeding refuses it — so nothing
-      # anyone runs is inside. It also holds a name the installer needs, and the
+    if [ ! -L "$f" ] && [ ! -f "$f" ]; then
+      # Hidden names only here, not for links. Unlinking a link destroys no
+      # bytes; a recursive delete destroys whatever is inside, on every start,
+      # in a volume every project on the host shares. A hidden name is not an
+      # installer target and the selection does not look at one, so nothing
+      # there is holding a name anyone needs — no reason to reach into it.
+      case "$cand" in
+        .*) continue ;;
+      esac
+      # Anything that is not a regular file and not a link — a directory, a
+      # fifo, a socket — is junk by construction: ccc publishes only regular
+      # files here, the selection takes only regular files, seeding refuses
+      # anything else. It also holds a name the installer needs, and the
       # installer declines a name that exists: measured, a container with
       # nothing of its own to adopt downloaded 215MB and failed with EISDIR on
       # every start, forever, because the only code that cleared this ran inside
       # adoption and adoption needs a local install to adopt.
       #
-      # Not announced. Behavior 9 reports what a user can be surprised by, and
-      # nothing was running out of a directory.
+      # A successful clear is not announced. Behavior 9 reports what a user can
+      # be surprised by, and nothing was running out of a directory. A refusal
+      # is: it is a start that will now do something expensive and pointless.
       if is_mountpoint "$f"; then
-        echo "cannot clear $cand: it is a mount point in the volume, and clearing it would empty the other side" >&2
-      elif ! rm -rf "$f" 2>/dev/null; then
-        echo "cannot clear $cand: a version cannot be a directory" >&2
+        echo "cannot remove $cand: it is a mount point in the volume, and clearing it would empty the other side" >&2
+      elif ! clear_why="$(rm -rf "$f" 2>&1)"; then
+        # The reason, not the rule: a read-only volume, a permission problem and
+        # an I/O error are otherwise the same sentence.
+        echo "cannot remove $cand: a version must be a regular file: $clear_why" >&2
       fi
       continue
     fi

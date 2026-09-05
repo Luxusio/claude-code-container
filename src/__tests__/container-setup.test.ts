@@ -90,6 +90,22 @@ describe("container-setup.ts module", () => {
             expect(said).toHaveLength(1)
         })
 
+        it("relays a refusal that did not fail the start", () => {
+            // The refusals at a version name do not fail the probe — the start
+            // goes on to install. So nothing carries them into an error, and
+            // the only layer that could show them is this one. Pinning them on
+            // the generated script's stderr, as the layout tests do, cannot see
+            // whether a user is ever told.
+            const refusal = "cannot remove 2.1.261: it is a mount point in the volume, and clearing it would empty the other side"
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "INSTALL\n", `${refusal}\n`))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0))
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.260\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(refusal)
+        })
+
         it("does not relay the noise of the tools the probe calls", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n",
                 "rm: cannot remove '/vol/versions/2.1.261': Permission denied\n"))

@@ -740,7 +740,7 @@ describe("claude launcher layout", () => {
             // what it cannot unlink — and that is why a mount there is checked
             // for before any of this, not after.
             expect(lstatSync(occupied).isDirectory()).toBe(true)
-            expect(result.stderr).toContain("cannot clear 2.1.241")
+            expect(result.stderr).toContain("cannot remove 2.1.241")
         })
 
         it.skipIf(!canBindMount)("refuses to clear a version name that is a mount point, with nothing to adopt", () => {
@@ -763,7 +763,56 @@ describe("claude launcher layout", () => {
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
 
             expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
-            expect(result.stderr ?? "").toContain("cannot clear 2.1.261")
+            expect(result.stderr ?? "").toContain("cannot remove 2.1.261")
+        })
+
+        it("frees a version name held by something that is not a file at all", () => {
+            // A fifo at a version name wedges exactly as a directory does: the
+            // installer declines a name that exists. The rule is "a version is
+            // a regular file", not "a version is not a directory".
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            execFileSync("mkfifo", [join(volVersions, "2.1.261")], { env: { PATH: "/usr/bin:/bin" } })
+
+            const result = run()
+
+            expect(result.stdout).toBe("INSTALL")
+            expect(existsSync(join(volVersions, "2.1.261"))).toBe(false)
+        })
+
+        it("does not reach into a hidden directory to free a name nobody wants", () => {
+            // The recursive delete runs on every start against a volume every
+            // project shares. A hidden name is not an installer target and the
+            // selection never looks at one, so there is no name to free and no
+            // reason to delete whatever is inside. Links are different: an
+            // unlink destroys no bytes, so those are taken under any name.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(volVersions, ".mystate", "deep"), { recursive: true })
+            writeFileSync(join(volVersions, ".mystate", "deep", "keep"), "somebody's state")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(join(volVersions, ".mystate", "deep", "keep"), "utf8"))
+                .toBe("somebody's state")
+        })
+
+        it("collects a stale staging link at the volume root", () => {
+            // The reaper's two roots have two rules, and only the versions/ one
+            // is about version names. At the volume root a .seed.* is a stale
+            // stage whatever its type, and nothing else ever collects it.
+            mkdirSync(paths.volumeDataDir, { recursive: true })
+            const stale = join(paths.volumeDataDir, ".seed.RootLink")
+            symlinkSync(join(root, "nowhere"), stale)
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(stale, old, old)
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(existsSync(stale)).toBe(false)
         })
 
         it("frees a version name a directory is holding when there is nothing to adopt", () => {

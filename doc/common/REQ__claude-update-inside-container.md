@@ -115,7 +115,24 @@ the install directory is shared. That makes several things observable:
     install, so a container with nothing to adopt met a directory at the name
     the installer produces, downloaded the whole release, failed on it, and did
     the same on every start after — with the volume shared by every project on
-    the host.
+    the host. A version is a regular file, so a directory, a fifo and a socket
+    are all cleared alike; the rule is what a version is, not a list of what it
+    is not.
+
+    What is cleared is any such entry directly under `versions/`, whatever it is
+    named — not only names that look like versions. Hidden names are the
+    exception, and only for the recursive clear: nothing there can be an
+    installer target or be selected, so there is no name to free, and reaching
+    into it would delete somebody's bytes for no reason. A link is taken under
+    any name, because unlinking one destroys nothing.
+
+    Two things stop the clear: a mount at that name, and a volume that will not
+    allow the removal. Both are reported even though the start goes on to
+    succeed or to install — a refusal that changes what the start will do, with
+    nothing said, is how the wedge above stayed invisible. The second case is
+    not clean: a recursive delete empties what it cannot unlink, so a directory
+    that could not be removed has already lost its contents. Only the mount is
+    checked before anything is touched.
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
     keeps its inode and cannot be interrupted the way an overwrite interrupts
@@ -224,9 +241,12 @@ or
 
 Both lines name the same directory, resolved, because the data directory is
 itself a symlink into the shared volume and the two spellings of one place read
-as two places. Before any ccc start has run there is nothing to resolve, and
-the line falls back to the unresolved path — which does not exist either, in a
-container where nothing has been set up yet. The warning says what to do because an ordinary `ccc` start is
+as two places. When there is no `versions/` directory to resolve, the line
+falls back to the unresolved path. Reaching that needs a launcher that answers
+`--version` while the data directory does not exist — a claude installed by
+something other than ccc. In a container where nothing has been set up there is
+no launcher either, and the check prints no line at all. The warning says what
+to do because an ordinary `ccc` start is
 what repairs the states a user reaches by accident. It says "usually" because
 one state that prints it — a launcher resolving through a link on a volume ccc
 cannot write — is repaired by nothing, and a warning that promised otherwise
@@ -269,9 +289,16 @@ would be wrong precisely where it is permanent.
   names. Pinned, because making it look at them is a one-character change that
   puts the launcher on a file the reaper later deletes.
 - Behavior 15's recovery is pinned with nothing to adopt as well as with a
-  local install, and its two refusals — a mount at that name, and a name that
-  could not be cleared — are pinned separately, because the clear reached from
-  this side is a second recursive delete and needs the same guard as the first.
+  local install, for a directory and for a fifo, and its two refusals — a mount
+  at that name, and a name that could not be cleared — are pinned separately,
+  because the clear reached from this side is a second recursive delete and
+  needs the same guard as the first. A refusal is also pinned where it reaches
+  the user, not only where the container prints it: these refusals do not fail
+  the start, so nothing carries them into an error, and a test on the script's
+  own stderr cannot tell whether anybody is told.
+- That the recursive clear leaves a hidden directory alone is pinned, and so is
+  the volume root's half of the staging reaper, which collects a stale entry of
+  any type where the `versions/` half takes only files.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot
