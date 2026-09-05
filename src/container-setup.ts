@@ -369,13 +369,10 @@ pick_best() {
     # probe reported success on a layout ccc doctor calls NOT updatable, which
     # is the exact shape this whole change exists to remove. ccc never publishes
     # one, but a hand-made or foreign entry in a shared volume can be one.
-    if [ -L "$f" ]; then
-      # Skipping silently leaves the user with a full reinstall, or with
-      # "installation left no usable launcher", and nothing naming the entry
-      # that caused either.
-      echo "ignoring $cand: a version must be a real file, not a link" >&2
-      continue
-    fi
+    # A last guard. drop_linked_versions has normally already removed these;
+    # this catches the one it could not, on a volume it cannot write to, where
+    # running the link would be worse than not starting.
+    [ ! -L "$f" ] || continue
     [ -f "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
     if is_claude "$f"; then BEST="$f"; return 0; fi
@@ -409,6 +406,29 @@ seed_from() {
   if ! mv -f "$seed" "$DATA/versions/$v"; then rm -f "$seed"; return 1; fi
 }
 
+drop_linked_versions() {
+  [ -d "$DATA/versions" ] || return 0
+  for cand in $(ls "$DATA/versions" 2>/dev/null); do
+    f="$DATA/versions/$cand"
+    [ -L "$f" ] || continue
+    # A version has to be a real file: a symlink resolves to a binary outside
+    # the directory the updater manages, which is the bug this whole change
+    # removes. Declining to RUN it is not enough, because it also holds a name
+    # the installer needs — and the installer declines a name that exists. That
+    # combination wedged every start: download, refuse, no change, forever.
+    #
+    # So free the name. Nothing ccc publishes here is a link, and unlink is safe
+    # for a name in use — it unbinds the name while a process already running
+    # the target keeps its inode.
+    if rm -f "$f"; then
+      echo "removed $cand: a version must be a real file, not a symlink" >&2
+    else
+      echo "cannot remove $cand: a version must be a real file, not a symlink" >&2
+    fi
+  done
+}
+
+drop_linked_versions
 if ! pick_best; then
   for donor in "$BIN" "$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" "$LEGACY"; do
     if seed_from "$donor"; then break; fi
@@ -446,6 +466,20 @@ echo "RESTORED $(basename "$BEST")"`.trim();
 // user gets a bare "probe failed" and no way to tell a full disk from a
 // read-only volume from a bind mount in the way. Same failure the e2e helper
 // had: the assertion read stdout while the reason was on stderr.
+/**
+ * Print what a SUCCESSFUL probe had to say. Only lines that describe a change
+ * to shared state or a version passed over — the probe's other stderr is noise
+ * from tools it calls, and a start that worked should not read like a failure.
+ */
+function reportProbeNotes(stderr: string | undefined): void {
+    for (const line of (stderr ?? "").split(/\r?\n/)) {
+        const text = line.trim();
+        if (text.startsWith("removed ") || text.startsWith("cannot remove ")) {
+            console.log(text);
+        }
+    }
+}
+
 function probeDiagnostic(stderr: string | undefined): string {
     const text = (stderr ?? "").trim();
     if (!text) return "";
@@ -542,6 +576,11 @@ export function ensureClaudeInContainer(containerName: string): void {
         console.log(version
             ? `Reusing claude ${version} from the shared volume.`
             : "Reusing claude from the shared volume.");
+        // A start that succeeded can still have changed something the user
+        // needs to know about — an entry removed from a volume every project
+        // shares, or a version passed over. Dropping stderr on success meant a
+        // silent downgrade with nothing said.
+        reportProbeNotes(result.stderr);
         return;
     }
 
@@ -579,6 +618,7 @@ export function ensureClaudeInContainer(containerName: string): void {
         || (confirmStatus !== "VALID" && !confirmStatus.startsWith("RESTORED"))) {
         throw new Error(`Claude installation left no usable launcher${probeDiagnostic(confirm.stderr)}`);
     }
+    reportProbeNotes(confirm.stderr);
 }
 
 /**

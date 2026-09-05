@@ -834,9 +834,50 @@ describe("claude launcher layout", () => {
 
             expect(result.stdout).toBe("RESTORED 2.1.261")
             expect(realpathSync(paths.bin)).toBe(join(paths.volumeDataDir, "versions", "2.1.261"))
-            // and it says which entry it ignored, so the reinstall this causes
-            // when there is no other candidate is diagnosable
-            expect(result.stderr).toContain("ignoring 9.9.9")
+            // and the name is freed, not merely passed over, because it is a
+            // name the installer needs
+            expect(existsSync(join(paths.volumeDataDir, "versions", "9.9.9"))).toBe(false)
+            expect(result.stderr).toContain("removed 9.9.9")
+        })
+
+        it("still refuses to run a symlinked version it could not remove", () => {
+            // Freeing the name is the repair; refusing to run the link is the
+            // guarantee. On a volume ccc cannot write to, the repair is not
+            // available and the guarantee has to hold on its own — running it
+            // would put the user back on a launcher claude update cannot
+            // replace, which is the bug this work exists to remove.
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "9.9.9")
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(volVersions, "9.9.9"))
+            chmodSync(volVersions, 0o555)
+
+            const result = run()
+
+            chmodSync(volVersions, 0o755)
+            expect(result.stdout).toBe("INSTALL")
+            expect(result.stderr).toContain("cannot remove 9.9.9")
+        })
+
+        it("frees a version name held by a symlink instead of wedging on it", () => {
+            // Runtime QA measured the wedge this replaces: a hand-made link
+            // named for the version the installer produces. The installer
+            // declines a name that exists, the probe declined the link, and the
+            // start failed identically every time — a full download each round,
+            // with nothing changed. Skipping an entry is not enough when the
+            // entry is also holding the name the fix needs.
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "2.1.261")
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(paths.volumeDataDir, "versions", "2.1.261"))
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stdout).toBe("INSTALL")
+            // INSTALL is only useful if the installer can now write that name
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
         })
 
         it("does not adopt a mise shim as a claude binary", () => {
