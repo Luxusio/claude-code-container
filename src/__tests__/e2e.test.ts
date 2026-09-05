@@ -20,6 +20,14 @@ function isDockerAvailable(): boolean {
 // THIS container and the daemon resolved them on the host. That check is doing its job; the tests
 // simply cannot be satisfied from here.
 //
+// Demonstrated rather than reasoned, because "cannot be fixed" is the kind of claim that quietly
+// turns a skip into a way of hiding a bug: write a marker into a fresh /tmp directory from inside
+// this container, then `docker run -v <same path>:/probe alpine ls /probe` — the directory comes up
+// EMPTY. The daemon mounted the host's path of that name, which is a different directory. There is
+// no host path to pass instead that this process could know, so the verification cannot be
+// satisfied, and disabling it to make the tests pass would delete the check that catches a real
+// mount mismatch.
+//
 // Detected the way systemd conventions and Docker itself mark a container, both of which ccc already
 // relies on elsewhere (`container=docker` is set into every ccc container; /.dockerenv is Docker's
 // own marker).
