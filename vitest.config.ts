@@ -14,7 +14,15 @@ export default defineConfig({
         // Both entries are where `git ls-files '*.test.ts'` actually reports tests. A third location
         // means adding it here, which is the intended cost: the suite should be a property of the
         // repository rather than of whatever else happens to be in the directory.
-        include: ["src/__tests__/**/*.test.ts", "scripts/real-tests/**/*.test.ts"],
+        // Extensions matter here: scripts/real-tests holds .test.mjs as well as .test.ts, and an
+        // earlier version of this list matched only .ts — which silently dropped
+        // hyper-v-windows-library-elevation.test.mjs from the suite. Scoping collection is exactly
+        // the change that can hide a test, so the pattern is checked against
+        // `git ls-files` rather than written from memory.
+        include: [
+            "src/__tests__/**/*.test.?(m|c)[jt]s",
+            "scripts/real-tests/**/*.test.?(m|c)[jt]s",
+        ],
         globals: true,
         setupFiles: ['./scripts/real-tests/hidden-child-processes.cjs'],
         maxWorkers,
