@@ -122,13 +122,15 @@ Recorded as the updater's stated behavior.
 
 `ccc doctor` reports the launcher's shape, not only its version, because the
 version alone is what looks fine in the broken state: a real version printed by
-a real binary at the right path. It reads either
+a real binary at the right path. What it checks is where the launcher resolves,
+not merely whether it is a symlink — a symlink pointing outside `versions/` is
+exactly as unmanaged as a plain copy. It reads either
 
     2.1.261 (Claude Code) (updatable, -> /home/ccc/.local/share/claude/versions/2.1.261)
 
 or
 
-    2.1.241 (Claude Code) (NOT updatable: launcher is a plain file, so claude update cannot replace it)
+    2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/claude/versions, so claude update cannot replace it)
 
 ## Verification
 
