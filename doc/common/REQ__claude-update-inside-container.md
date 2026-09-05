@@ -109,7 +109,13 @@ the install directory is shared. That makes several things observable:
     ccc reads its own install through symlinks rather than copying them, so a
     data directory that reaches versions/ by a link publishes the same regular
     files as one that does not.
-15. A start recovers from a volume entry that no version binary could be.
+15. A start recovers from a volume entry that no version binary could be, and
+    it recovers whether or not this container has an install of its own. That
+    was not true once: the clearing lived where a container publishes its own
+    install, so a container with nothing to adopt met a directory at the name
+    the installer produces, downloaded the whole release, failed on it, and did
+    the same on every start after — with the volume shared by every project on
+    the host.
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
     keeps its inode and cannot be interrupted the way an overwrite interrupts
@@ -218,7 +224,9 @@ or
 
 Both lines name the same directory, resolved, because the data directory is
 itself a symlink into the shared volume and the two spellings of one place read
-as two places. The warning says what to do because an ordinary `ccc` start is
+as two places. Before any ccc start has run there is nothing to resolve, and
+the line falls back to the unresolved path — which does not exist either, in a
+container where nothing has been set up yet. The warning says what to do because an ordinary `ccc` start is
 what repairs the states a user reaches by accident. It says "usually" because
 one state that prints it — a launcher resolving through a link on a volume ccc
 cannot write — is repaired by nothing, and a warning that promised otherwise
@@ -260,6 +268,10 @@ would be wrong precisely where it is permanent.
   are hidden names, and the selection deliberately does not look at hidden
   names. Pinned, because making it look at them is a one-character change that
   puts the launcher on a file the reaper later deletes.
+- Behavior 15's recovery is pinned with nothing to adopt as well as with a
+  local install, and its two refusals — a mount at that name, and a name that
+  could not be cleared — are pinned separately, because the clear reached from
+  this side is a second recursive delete and needs the same guard as the first.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot

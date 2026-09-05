@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync, spawnSync } from "child_process"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
-    realpathSync, rmSync, symlinkSync, writeFileSync } from "fs"
+    lutimesSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -211,6 +211,12 @@ describe("claude launcher layout", () => {
             const elsewhere = join(root, "elsewhere")
             writeFakeClaude(join(elsewhere, "real"), "2.1.261")
             symlinkSync(join(elsewhere, "real"), join(volVersions, ".seed.AbCdEf"))
+            // The reaper only takes entries older than ten minutes, and a link
+            // just created is not one — without this the test passed whether or
+            // not the reaper still deleted links, which is the whole question.
+            // lutimes, not utimes: the link's own timestamps, not its target's.
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(join(volVersions, ".seed.AbCdEf"), old, old)
             writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
 
             const result = run()
@@ -390,6 +396,9 @@ describe("claude launcher layout", () => {
 
             expect(result.status).toBe(0)
             expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
+            // and it stays unannounced: nothing was running out of a directory,
+            // so there is nothing for a user to be surprised by
+            expect(result.stderr).not.toMatch(/^removed /m)
         })
 
         it("recovers on the first start and stays recovered on later ones", () => {
@@ -694,18 +703,85 @@ describe("claude launcher layout", () => {
             expect(readFileSync(occupied, "utf8")).toContain("another container's copy")
         })
 
-        it("refuses to seed on top of a directory rather than half-publishing into it", () => {
-            // If versions/<v> is ever a directory — an upstream layout change,
-            // or a half-finished install — `mv -f` deposits the seed INSIDE it
-            // and leaves the version name permanently unusable, which turns
-            // into "Claude installation left no usable launcher" on every run.
+        it("clears a directory squatting on the version it would seed", () => {
+            // A directory at versions/<v> is junk by construction, and it holds
+            // the name the seed needs. Freeing it is the recovery; before, the
+            // migration refused and the name stayed occupied forever.
             const occupied = join(paths.volumeDataDir, "versions", "2.1.241")
             mkdirSync(occupied, { recursive: true })
             writeFakeClaude(join(occupied, "claude"), "2.1.241")
             writeFakeClaude(paths.legacyCacheFile, "2.1.241")
 
-            expect(run().stdout).toBe("INSTALL")
-            expect(readdirSync(occupied)).toEqual(["claude"])
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.241")
+            expect(lstatSync(occupied).isFile()).toBe(true)
+            expect(result.stderr).not.toMatch(/^removed /m)
+        })
+
+        it("refuses to seed on top of a directory it could not clear", () => {
+            // The clearing is the recovery; this is the guarantee behind it. If
+            // versions/<v> is a directory that stays, `mv -f` would deposit the
+            // seed INSIDE it and leave the name permanently unusable — which
+            // reads as "installation left no usable launcher" on every run.
+            const versions = join(paths.volumeDataDir, "versions")
+            const occupied = join(versions, "2.1.241")
+            mkdirSync(occupied, { recursive: true })
+            writeFakeClaude(join(occupied, "claude"), "2.1.241")
+            writeFakeClaude(paths.legacyCacheFile, "2.1.241")
+            chmodSync(versions, 0o555)
+
+            const result = run()
+
+            chmodSync(versions, 0o755)
+            expect(result.stdout).toBe("INSTALL")
+            // The name is still occupied, which is what the seed must respect.
+            // The directory's contents are gone either way — rm -rf empties
+            // what it cannot unlink — and that is why a mount there is checked
+            // for before any of this, not after.
+            expect(lstatSync(occupied).isDirectory()).toBe(true)
+            expect(result.stderr).toContain("cannot clear 2.1.241")
+        })
+
+        it.skipIf(!canBindMount)("refuses to clear a version name that is a mount point, with nothing to adopt", () => {
+            // Freeing the name reaches a second recursive delete, on the path
+            // that runs when there is no local install. It gets the same guard
+            // as the first: rm -rf empties the other side of a mount before it
+            // fails on the directory itself.
+            const junk = join(paths.volumeDataDir, "versions", "2.1.261")
+            mkdirSync(junk, { recursive: true })
+            const source = join(root, "mounted")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            // spawnSync: this run SUCCEEDS (it goes on to install), so the
+            // refusal is on the stderr of a command that did not throw.
+            const result = spawnSync("unshare", ["-Umr", "sh", "-c",
+                `mount --bind '${source}' '${junk}' && sh '${script}'`],
+                { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(result.stderr ?? "").toContain("cannot clear 2.1.261")
+        })
+
+        it("frees a version name a directory is holding when there is nothing to adopt", () => {
+            // Measured by runtime QA as a permanent wedge: with a directory at
+            // the name the installer produces and no local install to adopt,
+            // every start downloaded 215MB and failed with EISDIR, forever. The
+            // only code that cleared this lived inside adoption, and adoption
+            // needs something of its own to adopt.
+            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261", "junk"), { recursive: true })
+
+            const result = run()
+
+            expect(result.stdout).toBe("INSTALL")
+            // INSTALL is only useful if the installer can write that name
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
+            // and it stays unannounced, on this path as on the other: nothing
+            // was running out of a directory
+            expect(result.stderr).not.toMatch(/^removed /m)
         })
 
         it("prefers an existing version over the legacy cache", () => {

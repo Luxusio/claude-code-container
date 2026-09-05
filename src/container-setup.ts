@@ -286,8 +286,12 @@ adopt_into_volume() {
             # path that removes one.
             was_link=no
             [ -L "$target" ] && was_link=yes
-            clear_why="$(rm -rf "$target" 2>&1)"
-            if [ "$was_link" = yes ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+            # From rm's own status, not from re-testing the path: under a race
+            # another container can publish a real file at the name between the
+            # two, and the removal would go unreported. The other path that
+            # removes a link decides the same way.
+            if clear_why="$(rm -rf "$target" 2>&1)"; then cleared=yes; else cleared=no; fi
+            if [ "$was_link" = yes ] && [ "$cleared" = yes ]; then
               echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
             fi
             ;;
@@ -362,11 +366,13 @@ fi
 # every project, so the symptom is "the cache is mysteriously full" with nothing
 # pointing at the cause. The age guard is what makes this safe: another
 # container's live staging file is minutes younger than the probe's own budget.
-# -type f: a stale staging file is a file. A symlink that happens to carry this
-# name is a link under versions/ like any other, and deleting it here removed it
-# with nothing said — the one path that took a link away in silence. Left alone,
-# drop_linked_versions takes it and reports it.
-find "$VOL" "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/dev/null || true
+# Two roots, two rules. At the volume root a stale stage is the only thing that
+# name can be, so anything wearing it goes. Under versions/ the name is also a
+# version name: a link there is a link like any other, and deleting it here took
+# it away with nothing said — the one path that removed one in silence. Left
+# alone, free_unusable_versions takes it and reports it.
+find "$VOL" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/dev/null || true
+find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
@@ -397,7 +403,7 @@ pick_best() {
     # probe reported success on a layout ccc doctor calls NOT updatable, which
     # is the exact shape this whole change exists to remove. ccc never publishes
     # one, but a hand-made or foreign entry in a shared volume can be one.
-    # A last guard. drop_linked_versions has normally already removed these;
+    # A last guard. free_unusable_versions has normally already removed these;
     # this catches the one it could not, on a volume it cannot write to, where
     # running the link would be worse than not starting.
     [ ! -L "$f" ] || continue
@@ -436,11 +442,14 @@ seed_from() {
   # onto a file succeeds even while another container executes it, silently
   # swapping that container's binary for a donor copy on its next resolve. The
   # name is the content, so anything already there is already right.
-  [ -e "$DATA/versions/$v" ] && return 1
+  { [ -e "$DATA/versions/$v" ] || [ -L "$DATA/versions/$v" ]; } && return 1
   # Not "$$": the PID is container-local, containers start at low PIDs, and this
   # directory is a volume shared by every project on the host — two of them
   # seeding at once would interleave 215MB writes into one file and publish the
   # result under a real version name.
+  #
+  # -e alone is false for a dangling link, and this early guard exists to refuse
+  # before the copy rather than after it — the late one below is the guarantee.
   seed="$(mktemp "$DATA/versions/.seed.XXXXXX")" || return 1
   if ! cp -L "$src" "$seed"; then rm -f "$seed"; return 1; fi
   if ! chmod +x "$seed"; then rm -f "$seed"; return 1; fi
@@ -450,7 +459,7 @@ seed_from() {
   if ! mv -f "$seed" "$DATA/versions/$v"; then rm -f "$seed"; return 1; fi
 }
 
-drop_linked_versions() {
+free_unusable_versions() {
   [ -d "$DATA/versions" ] || return 0
   # find + read -r, not $(ls): word splitting drops a name holding whitespace
   # and glob expansion turns one holding * into something else entirely, so
@@ -463,6 +472,24 @@ drop_linked_versions() {
   ( cd "$DATA/versions" && find . -mindepth 1 -maxdepth 1 -print ) 2>/dev/null | while IFS= read -r ent; do
     cand="\${ent#./}"
     f="$DATA/versions/$cand"
+    if [ ! -L "$f" ] && [ -d "$f" ]; then
+      # A directory under a version name is junk by construction — ccc refuses
+      # to publish one, the selection skips it, seeding refuses it — so nothing
+      # anyone runs is inside. It also holds a name the installer needs, and the
+      # installer declines a name that exists: measured, a container with
+      # nothing of its own to adopt downloaded 215MB and failed with EISDIR on
+      # every start, forever, because the only code that cleared this ran inside
+      # adoption and adoption needs a local install to adopt.
+      #
+      # Not announced. Behavior 9 reports what a user can be surprised by, and
+      # nothing was running out of a directory.
+      if is_mountpoint "$f"; then
+        echo "cannot clear $cand: it is a mount point in the volume, and clearing it would empty the other side" >&2
+      elif ! rm -rf "$f" 2>/dev/null; then
+        echo "cannot clear $cand: a version cannot be a directory" >&2
+      fi
+      continue
+    fi
     [ -L "$f" ] || continue
     # A version has to be a real file: a symlink resolves to a binary outside
     # the directory the updater manages, which is the bug this whole change
@@ -481,7 +508,7 @@ drop_linked_versions() {
   done
 }
 
-drop_linked_versions
+free_unusable_versions
 if ! pick_best; then
   for donor in "$BIN" "$(command -v ${CLAUDE_EXECUTABLE} 2>/dev/null || true)" "$LEGACY"; do
     if seed_from "$donor"; then break; fi
