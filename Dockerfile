@@ -197,8 +197,10 @@ COPY --chown=ccc:ccc device-lab-mcp/server.mjs /opt/ccc/device-lab-mcp/server.mj
 COPY --chown=ccc:ccc device-lab-mcp/src /opt/ccc/device-lab-mcp/src
 
 # ============================================================
-# claude-code is installed at runtime and cached in mise volume.
-# See ensureClaudeInContainer() in src/index.ts
+# claude-code is installed at runtime. Its native install directory is kept in
+# the mise volume and reached through a symlinked ~/.local/share/claude, so
+# `claude update` inside the container works and survives container recreation.
+# See ensureClaudeInContainer() in src/container-setup.ts
 # ============================================================
 
 # ============================================================
