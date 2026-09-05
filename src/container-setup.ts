@@ -133,6 +133,13 @@ mkdir -p "$VOL" || exit 1
 # means an ordinary directory.
 is_mountpoint() {
   [ -d "$1" ] || return 1
+  if command -v mountpoint >/dev/null 2>&1; then
+    mountpoint -q "$1"
+    return
+  fi
+  # Fallback only. Comparing device numbers with the parent misses a bind mount
+  # made within one filesystem — a real mount whose source rm -rf would empty
+  # through. util-linux is in the image, so this branch should not be reached.
   [ "$(stat -c %d "$1" 2>/dev/null)" != "$(stat -c %d "$1/.." 2>/dev/null)" ]
 }
 # Copy an existing install into the volume before replacing it. Applies to a
@@ -164,6 +171,7 @@ elif [ -d "$DATA" ]; then
   # directory itself, so a failure here can leave $DATA empty. The contents are
   # already in the volume by then, and the check below fails the probe loudly.
   if is_mountpoint "$DATA"; then
+    echo "refusing to replace $DATA: it is a mount point, and rm -rf would empty the other side" >&2
     exit 1
   fi
   adopt_into_volume && rm -rf "$DATA" && ln -s "$VOL" "$DATA"
@@ -171,7 +179,10 @@ else
   rm -f "$DATA" 2>/dev/null || true
   mkdir -p "$(dirname "$DATA")" && ln -s "$VOL" "$DATA"
 fi
-[ -L "$DATA" ] || exit 1
+if [ ! -L "$DATA" ] || [ "$(readlink "$DATA")" != "$VOL" ]; then
+  echo "$DATA is not backed by $VOL; an update here would not survive the container" >&2
+  exit 1
+fi
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
@@ -231,7 +242,13 @@ fi
 mkdir -p "$(dirname "$BIN")" || exit 1
 # A directory here is pathological but has to go; anything else is replaced in
 # one step, so a concurrent probe never sees the launcher missing.
-[ -d "$BIN" ] && [ ! -L "$BIN" ] && rm -rf "$BIN"
+if [ -d "$BIN" ] && [ ! -L "$BIN" ]; then
+  if is_mountpoint "$BIN"; then
+    echo "refusing to replace $BIN: it is a mount point" >&2
+    exit 1
+  fi
+  rm -rf "$BIN"
+fi
 ln -sfn "$BEST" "$BIN" || exit 1
 echo "RESTORED $(basename "$BEST")"`.trim();
 }
@@ -259,15 +276,29 @@ function probeDiagnostic(stderr: string | undefined): string {
  * Separate and parameterized for the same reason `buildClaudeProbeScript` is:
  * so a test can run it instead of matching substrings in it.
  */
-export function buildClaudeLauncherReportCommand(binPath: string): string {
+export function buildClaudeLauncherReportCommand(
+    binPath: string,
+    dataDir: string = CLAUDE_DATA_DIR,
+): string {
     const bin = shellQuote(binPath);
+    const versionsDir = shellQuote(`${dataDir}/versions`);
     return [
         `v="$(test -x ${bin} && ${bin} --version 2>&1 | head -1)"`,
         `[ -n "$v" ] || exit 1`,
-        `if [ -L ${bin} ]; then`,
-        `  printf '%s (updatable, -> %s)\\n' "$v" "$(readlink ${bin})"`,
+        // Being a symlink is not the requirement — the updater manages the
+        // launcher only when it resolves INTO versions/. A symlink pointing
+        // anywhere else is just as unmanaged as a plain file, so reporting it
+        // as updatable would hide exactly the state this check exists to find.
+        `target="$(readlink -f ${bin} 2>/dev/null || true)"`,
+        // Both sides get resolved. The data dir is itself a symlink into the
+        // volume, so comparing a fully-resolved launcher against the literal
+        // path reports every healthy container as broken — measured, not
+        // guessed: the first version of this check did exactly that.
+        `expected="$(readlink -f ${versionsDir} 2>/dev/null || true)"`,
+        `if [ -n "$expected" ] && [ "\${target#$expected/}" != "$target" ]; then`,
+        `  printf '%s (updatable, -> %s)\\n' "$v" "$target"`,
         `else`,
-        `  printf '%s (NOT updatable: launcher is a plain file, so claude update cannot replace it)\\n' "$v"`,
+        `  printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir}`,
         `fi`,
     ].join("\n");
 }

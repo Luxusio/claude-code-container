@@ -318,6 +318,28 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.dataDir, "versions", "2.1.5"))).toBe(true)
         })
 
+        it("fails when a foreign data-dir symlink cannot be adopted, instead of reporting success", () => {
+            // The sibling directory case was covered; this one was not, and it
+            // failed OPEN. A failed copy leaves $DATA a symlink pointing
+            // elsewhere, and a guard that checks only "is it a symlink" passes —
+            // so the probe reported RESTORED, linked the launcher into a
+            // container-local directory, and announced it was reusing the shared
+            // volume. That is the original bug with a success message on top.
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "versions", "2.1.5"), "2.1.5")
+            const unreadable = join(elsewhere, "unreadable")
+            writeFileSync(unreadable, "secret\n")
+            chmodSync(unreadable, 0o000)
+            mkdirSync(join(paths.dataDir, ".."), { recursive: true })
+            symlinkSync(elsewhere, paths.dataDir)
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(result.stdout).toBe("")
+            expect(existsSync(paths.bin)).toBe(false)
+        })
+
         it("fails when the volume directory cannot be created", () => {
             // A regular file where the volume dir belongs: mkdir -p cannot win.
             mkdirSync(join(paths.volumeDataDir, ".."), { recursive: true })
@@ -415,7 +437,7 @@ describe("what ccc doctor says about the launcher", () => {
     // "up to date" from "pinned forever".
     function report(binPath: string): { status: number, stdout: string } {
         try {
-            const stdout = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(binPath)],
+            const stdout = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(binPath, paths.dataDir)],
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
             return { status: 0, stdout: stdout.trim() }
         } catch (error) {
@@ -432,7 +454,23 @@ describe("what ccc doctor says about the launcher", () => {
 
         expect(out).toContain("2.1.5 (Claude Code)")
         expect(out).toContain("updatable")
-        expect(out).toContain(join(paths.dataDir, "versions", "2.1.5"))
+        // The reported target is fully resolved, so it names the volume the
+        // version actually lives in rather than the symlink hop through $DATA.
+        expect(out).toContain(join(paths.volumeDataDir, "versions", "2.1.5"))
+    })
+
+    it("does not call a symlink pointing outside versions/ updatable", () => {
+        // Being a symlink is not the requirement — the updater manages the
+        // launcher only when it resolves INTO versions/. Reporting any symlink
+        // as updatable would hide the state this check exists to surface.
+        const stray = join(root, "stray-claude")
+        writeFakeClaude(stray, "2.1.5")
+        mkdirSync(join(paths.bin, ".."), { recursive: true })
+        symlinkSync(stray, paths.bin)
+
+        const out = report(paths.bin).stdout
+
+        expect(out).toContain("NOT updatable")
     })
 
     it("says a plain-file launcher is NOT updatable, which is the whole bug", () => {
