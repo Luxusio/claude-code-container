@@ -334,6 +334,30 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.dataDir, "versions", "2.1.5"))).toBe(true)
         })
 
+        it("reports a failed copy instead of publishing a half-adopted tree", () => {
+            // What this pins: a copy that fails leaves no version name behind,
+            // no staging file, and a non-zero exit — so the caller cannot delete
+            // the original believing the adopt succeeded.
+            //
+            // What it does NOT pin, stated because the mutation survives it:
+            // that staging-then-linking prevents a TRUNCATED publish. An
+            // unreadable source fails at open, so nothing partial is written
+            // either way, and reproducing a real mid-copy death is not something
+            // to put in a suite. That property was measured by hand on a 1.5GB
+            // copy — a staging file is observable while it runs, and the version
+            // name is already at full size the instant it first exists.
+            const unreadable = join(paths.dataDir, "versions", "2.1.9")
+            mkdirSync(join(unreadable, ".."), { recursive: true })
+            writeFileSync(unreadable, "would be a 215MB binary\n")
+            chmodSync(unreadable, 0o000)
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.9"))).toBe(false)
+            expect(readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".seed."))).toEqual([])
+        })
+
         it("fails when a foreign data-dir symlink cannot be adopted, instead of reporting success", () => {
             // The sibling directory case was covered; this one was not, and it
             // failed OPEN. A failed copy leaves $DATA a symlink pointing

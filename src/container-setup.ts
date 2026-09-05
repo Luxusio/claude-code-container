@@ -129,22 +129,20 @@ is_claude() {
 mkdir -p "$VOL" || exit 1
 # rm -rf across a mount boundary empties the OTHER side of the mount. ccc never
 # puts one here, but a user can, and gutting a host directory to save a symlink
-# is not a trade worth making. Compare device numbers with the parent: equal
-# means an ordinary directory.
+# is not a trade worth making.
+#
+# Read the kernel's own mount table rather than comparing device numbers with
+# the parent: that comparison misses a bind mount made within one filesystem,
+# which is a real mount rm -rf would empty through, and it fails OPEN on exactly
+# that case. /proc is mounted in any container that can run at all, so this
+# needs no tool probe and has a single code path. (mountinfo octal-escapes
+# space, tab, newline and backslash in field 5; irrelevant for these fixed
+# paths, noted so nobody debugs it later.)
 is_mountpoint() {
   [ -d "$1" ] || return 1
-  if command -v mountpoint >/dev/null 2>&1; then
-    mountpoint -q "$1"
-    return
-  fi
-  # Fallback only. Comparing device numbers with the parent misses a bind mount
-  # made within one filesystem — measured under "unshare -rm" with
-  # "mount --bind src dst": mountpoint(1) says IS, both device numbers read 90,
-  # and the comparison answers "not a mount" on a real mount whose source
-  # rm -rf would empty through. util-linux ships in the image, so this branch
-  # should not be reached; it is here so a missing mountpoint(1) degrades to the
-  # old behavior rather than to no check at all.
-  [ "$(stat -c %d "$1" 2>/dev/null)" != "$(stat -c %d "$1/.." 2>/dev/null)" ]
+  p="$(readlink -f "$1" 2>/dev/null)" || return 1
+  [ -n "$p" ] || return 1
+  awk -v want="$p" '$5 == want { found=1 } END { exit !found }' /proc/self/mountinfo
 }
 # Copy an existing install into the volume before replacing it. Applies to a
 # real directory AND to a symlink aimed somewhere other than the volume —
@@ -152,18 +150,38 @@ is_mountpoint() {
 # install it abandoned sat untouched on disk.
 adopt_into_volume() {
   [ -d "$DATA" ] || return 0
-  # Skip what exists; never overwrite. The volume is shared by every project on
-  # the host, so a version file already sitting there may be the binary another
-  # container is executing right now — forcing over it fails with ETXTBSY and
-  # takes down ccc startup for a project that was working fine. Version files
-  # are named by their content, so an existing one needs no replacing, and this
-  # directory holds nothing but versions/ (checked on a live container), so
-  # skipping wholesale loses no state that would otherwise be refreshed.
-  #
-  # --update=none rather than -n: coreutils warns on every -n that its
-  # "behavior is non-portable and may change in future", and a safety guard
-  # whose semantics are advertised as unstable is the wrong thing to depend on.
-  cp -a --update=none "$DATA/." "$VOL/"
+  adopt_failed="$VOL/.adopt-failed.$$"
+  rm -f "$adopt_failed"
+  ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do
+    target="$VOL/\${rel#./}"
+    if [ -d "$DATA/$rel" ] && [ ! -L "$DATA/$rel" ]; then
+      mkdir -p "$target" || : > "$adopt_failed"
+      continue
+    fi
+    # Skip what exists. The volume is shared by every project on the host, so a
+    # version already there may be the binary another container is executing;
+    # forcing over it fails with ETXTBSY and takes down a working project.
+    # Version files are named by their content, so an existing one is right.
+    [ -e "$target" ] && continue
+    # Copy to a staging name, then link it into place. Copying straight to the
+    # final name publishes a truncated but still-executable file if the process
+    # dies mid-copy, and nothing ever replaces it because copies skip what
+    # exists — the migration path would manufacture the poisoned version it is
+    # supposed to avoid. 215MB is long enough for that to happen. ln fails
+    # EEXIST in the kernel, so two containers cannot both win the same name.
+    stage="$(mktemp "$VOL/.seed.XXXXXX")" || { : > "$adopt_failed"; continue; }
+    if cp -a "$DATA/$rel" "$stage"; then
+      ln "$stage" "$target" 2>/dev/null || true
+    else
+      : > "$adopt_failed"
+    fi
+    rm -f "$stage"
+  done
+  if [ -e "$adopt_failed" ]; then
+    rm -f "$adopt_failed"
+    return 1
+  fi
+  return 0
 }
 if [ -L "$DATA" ] && [ "$(readlink "$DATA")" = "$VOL" ]; then
   :
