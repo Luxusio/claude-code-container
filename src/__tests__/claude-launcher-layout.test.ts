@@ -112,6 +112,11 @@ const canBindMount = (() => {
 
 // Nothing published into the shared volume may be a symlink: it would point at
 // a path that exists only in the container that wrote it.
+function elsewhere_dir(dir: string): string {
+    mkdirSync(dir, { recursive: true })
+    return dir
+}
+
 function volumeSymlinks(): string[] {
     const out: string[] = []
     const walk = (dir: string) => {
@@ -880,6 +885,42 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("RESTORED 2.1.261")
             expect(readFileSync(join(volVersions, "2026-notes", "deep", "data"), "utf8"))
                 .toBe("somebody's notes")
+        })
+
+        it("does not collect a .tmp. name the installer would never write", () => {
+            // The reaper had a name rule and no shape rule, so my.tmp.notes was
+            // taken, silently, on a shared volume. It blocks nothing — the
+            // selection skips it either way — so there is no licence for it.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const theirs = join(volVersions, "my.tmp.notes")
+            writeFileSync(theirs, "somebody's notes")
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(theirs, old, old)
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(theirs, "utf8")).toBe("somebody's notes")
+        })
+
+        it("says what it removed without calling every name a version", () => {
+            // The cautious branch reaches every entry in the data dir, not only
+            // the ones under versions/, so the version sentence was being said
+            // about settings.json — the right removal with the wrong reason.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            writeFileSync(join(paths.dataDir, "settings.json"), "{}")
+            const elsewhere = join(root, "elsewhere")
+            writeFileSync(join(elsewhere_dir(elsewhere), "real"), "{}")
+            mkdirSync(paths.volumeDataDir, { recursive: true })
+            symlinkSync(join(elsewhere, "real"), join(paths.volumeDataDir, "settings.json"))
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stderr).toMatch(/^removed settings\.json: a link cannot be published/m)
+            expect(result.stderr).not.toMatch(/^removed settings\.json: a version/m)
         })
 
         it("collects an installer staging file a killed install left behind", () => {

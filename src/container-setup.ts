@@ -148,8 +148,10 @@ mkdir -p "$VOL" || exit 1
 # and 1.0.0-my-notes through, and what is on the other side of this test is a
 # recursive delete in a volume every project shares.
 #
-# A dot-dated name like 2026.09.05 IS three dot-separated numbers and cannot be
-# told from a version by any rule — recorded in the REQ rather than guessed at.
+# A dot-dated name like 2026.09.05 IS three dot-separated numbers. Something
+# could separate it — a bound on the first component, say — but that is a rule
+# about what claude versions look like, maintained here, wrong the day it is
+# not. Treating it as a version is the choice; the REQ records the cost.
 is_version_name() {
   printf '%s' "$1" | grep -qE '^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.].*)?$'
 }
@@ -343,7 +345,18 @@ adopt_into_volume() {
             cautious_was_link=no
             [ -L "$target" ] && cautious_was_link=yes
             if clear_why="$(rm -f "$target" 2>&1)"; then
-              [ "$cautious_was_link" = no ] || echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
+              # This branch reaches every name, not only versions/, so the
+              # version sentence is only true for some of them. Saying it about
+              # settings.json was announcing the right removal with the wrong
+              # reason.
+              if [ "$cautious_was_link" = no ]; then
+                :
+              else
+                case "$relpath" in
+                  versions/*) echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2 ;;
+                  *) echo "removed $relpath: a link cannot be published into a volume other containers read" >&2 ;;
+                esac
+              fi
             fi
           fi
         fi
@@ -418,9 +431,15 @@ find "$VOL" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/dev/null || true
 find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/dev/null || true
 # The native installer's own staging name. A killed install leaves one behind —
 # up to 215MB, in a volume every project shares — and nothing else collects it:
-# the clear takes only what is not a regular file, and the selection now skips
-# it. Age-gated like the rest, so an install in flight is never touched.
-find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -delete 2>/dev/null || true
+# the clear takes only what is not a regular file, and the selection skips it.
+# Age-gated like the rest, so an install in flight is never touched: mtime
+# advances while the installer writes, so no unfinished file can be ten minutes
+# idle.
+#
+# Shape-gated too. A bare *.tmp.* took my.tmp.notes, which the installer would
+# never write and which blocks nothing — the same defect this file has already
+# closed twice on other paths.
+find "$DATA/versions" -maxdepth 1 -name '[0-9]*.[0-9]*.[0-9]*.tmp.*' -type f -mmin +10 -delete 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five

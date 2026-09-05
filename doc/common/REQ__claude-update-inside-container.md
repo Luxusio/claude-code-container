@@ -83,8 +83,10 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
-12. ccc runs a version only when it is a real file under `versions/` that is a
-    version rather than the installer's own staging. Those names sort above the
+12. ccc runs a version only when it is a real file under `versions/` that is
+    not the installer's own staging. It does not otherwise judge the name — a
+    file there that answers `--version` like claude is run, whatever it is
+    called. Those names sort above the
     version they are becoming, so one left behind by a killed install was
     chosen — and being complete is what made that dangerous, not being partial.
     Nothing else would have reclaimed it either: the installer neither
@@ -136,9 +138,10 @@ the install directory is shared. That makes several things observable:
     every project shares for no reason at all. So is a version name carrying
     somebody else's suffix — `2.1.261.backup`, `1.0.0-my-notes` — since the
     installer's only suffix is its staging one. An export named for a date with
-    dots — `2026.09.05` — is not distinguishable from a version by any rule ccc
-    could apply, and is treated as one; that is a cost of the name being the
-    only thing there is to go on. Both recursive clears read that same rule — the one that
+    dots — `2026.09.05` — is three dot-separated numbers and is treated as one.
+    Something could separate it, a bound on the first component say, but that
+    is a rule about what a claude version looks like, maintained here, and
+    wrong the day it is not. The cost is recorded rather than traded away. Both recursive clears read that same rule — the one that
     frees a blocked name, and the one that runs while publishing, whose licence
     is that it is about to write that exact name and only ever writes
     versions. A link is taken under any name,
@@ -149,12 +152,13 @@ the install directory is shared. That makes several things observable:
     Two things stop the clear: a mount at that name, and a volume that will not
     allow the removal. Both are reported even though the start goes on to
     succeed or to install — a refusal that changes what the start will do, with
-    nothing said, is how the wedge above stayed invisible. A refusal for the
-    second reason is not clean: a recursive delete empties what it can before
-    failing on what it cannot, so a directory ccc could not remove has already
-    lost its contents. Only the mount is checked before anything is touched at
-    all — that is the difference between the two refusals, and it is why the
-    mount is the one checked first.
+    nothing said, is how the wedge above stayed invisible. Whether a refusal
+    for the second reason is clean depends on where it comes from: a volume
+    mounted read-only refuses the first unlink and nothing is lost, while a
+    directory ccc cannot remove for any other reason — an unwritable parent,
+    one unwritable entry inside — has already lost whatever the delete reached
+    before it stopped. Only the mount is checked before anything is touched at
+    all; that is why it is the one checked first.
 
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
@@ -246,8 +250,10 @@ binary — the difference is that the shared thing can now be updated.
 The updater says it disables its own version cleanup while the launcher is a
 foreign file — "automatic version cleanup is disabled on this machine (the
 installer cannot tell which version your launcher needs, so it keeps them all)".
-That is its own message, not something measured here, and the container observed
-during this work held a single version, so no accumulation was actually seen.
+It does not prune with the launcher in the right shape either: measured, 2.1.259
+was still there after updating to 2.1.261, after a second update, and after a
+reinstall. So `versions/` grows, in a volume every project on the host shares,
+and nothing here removes an old version — only entries that could never be one.
 Recorded as the updater's stated behavior.
 
 ## Diagnosis
@@ -305,7 +311,8 @@ would be wrong precisely where it is permanent.
   no mount at all: the start must fail and must not print RESTORED, and no
   symlink may be left inside the directory that survived.
 - Behavior 9 is pinned on each success path a start can take — nothing else
-  needed, a reuse, and an install — on both paths that remove a link, and for
+  needed, a reuse, and an install — at every place that removes a link: the
+  pass that frees a blocked name, and both branches of the publishing pass, and for
   once-per-start reporting, the tools' own stderr staying out of it, and all
   four channels that print a name: the note, the reuse line, the error, and
   `ccc doctor`'s own output on both of its branches.
