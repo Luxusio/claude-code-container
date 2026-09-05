@@ -61,7 +61,9 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    said once. Every name ccc reads out of the volume and prints — in a note, in
    a reuse line, in an error, in what `ccc doctor` shows — is stripped of
    control and direction-marking characters first, because a name is data and
-   can otherwise repaint or reverse the line reporting it. A start that fails
+   can otherwise repaint or reverse the line reporting it. In `ccc doctor` that
+   happens where a check is printed rather than where each one is built: a rule
+   applied at every call site is a rule the next call site forgets. A start that fails
    carries its reason in the error rather than as a note, and that error keeps
    only the last few lines of what the container said.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
@@ -90,9 +92,9 @@ the install directory is shared. That makes several things observable:
     start work. Where the volume cannot be written, ccc still will not run the
     link — it says so and installs instead. ccc never publishes such an entry;
     a shared volume can hold one somebody put there, under any name including a
-    hidden one, and adopting over it removes it just as a start finding it does.
-    Removing it carries the
-    same inode argument as clearing any version name — a process running the
+    hidden one, and adopting over it removes it just as a start finding it
+    does. Removing it carries the same inode argument as clearing any version
+    name — a process running the
     target is unaffected — but not the rest of it: unlike the junk names in
     behavior 15, a link can be what another container's launcher resolves
     through, and that container's `claude` stops working until its next ccc
@@ -251,8 +253,9 @@ would be wrong precisely where it is permanent.
   symlink may be left inside the directory that survived.
 - Behavior 9 is pinned on each success path a start can take — nothing else
   needed, a reuse, and an install — on both paths that remove a link, and for
-  once-per-start reporting, the tools' own stderr staying out of it, and every
-  channel that prints a name: the note, the reuse line and the error.
+  once-per-start reporting, the tools' own stderr staying out of it, and all
+  four channels that print a name: the note, the reuse line, the error, and
+  `ccc doctor`'s own output on both of its branches.
 - ccc never runs a staging file a killed start left under `versions/`: those
   are hidden names, and the selection deliberately does not look at hidden
   names. Pinned, because making it look at them is a one-character change that

@@ -94,6 +94,39 @@ describe("runDoctor", () => {
         expect(result).toBe(true);
     });
 
+    it("does not let a name out of the container repaint what it prints", () => {
+        // The launcher line carries a path read out of a volume any container
+        // on the host can write, so it reaches the terminal as data. It is
+        // sanitized where a check is printed rather than where each is built:
+        // one rule at one place, not eighteen call sites and a nineteenth that
+        // forgets.
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n"));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/var/lib/docker/volumes/ccc-mise-cache/_data\n"));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0,
+            "2.1.261 (Claude Code) (updatable, -> /vol/versions/2.1.261\u001b[2K\u200fX)\n"));
+
+        runDoctor("/project/myproject");
+
+        const printed = (console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
+            .map(call => String(call[0])).join("\n");
+        expect(printed).toContain("-> /vol/versions/2.1.261?[2K?X");
+        expect(printed).not.toContain("\u001b");
+        expect(printed).not.toContain("\u200f");
+    });
+
+    it("sanitizes the not-updatable line too, which is the one a user reads twice", () => {
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "27.3.1\n"));
+        spawnSyncMock.mockReturnValueOnce(makeResult(0, "/var/lib/docker/volumes/ccc-mise-cache/_data\n"));
+        spawnSyncMock.mockReturnValueOnce(makeResult(2,
+            "2.1.241 (Claude Code) (NOT updatable: \u202eDESREVER)\n"));
+
+        runDoctor("/project/myproject");
+
+        const printed = (console.log as unknown as { mock: { calls: unknown[][] } }).mock.calls
+            .map(call => String(call[0])).join("\n");
+        expect(printed).toContain("(NOT updatable: ?DESREVER)");
+    });
+
     it("returns false when Docker is not running", () => {
         mockIsDockerRunning.mockReturnValue(false);
 

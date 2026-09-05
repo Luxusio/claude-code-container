@@ -202,6 +202,24 @@ describe("claude launcher layout", () => {
             expect(volumeSymlinks()).toEqual([])
         })
 
+        it("leaves a link named like a staging file to the path that reports it", () => {
+            // The stale-stage reaper deleted anything matching .seed.*, link
+            // included, before anything could announce it — the one path that
+            // took a link away in silence.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "2.1.261")
+            symlinkSync(join(elsewhere, "real"), join(volVersions, ".seed.AbCdEf"))
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stderr).toContain("removed .seed.AbCdEf")
+            expect(existsSync(join(volVersions, ".seed.AbCdEf"))).toBe(false)
+        })
+
         it("says so when adoption is what removed the link", () => {
             // The same removal reached from the other side. Reporting it on one
             // path and not the other means a start can take away the entry
@@ -215,7 +233,9 @@ describe("claude launcher layout", () => {
             const result = run()
 
             expect(result.status).toBe(0)
-            expect(result.stderr).toContain("removed versions/2.1.261")
+            // The same wording as the other path that removes a link: one
+            // removal should not read as two different things.
+            expect(result.stderr).toContain("removed 2.1.261: a version must be a real file, not a symlink")
             expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
         })
 

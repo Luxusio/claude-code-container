@@ -279,15 +279,16 @@ adopt_into_volume() {
               : > "$adopt_failed"
               continue
             fi
-            if [ -L "$target" ]; then
-              # Same removal as drop_linked_versions, reached from the other
-              # side, and the same thing is at stake: a link here can be what
-              # another container's launcher resolves through, so a start that
-              # takes it away has to say so.
-              clear_why="$(rm -f "$target" 2>&1)"
-              [ -e "$target" ] || [ -L "$target" ] || echo "removed $relpath: a version must be a real file, not a symlink" >&2
-            else
-              clear_why="$(rm -rf "$target" 2>&1)"
+            # rm never follows a symlink argument, -r included, so one call
+            # serves both. What differs is that a link has to be announced: it
+            # can be what another container's launcher resolves through, so a
+            # start that takes it away says so, in the same words as the other
+            # path that removes one.
+            was_link=no
+            [ -L "$target" ] && was_link=yes
+            clear_why="$(rm -rf "$target" 2>&1)"
+            if [ "$was_link" = yes ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+              echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
             fi
             ;;
         esac
@@ -361,7 +362,11 @@ fi
 # every project, so the symptom is "the cache is mysteriously full" with nothing
 # pointing at the cause. The age guard is what makes this safe: another
 # container's live staging file is minutes younger than the probe's own budget.
-find "$VOL" "$DATA/versions" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/dev/null || true
+# -type f: a stale staging file is a file. A symlink that happens to carry this
+# name is a link under versions/ like any other, and deleting it here removed it
+# with nothing said — the one path that took a link away in silence. Left alone,
+# drop_linked_versions takes it and reports it.
+find "$VOL" "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
@@ -404,6 +409,10 @@ pick_best() {
   return 1
 }
 
+# Only ever called from pick_best, which sets both globals before it can run.
+# Nothing can pin it: docker exec gives an empty $- either way, so this is
+# defensive, and standalone it would set IFS empty and disable field splitting
+# for the rest of the script.
 restore_scan_flags() {
   case "$old_flags" in
     *f*) ;;
@@ -435,6 +444,9 @@ seed_from() {
   seed="$(mktemp "$DATA/versions/.seed.XXXXXX")" || return 1
   if ! cp -L "$src" "$seed"; then rm -f "$seed"; return 1; fi
   if ! chmod +x "$seed"; then rm -f "$seed"; return 1; fi
+  # -e alone is false for a dangling link, and mv -f would then replace the link
+  # itself — silently, since nothing here announces a removal.
+  if [ -e "$DATA/versions/$v" ] || [ -L "$DATA/versions/$v" ]; then rm -f "$seed"; return 1; fi
   if ! mv -f "$seed" "$DATA/versions/$v"; then rm -f "$seed"; return 1; fi
 }
 

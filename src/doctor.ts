@@ -32,7 +32,12 @@ function printResults(checks: DoctorCheck[]): void {
         } else {
             icon = "✗";
         }
-        console.log(`  ${icon} ${check.name}: ${check.message}`);
+        // Sanitize here rather than where each check is built. Several of these
+        // messages carry strings produced inside a container — a path out of a
+        // volume any container can write, a runtime's own version output — and
+        // a rule applied at eighteen call sites is a rule the nineteenth
+        // forgets. This is the only place a check reaches a terminal.
+        console.log(`  ${icon} ${check.name}: ${sanitizeForTerminal(check.message)}`);
     }
 
     const errors = checks.filter((c) => c.status === "error").length;
@@ -197,20 +202,17 @@ export function runDoctor(projectPath: string): boolean {
         // updater refuses to manage — `claude update` will report success and
         // change nothing. Reporting that as ok is how the state stayed
         // invisible; it is a warning, and the message says why.
-        // The line carries a path read out of a volume any container can write,
-        // so it reaches the terminal as data — the same reason the probe's own
-        // notes are sanitized before they are printed.
         if (claudeCheck.status === 2 && claudeCheck.stdout?.trim()) {
             checks.push({
                 name: "Claude",
                 status: "warn",
-                message: sanitizeForTerminal(claudeCheck.stdout.trim()),
+                message: claudeCheck.stdout.trim(),
             });
         } else if (claudeCheck.status === 0 && claudeCheck.stdout?.trim()) {
             checks.push({
                 name: "Claude",
                 status: "ok",
-                message: sanitizeForTerminal(claudeCheck.stdout.trim()),
+                message: claudeCheck.stdout.trim(),
             });
         } else {
             checks.push({

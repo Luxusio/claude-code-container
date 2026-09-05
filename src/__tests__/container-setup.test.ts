@@ -99,6 +99,19 @@ describe("container-setup.ts module", () => {
             expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Permission denied"))
         })
 
+        it("strips the invisible direction marks as well as the overrides", () => {
+            // LRM and RLM are not overrides and not control bytes, and they are
+            // invisible — which is what makes them useful for making a name
+            // read as one thing while being another.
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "VALID\n",
+                "removed 2.1.\u200e261\u200f\u061c: a version must be a real file, not a symlink\n"))
+
+            ensureClaudeInContainer(container)
+
+            expect(console.log).toHaveBeenCalledWith(
+                "removed 2.1.?261??: a version must be a real file, not a symlink")
+        })
+
         it("strips the marks that reorder how a name renders", () => {
             // A right-to-left override is not a control byte, and it makes the
             // rest of the line read backwards — enough to disguise which entry
