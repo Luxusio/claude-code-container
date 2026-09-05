@@ -358,6 +358,20 @@ describe("claude launcher layout", () => {
             expect(readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".seed."))).toEqual([])
         })
 
+        it("keeps its failure marker out of the volume every project shares", () => {
+            // The marker is intra-container signalling. Putting it in the shared
+            // volume means the one failure it exists to report — the volume
+            // being unwritable — is the one it cannot record, and a failed run
+            // leaves an invisible dotfile in a volume nobody thinks to look in.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.5"), "2.1.5")
+
+            expect(run().stdout).toBe("RESTORED 2.1.5")
+
+            const litter = readdirSync(paths.volumeDataDir).filter(n => n.startsWith(".adopt-failed"))
+            expect(litter).toEqual([])
+            expect(buildClaudeProbeScript(paths)).not.toContain('"$VOL/.adopt-failed')
+        })
+
         it("reports a link failure instead of letting the caller delete an unadopted original", () => {
             // adopt swallowed every ln failure, not only "another container won
             // this name". A cross-device or ENOSPC failure left the file NOT in

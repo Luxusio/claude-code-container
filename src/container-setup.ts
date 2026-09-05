@@ -150,7 +150,11 @@ is_mountpoint() {
 # install it abandoned sat untouched on disk.
 adopt_into_volume() {
   [ -d "$DATA" ] || return 0
-  adopt_failed="$(mktemp "$VOL/.adopt-failed.XXXXXX")" || return 1
+  # Container-local, not in the volume. This is intra-container signalling, and
+  # putting it in the shared volume made the one failure it exists to report —
+  # the volume being unwritable — the one it could not record, while leaving an
+  # invisible dotfile behind in a volume nobody thinks to inspect.
+  adopt_failed="$(mktemp)" || return 1
   rm -f "$adopt_failed"
   ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do
     target="$VOL/\${rel#./}"
@@ -210,6 +214,13 @@ if [ ! -L "$DATA" ] || [ "$(readlink "$DATA")" != "$VOL" ]; then
   echo "$DATA is not backed by $VOL; an update here would not survive the container" >&2
   exit 1
 fi
+
+# Staging files are removed on every path that creates them, but a killed
+# process leaves one behind — up to 215MB, dot-prefixed, in a volume shared by
+# every project, so the symptom is "the cache is mysteriously full" with nothing
+# pointing at the cause. The age guard is what makes this safe: another
+# container's live staging file is minutes younger than the probe's own budget.
+find "$VOL" "$DATA/versions" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five
