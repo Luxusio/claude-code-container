@@ -67,17 +67,23 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
-11. A version name appears in the volume only when its bytes are all there. A
-    copy interrupted partway leaves no published name, because nothing would
-    ever replace a truncated file once it existed.
+11. A version name written by current ccc appears in the volume only when its
+    bytes are all there: a copy interrupted partway leaves no published name,
+    because nothing would ever replace a truncated file once it existed. This
+    is a guarantee about what ccc writes, not about what a volume contains —
+    volumes written by earlier versions can already hold truncated or
+    wrong-typed entries, and ccc will not replace them. It refuses rather than
+    reporting success when it finds one.
 12. ccc refuses to delete through a mount point, at the data directory and at
     the launcher path, and says which one it refused. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
 13. Setup fails rather than reporting success whenever the install could not
-    actually be adopted into the volume — including when the volume is
-    read-only or full. The caller removes the original on success, so a false
-    success destroys a working install.
+    actually be adopted into the volume — a read-only or full volume, and also
+    a name already held by something that is not the matching binary. The
+    caller removes the original on success, so a false success destroys a
+    working install; existence of the name is not adoption, and the failure
+    message says which entry could not be adopted.
 
 ## What stopped being pinned
 

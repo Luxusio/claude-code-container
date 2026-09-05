@@ -38,14 +38,14 @@ function runWithEnv(env: Record<string, string>): { status: number, stdout: stri
     }
 }
 
-function run(): { status: number, stdout: string } {
+function run(): { status: number, stdout: string, stderr: string } {
     const options = { encoding: "utf-8" as const, env: { PATH: "/usr/bin:/bin" } }
     try {
         const stdout = execFileSync("sh", ["-c", buildClaudeProbeScript(paths)], options)
-        return { status: 0, stdout: stdout.trim() }
+        return { status: 0, stdout: stdout.trim(), stderr: "" }
     } catch (error) {
-        const e = error as { status?: number, stdout?: string }
-        return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim() }
+        const e = error as { status?: number, stdout?: string, stderr?: string }
+        return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim(), stderr: (e.stderr ?? "").trim() }
     }
 }
 
@@ -92,6 +92,46 @@ describe("claude launcher layout", () => {
 
             expect(lstatSync(paths.dataDir).isSymbolicLink()).toBe(true)
             expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
+        })
+
+        it("does not call a name taken by the wrong thing adopted, and keep the original", () => {
+            // `-e` answers "is this name taken", not "is the right content
+            // there". A directory, a truncated file or a foreign symlink at the
+            // target made adopt skip the entry and return 0 — and the caller
+            // deletes the original on success, so the working binary was
+            // destroyed and the bad entry left in place.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(existsSync(join(paths.dataDir, "versions", "2.1.261"))).toBe(true)
+        })
+
+        it("refuses to publish a directory under a version name", () => {
+            // Mirroring a container's own broken state into the shared volume
+            // takes that version name out of circulation for every project on
+            // the host: pick_best skips it, seed_from refuses it, adopt skips
+            // it — while still deleting each container's good copy.
+            mkdirSync(join(paths.dataDir, "versions", "2.1.261"), { recursive: true })
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261", "claude"), "2.1.261")
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.261"))).toBe(false)
+        })
+
+        it("fails on a dangling symlink in the volume and names the entry", () => {
+            writeFakeClaude(join(paths.dataDir, "statsig"), "2.1.5")
+            mkdirSync(paths.volumeDataDir, { recursive: true })
+            symlinkSync(join(root, "nonexistent"), join(paths.volumeDataDir, "statsig"))
+
+            const result = run()
+
+            expect(result.status).not.toBe(0)
+            expect(result.stderr).toContain("statsig")
         })
 
         it("does not overwrite a version another container may be executing", () => {
@@ -575,6 +615,20 @@ describe("what ccc doctor says about the launcher", () => {
         expect(out).toContain("NOT updatable")
     })
 
+    it("signals the not-updatable state by exit code, not only in prose", () => {
+        // doctor rendered this as a green check with "All checks passed",
+        // because it keyed off "the command succeeded" — and the command
+        // succeeded while reporting the exact state it exists to surface. An
+        // exit code is what a caller can act on.
+        writeFakeClaude(paths.bin, "2.1.241")
+        expect(report(paths.bin).status).toBe(2)
+
+        rmSync(paths.bin)
+        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
+        run()
+        expect(report(paths.bin).status).toBe(0)
+    })
+
     it("says a plain-file launcher is NOT updatable, which is the whole bug", () => {
         writeFakeClaude(paths.bin, "2.1.241")
 
@@ -597,11 +651,16 @@ describe("what ccc doctor says about the launcher", () => {
         const launcher = join(root, "bin", "claude-elsewhere")
         symlinkSync(join(sibling, "versions", "2.1.5"), launcher)
 
-        const out = execFileSync(
-            "sh",
-            ["-c", buildClaudeLauncherReportCommand(launcher, globbyData)],
-            { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } },
-        )
+        // exits 2 for the not-updatable state, so read it the way doctor does
+        let out = ""
+        try {
+            out = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(launcher, globbyData)],
+                { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+        } catch (error) {
+            const e = error as { status?: number, stdout?: string }
+            expect(e.status).toBe(2)
+            out = e.stdout ?? ""
+        }
 
         expect(out).toContain("NOT updatable")
     })

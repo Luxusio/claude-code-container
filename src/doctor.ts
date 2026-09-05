@@ -193,7 +193,17 @@ export function runDoctor(projectPath: string): boolean {
             ],
             { encoding: "utf-8", timeout: 10000 },
         );
-        if (claudeCheck.status === 0 && claudeCheck.stdout?.trim()) {
+        // Exit 2 means the launcher works but is in the shape the native
+        // updater refuses to manage — `claude update` will report success and
+        // change nothing. Reporting that as ok is how the state stayed
+        // invisible; it is a warning, and the message says why.
+        if (claudeCheck.status === 2 && claudeCheck.stdout?.trim()) {
+            checks.push({
+                name: "Claude",
+                status: "warn",
+                message: claudeCheck.stdout.trim(),
+            });
+        } else if (claudeCheck.status === 0 && claudeCheck.stdout?.trim()) {
             checks.push({
                 name: "Claude",
                 status: "ok",

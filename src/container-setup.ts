@@ -168,31 +168,57 @@ adopt_into_volume() {
   adopt_failed="$(mktemp)" || return 1
   rm -f "$adopt_failed"
   ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do
-    target="$VOL/\${rel#./}"
+    relpath="\${rel#./}"
+    target="$VOL/$relpath"
     if [ -d "$DATA/$rel" ] && [ ! -L "$DATA/$rel" ]; then
+      # A directory directly under versions/ is not a version. Mirroring one
+      # into the shared volume takes that name out of circulation for every
+      # project on the host — pick_best skips it, seed_from refuses it, adopt
+      # skips it — while each container keeps deleting its own good copy.
+      case "$relpath" in
+        versions/*/*) ;;
+        versions/*)
+          echo "refusing to publish $relpath: a directory cannot be a version" >&2
+          : > "$adopt_failed"
+          continue
+          ;;
+      esac
       mkdir -p "$target" || : > "$adopt_failed"
       continue
     fi
-    # Skip what exists. The volume is shared by every project on the host, so a
-    # version already there may be the binary another container is executing;
-    # forcing over it fails with ETXTBSY and takes down a working project.
-    # Version files are named by their content, so an existing one is right.
-    [ -e "$target" ] && continue
+    # Existence is not adoption. The volume is shared by every project on the
+    # host, so a version already there may be the binary another container is
+    # executing — forcing over it fails with ETXTBSY and takes down a working
+    # project, and version files are named by their content, so a matching
+    # regular file needs no replacing. Anything ELSE holding the name means this
+    # entry did not reach the volume, and the caller deletes the original on
+    # success: a directory, a foreign symlink, or a dangling link there has to
+    # be a failure, not a skip.
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
+        continue
+      fi
+      echo "cannot adopt $relpath: the volume already holds something else at that name" >&2
+      : > "$adopt_failed"
+      continue
+    fi
     # Copy to a staging name, then link it into place. Copying straight to the
     # final name publishes a truncated but still-executable file if the process
     # dies mid-copy, and nothing ever replaces it because copies skip what
     # exists — the migration path would manufacture the poisoned version it is
     # supposed to avoid. 215MB is long enough for that to happen. ln fails
     # EEXIST in the kernel, so two containers cannot both win the same name.
-    stage="$(mktemp "$VOL/.seed.XXXXXX")" || { : > "$adopt_failed"; continue; }
+    stage="$(mktemp "$VOL/.seed.XXXXXX")" || { echo "cannot stage $relpath into $VOL" >&2; : > "$adopt_failed"; continue; }
     if cp -a "$DATA/$rel" "$stage"; then
       # A losing race is fine — the winner published the same content under a
       # content-named path. Any other ln failure means the file was NOT adopted,
       # and the caller deletes the original on success, so it has to be recorded.
       if ! ln "$stage" "$target" 2>/dev/null && [ ! -e "$target" ]; then
+        echo "cannot publish $relpath into $VOL" >&2
         : > "$adopt_failed"
       fi
     else
+      echo "cannot copy $relpath out of $DATA" >&2
       : > "$adopt_failed"
     fi
     rm -f "$stage"
@@ -351,7 +377,11 @@ export function buildClaudeLauncherReportCommand(
         `[ -n "$expected" ] || expected="__no_versions_dir__"`,
         `case "$target" in`,
         `  "$expected"/*) printf '%s (updatable, -> %s)\\n' "$v" "$target" ;;`,
-        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir} ;;`,
+        // Exit 2, not 0. A caller that keys off "the command succeeded" would
+        // render this as a passing check — which is what ccc doctor did, showing
+        // a green tick and "All checks passed" for the exact state this exists
+        // to surface.
+        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it)\\n' "$v" ${versionsDir}; exit 2 ;;`,
         `esac`,
     ].join("\n");
 }
