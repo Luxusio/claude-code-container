@@ -258,6 +258,21 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.241"))
         })
 
+        it("refuses to seed over a version name that already exists", () => {
+            // mv -f onto a file succeeds even while another container is running
+            // it — rename() swaps the directory entry, so that container gets a
+            // donor copy on its next resolve. Refusing costs a re-download; the
+            // installer writes a fresh version name and recovery still works.
+            const occupied = join(paths.volumeDataDir, "versions", "2.1.241")
+            mkdirSync(join(occupied, ".."), { recursive: true })
+            writeFileSync(occupied, "#!/bin/sh\n# another container's copy\nexit 1\n")
+            chmodSync(occupied, 0o755)
+            writeFakeClaude(paths.legacyCacheFile, "2.1.241")
+
+            expect(run().stdout).toBe("INSTALL")
+            expect(readFileSync(occupied, "utf8")).toContain("another container's copy")
+        })
+
         it("refuses to seed on top of a directory rather than half-publishing into it", () => {
             // If versions/<v> is ever a directory — an upstream layout change,
             // or a half-finished install — `mv -f` deposits the seed INSIDE it

@@ -195,10 +195,12 @@ seed_from() {
   v="$(claude_version_line "$src" | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n 1)"
   [ -n "$v" ] || return 1
   mkdir -p "$DATA/versions" || return 1
-  # mv -f onto a directory deposits the file INSIDE it and leaves the version
-  # name unusable, which turns a layout change upstream into a container that
-  # cannot start. Refuse rather than half-publish.
-  [ -d "$DATA/versions/$v" ] && return 1
+  # Never publish over a version name that already exists. mv -f onto a
+  # directory deposits the file INSIDE it and leaves the name unusable; mv -f
+  # onto a file succeeds even while another container executes it, silently
+  # swapping that container's binary for a donor copy on its next resolve. The
+  # name is the content, so anything already there is already right.
+  [ -e "$DATA/versions/$v" ] && return 1
   # Not "$$": the PID is container-local, containers start at low PIDs, and this
   # directory is a volume shared by every project on the host — two of them
   # seeding at once would interleave 215MB writes into one file and publish the
