@@ -77,12 +77,15 @@ the install directory is shared. That makes several things observable:
     data directory that reaches versions/ by a link publishes the same regular
     files as one that does not.
 13. A start recovers from a volume entry that no version binary could be.
-    Clearing a name is safe where overwriting is not: `unlink` only unbinds the
-    name, so a process already running that binary keeps its inode and cannot
-    be interrupted the way an overwrite interrupts it with ETXTBSY.
+    Under a *version* name, clearing is safe where overwriting is not:
+    `unlink` only unbinds the name, so a process already running that binary
+    keeps its inode and cannot be interrupted the way an overwrite interrupts
+    it with ETXTBSY. That argument does not extend to other names, and the
+    rule below does not either.
     A directory under a version name is junk by construction — ccc refuses to
     create one, skips one when choosing a version, and refuses to seed from
-    one — so nothing anyone runs is inside it and it is cleared whole. Refusing
+    one — so nothing anyone runs is inside it and it is cleared whole, except
+    where a user has put a mount there (behavior 16). Refusing
     it instead left a container with a working local install failing on every
     start with no way back. Every other name is cleared only when it holds
     nothing, because ccc cannot tell its contents from what other projects are
@@ -97,11 +100,16 @@ the install directory is shared. That makes several things observable:
     than a directory at that name fails to start and says so.
 15. An entry under the data directory that cannot be read — a link pointing at
     nothing, a socket, a file ccc has no permission for — fails the start
-    rather than being published as-is, and the message names the entry. There
-    is no automatic recovery from that state; the volume is left untouched and
-    the local install is preserved, so it is repairable by hand.
+    rather than being published as-is, and the message names the entry. The
+    local install is preserved, so the state is repairable by hand, but the
+    volume is not left as it was: entries reached before the failing one are
+    already published. Adoption is not atomic, and nothing here claims it is.
 16. ccc refuses to delete through a mount point — at the data directory, at
-    the launcher path, and at a version name it would otherwise clear. ccc never places a mount
+    the launcher path, and at a version name it would otherwise clear — and
+    says which one it refused. Without that, the refusal is indistinguishable
+    from the ordinary one: deleting through a mount empties the other side and
+    then fails on the directory itself, so the exit code and the message look
+    the same whether or not the user's data survived. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
 17. Setup fails rather than reporting success whenever the install could not
@@ -183,9 +191,17 @@ or
 - Behavior 14 is pinned by a regular file at versions/ against a volume that
   holds the shared directory: the start must fail and the directory must
   survive.
-- Behavior 16's third site is not covered: creating a bind mount needs
-  privileges the test suite does not have, which is why the two older
-  mount-point guards are uncovered as well.
+- Behavior 16 is pinned at the version-name site by a real bind mount, made
+  inside a user namespace with `unshare -Umr`, which needs no privileges. The
+  test skips where the kernel or image will not provide one. It is the guard
+  worth the trouble: without it the run exits with the same code and the same
+  message, and the only difference is that the user's mounted data is gone.
+  The two older sites remain uncovered — not because a mount is unobtainable,
+  which was an earlier claim in this document and was false, but because
+  neither has been written yet.
+- Behavior 17 is pinned in part by a read-only volume that already holds the
+  version: the start must succeed, because nothing needs writing. That is what
+  keeps ccc from re-copying 215MB per version on every start.
 - Behaviors 1–4 as stated are host-tier: they need a real Docker daemon whose
   path resolution matches the caller's, which is not satisfiable from inside a
   container (see the header of `src/__tests__/e2e.test.ts`).

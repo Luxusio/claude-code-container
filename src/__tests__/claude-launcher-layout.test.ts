@@ -82,6 +82,24 @@ beforeEach(() => {
     }
 })
 
+// A bind mount needs no privileges inside a user namespace, so the mount-point
+// guards are testable after all — the earlier claim that they were not is what
+// let a data-destroying mutant survive. Skipped, not silently passed, where the
+// kernel or the image will not give us one.
+const canBindMount = (() => {
+    try {
+        const probe = mkdtempSync(join(tmpdir(), "ccc-bindmount-probe-"))
+        mkdirSync(join(probe, "a"))
+        mkdirSync(join(probe, "b"))
+        execFileSync("unshare", ["-Umr", "sh", "-c", `mount --bind '${join(probe, "a")}' '${join(probe, "b")}'`],
+            { stdio: "ignore", env: { PATH: "/usr/bin:/bin" } })
+        rmSync(probe, { recursive: true, force: true })
+        return true
+    } catch {
+        return false
+    }
+})()
+
 // Nothing published into the shared volume may be a symlink: it would point at
 // a path that exists only in the container that wrote it.
 function volumeSymlinks(): string[] {
@@ -200,6 +218,57 @@ describe("claude launcher layout", () => {
             expect(result.status).toBe(0)
             expect(volumeSymlinks()).toEqual([])
             expect(lstatSync(join(paths.volumeDataDir, "statsig")).isFile()).toBe(true)
+        })
+
+        it("does not copy a version the volume already holds", () => {
+            // The skip before staging looks redundant with the one inside the
+            // clearing block — same condition, same outcome — so removing it
+            // passed the whole suite. The difference is 215MB of copying per
+            // already-present version on every start, and it is only visible
+            // when the volume cannot be written to at all: with the skip there
+            // is nothing to write, without it the staging copy is attempted
+            // and the start fails.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+            chmodSync(volVersions, 0o555)
+            chmodSync(paths.volumeDataDir, 0o555)
+
+            const result = run()
+
+            chmodSync(paths.volumeDataDir, 0o755)
+            chmodSync(volVersions, 0o755)
+            expect(result.status).toBe(0)
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+        })
+
+        it.skipIf(!canBindMount)("refuses to clear through a bind mount at a version name", () => {
+            // rm -rf deletes the contents THROUGH the mount before it fails
+            // EBUSY on the directory itself, so without the guard the user's
+            // data is gone while the exit code and stderr look identical. That
+            // is why this needs a real mount rather than a reasoned argument.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            const junk = join(paths.volumeDataDir, "versions", "2.1.261")
+            mkdirSync(junk, { recursive: true })
+            const source = join(root, "mounted")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            let stderr = ""
+            try {
+                execFileSync("unshare", ["-Umr", "sh", "-c",
+                    `mount --bind '${source}' '${junk}' && sh '${script}'`],
+                    { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+            } catch (error) {
+                stderr = ((error as { stderr?: string }).stderr ?? "")
+            }
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(stderr).toContain("versions/2.1.261")
+            expect(stderr).toContain("mount point")
         })
 
         it("refuses a non-empty directory at a name that is not a version", () => {
