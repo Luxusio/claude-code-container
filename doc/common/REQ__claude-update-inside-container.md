@@ -57,6 +57,28 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    previous wording ("Restored claude from cache") was also no longer true —
    nothing is copied out of a cache.
 
+## Behavior against a volume other projects are using
+
+`ccc-mise-cache` is one volume mounted into every ccc container on the host, so
+the install directory is shared. That makes several things observable:
+
+10. ccc never overwrites a version file that already exists in the volume. One
+    container's startup must not disturb a binary another container is
+    executing — forcing over it fails with ETXTBSY and takes down a project
+    that was working. Version files are named by their content, so an existing
+    one is already correct.
+11. A version name appears in the volume only when its bytes are all there. A
+    copy interrupted partway leaves no published name, because nothing would
+    ever replace a truncated file once it existed.
+12. ccc refuses to delete through a mount point, at the data directory and at
+    the launcher path, and says which one it refused. ccc never places a mount
+    there, but a user can, and `rm -rf` across that boundary empties the other
+    side.
+13. Setup fails rather than reporting success whenever the install could not
+    actually be adopted into the volume — including when the volume is
+    read-only or full. The caller removes the original on success, so a false
+    success destroys a working install.
+
 ## What stopped being pinned
 
 The removed `saveClaudeBinaryToVolume` persisted whatever `command -v claude`
