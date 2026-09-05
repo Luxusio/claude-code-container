@@ -67,21 +67,23 @@ the install directory is shared. That makes several things observable:
     executing — forcing over it fails with ETXTBSY and takes down a project
     that was working. Version files are named by their content, so an existing
     one is already correct.
-10b. ccc runs a version only when it is a real file under `versions/`. A
-    symlink there resolves to a binary outside the directory the updater
-    manages, so running it reproduces the original bug: the version works,
-    reports correctly, and cannot be updated. ccc never publishes one; a shared
-    volume can still hold one somebody put there.
-11. A version name written by current ccc appears in the volume only when its
+11. ccc runs a version only when it is a real file under `versions/`. A symlink
+    there may resolve to a binary outside the directory the updater manages,
+    which rebuilds the original bug — the version works, reports its number
+    correctly, and cannot be updated — and nothing about the entry says which
+    kind it is, so ccc runs neither. When another version is present it is
+    chosen instead. ccc never publishes such an entry; a shared volume can
+    still hold one somebody put there.
+12. A version name written by current ccc appears in the volume only when its
     bytes are all there: a copy interrupted partway leaves no published name,
     because nothing would ever replace a truncated file once it existed.
-12. Nothing ccc publishes into the volume is a symlink. A link there names a
+13. Nothing ccc publishes into the volume is a symlink. A link there names a
     path that exists only in the container that wrote it, so every other
     container reads a name pointing at nothing — and no later run can free it.
     ccc reads its own install through symlinks rather than copying them, so a
     data directory that reaches versions/ by a link publishes the same regular
     files as one that does not.
-13. A start recovers from a volume entry that no version binary could be.
+14. A start recovers from a volume entry that no version binary could be.
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
     keeps its inode and cannot be interrupted the way an overwrite interrupts
@@ -90,7 +92,7 @@ the install directory is shared. That makes several things observable:
     A directory under a version name is junk by construction — ccc refuses to
     create one, skips one when choosing a version, and refuses to seed from
     one — so nothing anyone runs is inside it and it is cleared whole, except
-    where a user has put a mount there (behavior 16). Refusing
+    where a user has put a mount there (behavior 17). Refusing
     it instead left a container with a working local install failing on every
     start with no way back. Every other name is cleared only when it holds
     nothing, because ccc cannot tell its contents from what other projects are
@@ -98,18 +100,18 @@ the install directory is shared. That makes several things observable:
     already under a version name is left alone: it may be what another
     container is executing, and version names are content-addressed, so it is
     already correct.
-14. ccc never publishes anything over `versions/` itself. That name holds every
+15. ccc never publishes anything over `versions/` itself. That name holds every
     other project's binaries, and a file written there could not be undone by
     any later start: once the data directory is the symlink, the adoption path
     is never entered again. A container whose own layout puts something other
     than a directory at that name fails to start and says so.
-15. An entry under the data directory that cannot be read — a link pointing at
+16. An entry under the data directory that cannot be read — a link pointing at
     nothing, a socket, a file ccc has no permission for — fails the start
     rather than being published as-is, and the message names the entry. The
     local install is preserved, so the state is repairable by hand, but the
     volume is not left as it was: entries reached before the failing one are
     already published. Adoption is not atomic, and nothing here claims it is.
-16. ccc refuses to delete through a mount point — at the data directory, at
+17. ccc refuses to delete through a mount point — at the data directory, at
     the launcher path, and at a version name it would otherwise clear — and
     says which one it refused. Deleting through a mount empties the other side
     and only then fails on the directory itself, which is a failure ccc cannot
@@ -117,13 +119,13 @@ the install directory is shared. That makes several things observable:
     lost. At the launcher there was not even a failure to read: the removal
     went unchecked, the launcher was written inside the directory that
     survived, and the start reported success.
-17. A start that could not put the launcher where it belongs fails rather than
+18. A start that could not put the launcher where it belongs fails rather than
     reporting success. Removing whatever occupies that path can fail — a mount,
     a read-only parent — and a symlink created inside the survivor is not a
     launcher anyone will run. ccc never places a mount
     there, but a user can, and `rm -rf` across that boundary empties the other
     side.
-18. Setup fails rather than reporting success whenever something that needed
+19. Setup fails rather than reporting success whenever something that needed
     adopting could not be — a read-only or full volume with anything left to
     publish, and a name held by something that could not be removed. A volume
     that already holds everything this container would publish is not such a
@@ -176,12 +178,6 @@ Recorded as the updater's stated behavior.
 
 ## Diagnosis
 
-Both lines name the same directory, resolved: the data dir is itself a symlink
-into the shared volume, and printing the literal path on one branch and the
-resolved one on the other described two places for one. The warning also says
-what to do, because an ordinary `ccc` start is what repairs it — measured, not
-assumed.
-
 `ccc doctor` reports the launcher's shape, not only its version, because the
 version alone is what looks fine in the broken state: a real version printed by
 a real binary at the right path. What it checks is where the launcher resolves,
@@ -194,6 +190,11 @@ or
 
     2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/mise/.claude-data/versions, so claude update cannot replace it. Starting ccc again repairs this)
 
+Both lines name the same directory, resolved, because the data directory is
+itself a symlink into the shared volume and the two spellings of one place read
+as two places. The warning says what to do because an ordinary `ccc` start is
+what repairs the states a user reaches by accident.
+
 ## Verification
 
 - `src/__tests__/claude-launcher-layout.test.ts` executes the generated setup
@@ -201,26 +202,28 @@ or
   a symlink into `versions/`, newest version wins by version order, a flattened
   regular-file launcher is repaired, a legacy single-file cache is migrated, and
   shims / non-Claude binaries are rejected.
-- Behavior 12 is pinned by a case where this container reaches versions/
+- Behavior 13 is pinned by a case where this container reaches versions/
   through a symlink: the volume's other versions must survive, the new one must
   publish, and nothing under the volume may be a symlink afterwards.
-- Behavior 13 is pinned by three consecutive probe runs against a poisoned
+- Behavior 14 is pinned by three consecutive probe runs against a poisoned
   volume, all of which must succeed; by a non-empty junk directory under a
   version name, which must be cleared; by a non-empty directory at a name that
   is *not* a version, which must be refused with the shared file intact; and by
   a read-only volume, which must refuse. The middle two are what separate a
   clear from a delete, and widening either one is caught.
-- Behavior 14 is pinned by a regular file at versions/ against a volume that
+- Behavior 15 is pinned by a regular file at versions/ against a volume that
   holds the shared directory: the start must fail and the directory must
   survive.
-- Behavior 16 is pinned at all three sites by a real bind mount, made inside a
+- Behavior 17 is pinned at all three sites by a real bind mount, made inside a
   user namespace with `unshare -Umr`, which needs no privileges; the tests skip
   where the kernel or image will not provide one. An earlier version of this
   document claimed such a mount was unobtainable and used that to excuse
   leaving the guards untested. It was not true.
-- Behavior 17 is pinned by a read-only parent at the launcher path, which needs
+- Behavior 18 is pinned by a read-only parent at the launcher path, which needs
   no mount at all: the start must fail and must not print RESTORED, and no
   symlink may be left inside the directory that survived.
+- Behavior 11 is pinned by a symlinked version alongside a real one: the real
+  one must be chosen, and the launcher must resolve to it.
 - Behavior 10 is pinned in part by a read-only volume that already holds the
   version: the start must succeed, because a version already there is left
   alone and so nothing needs writing. The test observes a refused write rather

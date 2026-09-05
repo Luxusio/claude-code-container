@@ -369,7 +369,14 @@ pick_best() {
     # probe reported success on a layout ccc doctor calls NOT updatable, which
     # is the exact shape this whole change exists to remove. ccc never publishes
     # one, but a hand-made or foreign entry in a shared volume can be one.
-    [ -f "$f" ] && [ ! -L "$f" ] && [ -x "$f" ] || continue
+    if [ -L "$f" ]; then
+      # Skipping silently leaves the user with a full reinstall, or with
+      # "installation left no usable launcher", and nothing naming the entry
+      # that caused either.
+      echo "ignoring $cand: a version must be a real file, not a link" >&2
+      continue
+    fi
+    [ -f "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
     if is_claude "$f"; then BEST="$f"; return 0; fi
   done

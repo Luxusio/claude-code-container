@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { execFileSync } from "child_process"
+import { execFileSync, spawnSync } from "child_process"
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
     realpathSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
@@ -40,13 +40,16 @@ function runWithEnv(env: Record<string, string>): { status: number, stdout: stri
 }
 
 function run(): { status: number, stdout: string, stderr: string } {
-    const options = { encoding: "utf-8" as const, env: { PATH: "/usr/bin:/bin" } }
-    try {
-        const stdout = execFileSync("sh", ["-c", buildClaudeProbeScript(paths)], options)
-        return { status: 0, stdout: stdout.trim(), stderr: "" }
-    } catch (error) {
-        const e = error as { status?: number, stdout?: string, stderr?: string }
-        return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim(), stderr: (e.stderr ?? "").trim() }
+    // spawnSync rather than execFileSync: the latter surfaces stderr only on a
+    // throw, so a diagnostic printed by a run that SUCCEEDS was invisible to
+    // the tests — and a skipped entry that costs the user a reinstall is
+    // exactly such a diagnostic.
+    const result = spawnSync("sh", ["-c", buildClaudeProbeScript(paths)],
+        { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+    return {
+        status: result.status ?? -1,
+        stdout: (result.stdout ?? "").trim(),
+        stderr: (result.stderr ?? "").trim(),
     }
 }
 
@@ -831,6 +834,9 @@ describe("claude launcher layout", () => {
 
             expect(result.stdout).toBe("RESTORED 2.1.261")
             expect(realpathSync(paths.bin)).toBe(join(paths.volumeDataDir, "versions", "2.1.261"))
+            // and it says which entry it ignored, so the reinstall this causes
+            // when there is no other candidate is diagnosable
+            expect(result.stderr).toContain("ignoring 9.9.9")
         })
 
         it("does not adopt a mise shim as a claude binary", () => {
@@ -969,6 +975,37 @@ describe("what ccc doctor says about the launcher", () => {
 
         expect(out).toContain("2.1.241 (Claude Code)")
         expect(out).toContain("NOT updatable")
+    })
+
+    it("names the same directory whether or not the launcher is updatable", () => {
+        // One branch printed the resolved path and the other the literal, so a
+        // user comparing the two outputs was told about two directories for one
+        // place. Nothing pinned that: reverting the failure branch to the
+        // literal left the whole file green, in a file whose own history is
+        // assertions that matched text instead of behavior.
+        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+        run()
+        const updatable = report(paths.bin).stdout
+
+        rmSync(paths.bin)
+        writeFakeClaude(paths.bin, "2.1.241")
+        const notUpdatable = report(paths.bin).stdout
+
+        const resolved = join(paths.volumeDataDir, "versions")
+        expect(updatable).toContain(resolved)
+        expect(notUpdatable).toContain(resolved)
+        expect(notUpdatable).not.toContain(`${paths.dataDir}/versions`)
+    })
+
+    it("names a real directory when there is no versions directory to resolve", () => {
+        // The sentinel exists so an absent versions dir matches nothing. It
+        // must never be what the user is told to look at.
+        writeFakeClaude(paths.bin, "2.1.241")
+
+        const out = report(paths.bin).stdout
+
+        expect(out).toContain("NOT updatable")
+        expect(out).not.toContain("__no_versions_dir__")
     })
 
     it("does not report a launcher in a different directory as updatable", () => {
