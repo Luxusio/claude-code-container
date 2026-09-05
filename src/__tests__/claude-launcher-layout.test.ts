@@ -82,6 +82,23 @@ beforeEach(() => {
     }
 })
 
+// Nothing published into the shared volume may be a symlink: it would point at
+// a path that exists only in the container that wrote it.
+function volumeSymlinks(): string[] {
+    const out: string[] = []
+    const walk = (dir: string) => {
+        if (!existsSync(dir)) return
+        for (const name of readdirSync(dir)) {
+            const full = join(dir, name)
+            const st = lstatSync(full)
+            if (st.isSymbolicLink()) out.push(full)
+            else if (st.isDirectory()) walk(full)
+        }
+    }
+    walk(paths.volumeDataDir)
+    return out
+}
+
 afterEach(() => {
     rmSync(root, { recursive: true, force: true })
 })
@@ -157,7 +174,50 @@ describe("claude launcher layout", () => {
 
             expect(existsSync(join(volVersions, "2.1.100"))).toBe(true)
             expect(existsSync(join(volVersions, "2.1.261"))).toBe(true)
-            expect(result.status).not.toBe(0)
+            // Enumerating with -L dissolves the case rather than defending
+            // against it: versions/ is the directory it points at, so it is
+            // mirrored and its versions are copied in as files. The shared
+            // directory is never a leaf, so it is never a removal target.
+            expect(result.status).toBe(0)
+            expect(lstatSync(join(volVersions, "2.1.300")).isFile()).toBe(true)
+            expect(volumeSymlinks()).toEqual([])
+        })
+
+        it("never publishes a symlink into the shared volume", () => {
+            // A symlink published there points at a path that exists only in
+            // the container that wrote it, so every other container reads a
+            // dangling name — and no later run can free it, because our own
+            // side is a directory and never reaches the clearing branch.
+            mkdirSync(paths.dataDir, { recursive: true })
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "2.1.300"), "2.1.300")
+            symlinkSync(elsewhere, join(paths.dataDir, "versions"))
+            writeFakeClaude(join(root, "outside", "blob"), "0.0.1")
+            symlinkSync(join(root, "outside", "blob"), join(paths.dataDir, "statsig"))
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(volumeSymlinks()).toEqual([])
+            expect(lstatSync(join(paths.volumeDataDir, "statsig")).isFile()).toBe(true)
+        })
+
+        it("clears a junk directory under a version name even when it is not empty", () => {
+            // versions/<v> as a directory is junk by construction — the mirror
+            // branch refuses to create one, pick_best skips it, seed_from
+            // refuses it — so nothing anyone runs lives inside. Refusing it
+            // left a container with a perfectly good local install failing on
+            // every start forever, which is the failure this whole rule exists
+            // to remove. The caution belongs on names we cannot reason about,
+            // not on this one.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            mkdirSync(join(paths.volumeDataDir, "versions", "2.1.261"), { recursive: true })
+            writeFileSync(join(paths.volumeDataDir, "versions", "2.1.261", "junk"), "x")
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
         })
 
         it("recovers on the first start and stays recovered on later ones", () => {

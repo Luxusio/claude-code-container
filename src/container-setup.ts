@@ -167,10 +167,16 @@ adopt_into_volume() {
   # it destroys working installs; a test pins it.
   adopt_failed="$(mktemp)" || return 1
   rm -f "$adopt_failed"
-  ( cd "$DATA" && find . -mindepth 1 -print ) | while IFS= read -r rel; do
+  # -L, so a name our side presents as a symlink to a directory is enumerated as
+  # the directory it points at. Without it such a name is a LEAF, and the one
+  # that matters is versions/ itself: the volume's shared versions directory
+  # then lands under $target, where clearing it wipes every version every
+  # project on the host runs, and publishing it puts a symlink to a
+  # container-local path into a volume every other container reads.
+  ( cd "$DATA" && find -L . -mindepth 1 -print ) | while IFS= read -r rel; do
     relpath="\${rel#./}"
     target="$VOL/$relpath"
-    if [ -d "$DATA/$rel" ] && [ ! -L "$DATA/$rel" ]; then
+    if [ -d "$DATA/$rel" ]; then
       # A directory directly under versions/ is not a version. Mirroring one
       # into the shared volume takes that name out of circulation for every
       # project on the host — pick_best skips it, seed_from refuses it, adopt
@@ -191,39 +197,8 @@ adopt_into_volume() {
     # executing — forcing over it fails with ETXTBSY and takes down a working
     # project, and version files are named by their content, so a matching
     # regular file needs no replacing. That case is a skip, and stays one.
-    #
-    # Anything else holding the name is a different situation. We only reach
-    # here when our side has a file, so a directory or a symlink under that name
-    # is not something a version binary can be: no process is executing it, and
-    # no later run could ever clear it. Refusing was the first fix and it turned
-    # a recoverable loss into a permanent one — every subsequent start failed
-    # identically, with no path back short of hand surgery on a shared volume.
-    #
-    # Removing is safe even for a name in use: unlink() has no ETXTBSY, and a
-    # process already running a binary holds its inode, so it keeps running
-    # while the name is rebound. The removal itself must succeed though — the
-    # caller deletes the original on success, so a read-only volume is still a
-    # refusal, not a fall-through.
-    if [ -e "$target" ] || [ -L "$target" ]; then
-      if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
-        continue
-      fi
-      # Only a name holding NOTHING can be cleared. A recursive delete here
-      # took out the volume's entire versions/ directory — every version every
-      # other project on the host runs — and still reported success, because
-      # our own side can present versions/ as a symlink, which makes it a leaf
-      # and puts the shared directory itself under \$target. rmdir refuses a
-      # non-empty directory, so the blast radius is one empty name.
-      if [ -d "$target" ] && [ ! -L "$target" ]; then
-        rmdir "$target" 2>/dev/null
-      else
-        rm -f "$target"
-      fi
-      if [ -e "$target" ] || [ -L "$target" ]; then
-        echo "cannot adopt $relpath: the volume holds something else at that name and it could not be removed" >&2
-        : > "$adopt_failed"
-        continue
-      fi
+    if [ -f "$target" ] && [ ! -L "$target" ] && [ -f "$DATA/$rel" ]; then
+      continue
     fi
     # Copy to a staging name, then link it into place. Copying straight to the
     # final name publishes a truncated but still-executable file if the process
@@ -231,8 +206,56 @@ adopt_into_volume() {
     # exists — the migration path would manufacture the poisoned version it is
     # supposed to avoid. 215MB is long enough for that to happen. ln fails
     # EEXIST in the kernel, so two containers cannot both win the same name.
+    #
+    # -L on the copy as well: the volume must hold regular files and directories
+    # and nothing else, since a symlink published there points at a path that
+    # exists only in the container that wrote it.
     stage="$(mktemp "$VOL/.seed.XXXXXX")" || { echo "cannot stage $relpath into $VOL" >&2; : > "$adopt_failed"; continue; }
-    if cp -a "$DATA/$rel" "$stage"; then
+    if cp -aL "$DATA/$rel" "$stage"; then
+      # Clear a name held by something unusable, here rather than before the
+      # copy: between the two is 215MB of copying, and a name cleared that early
+      # is a name absent from a shared volume for the whole of it — measured at
+      # 1.05s for a 200MB payload. Doing it in the instant before ln also lets
+      # a file that appeared meanwhile win, instead of being deleted by us.
+      if [ -e "$target" ] || [ -L "$target" ]; then
+        if [ -f "$target" ] && [ ! -L "$target" ]; then
+          rm -f "$stage"
+          continue
+        fi
+        clear_why=""
+        case "$relpath" in
+          versions/*/*) ;;
+          versions/*)
+            # A directory at versions/<v> is junk by construction: the mirror
+            # branch refuses to create one, pick_best skips it and seed_from
+            # refuses it, so nothing anyone runs lives inside. Leaving it there
+            # wedges this container on every future start with no way back.
+            clear_why="$(rm -rf "$target" 2>&1)"
+            ;;
+        esac
+        if [ -e "$target" ] || [ -L "$target" ]; then
+          # Every other name gets the cautious treatment: only something that
+          # holds nothing can go, because we cannot tell its contents from what
+          # other projects are using.
+          if [ -d "$target" ] && [ ! -L "$target" ]; then
+            clear_why="$(rmdir "$target" 2>&1)"
+          else
+            clear_why="$(rm -f "$target" 2>&1)"
+          fi
+        fi
+        if [ -e "$target" ] || [ -L "$target" ]; then
+          # The reason matters: a permanently refused start otherwise cannot be
+          # told apart from a read-only volume.
+          if [ -n "$clear_why" ]; then
+            echo "cannot adopt $relpath: the volume holds something else at that name and it could not be removed: $clear_why" >&2
+          else
+            echo "cannot adopt $relpath: the volume holds something else at that name and it could not be removed" >&2
+          fi
+          rm -f "$stage"
+          : > "$adopt_failed"
+          continue
+        fi
+      fi
       # A losing race is fine — the winner published the same content under a
       # content-named path. Any other ln failure means the file was NOT adopted,
       # and the caller deletes the original on success, so it has to be recorded.
