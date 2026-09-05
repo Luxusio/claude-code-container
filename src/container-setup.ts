@@ -363,7 +363,15 @@ find "$VOL" "$DATA/versions" -maxdepth 1 -name '.seed.*' -mmin +10 -delete 2>/de
 BEST=""
 pick_best() {
   BEST=""
-  for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr); do
+  # BEST has to survive the loop, so this cannot pipe into while — that body
+  # runs in a subshell. IFS to newline and set -f instead, which is what the
+  # $(ls) form needed all along: without them a version name holding a space is
+  # split into two nonexistent candidates and one holding * is expanded against
+  # the working directory.
+  old_ifs="$IFS"
+  IFS="$(printf '\\n_')"; IFS="\${IFS%_}"
+  set -f
+  for cand in $(ls -A "$DATA/versions" 2>/dev/null | sort -Vr); do
     f="$DATA/versions/$cand"
     # -f follows links, so a symlink here used to be selected and blessed: the
     # probe reported success on a layout ccc doctor calls NOT updatable, which
@@ -375,8 +383,10 @@ pick_best() {
     [ ! -L "$f" ] || continue
     [ -f "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
-    if is_claude "$f"; then BEST="$f"; return 0; fi
+    if is_claude "$f"; then BEST="$f"; set +f; IFS="$old_ifs"; return 0; fi
   done
+  set +f
+  IFS="$old_ifs"
   return 1
 }
 
@@ -487,7 +497,7 @@ function reportProbeNotes(stderr: string | undefined, seen: Set<string>): void {
         // The name comes from a volume every project on the host can write, so
         // it reaches the terminal as data: control bytes out, or a filename
         // can repaint the line it is reported on.
-        const safe = text.replace(/[\u0000-\u001f\u007f]/g, "?");
+        const safe = sanitizeForTerminal(text);
         // A note that survives into the confirm probe — an entry that could not
         // be removed — would otherwise be reported twice for one start.
         if (seen.has(safe)) continue;
@@ -496,11 +506,21 @@ function reportProbeNotes(stderr: string | undefined, seen: Set<string>): void {
     }
 }
 
+/**
+ * Names read out of the shared volume reach a terminal as data. Control bytes
+ * can repaint the line they are reported on and bidi overrides can reverse it,
+ * so both go before anything prints — on the failure channel too, where the
+ * same name travels inside an Error message.
+ */
+function sanitizeForTerminal(text: string): string {
+    return text.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, "?");
+}
+
 function probeDiagnostic(stderr: string | undefined): string {
     const text = (stderr ?? "").trim();
     if (!text) return "";
     const lastLines = text.split(/\r?\n/).slice(-3).join("; ");
-    return `: ${lastLines}`;
+    return `: ${sanitizeForTerminal(lastLines)}`;
 }
 
 /**
@@ -552,7 +572,7 @@ export function buildClaudeLauncherReportCommand(
         // Report the resolved directory here too. Printing the literal path on
         // one branch and the resolved one on the other told a user about two
         // different directories for the same place.
-        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it. Starting ccc again repairs this)\\n' "$v" "$shown"; exit 2 ;;`,
+        `  *) printf '%s (NOT updatable: launcher does not resolve into %s, so claude update cannot replace it. Usually an ordinary ccc start repairs it)\\n' "$v" "$shown"; exit 2 ;;`,
         `esac`,
     ].join("\n");
 }

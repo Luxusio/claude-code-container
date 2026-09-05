@@ -52,13 +52,17 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 8. When setup fails, the reason reported from inside the container is included.
    A read-only volume, a full disk, and a bind mount in the way all produce the
    same bare "probe failed" otherwise, and the difference is only on stderr.
-9. A start that changed shared state says so even when it succeeded, on every
-   path a start can take. Removing an entry from a volume every project on the
-   host reads is not something to report only when the start fails; a user
-   moved to a different version deserves the reason. A change reported by more
-   than one probe of the same start is said once, and the entry's name reaches
-   the terminal with control bytes stripped, because it came from a volume
-   anyone with a container can write to.
+9. When ccc removes a version name held by a link, it says so — on any start
+   that succeeds, not only one that goes on to fail. That removal is the one
+   shared-volume change a user can be surprised by: it can move them to a
+   different version, or break another project. The other clearing this
+   document describes is not reported, because nothing anyone runs was inside
+   what it removed. A change reported by more than one probe of the same start
+   is said once. Names read out of the volume are stripped of control and
+   direction-marking characters before they reach a terminal, on the failure
+   channel as well, because a name is data and can otherwise repaint the line
+   reporting it. A start that fails carries its reason in the error rather than
+   as a note, bounded to the last few lines of it.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
    I on an old claude" is the question that line exists to answer, and the
    previous wording ("Restored claude from cache") was also no longer true —
@@ -84,7 +88,8 @@ the install directory is shared. That makes several things observable:
     identically with nothing changed. Freeing the name is what makes the next
     start work. Where the volume cannot be written, ccc still will not run the
     link — it says so and installs instead. ccc never publishes such an entry;
-    a shared volume can hold one somebody put there. Removing it carries the
+    a shared volume can hold one somebody put there, under any name including a
+    hidden one. Removing it carries the
     same inode argument as clearing any version name — a process running the
     target is unaffected — but not the rest of it: unlike the junk names in
     behavior 15, a link can be what another container's launcher resolves
@@ -205,12 +210,15 @@ exactly as unmanaged as a plain copy. It reads either
 
 or
 
-    2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/mise/.claude-data/versions, so claude update cannot replace it. Starting ccc again repairs this)
+    2.1.241 (Claude Code) (NOT updatable: launcher does not resolve into /home/ccc/.local/share/mise/.claude-data/versions, so claude update cannot replace it. Usually an ordinary ccc start repairs it)
 
 Both lines name the same directory, resolved, because the data directory is
 itself a symlink into the shared volume and the two spellings of one place read
 as two places. The warning says what to do because an ordinary `ccc` start is
-what repairs the states a user reaches by accident.
+what repairs the states a user reaches by accident. It says "usually" because
+one state that prints it — a launcher resolving through a link on a volume ccc
+cannot write — is repaired by nothing, and a warning that promised otherwise
+would be wrong precisely where it is permanent.
 
 ## Verification
 
@@ -241,7 +249,8 @@ what repairs the states a user reaches by accident.
   symlink may be left inside the directory that survived.
 - Behavior 9 is pinned on each success path a start can take — nothing else
   needed, a reuse, and an install — plus once-per-start reporting, the tools'
-  own stderr staying out of it, and control bytes stripped from a name.
+  own stderr staying out of it, and control bytes stripped from a name on both
+  the reporting and the failure channel.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot

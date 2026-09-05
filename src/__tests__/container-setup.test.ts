@@ -99,6 +99,16 @@ describe("container-setup.ts module", () => {
             expect(console.log).not.toHaveBeenCalledWith(expect.stringContaining("Permission denied"))
         })
 
+        it("strips control bytes out of a name inside a failure too", () => {
+            // The same name travels on the failure channel, inside the Error,
+            // where stripping it on the reporting path alone does nothing.
+            spawnSyncMock.mockReturnValueOnce(makeResult(1, "",
+                "cannot remove 2.1.261\u001b[31mHACK: a version must be a real file, not a symlink\n"))
+
+            expect(() => ensureClaudeInContainer(container))
+                .toThrow("cannot remove 2.1.261?[31mHACK: a version must be a real file, not a symlink")
+        })
+
         it("strips control bytes out of a name it repeats", () => {
             // The name comes from a volume every project can write to, so it is
             // data on its way to a terminal, not text to trust.

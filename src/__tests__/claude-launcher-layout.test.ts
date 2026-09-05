@@ -818,6 +818,22 @@ describe("claude launcher layout", () => {
             expect(existsSync(paths.bin)).toBe(false)
         })
 
+        it("finds a version whose name holds a space or a glob character", () => {
+            // The selection loop read its candidates through $(ls), so a name
+            // holding a space was split into two that do not exist and one
+            // holding * was expanded against the working directory. Neither can
+            // be an installer target, so this never wedged anything — but the
+            // two loops over the same directory disagreed about what they saw.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFakeClaude(join(volVersions, "2.1.261 rc1"), "2.1.261 rc1")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261 rc1")
+            expect(realpathSync(paths.bin)).toBe(join(volVersions, "2.1.261 rc1"))
+        })
+
         it("does not select a version that is a symlink", () => {
             // -f follows links, so a symlink under versions/ used to be chosen
             // and reported as a successful start — on precisely the layout the
