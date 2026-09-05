@@ -231,7 +231,12 @@ adopt_into_volume() {
     case "$relpath" in
       versions/*/*) ;;
       versions/*)
-        if is_mountpoint "$target"; then
+        # Not through a link, same as the guard after staging: is_mountpoint
+        # follows, so a symlink whose target is a mount read as a mount and
+        # refused here — first, before the other guard could be reached — and
+        # every start failed permanently on a message that was false, since
+        # unlinking a link empties nothing.
+        if [ ! -L "$target" ] && is_mountpoint "$target"; then
           echo "cannot adopt $relpath: it is a mount point in the volume, and clearing it would empty the other side" >&2
           : > "$adopt_failed"
           continue
@@ -468,8 +473,9 @@ free_unusable_versions() {
   [ -d "$DATA/versions" ] || return 0
   # find + read -r, not $(ls): word splitting drops a name holding whitespace
   # and glob expansion turns one holding * into something else entirely, so
-  # those names were silently left behind. They cannot collide with an X.Y.Z
-  # installer target, so this is consistency rather than a second wedge.
+  # those names were silently left behind. A name holding a NEWLINE still is —
+  # read -r breaks the record on it — and none of these can collide with an
+  # X.Y.Z installer target, so this is consistency rather than a second wedge.
   #
   # Between the test and the unlink another container could publish a real file
   # at this name. The window is microseconds, POSIX sh has no unlink-if-symlink,
@@ -478,13 +484,17 @@ free_unusable_versions() {
     cand="\${ent#./}"
     f="$DATA/versions/$cand"
     if [ ! -L "$f" ] && [ ! -f "$f" ]; then
-      # Hidden names only here, not for links. Unlinking a link destroys no
-      # bytes; a recursive delete destroys whatever is inside, on every start,
-      # in a volume every project on the host shares. A hidden name is not an
-      # installer target and the selection does not look at one, so nothing
-      # there is holding a name anyone needs — no reason to reach into it.
+      # Only a name that could be a version, and only here — not for links.
+      # Unlinking a link destroys no bytes; a recursive delete destroys whatever
+      # is inside, on every start, in a volume every project on the host shares.
+      # The licence for it is that the entry is holding a name the installer
+      # needs, and the installer writes versions. A name that starts with
+      # anything else — somebody's notes, somebody's state, a staging directory
+      # — is holding nothing anyone is waiting for, so there is no reason to
+      # reach into it.
       case "$cand" in
-        .*) continue ;;
+        [0-9]*) ;;
+        *) continue ;;
       esac
       # Anything that is not a regular file and not a link — a directory, a
       # fifo, a socket — is junk by construction: ccc publishes only regular
@@ -500,10 +510,21 @@ free_unusable_versions() {
       # is: it is a start that will now do something expensive and pointless.
       if is_mountpoint "$f"; then
         echo "cannot remove $cand: it is a mount point in the volume, and clearing it would empty the other side" >&2
-      elif ! clear_why="$(rm -rf "$f" 2>&1)"; then
+      elif ! clear_err="$(rm -rf "$f" 2>&1)"; then
+        # Trim after, not in the pipeline: a pipe reports the LAST command's
+        # status, so head would have swallowed rm's failure and the refusal
+        # would never have been printed at all.
+        clear_why="$(printf '%s\\n' "$clear_err" | head -1)"
         # The reason, not the rule: a read-only volume, a permission problem and
-        # an I/O error are otherwise the same sentence.
-        echo "cannot remove $cand: a version must be a regular file: $clear_why" >&2
+        # an I/O error are otherwise the same sentence. One line of it, because
+        # the reporter reads lines and would forward only the first anyway; and
+        # only when there is one, because a bare trailing colon reads as a
+        # message that got lost.
+        if [ -n "$clear_why" ]; then
+          echo "cannot remove $cand: a version must be a regular file: $clear_why" >&2
+        else
+          echo "cannot remove $cand: a version must be a regular file" >&2
+        fi
       fi
       continue
     fi

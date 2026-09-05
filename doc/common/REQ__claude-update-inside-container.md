@@ -52,12 +52,14 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 8. When setup fails, the reason reported from inside the container is included.
    A read-only volume, a full disk, and a bind mount in the way all produce the
    same bare "probe failed" otherwise, and the difference is only on stderr.
-9. When ccc removes a version name held by a link, it says so — on any start
+9. When ccc removes a version name held by a link, or refuses to remove one it
+   cannot, it says so — on any start
    that succeeds, and by whichever path removed it. That removal is the one
    shared-volume change a user can be surprised by: it can move them to a
    different version, or leave another project's launcher pointing at nothing.
-   Clearing a junk directory is not reported, because nothing anyone runs was
-   inside it. A change reported by more than one probe of the same start is
+   Clearing an entry that is not a file at all — a directory, a fifo, a socket
+   — is not reported when it succeeds, because nothing anyone runs was inside
+   it. A change reported by more than one probe of the same start is
    said once. Every name ccc reads out of the volume and prints — in a note, in
    a reuse line, in an error, in what `ccc doctor` shows — is stripped of
    control and direction-marking characters first, because a name is data and
@@ -119,20 +121,23 @@ the install directory is shared. That makes several things observable:
     are all cleared alike; the rule is what a version is, not a list of what it
     is not.
 
-    What is cleared is any such entry directly under `versions/`, whatever it is
-    named — not only names that look like versions. Hidden names are the
-    exception, and only for the recursive clear: nothing there can be an
-    installer target or be selected, so there is no name to free, and reaching
-    into it would delete somebody's bytes for no reason. A link is taken under
-    any name, because unlinking one destroys nothing.
+    What licenses the clear is that the entry is holding a name the installer
+    needs, so it is only ever applied to a name that could be a version. A
+    directory of somebody's notes or state under `versions/` is left where it
+    is: it blocks nothing, and reaching into it would destroy bytes on a volume
+    every project shares for no reason at all. A link is taken under any name,
+    because unlinking one destroys nothing — that asymmetry is the rule, not an
+    oversight. A name holding a newline is left alone too, which is a limit of
+    reading entries a line at a time rather than a decision.
 
     Two things stop the clear: a mount at that name, and a volume that will not
     allow the removal. Both are reported even though the start goes on to
     succeed or to install — a refusal that changes what the start will do, with
-    nothing said, is how the wedge above stayed invisible. The second case is
-    not clean: a recursive delete empties what it cannot unlink, so a directory
-    that could not be removed has already lost its contents. Only the mount is
-    checked before anything is touched.
+    nothing said, is how the wedge above stayed invisible. A refusal for the
+    second reason may not be clean: a recursive delete empties what it can
+    before failing on what it cannot, so a directory refused because part of it
+    was unwritable has lost the rest. A read-only volume refuses before
+    anything goes. Only the mount is checked before anything is touched at all.
     Under a *version* name, clearing is safe where overwriting is not:
     `unlink` only unbinds the name, so a process already running that binary
     keeps its inode and cannot be interrupted the way an overwrite interrupts
@@ -141,11 +146,15 @@ the install directory is shared. That makes several things observable:
     A directory under a version name is junk by construction — ccc refuses to
     create one, skips one when choosing a version, and refuses to seed from
     one — so nothing anyone runs is inside it and it is cleared whole, except
-    where a user has put a mount there (behavior 18). Refusing
+    where a user has put a mount there (behavior 18). Under `versions/` that
+    holds for any name that could be a version; the cautious rule below governs
+    the names outside it. Refusing
     it instead left a container with a working local install failing on every
     start with no way back. Every other name is cleared only when it holds
     nothing, because ccc cannot tell its contents from what other projects are
-    using, and the refusal says why it could not be cleared. A regular file
+    using, and the refusal says why it could not be cleared. That cautious rule
+    is what the adoption path applies; the pass that frees a blocked name reads
+    the same distinction off the name instead. A regular file
     already under a version name is left alone: it may be what another
     container is executing, and version names are content-addressed, so it is
     already correct.
@@ -298,7 +307,10 @@ would be wrong precisely where it is permanent.
   own stderr cannot tell whether anybody is told.
 - That the recursive clear leaves a hidden directory alone is pinned, and so is
   the volume root's half of the staging reaper, which collects a stale entry of
-  any type where the `versions/` half takes only files.
+  any type where the `versions/` half takes only files. So is the mount guard on
+  the check that runs first, before staging: guarding only the later one left
+  the case it was written for — a link whose target is a mount — refusing every
+  start on a message that was false.
 - Behavior 12 is pinned three ways: a symlinked version alongside a real one
   (the real one is chosen and the link is gone); a link named for the version
   the installer produces (the name must be free afterwards, or INSTALL cannot

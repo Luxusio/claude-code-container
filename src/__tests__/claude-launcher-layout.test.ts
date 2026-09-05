@@ -740,7 +740,7 @@ describe("claude launcher layout", () => {
             // what it cannot unlink — and that is why a mount there is checked
             // for before any of this, not after.
             expect(lstatSync(occupied).isDirectory()).toBe(true)
-            expect(result.stderr).toContain("cannot remove 2.1.241")
+            expect(result.stderr).toMatch(/^cannot remove 2\.1\.241:/m)
         })
 
         it.skipIf(!canBindMount)("refuses to clear a version name that is a mount point, with nothing to adopt", () => {
@@ -763,7 +763,49 @@ describe("claude launcher layout", () => {
                 { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
 
             expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
-            expect(result.stderr ?? "").toContain("cannot remove 2.1.261")
+            expect(result.stderr ?? "").toMatch(/^cannot remove 2\.1\.261:/m)
+        })
+
+        it.skipIf(!canBindMount)("takes a link whose target is a mount instead of refusing forever", () => {
+            // is_mountpoint follows the link, so a link pointing at a mount read
+            // as a mount at the guard that runs FIRST — before staging — and
+            // every start failed permanently on a message that was false:
+            // unlinking a link empties nothing. Guarding only the later check
+            // left this reachable, which is how a half-applied fix passed.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.150"), "2.1.150")
+            const mounted = join(paths.volumeDataDir, "versions", "mountpoint")
+            mkdirSync(mounted, { recursive: true })
+            symlinkSync(mounted, join(paths.volumeDataDir, "versions", "2.1.150"))
+            const source = join(root, "mounted")
+            mkdirSync(source, { recursive: true })
+            writeFileSync(join(source, "precious"), "the other side of the mount")
+
+            const script = join(root, "probe.sh")
+            writeFileSync(script, buildClaudeProbeScript(paths))
+            const result = spawnSync("unshare", ["-Umr", "sh", "-c",
+                `mount --bind '${source}' '${mounted}' && sh '${script}'`],
+                { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+
+            expect(readFileSync(join(source, "precious"), "utf8")).toBe("the other side of the mount")
+            expect(result.status).toBe(0)
+            expect((result.stderr ?? "")).toMatch(/^removed 2\.1\.150:/m)
+        })
+
+        it("does not reach into a directory whose name no installer would want", () => {
+            // The licence for a recursive delete is that the entry holds a name
+            // the installer needs. A name that is not a version holds nothing
+            // anyone is waiting for, and deleting it destroys somebody's bytes
+            // on a volume every project shares, silently, on every start.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(join(volVersions, "notaversion", "deep"), { recursive: true })
+            writeFileSync(join(volVersions, "notaversion", "deep", "data"), "another project's data")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(readFileSync(join(volVersions, "notaversion", "deep", "data"), "utf8"))
+                .toBe("another project's data")
         })
 
         it("frees a version name held by something that is not a file at all", () => {
