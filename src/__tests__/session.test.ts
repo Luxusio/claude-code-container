@@ -55,12 +55,6 @@ vi.mock("../docker.js", () => ({
     getContainerName: (...args: unknown[]) => mockGetContainerName(...args),
 }));
 
-const mockSaveClaudeBinaryToVolume = vi.fn();
-vi.mock("../container-setup.js", () => ({
-    saveClaudeBinaryToVolume: (...args: unknown[]) =>
-        mockSaveClaudeBinaryToVolume(...args),
-}));
-
 const mockCleanupOwnerDevices = vi.fn();
 vi.mock("../device-lab-admin.js", () => ({
     cleanupOwnerDevices: (...args: unknown[]) => mockCleanupOwnerDevices(...args),
@@ -131,7 +125,6 @@ describe("session.ts", () => {
         mockGetProjectId.mockReset();
         mockIsContainerRunning.mockReset();
         mockGetContainerName.mockReset();
-        mockSaveClaudeBinaryToVolume.mockReset();
         mockCleanupOwnerDevices.mockReset();
         mockWithSharedMutationLock.mockReset()
             .mockImplementation((_file: string, operation: () => unknown) => operation());
@@ -1762,7 +1755,7 @@ describe("session.ts", () => {
             expect(mockUnlinkSync).toHaveBeenCalledWith(lockFile);
         });
 
-        it("does NOT call docker stop or saveClaudeBinaryToVolume when container is not running", () => {
+        it("does NOT call docker stop when container is not running", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
@@ -1781,12 +1774,11 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            expect(mockSaveClaudeBinaryToVolume).not.toHaveBeenCalled();
             expect(mockSpawnSync).not.toHaveBeenCalled();
             expect(mockCleanupOwnerDevices).toHaveBeenCalledWith(projectPath, 5000, undefined);
         });
 
-        it("calls saveClaudeBinaryToVolume before docker stop when container is running", () => {
+        it("cleans up devices before docker stop when container is running", () => {
             const projectId = "my-project-abc123";
             const lockFileName = `${projectId}--aabbccddeeff00112233445566778899.lock`;
             const lockFile = `/locks/${lockFileName}`;
@@ -1803,9 +1795,6 @@ describe("session.ts", () => {
             mockIsContainerRunning.mockReturnValue(true);
 
             const callOrder: string[] = [];
-            mockSaveClaudeBinaryToVolume.mockImplementation(() => {
-                callOrder.push("saveClaudeBinary");
-            });
             mockSpawnSync.mockImplementation(() => {
                 callOrder.push("dockerStop");
                 return { status: 0 };
@@ -1818,8 +1807,7 @@ describe("session.ts", () => {
             setSessionContainerId("pinned-container-id");
             cleanupSession();
 
-            expect(callOrder).toEqual(["cleanupDevices", "saveClaudeBinary", "dockerStop"]);
-            expect(mockSaveClaudeBinaryToVolume).toHaveBeenCalledWith("pinned-container-id");
+            expect(callOrder).toEqual(["cleanupDevices", "dockerStop"]);
             expect(mockSpawnSync).toHaveBeenCalledWith(
                 "docker",
                 ["stop", "pinned-container-id"],
@@ -1937,7 +1925,7 @@ describe("session.ts", () => {
             expect(mockSpawnSync).not.toHaveBeenCalled();
         });
 
-        it("does NOT call saveClaudeBinaryToVolume when other sessions are active", () => {
+        it("does NOT stop the container when other sessions are active", () => {
             const projectId = "my-project-abc123";
             const lockFileName1 = `${projectId}--session1aabbccdd11223344.lock`;
             const lockFileName2 = `${projectId}--session2eeff001122334455.lock`;
@@ -1952,7 +1940,7 @@ describe("session.ts", () => {
             setSession(lockFile, projectPath);
             cleanupSession();
 
-            expect(mockSaveClaudeBinaryToVolume).not.toHaveBeenCalled();
+            expect(mockSpawnSync).not.toHaveBeenCalled();
         });
     });
 
