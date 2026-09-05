@@ -329,7 +329,9 @@ would be wrong precisely where it is permanent.
   are two kinds and they are protected differently: ccc's own are hidden, and
   the selection does not look at hidden names; the installer's are not hidden
   and are skipped by name. Both are pinned, and so is collecting the
-  installer's once it is old enough — it is the one that can be 215MB. That
+  installer's once it is old enough — it is the one that can be 215MB, and the
+  one removal from `versions/` that is not announced: it is the installer's own
+  garbage rather than anything a person put there. That
   collector reads the same shape rule as the clears, so a name the installer
   would not write is not swept; ccc's own two are name-globs on a prefix only
   ccc writes. A directory wearing a staging name is not swept by any of them,
