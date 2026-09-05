@@ -138,8 +138,12 @@ is_mountpoint() {
     return
   fi
   # Fallback only. Comparing device numbers with the parent misses a bind mount
-  # made within one filesystem — a real mount whose source rm -rf would empty
-  # through. util-linux is in the image, so this branch should not be reached.
+  # made within one filesystem — measured under "unshare -rm" with
+  # "mount --bind src dst": mountpoint(1) says IS, both device numbers read 90,
+  # and the comparison answers "not a mount" on a real mount whose source
+  # rm -rf would empty through. util-linux ships in the image, so this branch
+  # should not be reached; it is here so a missing mountpoint(1) degrades to the
+  # old behavior rather than to no check at all.
   [ "$(stat -c %d "$1" 2>/dev/null)" != "$(stat -c %d "$1/.." 2>/dev/null)" ]
 }
 # Copy an existing install into the volume before replacing it. Applies to a
