@@ -258,6 +258,30 @@ describe("claude launcher layout", () => {
             expect(run().stdout).toBe("INSTALL")
         })
 
+        it("does not copy a rejected donor into the shared volume", () => {
+            // Rejecting the donor at the launcher step is not enough. Seeding it
+            // first would put ~215MB of the wrong binary into a volume every ccc
+            // project on the host shares, once per container start. The guard has
+            // to be in the seeding step, and only versions/ staying empty can
+            // tell the two apart.
+            writeMiseShim(paths.bin)
+
+            run()
+
+            expect(existsSync(join(paths.volumeDataDir, "versions"))).toBe(false)
+        })
+
+        it("does not copy a non-Claude binary into the shared volume either", () => {
+            // `bun 1.1.0` yields a plausible-looking version string, so a seeding
+            // step that trusts the version regex alone would cache bun as claude.
+            writeFileSync(paths.bin, `#!/bin/sh\necho "bun 1.1.0"\n`)
+            chmodSync(paths.bin, 0o755)
+
+            run()
+
+            expect(existsSync(join(paths.volumeDataDir, "versions"))).toBe(false)
+        })
+
         it("does not adopt a binary whose --version is not Claude-shaped", () => {
             writeFileSync(paths.bin, `#!/bin/sh\necho "bun 1.1.0"\n`)
             chmodSync(paths.bin, 0o755)
