@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "child_process"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -82,6 +82,28 @@ describe("claude launcher layout", () => {
 
             expect(lstatSync(paths.dataDir).isSymbolicLink()).toBe(true)
             expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
+        })
+
+        it("does not overwrite a version another container may be executing", () => {
+            // Reported from a real ccc run: `cp: cannot create regular file
+            // '.../.claude-data/./versions/2.1.261': Text file busy`. The volume
+            // is shared by every project on the host, so a version already there
+            // can be the binary a different container is running right now.
+            // Overwriting it fails with ETXTBSY and takes ccc startup down for a
+            // project that was working. Version files are named by their
+            // content, so an existing one is left alone.
+            writeFakeClaude(join(paths.dataDir, "versions", "2.1.261"), "2.1.261")
+            const shared = join(paths.volumeDataDir, "versions", "2.1.261")
+            writeFakeClaude(shared, "2.1.261")
+            writeFileSync(shared, `#!/bin/sh\n# in use by another container\n[ "$1" = "--version" ] && echo "2.1.261 (Claude Code)"\nexit 0\n`)
+            chmodSync(shared, 0o755)
+
+            const result = run()
+
+            expect(result.status).toBe(0)
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            // The shared copy is untouched — same bytes it had before.
+            expect(readFileSync(shared, "utf8")).toContain("in use by another container")
         })
 
         it("adopts a data dir symlinked somewhere else instead of abandoning the install", () => {

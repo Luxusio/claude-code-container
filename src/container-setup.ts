@@ -141,7 +141,12 @@ is_mountpoint() {
 # install it abandoned sat untouched on disk.
 adopt_into_volume() {
   [ -d "$DATA" ] || return 0
-  cp -a "$DATA/." "$VOL/"
+  # -n, never -f. The volume is shared by every project on the host, so a
+  # version file already sitting there may be the binary another container is
+  # executing right now — overwriting it fails with ETXTBSY and takes down ccc
+  # startup for a project that was working fine. Version files are named by
+  # their content, so an existing one needs no replacing.
+  cp -an "$DATA/." "$VOL/"
 }
 if [ -L "$DATA" ] && [ "$(readlink "$DATA")" = "$VOL" ]; then
   :
