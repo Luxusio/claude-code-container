@@ -325,8 +325,15 @@ adopt_into_volume() {
             # two, and the removal would go unreported. The other path that
             # removes a link decides the same way.
             if clear_why="$(rm -rf "$target" 2>&1)"; then cleared=yes; else cleared=no; fi
-            if [ "$was_link" = yes ] && [ "$cleared" = yes ]; then
-              echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
+            if [ "$cleared" = yes ]; then
+              # Both kinds, not only the link. A directory here can be an export
+              # named for a date wearing a version's shape, and destroying it
+              # silently is the thing the other path stopped doing.
+              if [ "$was_link" = yes ]; then
+                echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2
+              else
+                echo "removed \${relpath#versions/}: a version must be a regular file" >&2
+              fi
             fi
             fi
             ;;
@@ -353,6 +360,7 @@ adopt_into_volume() {
                 :
               else
                 case "$relpath" in
+                  versions/*/*) echo "removed $relpath: a link cannot be published into a volume other containers read" >&2 ;;
                   versions/*) echo "removed \${relpath#versions/}: a version must be a real file, not a symlink" >&2 ;;
                   *) echo "removed $relpath: a link cannot be published into a volume other containers read" >&2 ;;
                 esac
@@ -432,16 +440,26 @@ find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/d
 # The native installer's own staging name. A killed install leaves one behind —
 # up to 215MB, in a volume every project shares — and nothing else collects it:
 # the clear takes only what is not a regular file, and the selection skips it.
-# Age-gated like the rest, so an install in flight is never touched: mtime
-# advances while the installer writes, so no unfinished file can be ten minutes
-# idle.
+# Age-gated like the rest, so an install in flight is never touched. The
+# protection is the size of the window, not mtime: the installer moves an
+# already-downloaded file into the staging name and renames it away within
+# seconds, so ten minutes is not a race it can lose.
 #
 # Shape-gated too, through the same function the clears use rather than a glob
 # of its own: a bare *.tmp.* took my.tmp.notes, and a glob cannot say "digits",
-# so it would have taken 2a.1b.3c.tmp.x as well. One rule, three sites.
+# so it would have taken 2a.1b.3c.tmp.x as well. One rule, every site.
 ( cd "$DATA/versions" && find . -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 -print ) 2>/dev/null | while IFS= read -r ent; do
   cand="\${ent#./}"
-  is_version_name "$cand" && rm -f "$DATA/versions/$cand"
+  # find -delete could only ever remove a path it matched; reading records back
+  # gave that up, and a name holding a newline splits into fragments that were
+  # never matched. One of those was "2.1.261" — a working 215MB binary deleted
+  # out of the volume every project shares. Every candidate must still carry
+  # the name find selected on, which a plain version never does.
+  case "$cand" in
+    *.tmp.*) ;;
+    *) continue ;;
+  esac
+  is_version_name "$cand" && rm -f "$DATA/versions/$cand" 2>/dev/null
 done
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
@@ -551,6 +569,11 @@ free_unusable_versions() {
   ( cd "$DATA/versions" && find . -mindepth 1 -maxdepth 1 -print ) 2>/dev/null | while IFS= read -r ent; do
     cand="\${ent#./}"
     f="$DATA/versions/$cand"
+    # Both tests are true of a path that does not exist — a fragment of a split
+    # name, or an entry another container removed between find and here — and
+    # then rm -rf "succeeds" on nothing and the clear announces a destruction
+    # that never happened.
+    { [ -e "$f" ] || [ -L "$f" ]; } || continue
     if [ ! -L "$f" ] && [ ! -f "$f" ]; then
       # Only a name that could be a version, and only here — not for links.
       # Unlinking a link destroys no bytes; a recursive delete destroys whatever

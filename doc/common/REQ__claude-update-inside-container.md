@@ -88,8 +88,11 @@ the install directory is shared. That makes several things observable:
     that was working. Version files are named by their content, so an existing
     one is already correct.
 12. ccc runs a version only when it is a real file under `versions/` that is
-    not the installer's own staging. It does not otherwise judge the name — a
-    file there that answers `--version` like claude is run, whatever it is
+    neither hidden nor carries `.tmp.` anywhere in its name. That is wider than
+    "not the installer's own staging" — deliberately, since what must not be
+    run is any name a staging file could have, and the cost of the extra width
+    is a name nobody writes. Beyond those two rules it does not judge the name:
+    a file there that answers `--version` like claude is run, whatever it is
     called. Those names sort above the
     version they are becoming, so one left behind by a killed install was
     chosen — and being complete is what made that dangerous, not being partial.
@@ -326,11 +329,11 @@ would be wrong precisely where it is permanent.
   are two kinds and they are protected differently: ccc's own are hidden, and
   the selection does not look at hidden names; the installer's are not hidden
   and are skipped by name. Both are pinned, and so is collecting the
-  installer's once it is old enough — it is the one that can be 215MB. Both
-  collectors read the same shape rule as the clears, so a name the installer
-  would not write is not swept either. A directory wearing a staging name is
-  collected by nothing, which is a gap in the claim rather than in the cleanup:
-  ccc writes no directory there.
+  installer's once it is old enough — it is the one that can be 215MB. That
+  collector reads the same shape rule as the clears, so a name the installer
+  would not write is not swept; ccc's own two are name-globs on a prefix only
+  ccc writes. A directory wearing a staging name is not swept by any of them,
+  but the clear takes it, because a staging name is version-shaped.
 - Behavior 15's recovery is pinned with nothing to adopt as well as with a
   local install, for a directory and for a fifo, and its two refusals — a mount
   at that name, and a name that could not be cleared — are pinned separately,

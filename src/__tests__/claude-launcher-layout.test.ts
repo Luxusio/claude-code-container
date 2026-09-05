@@ -401,9 +401,11 @@ describe("claude launcher layout", () => {
 
             expect(result.status).toBe(0)
             expect(lstatSync(join(paths.volumeDataDir, "versions", "2.1.261")).isFile()).toBe(true)
-            // and it stays unannounced: nothing was running out of a directory,
-            // so there is nothing for a user to be surprised by
-            expect(result.stderr).not.toMatch(/^removed /m)
+            // and it is announced here too. A directory at a version name can
+            // be an export named for a date wearing that shape; destroying it
+            // in a shared volume without a word is what the other path stopped
+            // doing, and the two have to agree.
+            expect(result.stderr).toMatch(/^removed 2\.1\.261: a version must be a regular file$/m)
         })
 
         it("recovers on the first start and stays recovered on later ones", () => {
@@ -889,6 +891,41 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("RESTORED 2.1.261")
             expect(readFileSync(join(volVersions, "2026-notes", "deep", "data"), "utf8"))
                 .toBe("somebody's notes")
+        })
+
+        it("does not delete a name a split record made up", () => {
+            // find -delete could only ever remove a path it matched. Reading
+            // records back gave that up: a name holding a newline splits, and
+            // one of the fragments was a real version — a working binary
+            // deleted out of the volume every project shares.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const split = join(volVersions, "junk.tmp.x\n2.1.261")
+            writeFileSync(split, "not a version")
+            const old = new Date(Date.now() - 3600_000)
+            lutimesSync(split, old, old)
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(existsSync(join(volVersions, "2.1.261"))).toBe(true)
+        })
+
+        it("does not announce clearing something that was never there", () => {
+            // Neither -L nor -f is true of a path that does not exist, so the
+            // arm was entered for a fragment of a split name, rm -rf succeeded
+            // on nothing, and the user was told a version had been destroyed in
+            // a shared volume.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            writeFileSync(join(volVersions, "notes\n9.9.9"), "not a version")
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(result.stderr).not.toMatch(/^removed 9\.9\.9/m)
         })
 
         it("does not clear a .tmp. name whose suffix the installer would not write", () => {
