@@ -52,6 +52,11 @@ describe.skipIf(!chromiumAvailable)("chrome-devtools MCP integration", () => {
     // with "Expected number, received string", so the index is the id.
     //
     // `new_page` above leaves at least one page open, so index 1 always exists by the time these run.
+    // Note the tools act on the id given, NOT on the page marked [selected] — measured: with page 2
+    // selected, navigating pageId 1 moves page 1 from about:blank to the data URI and a script
+    // evaluated against pageId 1 reads back that page's body. So these assertions are about the
+    // page they name, and "navigates" verifies a navigation rather than merely a call that did
+    // not error.
     const PAGE_ID = 1;
 
     it("navigates to a data URI page", { timeout: TIMEOUT }, async () => {
