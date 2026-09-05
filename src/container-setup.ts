@@ -83,17 +83,14 @@ export const CLAUDE_LAYOUT_PATHS: ClaudeLayoutPaths = {
     legacyCacheFile: CLAUDE_LEGACY_CACHE_FILE,
 };
 
-// Bounded so a corrupt newest version cannot make the probe walk the whole
-// directory spawning a 200MB binary per candidate.
-const CLAUDE_VERSION_SCAN_LIMIT = 5;
-
-// The probe is milliseconds on the happy path, but its migration branch copies
-// the ~215MB binary into the volume. Measured here at 0.19s for a real 215MB
-// migration within one filesystem, so the 8s budget the other short mutations
-// use would very likely have held — this is headroom, not a fix for an observed
-// timeout. It buys the case that branch cannot afford to lose: the first run
-// after upgrading ccc, where timing out means re-downloading a cache that was
-// already on disk.
+// A single `--version` may cold-read a ~215MB binary off a Docker named volume,
+// and one probe can do that up to ten times: once per candidate version, plus
+// twice per migration donor. That spawn count — not the migration copy, which
+// measures 0.15s for the real 215MB file on one filesystem — is what the raised
+// budget is for. Each individual call is capped separately so a binary that
+// hangs cannot spend the whole budget in silence: the probe's stdio is captured,
+// so a stall here is 150 seconds of no output at all.
+const CLAUDE_VERSION_CALL_TIMEOUT_SECONDS = 10;
 const CLAUDE_PROBE_INNER_TIMEOUT_SECONDS = 120;
 export const CLAUDE_PROBE_TIMEOUT_MS = 150_000;
 
@@ -116,11 +113,14 @@ BIN=${shellQuote(paths.bin)}
 DATA=${shellQuote(paths.dataDir)}
 VOL=${shellQuote(paths.volumeDataDir)}
 LEGACY=${shellQuote(paths.legacyCacheFile)}
-SCAN_LIMIT=${CLAUDE_VERSION_SCAN_LIMIT}
+VERSION_CALL_TIMEOUT=${CLAUDE_VERSION_CALL_TIMEOUT_SECONDS}s
 
 is_shim() { head -c 500 "$1" 2>/dev/null | grep -q mise; }
+claude_version_line() {
+  timeout "$VERSION_CALL_TIMEOUT" "$1" --version 2>/dev/null </dev/null | head -n 1 || true
+}
 is_claude() {
-  first_line="$("$1" --version 2>/dev/null | head -n 1 || true)"
+  first_line="$(claude_version_line "$1")"
   printf '%s\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\bclaude([[:space:]]+code)?\b)'
 }
 
@@ -142,11 +142,16 @@ else
 fi
 [ -L "$DATA" ] || exit 1
 
-# Newest-first, first valid wins: normally one --version spawn.
+# Newest-first, first valid wins: normally one --version spawn. An earlier
+# version stopped after the five newest, which turned a versions/ holding five
+# broken entries into a fresh 215MB download for every project on the host even
+# though a working version sat just below the cut. The updater prunes old
+# versions once it manages the launcher, so the directory stays small; bounding
+# each call is the protection that was actually wanted.
 BEST=""
 pick_best() {
   BEST=""
-  for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr | head -n "$SCAN_LIMIT"); do
+  for cand in $(ls "$DATA/versions" 2>/dev/null | sort -Vr); do
     f="$DATA/versions/$cand"
     [ -f "$f" ] && [ -x "$f" ] || continue
     if is_shim "$f"; then continue; fi
@@ -162,12 +167,21 @@ seed_from() {
   [ -n "$src" ] && [ -f "$src" ] && [ -x "$src" ] || return 1
   is_shim "$src" && return 1
   is_claude "$src" || return 1
-  v="$("$src" --version 2>/dev/null | head -n 1 | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n 1)"
+  v="$(claude_version_line "$src" | grep -oE '[0-9]+[.][0-9]+[.][0-9]+' | head -n 1)"
   [ -n "$v" ] || return 1
   mkdir -p "$DATA/versions" || return 1
-  cp -L "$src" "$DATA/versions/.seed.$$" || return 1
-  chmod +x "$DATA/versions/.seed.$$"
-  mv -f "$DATA/versions/.seed.$$" "$DATA/versions/$v"
+  # mv -f onto a directory deposits the file INSIDE it and leaves the version
+  # name unusable, which turns a layout change upstream into a container that
+  # cannot start. Refuse rather than half-publish.
+  [ -d "$DATA/versions/$v" ] && return 1
+  # Not "$$": the PID is container-local, containers start at low PIDs, and this
+  # directory is a volume shared by every project on the host — two of them
+  # seeding at once would interleave 215MB writes into one file and publish the
+  # result under a real version name.
+  seed="$(mktemp "$DATA/versions/.seed.XXXXXX")" || return 1
+  if ! cp -L "$src" "$seed"; then rm -f "$seed"; return 1; fi
+  if ! chmod +x "$seed"; then rm -f "$seed"; return 1; fi
+  if ! mv -f "$seed" "$DATA/versions/$v"; then rm -f "$seed"; return 1; fi
 }
 
 if ! pick_best; then
@@ -184,7 +198,18 @@ fi
 mkdir -p "$(dirname "$BIN")" || exit 1
 rm -rf "$BIN"
 ln -s "$BEST" "$BIN" || exit 1
-echo RESTORED`.trim();
+echo "RESTORED $(basename "$BEST")"`.trim();
+}
+
+// The probe writes nothing to stdout when it fails, so without its stderr the
+// user gets a bare "probe failed" and no way to tell a full disk from a
+// read-only volume from a bind mount in the way. Same failure the e2e helper
+// had: the assertion read stdout while the reason was on stderr.
+function probeDiagnostic(stderr: string | undefined): string {
+    const text = (stderr ?? "").trim();
+    if (!text) return "";
+    const lastLines = text.split(/\r?\n/).slice(-3).join("; ");
+    return `: ${lastLines}`;
 }
 
 /**
@@ -208,14 +233,20 @@ export function ensureClaudeInContainer(containerName: string): void {
         throw new Error("Claude readiness probe timed out");
     }
     if (result.error || result.status !== 0) {
-        throw new Error("Claude readiness probe failed");
+        throw new Error(`Claude readiness probe failed${probeDiagnostic(result.stderr)}`);
     }
     const status = (result.stdout ?? "").trim();
 
     if (status === "VALID") return;
 
-    if (status === "RESTORED") {
-        console.log("Restored claude from cache.");
+    if (status.startsWith("RESTORED")) {
+        // Nothing is copied out of a cache any more — the launcher is pointed at
+        // a version already in the shared volume. Name it, because "why am I on
+        // an old claude" is the question this line exists to answer.
+        const version = status.slice("RESTORED".length).trim();
+        console.log(version
+            ? `Reusing claude ${version} from the shared volume.`
+            : "Reusing claude from the shared volume.");
         return;
     }
 
@@ -249,8 +280,9 @@ export function ensureClaudeInContainer(containerName: string): void {
         { encoding: "utf-8", timeout: CLAUDE_PROBE_TIMEOUT_MS },
     );
     const confirmStatus = (confirm.stdout ?? "").trim();
-    if (confirm.error || confirm.status !== 0 || (confirmStatus !== "VALID" && confirmStatus !== "RESTORED")) {
-        throw new Error("Claude installation left no usable launcher");
+    if (confirm.error || confirm.status !== 0
+        || (confirmStatus !== "VALID" && !confirmStatus.startsWith("RESTORED"))) {
+        throw new Error(`Claude installation left no usable launcher${probeDiagnostic(confirm.stderr)}`);
     }
 }
 

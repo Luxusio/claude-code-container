@@ -45,6 +45,37 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 7. When `curl | bash` exits 0 but leaves no usable launcher, `ccc` fails at that
    point with a message naming the installation, rather than later with a
    generic "tool is unavailable after setup".
+8. When setup fails, the reason reported from inside the container is included.
+   A read-only volume, a full disk, and a bind mount in the way all produce the
+   same bare "probe failed" otherwise, and the difference is only on stderr.
+9. When ccc reuses an already-installed claude, it says which version. "Why am
+   I on an old claude" is the question that line exists to answer, and the
+   previous wording ("Restored claude from cache") was also no longer true —
+   nothing is copied out of a cache.
+
+## What stopped being pinned
+
+The removed `saveClaudeBinaryToVolume` persisted whatever `command -v claude`
+resolved to at session exit, whatever put it there. So an install made by some
+other mechanism — `npm i -g @anthropic-ai/claude-code` landing on the mise shims
+path, or a binary dropped in by hand — used to be captured and reused by every
+project. It no longer is: only versions under `<data-dir>/versions/` survive a
+container recreate, and anything else is reinstalled from `install.sh`.
+
+That pinning is exactly what made the original bug permanent, so losing it is
+the point. It is recorded here because it is the one thing a user could
+experience as a regression.
+
+## Known limitation
+
+`command -v claude` remains a migration donor, and the donor check only rejects
+a binary that looks like a mise shim. A different wrapper script on PATH — for
+instance one carried in by the `~/.ccc/claude` bind mount at
+`/home/ccc/.claude/local/claude` — would pass the check and be published into
+the shared volume under a version name. This behavior predates the change; what
+is new is that the adopted file reaches other projects. Closing it properly
+means requiring the donor to be a native binary, which the current tests cannot
+express without shipping a real one.
 
 ## Design consequence, stated because it is user-visible
 

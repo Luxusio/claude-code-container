@@ -83,13 +83,31 @@ describe("container-setup.ts module", () => {
             expect(spawnSyncMock).toHaveBeenCalledTimes(1);
         });
 
-        it("reports a restore when the launcher was re-pointed at a volume version", () => {
+        it("names the version it reused, because that is the question this line answers", () => {
+            spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED 2.1.261\n"));
+            ensureClaudeInContainer(container);
+            expect(console.log).toHaveBeenCalledWith(
+                "Reusing claude 2.1.261 from the shared volume.",
+            );
+            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+        });
+
+        it("still reports a reuse when the probe names no version", () => {
             spawnSyncMock.mockReturnValueOnce(makeResult(0, "RESTORED\n"));
             ensureClaudeInContainer(container);
             expect(console.log).toHaveBeenCalledWith(
-                "Restored claude from cache.",
+                "Reusing claude from the shared volume.",
             );
-            expect(spawnSyncMock).toHaveBeenCalledTimes(1);
+        });
+
+        it("puts the probe's stderr into the failure, so the cause is not lost", () => {
+            spawnSyncMock.mockReturnValueOnce({
+                ...makeResult(1, ""),
+                stderr: "cp: cannot create regular file: Read-only file system\n",
+            });
+            expect(() => ensureClaudeInContainer(container)).toThrow(
+                /Read-only file system/,
+            );
         });
 
         it("installs, then re-probes to confirm the installer left a usable launcher", () => {

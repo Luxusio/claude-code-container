@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "child_process"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
@@ -91,7 +91,7 @@ describe("claude launcher layout", () => {
 
             const result = run()
 
-            expect(result.stdout).toBe("RESTORED")
+            expect(result.stdout).toBe("RESTORED 2.1.5")
             expect(lstatSync(paths.dataDir).isSymbolicLink()).toBe(true)
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.5"))).toBe(true)
         })
@@ -103,7 +103,7 @@ describe("claude launcher layout", () => {
 
             const result = run()
 
-            expect(result.stdout).toBe("RESTORED")
+            expect(result.stdout).toBe("RESTORED 2.1.5")
             expect(lstatSync(paths.bin).isSymbolicLink()).toBe(true)
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
@@ -116,7 +116,7 @@ describe("claude launcher layout", () => {
 
             const result = run()
 
-            expect(result.stdout).toBe("RESTORED")
+            expect(result.stdout).toBe("RESTORED 2.1.241")
             expect(lstatSync(paths.bin).isSymbolicLink()).toBe(true)
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.241"))
         })
@@ -127,14 +127,14 @@ describe("claude launcher layout", () => {
             mkdirSync(join(paths.bin, "junk"), { recursive: true })
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 
-            expect(run().stdout).toBe("RESTORED")
+            expect(run().stdout).toBe("RESTORED 2.1.5")
             expect(lstatSync(paths.bin).isSymbolicLink()).toBe(true)
         })
 
         it("reports VALID and changes nothing on a second run", () => {
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 
-            expect(run().stdout).toBe("RESTORED")
+            expect(run().stdout).toBe("RESTORED 2.1.5")
             const linkAfterFirst = readlinkSync(paths.bin)
 
             expect(run().stdout).toBe("VALID")
@@ -163,9 +163,11 @@ describe("claude launcher layout", () => {
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
 
-        it("does not walk an unbounded number of versions looking for a working one", () => {
-            // Each candidate costs a spawn of a ~215MB binary. Ten broken newer
-            // versions must not turn container startup into ten of those.
+        it("finds a working version buried under many broken ones instead of reinstalling", () => {
+            // An earlier version stopped after the five newest candidates. Ten
+            // broken entries above a good one therefore reported INSTALL, and
+            // every project on the host re-downloaded 215MB while the working
+            // binary sat in the same directory.
             mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
             for (let minor = 20; minor < 30; minor++) {
                 const broken = join(paths.volumeDataDir, "versions", `2.1.${minor}`)
@@ -174,10 +176,27 @@ describe("claude launcher layout", () => {
             }
             writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
 
-            // 2.1.5 is real but sits below the scan window, so the correct
-            // outcome is a fresh install rather than an unbounded search.
-            expect(run().stdout).toBe("INSTALL")
+            expect(run().stdout).toBe("RESTORED 2.1.5")
+            expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.5"))
         })
+
+        it("gives each version check its own deadline so one wedged binary cannot stall startup", () => {
+            // The probe's stdio is captured, so a binary that never returns is
+            // 150 seconds of complete silence. A per-call timeout turns that
+            // into one skipped candidate.
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            const wedged = join(paths.volumeDataDir, "versions", "2.1.300")
+            writeFileSync(wedged, "#!/bin/sh\nsleep 600\n")
+            chmodSync(wedged, 0o755)
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
+
+            const started = Date.now()
+            const result = run()
+            const elapsed = Date.now() - started
+
+            expect(result.stdout).toBe("RESTORED 2.1.5")
+            expect(elapsed).toBeLessThan(30_000)
+        }, 60_000)
 
         it("skips a corrupt newest version and falls back to a working one", () => {
             writeFileSync(join(root, "corrupt"), "not a binary\n")
@@ -198,9 +217,23 @@ describe("claude launcher layout", () => {
 
             const result = run()
 
-            expect(result.stdout).toBe("RESTORED")
+            expect(result.stdout).toBe("RESTORED 2.1.241")
             expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.241"))).toBe(true)
             expect(readlinkSync(paths.bin)).toBe(join(paths.dataDir, "versions", "2.1.241"))
+        })
+
+        it("refuses to seed on top of a directory rather than half-publishing into it", () => {
+            // If versions/<v> is ever a directory — an upstream layout change,
+            // or a half-finished install — `mv -f` deposits the seed INSIDE it
+            // and leaves the version name permanently unusable, which turns
+            // into "Claude installation left no usable launcher" on every run.
+            const occupied = join(paths.volumeDataDir, "versions", "2.1.241")
+            mkdirSync(occupied, { recursive: true })
+            writeFakeClaude(join(occupied, "claude"), "2.1.241")
+            writeFakeClaude(paths.legacyCacheFile, "2.1.241")
+
+            expect(run().stdout).toBe("INSTALL")
+            expect(readdirSync(occupied)).toEqual(["claude"])
         })
 
         it("prefers an existing version over the legacy cache", () => {
