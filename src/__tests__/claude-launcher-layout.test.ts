@@ -234,6 +234,22 @@ describe("claude launcher layout", () => {
             expect(elapsed).toBeLessThan(30_000)
         }, 60_000)
 
+        it("recovers past a truncated version that will never be replaced", () => {
+            // Copies into the volume skip what already exists, so a version left
+            // half-written by an interrupted install is never overwritten. That
+            // is only safe because the scan does not stop at it: measured here,
+            // the probe rejects it and links the working version below it. The
+            // stranded file costs one --version spawn and nothing else.
+            mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
+            const truncated = join(paths.volumeDataDir, "versions", "2.1.300")
+            writeFileSync(truncated, "\x7fELF truncated")
+            chmodSync(truncated, 0o755)
+            writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.261"), "2.1.261")
+
+            expect(run().stdout).toBe("RESTORED 2.1.261")
+            expect(existsSync(truncated)).toBe(true)
+        })
+
         it("skips a corrupt newest version and falls back to a working one", () => {
             writeFileSync(join(root, "corrupt"), "not a binary\n")
             mkdirSync(join(paths.volumeDataDir, "versions"), { recursive: true })
