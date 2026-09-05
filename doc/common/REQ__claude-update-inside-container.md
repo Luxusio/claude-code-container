@@ -40,8 +40,12 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
 5. A container created by an older ccc, whose volume holds only the pre-symlink
    single-file cache, adopts that binary as a version rather than downloading
    again.
-6. ccc never installs a mise shim, or a binary whose `--version` is not
-   Claude-shaped, as the claude launcher.
+6. ccc never installs a mise shim as the claude launcher, and never one whose
+   `--version` output is not Claude-shaped. "Claude-shaped" is a heuristic on
+   the version string, not proof of identity: a bare `1.2.3` from an unrelated
+   binary satisfies it. Reaching that requires something already named `claude`
+   on PATH, so the guard is a filter against accidents, not an authenticity
+   check.
 7. When `curl | bash` exits 0 but leaves no usable launcher, `ccc` fails at that
    point with a message naming the installation, rather than later with a
    generic "tool is unavailable after setup".
@@ -85,9 +89,24 @@ project updates the version other projects will pick up on their next container
 start. This matches the previous behavior, where all projects shared one cached
 binary — the difference is that the shared thing can now be updated.
 
-The native updater's own version cleanup resumes once it manages the launcher;
-it is disabled while the launcher is a foreign file, which is why old versions
-accumulated.
+The updater says it disables its own version cleanup while the launcher is a
+foreign file — "automatic version cleanup is disabled on this machine (the
+installer cannot tell which version your launcher needs, so it keeps them all)".
+That is its own message, not something measured here, and the container observed
+during this work held a single version, so no accumulation was actually seen.
+Recorded as the updater's stated behavior.
+
+## Diagnosis
+
+`ccc doctor` reports the launcher's shape, not only its version, because the
+version alone is what looks fine in the broken state: a real version printed by
+a real binary at the right path. It reads either
+
+    2.1.261 (Claude Code) (updatable, -> /home/ccc/.local/share/claude/versions/2.1.261)
+
+or
+
+    2.1.241 (Claude Code) (NOT updatable: launcher is a plain file, so claude update cannot replace it)
 
 ## Verification
 

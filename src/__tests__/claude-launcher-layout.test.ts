@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { execFileSync } from "child_process"
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "fs"
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 
-import { buildClaudeProbeScript, type ClaudeLayoutPaths } from "../container-setup.js"
+import { buildClaudeLauncherReportCommand, buildClaudeProbeScript, type ClaudeLayoutPaths } from "../container-setup.js"
 
 // These run the generated script instead of matching substrings in it.
 //
@@ -82,6 +82,20 @@ describe("claude launcher layout", () => {
 
             expect(lstatSync(paths.dataDir).isSymbolicLink()).toBe(true)
             expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
+        })
+
+        it("adopts a data dir symlinked somewhere else instead of abandoning the install", () => {
+            // Repointing the link on its own looks harmless and costs every
+            // project on the host a fresh 215MB download, while the install it
+            // walked away from sits untouched.
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "versions", "2.1.5"), "2.1.5")
+            mkdirSync(join(paths.dataDir, ".."), { recursive: true })
+            symlinkSync(elsewhere, paths.dataDir)
+
+            expect(run().stdout).toBe("RESTORED 2.1.5")
+            expect(readlinkSync(paths.dataDir)).toBe(paths.volumeDataDir)
+            expect(existsSync(join(paths.volumeDataDir, "versions", "2.1.5"))).toBe(true)
         })
 
         it("moves an existing real data directory into the volume instead of discarding it", () => {
@@ -315,6 +329,19 @@ describe("claude launcher layout", () => {
             expect(existsSync(join(paths.volumeDataDir, "versions"))).toBe(false)
         })
 
+        it("accepts a version line that names Claude after the number", () => {
+            // The word-boundary alternative of the version regex was dead: `\b`
+            // inside a template literal is a backspace byte, not a boundary, so
+            // only lines shaped like "2.1.5 (Claude Code)" ever matched. Every
+            // fake here printed exactly that shape, which is why nothing noticed.
+            const versioned = join(paths.volumeDataDir, "versions", "2.1.5")
+            mkdirSync(join(versioned, ".."), { recursive: true })
+            writeFileSync(versioned, `#!/bin/sh\n[ "$1" = "--version" ] && echo "2.1.5-rc1 Claude Code"\nexit 0\n`)
+            chmodSync(versioned, 0o755)
+
+            expect(run().stdout).toBe("RESTORED 2.1.5")
+        })
+
         it("does not adopt a binary whose --version is not Claude-shaped", () => {
             writeFileSync(paths.bin, `#!/bin/sh\necho "bun 1.1.0"\n`)
             chmodSync(paths.bin, 0o755)
@@ -341,5 +368,46 @@ describe("claude launcher layout", () => {
 
             expect(run().stdout).toBe("INSTALL")
         })
+    })
+})
+
+describe("what ccc doctor says about the launcher", () => {
+    // The version alone was all doctor reported, and the version alone is
+    // exactly what looks fine in the broken state: 2.1.241 is a real version,
+    // printed by a real binary, at the right path. Only the shape distinguishes
+    // "up to date" from "pinned forever".
+    function report(binPath: string): { status: number, stdout: string } {
+        try {
+            const stdout = execFileSync("sh", ["-c", buildClaudeLauncherReportCommand(binPath)],
+                { encoding: "utf-8", env: { PATH: "/usr/bin:/bin" } })
+            return { status: 0, stdout: stdout.trim() }
+        } catch (error) {
+            const e = error as { status?: number, stdout?: string }
+            return { status: e.status ?? -1, stdout: (e.stdout ?? "").trim() }
+        }
+    }
+
+    it("says a symlinked launcher is updatable, and where it points", () => {
+        writeFakeClaude(join(paths.volumeDataDir, "versions", "2.1.5"), "2.1.5")
+        run()
+
+        const out = report(paths.bin).stdout
+
+        expect(out).toContain("2.1.5 (Claude Code)")
+        expect(out).toContain("updatable")
+        expect(out).toContain(join(paths.dataDir, "versions", "2.1.5"))
+    })
+
+    it("says a plain-file launcher is NOT updatable, which is the whole bug", () => {
+        writeFakeClaude(paths.bin, "2.1.241")
+
+        const out = report(paths.bin).stdout
+
+        expect(out).toContain("2.1.241 (Claude Code)")
+        expect(out).toContain("NOT updatable")
+    })
+
+    it("fails rather than reporting a version when there is no launcher", () => {
+        expect(report(paths.bin).status).not.toBe(0)
     })
 })

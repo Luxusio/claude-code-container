@@ -14,6 +14,7 @@ import {
 import { getProjectId, DATA_DIR, MISE_VOLUME_NAME, CLI_VERSION } from "./utils.js";
 import { getActiveSessionsForProject } from "./session.js";
 import { getRuntimeInfo, runtimeCli } from "./container-runtime.js";
+import { buildClaudeLauncherReportCommand, CLAUDE_BIN_PATH } from "./container-setup.js";
 
 interface DoctorCheck {
     name: string;
@@ -188,7 +189,7 @@ export function runDoctor(projectPath: string): boolean {
                 containerName,
                 "sh",
                 "-c",
-                "test -x /home/ccc/.local/bin/claude && /home/ccc/.local/bin/claude --version 2>&1 | head -1",
+                buildClaudeLauncherReportCommand(CLAUDE_BIN_PATH),
             ],
             { encoding: "utf-8", timeout: 10000 },
         );

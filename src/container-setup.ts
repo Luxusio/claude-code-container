@@ -121,21 +121,41 @@ claude_version_line() {
 }
 is_claude() {
   first_line="$(claude_version_line "$1")"
-  printf '%s\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\bclaude([[:space:]]+code)?\b)'
+  printf '%s\n' "$first_line" | grep -Eiq '^(claude([[:space:]]+code)?[[:space:]]+v?[0-9]+[.][0-9]+[.][0-9]+|v?[0-9]+[.][0-9]+[.][0-9]+([[:space:]]|$)|v?[0-9]+[.][0-9]+[.][0-9]+.*\\bclaude([[:space:]]+code)?\\b)'
 }
 
 # The data dir must resolve into the named volume, or an in-container update is
 # lost the moment the container is recreated.
 mkdir -p "$VOL" || exit 1
-if [ -L "$DATA" ]; then
-  [ "$(readlink "$DATA")" = "$VOL" ] || { rm -f "$DATA"; ln -s "$VOL" "$DATA"; }
+# rm -rf across a mount boundary empties the OTHER side of the mount. ccc never
+# puts one here, but a user can, and gutting a host directory to save a symlink
+# is not a trade worth making. Compare device numbers with the parent: equal
+# means an ordinary directory.
+is_mountpoint() {
+  [ -d "$1" ] || return 1
+  [ "$(stat -c %d "$1" 2>/dev/null)" != "$(stat -c %d "$1/.." 2>/dev/null)" ]
+}
+# Copy an existing install into the volume before replacing it. Applies to a
+# real directory AND to a symlink aimed somewhere other than the volume —
+# repointing that one silently used to cost a fresh 215MB download while the
+# install it abandoned sat untouched on disk.
+adopt_into_volume() {
+  [ -d "$DATA" ] || return 0
+  cp -a "$DATA/." "$VOL/"
+}
+if [ -L "$DATA" ] && [ "$(readlink "$DATA")" = "$VOL" ]; then
+  :
+elif [ -L "$DATA" ]; then
+  adopt_into_volume && rm -f "$DATA" && ln -s "$VOL" "$DATA"
 elif [ -d "$DATA" ]; then
-  # A real directory here predates this layout (or a bind mount put it there).
-  # Move its contents into the volume rather than discarding an install — so the
-  # copy has to succeed before the original is removed. On failure $DATA stays a
-  # real directory and the check below fails the probe, which is the honest
-  # outcome: better a visible error than a silently deleted install.
-  cp -a "$DATA/." "$VOL/" && rm -rf "$DATA" && ln -s "$VOL" "$DATA"
+  # Copy first, so a failed copy cannot lose the original. Note the weaker
+  # guarantee once rm -rf starts: it removes entries before it can fail on the
+  # directory itself, so a failure here can leave $DATA empty. The contents are
+  # already in the volume by then, and the check below fails the probe loudly.
+  if is_mountpoint "$DATA"; then
+    exit 1
+  fi
+  adopt_into_volume && rm -rf "$DATA" && ln -s "$VOL" "$DATA"
 else
   rm -f "$DATA" 2>/dev/null || true
   mkdir -p "$(dirname "$DATA")" && ln -s "$VOL" "$DATA"
@@ -196,8 +216,10 @@ if [ -L "$BIN" ] && [ "$(readlink "$BIN")" = "$BEST" ]; then
   exit 0
 fi
 mkdir -p "$(dirname "$BIN")" || exit 1
-rm -rf "$BIN"
-ln -s "$BEST" "$BIN" || exit 1
+# A directory here is pathological but has to go; anything else is replaced in
+# one step, so a concurrent probe never sees the launcher missing.
+[ -d "$BIN" ] && [ ! -L "$BIN" ] && rm -rf "$BIN"
+ln -sfn "$BEST" "$BIN" || exit 1
 echo "RESTORED $(basename "$BEST")"`.trim();
 }
 
@@ -210,6 +232,31 @@ function probeDiagnostic(stderr: string | undefined): string {
     if (!text) return "";
     const lastLines = text.split(/\r?\n/).slice(-3).join("; ");
     return `: ${lastLines}`;
+}
+
+/**
+ * Build the command `ccc doctor` uses to describe the claude launcher.
+ *
+ * Reports the launcher's SHAPE, not only its version. A regular file at that
+ * path is the state in which `claude update` prints success and changes
+ * nothing, because the native updater declines to manage a launcher it did not
+ * create. Nothing surfaced that, which is why it went unnoticed across every
+ * project on the host until two version numbers were compared by hand.
+ *
+ * Separate and parameterized for the same reason `buildClaudeProbeScript` is:
+ * so a test can run it instead of matching substrings in it.
+ */
+export function buildClaudeLauncherReportCommand(binPath: string): string {
+    const bin = shellQuote(binPath);
+    return [
+        `v="$(test -x ${bin} && ${bin} --version 2>&1 | head -1)"`,
+        `[ -n "$v" ] || exit 1`,
+        `if [ -L ${bin} ]; then`,
+        `  printf '%s (updatable, -> %s)\\n' "$v" "$(readlink ${bin})"`,
+        `else`,
+        `  printf '%s (NOT updatable: launcher is a plain file, so claude update cannot replace it)\\n' "$v"`,
+        `fi`,
+    ].join("\n");
 }
 
 /**
