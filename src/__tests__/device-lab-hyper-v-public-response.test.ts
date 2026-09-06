@@ -373,6 +373,11 @@ describe("Hyper-V public response projection", () => {
             "ssh-host-key-rejected",
             "ssh-authentication-failed",
             "ssh-unavailable",
+            // Refined onto the linux lane after hyperVGuestReadinessFailureCode has run, so it is
+            // missing from any set derived from that function alone. It means the guest answered
+            // and provisioning is unfinished — the opposite diagnosis to "nothing at that address",
+            // which is what flattening produced.
+            "ssh-readiness-marker-missing",
         ]) {
             const projected = redactHyperVDeviceSecrets({
                 id: "windows-vm-1",
@@ -384,7 +389,14 @@ describe("Hyper-V public response projection", () => {
         }
         // The set is closed: anything outside it still collapses to the bounded fallback, so this
         // is not a hole for arbitrary strings that merely look like a transport code.
-        for (const rejected of ["powershell-direct-anything-else", "ssh-made-up", "C:\\secret"]) {
+        // The four ssh-host-key-* entries in the broker's own bootstrapSshCodes allowlist have no
+        // producer, so they stay out: a set that admits codes nothing emits is not closed.
+        for (const rejected of [
+            "powershell-direct-anything-else",
+            "ssh-made-up",
+            "C:\\secret",
+            "ssh-host-key-mismatch",
+        ]) {
             const projected = redactHyperVDeviceSecrets({
                 id: "windows-vm-1",
                 backend: "windows-vm",

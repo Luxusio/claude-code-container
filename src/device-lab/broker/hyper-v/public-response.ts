@@ -260,6 +260,15 @@ const HYPER_V_GUEST_TRANSPORT_REASONS = new Set([
     "ssh-host-key-rejected",
     "ssh-authentication-failed",
     "ssh-unavailable",
+    // Not from hyperVGuestReadinessFailureCode — the linux lane refines its code afterwards through
+    // hyperVLinuxGuestReadyTraceFailureCode, which can return this one verbatim. It means SSH
+    // connected, authenticated and exited zero but cloud-init had not written the readiness marker:
+    // the guest is up and answering, its provisioning is unfinished. Flattening that to
+    // hyper-v-guest-not-ready made it identical to nothing-at-that-address, which is the opposite
+    // diagnosis. The four ssh-host-key-* members of that same allowlist are deliberately absent:
+    // nothing produces them, and admitting codes the broker cannot emit is how a closed set stops
+    // being closed.
+    "ssh-readiness-marker-missing",
 ]);
 
 export function hyperVBoundedErrorCode(
