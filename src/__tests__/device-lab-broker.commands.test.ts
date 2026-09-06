@@ -733,7 +733,13 @@ describe("device-lab host broker lifecycle commands", () => {
         let orphanRecoveryCalls = 0;
         let preparedSourcePath = "";
         let networkCleanupFailure: false | "nonzero" | "invalid" | "in-use" = false;
-        let guestReadyScrubFailure: false | "hyper-v-guest-first-logon-incomplete" | "hyper-v-guest-provisioning-not-scrubbed" | "powershell-direct-attempt-timeout" = false;
+        let guestReadyScrubFailure: false
+            | "hyper-v-guest-first-logon-incomplete"
+            | "hyper-v-guest-provisioning-not-scrubbed"
+            | "powershell-direct-attempt-timeout"
+            | "powershell-direct-authentication-failed"
+            | "powershell-direct-session-unavailable"
+            | "powershell-direct-unavailable" = false;
         let containmentStopFailure = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
@@ -1077,7 +1083,12 @@ describe("device-lab host broker lifecycle commands", () => {
             const callsBeforeUnsafeWindowsStart = commandRunner.mock.calls.length;
             const unsafeWindowsStart = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, waitForBoot: false });
             expect(unsafeWindowsStart.status).toBe(400);
-            expect(await unsafeWindowsStart.json()).toEqual(expect.objectContaining({ error: "windows-vm-bootstrap-requires-boot-wait" }));
+            expect(await unsafeWindowsStart.json()).toEqual(expect.objectContaining({
+                error: "windows-vm-bootstrap-requires-boot-wait",
+                // A bare code tells a caller that set waitForBoot:false to skip a slow boot nothing
+                // about what to do instead.
+                detail: expect.stringContaining("bootTimeoutMs"),
+            }));
             const unsafeWindowsReboot = await invoke({ backend: "windows-vm", command: "device_reboot", deviceId, incarnationId, waitForBoot: false });
             expect(unsafeWindowsReboot.status).toBe(400);
             expect(commandRunner).toHaveBeenCalledTimes(callsBeforeUnsafeWindowsStart);
@@ -1117,15 +1128,42 @@ describe("device-lab host broker lifecycle commands", () => {
                 expect(refusedDevice?.runtimeState, "containment must drive the recorded state Off").toBe("Off");
             }
 
+            // First-boot containment. The two reasons above both require the PowerShell Direct probe
+            // to have landed; when it never lands — a stalled OOBE, the most likely way a fresh VM's
+            // first start fails — the reason is a transport code and the guest is in its DEFAULT
+            // un-scrubbed state. The host cannot ask the guest, but the provisioning ISO still being
+            // on disk is durable proof no readiness ever completed, and the ISO is itself the
+            // plaintext residue. So a transport failure with the media retained must contain.
+            mkdirSync(dirname(provisioningMediaPath), { recursive: true });
+            writeFileSync(provisioningMediaPath, "unattend-iso-bytes");
+            guestReadyScrubFailure = "powershell-direct-attempt-timeout";
+            const firstBootStops = containmentStops().length;
+            const neverProbed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await neverProbed.json())).toContain("powershell-direct-attempt-timeout");
+            expect(containmentStops().length, "media still on disk means never scrubbed: contain").toBeGreaterThan(firstBootStops);
+            expect(vmState).toBe("Off");
+            rmSync(provisioningMediaPath, { force: true });
+
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
             // on purpose, because powering it off destroys the state needed to diagnose it. Without
             // this, "contain every failure" would satisfy the loop above just as well.
-            guestReadyScrubFailure = "powershell-direct-attempt-timeout";
-            const stopsBeforeTimeout = containmentStops().length;
-            const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-            expect(JSON.stringify(await timedOut.json())).toContain("powershell-direct-attempt-timeout");
-            expect(vmState, "an ordinary readiness timeout must stay debuggable, not be powered off").toBe("Running");
-            expect(containmentStops().length, "no containment stop for an unknown scrub state").toBe(stopsBeforeTimeout);
+            // All four probe-never-returned reasons, not just one. The doc claims this set is
+            // pinned by test; listing three of them in prose while asserting only the fourth is the
+            // kind of claim this series has already had to retract more than once. They share a
+            // code path, so looping is a one-line cost.
+            for (const unknownReason of [
+                "powershell-direct-attempt-timeout",
+                "powershell-direct-authentication-failed",
+                "powershell-direct-session-unavailable",
+                "powershell-direct-unavailable",
+            ] as const) {
+                guestReadyScrubFailure = unknownReason;
+                const stopsBeforeTimeout = containmentStops().length;
+                const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                expect(JSON.stringify(await timedOut.json())).toContain(unknownReason);
+                expect(vmState, `${unknownReason} must stay debuggable, not be powered off`).toBe("Running");
+                expect(containmentStops().length, `no containment stop for ${unknownReason}`).toBe(stopsBeforeTimeout);
+            }
             // A containment that could not power the guest off must say so. This flag is the only
             // signal that a guest is still live with a hot credential, so silence here would be the
             // same class of invisible failure the whole series exists to remove. The readiness
@@ -1134,16 +1172,35 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
             containmentStopFailure = true;
             const containmentFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-            const containmentFailedBody = JSON.stringify(await containmentFailed.json());
-            expect(containmentFailedBody).toContain("scrubContainmentFailed");
-            expect(containmentFailedBody).toContain("hyper-v-guest-provisioning-not-scrubbed");
+            const containmentFailedBody = await containmentFailed.json();
+            // Asserted on the two writers SEPARATELY. A `toContain("scrubContainmentFailed")` over
+            // the whole stringified response is satisfied by errorDetail alone, so deleting the
+            // lastBootCheck persistence — the headline fix here — left the suite green. The
+            // persisted copy is the one that survives a dropped reply, which is the entire point:
+            // the caller's RPC can time out while containment is still running.
+            expect(containmentFailedBody?.result?.boot?.errorDetail?.scrubContainmentFailed).toBe(true);
+            // And on DISK, which is the actual claim: the reply can be dropped when the caller's
+            // RPC times out while containment is still running, so the persisted record is what an
+            // operator reads afterwards. Asserting `toContain("scrubContainmentFailed")` over the
+            // whole response was satisfied by errorDetail alone, so deleting the persistence — the
+            // headline fix of this commit — left the suite green.
+            const persisted = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as {
+                devices: Array<{ id?: string; lastBootCheck?: { error?: string; scrubContainmentFailed?: boolean } }>;
+            };
+            const persistedDevice = persisted.devices.find((entry) => entry.id === deviceId);
+            expect(persistedDevice?.lastBootCheck?.scrubContainmentFailed).toBe(true);
+            expect(persistedDevice?.lastBootCheck?.error).toBe("hyper-v-guest-provisioning-not-scrubbed");
             expect(vmState).toBe("Running");
             containmentStopFailure = false;
 
             // And it is absent, not `false`, when containment worked — its presence always means
             // something needs attention.
-            const containmentOk = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-            expect(JSON.stringify(await containmentOk.json())).not.toContain("scrubContainmentFailed");
+            const containmentOk = await (await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 })).json();
+            expect(JSON.stringify(containmentOk)).not.toContain("scrubContainmentFailed");
+            const persistedOk = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as {
+                devices: Array<{ id?: string; lastBootCheck?: { scrubContainmentFailed?: boolean } }>;
+            };
+            expect(persistedOk.devices.find((entry) => entry.id === deviceId)?.lastBootCheck?.scrubContainmentFailed).toBeUndefined();
             expect(vmState).toBe("Off");
 
             guestReadyScrubFailure = false;
@@ -1506,14 +1563,16 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 48 over the pre-containment 105, across six extra
-            // device_start round trips: two un-scrubbed reasons, one ordinary timeout, one
-            // containment-stop failure, one containment success, and one recovery back to success.
-            // The per-case split is not spelled out here because the obvious accounting — "each
-            // contained case costs a stop plus an ownership read" — was measured and is not what
-            // the cases actually cost; a plausible-looking breakdown is worse than none.
+            // The scrub-containment cases add 77 over the pre-containment 105, across ten extra
+            // device_start round trips: two un-scrubbed reasons, four probe-never-returned reasons,
+            // the first-boot media-retained case, one containment-stop failure, one containment
+            // success, and one recovery back to success. The two rejected waitForBoot:false calls
+            // add nothing by design — that is what their own assertion checks. The per-case split
+            // is not spelled out because the obvious accounting — "each contained case costs a stop
+            // plus an ownership read" — was measured and is not what the cases actually cost; a
+            // plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(153);
+            expect(commandRunner).toHaveBeenCalledTimes(182);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

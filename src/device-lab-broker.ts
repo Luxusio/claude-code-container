@@ -979,7 +979,7 @@ type LeaseParamSuccess = {
     claimId: string | null;
     claimNonce: string | null;
 };
-type CommandParamError = { ok: false; status: number; error: string; allowed?: string[] };
+type CommandParamError = { ok: false; status: number; error: string; allowed?: string[]; detail?: string };
 type CommandParamSuccess = {
     ok: true;
     backend: string;
@@ -7498,6 +7498,11 @@ function validateCommandParams(params: unknown): CommandParamError | CommandPara
             error: backend === "linux-vm"
                 ? "linux-vm-bootstrap-requires-boot-wait"
                 : "windows-vm-bootstrap-requires-boot-wait",
+            // A bare code leaves a caller that set waitForBoot:false to skip a slow boot with no
+            // idea what to do instead. Say what the wait is for and what to reach for.
+            detail: backend === "linux-vm"
+                ? "linux-vm start and reboot must wait for boot: bootstrap networking is torn down on the readiness path. Omit waitForBoot, or raise bootTimeoutMs if the guest is slow."
+                : "windows-vm start and reboot must wait for boot: the readiness path is what removes the provisioning media and contains a guest whose first-logon scrub did not run. Omit waitForBoot, or raise bootTimeoutMs if the guest is slow.",
         };
     }
     const deviceId = typeof input.deviceId === "string" && input.deviceId.trim()
@@ -7536,6 +7541,7 @@ function commandParamError(parsed: CommandParamError) {
             ok: false,
             error: parsed.error,
             ...(parsed.allowed ? { allowed: parsed.allowed } : {}),
+            ...(parsed.detail ? { detail: parsed.detail } : {}),
         },
     };
 }
@@ -13534,9 +13540,34 @@ async function lifecycleCommandInvokeUnlocked(
         // rewrite: containment would switch on the pre-rewrite reason and the report carry the
         // post-rewrite one.
         const containedReason = hyperVGuestReadyFailureCode;
+        const containedDevice = payload.result?.device as Record<string, unknown>;
+        // Those two reasons PROVE the guest is un-scrubbed, but they both require the PowerShell
+        // Direct probe to have landed at least once. When it never lands — a stalled OOBE, a
+        // servicing reboot loop, integration services not up — the reason is a transport code and
+        // the guest sits in its DEFAULT state, which is un-scrubbed: plaintext answer file on the
+        // mounted ISO and a live DefaultPassword. That is the most likely way a fresh VM's first
+        // start fails, so scoping containment to proof alone left the common case running.
+        //
+        // The host cannot ask the guest when the probe is down, but it does not need to. Readiness
+        // deletes the provisioning ISO only after every gate has passed, so the ISO still being on
+        // disk IS the durable evidence that no readiness has ever completed for this device — and
+        // the ISO is itself the plaintext residue that motivates containment. Once it is gone there
+        // is nothing left to contain, and an ordinary boot timeout on an already-scrubbed guest
+        // stays Running and debuggable, which is the whole point of the narrow scope.
+        const provisioningMediaRetained = (() => {
+            const mediaPath = field(containedDevice, "guestUnattendPath") || "";
+            if (!mediaPath) return false;
+            try {
+                return existsSync(mediaPath);
+            } catch {
+                // Unreadable is not proof of absence. Fail closed: treat it as still present.
+                return true;
+            }
+        })();
         if (containedReason === "hyper-v-guest-first-logon-incomplete"
-            || containedReason === "hyper-v-guest-provisioning-not-scrubbed") {
-            const device = payload.result?.device as Record<string, unknown>;
+            || containedReason === "hyper-v-guest-provisioning-not-scrubbed"
+            || provisioningMediaRetained) {
+            const device = containedDevice;
             let scrubContained = false;
             try {
                 const stopExecution = await hyperVProviderCommandRunner(normalized, hyperVStopCommand({

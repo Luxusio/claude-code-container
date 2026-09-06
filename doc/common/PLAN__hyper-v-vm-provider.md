@@ -270,12 +270,26 @@ Two consequences are deliberate and worth knowing:
 
   Two residuals of this scope, stated rather than implied:
 
-  - **Containment covers known-un-scrubbed, not unknown.** When the probe never
-    returns — `powershell-direct-attempt-timeout`,
+  - **Containment covers proof of un-scrubbed, plus every failure on a guest
+    that has never been scrubbed at all.** The two named reasons require the
+    PowerShell Direct probe to have landed. When it never lands —
+    `powershell-direct-attempt-timeout`,
     `powershell-direct-authentication-failed`,
     `powershell-direct-session-unavailable`, `powershell-direct-unavailable` —
-    the guest's scrub state is unknown, and it is left Running. That is the
-    debuggability half of the tradeoff, and it is pinned by test.
+    the reason proves nothing, and scoping containment to proof alone left the
+    most likely failure of a fresh VM's first start (a stalled OOBE) running in
+    its default state: plaintext answer file on the mounted ISO, live
+    `DefaultPassword`.
+
+    The host cannot ask a guest whose probe is down, and does not need to.
+    Readiness deletes the provisioning ISO only after every gate has passed, so
+    the ISO still being on disk is durable evidence that no readiness has ever
+    completed for that device — and the ISO is itself the plaintext residue. So
+    any readiness failure with the media still retained contains. Once the media
+    is gone there is nothing left to contain, and an ordinary boot timeout on an
+    already-scrubbed guest stays Running and debuggable, which is the point of
+    the narrow scope. An unreadable media path is treated as still present:
+    unreadable is not proof of absence.
   - **Containment uses `-TurnOff`, a hard kill.** A first boot that is merely
     slow past the budget is killed mid-script and can then never write the
     marker, because `FirstLogonCommands` fires once ever. That guest is
