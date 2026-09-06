@@ -50,6 +50,11 @@ describe.runIf(process.platform !== "win32")("safe cleanup cross-process lock", 
         const second = cleanupProcess(home, secondTarget, order, "b");
 
         await expect(Promise.all([first, second])).resolves.toEqual([0, 0]);
-        expect(readFileSync(order, "utf8")).toBe("AaBb");
+        // What the lock guarantees is that the two critical sections do not interleave — not which
+        // process wins the race for it. The 50ms head start makes "AaBb" the usual outcome, but it
+        // is a head start, not a barrier: a full-suite run measured "BbAa" when spawn latency
+        // swallowed the 50ms. Pinning one winner made a lock that had just done its job look
+        // broken. Interleaving ("ABab", "ABba", "BAab", "BAba") is the failure, and only that.
+        expect(["AaBb", "BbAa"]).toContain(readFileSync(order, "utf8"));
     });
 });
