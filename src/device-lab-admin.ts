@@ -1408,6 +1408,30 @@ const SCRUB_FAILURE_REASONS = new Set([
     "hyper-v-guest-scrub-containment-failed",
 ]);
 const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this guest — delete and recreate the device";
+// The broker bounds these codes to [a-z0-9-] before they leave it, but that invariant lives two
+// modules away and lastBootCheck rides a denylist redaction on non-hyper-v backends. Re-checking
+// at the render site costs one regex and makes the terminal output self-defending rather than
+// trusting something maintained elsewhere.
+const BOUNDED_BOOT_CODE = /^[a-z0-9-]{1,128}$/;
+
+// Shared by the success and failure renderers. The failure path is where an operator actually
+// lands on a refused start, and it read only error/detail/missing — so the warning and the remedy
+// were dead exactly there. Worse, a refused start whose containment FAILED printed byte-identically
+// to one where the guest was cleanly powered off, because the reason is the same string in both.
+function bootCheckLines(device: Record<string, unknown> | null): string[] {
+    const bootCheck = device?.lastBootCheck;
+    if (!bootCheck || typeof bootCheck !== "object" || Array.isArray(bootCheck)) return [];
+    const record = bootCheck as Record<string, unknown>;
+    const reason = typeof record.error === "string" && BOUNDED_BOOT_CODE.test(record.error) ? record.error : null;
+    const lines: string[] = [];
+    if (reason) lines.push(`bootError: ${reason}`);
+    if (record.scrubContainmentFailed === true) {
+        lines.push("scrubContainmentFailed: true");
+        lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
+    }
+    if (reason && SCRUB_FAILURE_REASONS.has(reason)) lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
+    return lines;
+}
 
 function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {
     const device = brokerRpcDevice(result);
@@ -1422,22 +1446,7 @@ function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, d
     for (const key of ["name", "minimized", "minimizeConfirmed", "sandboxId", "runtimeState", "bootReady"]) {
         if (device?.[key] !== undefined) lines.push(`${key}: ${String(device[key])}`);
     }
-    // lastBootCheck was not rendered at all, so a guest refused for an un-scrubbed reason printed
-    // byte-identically to a healthy one — and a guest whose containment FAILED printed
-    // `status: running` with nothing saying it is still up holding a live autologon password and a
-    // mounted plaintext answer file. The reason and the flag are bounded codes, not host text.
-    const bootCheck = device?.lastBootCheck;
-    if (bootCheck && typeof bootCheck === "object" && !Array.isArray(bootCheck)) {
-        const record = bootCheck as Record<string, unknown>;
-        if (typeof record.error === "string") lines.push(`bootError: ${record.error}`);
-        if (record.scrubContainmentFailed === true) {
-            lines.push("scrubContainmentFailed: true");
-            lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
-        }
-        if (typeof record.error === "string" && SCRUB_FAILURE_REASONS.has(record.error)) {
-            lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
-        }
-    }
+    lines.push(...bootCheckLines(device));
     return `${lines.join("\n")}\n`;
 }
 
@@ -1446,13 +1455,19 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     const error = typeof body?.error === "string" ? body.error : result.error || "broker-operation-failed";
     const detail = typeof body?.detail === "string" ? body.detail : result.detail;
     const missing = Array.isArray(body?.missing) && body.missing.length > 0 ? ` (missing: ${body.missing.join(", ")})` : "";
-    // This is where an operator actually lands on a refused start, so the terminal reasons say what
-    // to do here rather than only in the plan doc. Restarting cannot help: FirstLogonCommands fires
-    // once per OOBE and nothing re-provisions.
-    const remedy = typeof detail === "string" && SCRUB_FAILURE_REASONS.has(detail)
-        ? `\n  ${SCRUB_FAILURE_REMEDY}`
+    // The refusal body carries result.device, so the same lastBootCheck lines the success path
+    // prints are available here — and this is the path an operator actually sees. Without them a
+    // failed containment was indistinguishable from a clean power-off: identical reason, identical
+    // line, while one of the two guests is still up with a live autologon.
+    const details = bootCheckLines(brokerRpcDevice(result))
+        .map((line) => `\n  ${line}`)
+        .join("");
+    // Also matched against `detail` itself: on a start refused for one of the terminal reasons the
+    // record may not carry it yet, but the reply always does.
+    const remedy = typeof detail === "string" && SCRUB_FAILURE_REASONS.has(detail) && !details.includes(SCRUB_FAILURE_REMEDY)
+        ? `\n  remedy: ${SCRUB_FAILURE_REMEDY}`
         : "";
-    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${remedy}`;
+    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}`;
 }
 
 function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm" | "linux-vm", deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {

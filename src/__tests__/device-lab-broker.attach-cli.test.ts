@@ -1174,6 +1174,93 @@ describe("device-lab host broker physical attach and CLI", () => {
         );
     });
 
+    it("warns on a refused start whose containment failed, where the reason alone cannot tell", async () => {
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-scrub-refused-cli-test";
+        const scrubOwnerId = deviceLabOwnerId(cwd);
+        const scrubStateRoot = join(homedir(), ".ccc/devices/owners", scrubOwnerId, "windows-vm");
+        mkdirSync(scrubStateRoot, { recursive: true });
+        writeFileSync(join(scrubStateRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-y", backend: "windows-vm", status: "stopped", incarnationId: "b".repeat(32) }],
+        }));
+        // A stalled OOBE: the probe never lands, so the reason is powershell-direct-timeout — NOT
+        // one of the terminal scrub reasons. Containment still fires because the media is retained,
+        // and here it failed. The reason string is byte-identical to the same failure where the
+        // guest was cleanly powered off, so the reason alone cannot distinguish them; only the flag
+        // can, and the failure path rendered no lastBootCheck at all.
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: false,
+            status: 502,
+            ownerId: scrubOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: false,
+                error: "hyper-v-guest-not-ready",
+                detail: "powershell-direct-timeout",
+                result: {
+                    device: {
+                        id: "win-y",
+                        backend: "windows-vm",
+                        status: "running",
+                        runtimeState: "Running",
+                        lastBootCheck: {
+                            ready: false,
+                            error: "powershell-direct-timeout",
+                            scrubContainmentFailed: true,
+                        },
+                    },
+                },
+            },
+        }));
+
+        expect(await devicesCliAsync(["start", "win-y"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(stderr).toContain("powershell-direct-timeout");
+        expect(stderr, "the failure path must say the guest may still be up").toContain("scrubContainmentFailed: true");
+        expect(stderr).toContain("WARNING: this guest may still be running with provisioning secrets intact.");
+        expect(log).not.toHaveBeenCalled();
+    });
+
+    it("refuses to print an unbounded boot code", async () => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-scrub-unbounded-cli-test";
+        const unboundedOwnerId = deviceLabOwnerId(cwd);
+        const unboundedRoot = join(homedir(), ".ccc/devices/owners", unboundedOwnerId, "windows-vm");
+        mkdirSync(unboundedRoot, { recursive: true });
+        writeFileSync(join(unboundedRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-z", backend: "windows-vm", status: "stopped", incarnationId: "c".repeat(32) }],
+        }));
+        // The broker bounds these codes, but that invariant lives two modules away and
+        // lastBootCheck rides a denylist redaction on non-hyper-v backends. The render site checks
+        // for itself rather than trusting it — a path or an escape sequence must not reach a
+        // terminal.
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: false,
+            status: 502,
+            ownerId: unboundedOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: false,
+                error: "hyper-v-guest-not-ready",
+                result: {
+                    device: {
+                        id: "win-z",
+                        backend: "windows-vm",
+                        lastBootCheck: { ready: false, error: "C:\\Users\\Luxus\\secret.txt \u001b[31m" },
+                    },
+                },
+            },
+        }));
+
+        expect(await devicesCliAsync(["start", "win-z"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(stderr).not.toContain("secret.txt");
+        expect(stderr).not.toContain("bootError:");
+    });
+
     it("invokes authenticated owner RPC through a repaired host broker", async () => {
         const cwd = "/project/devices-owner-rpc-cli-test";
         const ownerId = deviceLabOwnerId(cwd);
