@@ -13603,14 +13603,24 @@ async function lifecycleCommandInvokeUnlocked(
         // that guest; the host-side-file argument only holds once the drive is actually gone.
         const readyFailure = parseHyperVGuestReadyFailureObservation(hyperVGuestReadyExecution?.stdout || "");
         const scrubConfirmed = readyFailure?.scrubConfirmed === true && readyFailure?.mediaDetached === true;
-        // A guest that is already Off has nothing to contain, and stopping it would claim otherwise.
-        // hyperVStopCommand is `if ($Vm.State -ne 'Off') { Stop-VM }` followed by a re-query, so on
-        // an Off VM it returns ok with state Off having done nothing — which then read as a
-        // successful containment, set hyperVContainedRuntimeState and reported mutatesHost: true for
-        // a stop that never happened. Reachable whenever the start failed before Start-VM ran, e.g.
-        // the host memory or CPU capacity checks. The diagnostic above is the evidence; when it is
-        // absent we still attempt the stop, which is the safe direction.
-        const alreadyOff = hyperVGuestBootDiagnostic?.state === "Off";
+        // A guest already Off has nothing to contain, and stopping it would claim otherwise:
+        // hyperVStopCommand is `if ($Vm.State -ne 'Off') { Stop-VM }` plus a re-query, so on an Off
+        // VM it returns ok having done nothing, which then set hyperVContainedRuntimeState and
+        // reported mutatesHost: true for a stop that never happened.
+        //
+        // The scope is narrower than it looks, and an earlier version of this comment overstated
+        // it. hyperVGuestBootDiagnostic is only ever assigned inside the readiness-failure block,
+        // so it is null whenever readiness never ran — which includes the case that comment named,
+        // a start rejected by the host capacity checks before Start-VM. That case still takes the
+        // phantom stop. What this actually covers is a guest that DID reach readiness, failed, and
+        // has since gone Off: a shutdown during OOBE, a sysprep shutdown, a crash.
+        //
+        // The comparison is an explicit list, not `!== "Running"`. Hyper-V reports 27 states, and
+        // treating every non-Running one as "nothing to contain" would skip Paused, Saved,
+        // Starting and Stopping — guests that are very much still holding a mounted answer file,
+        // and that hyperVStopCommand's own `-ne 'Off'` test would have stopped.
+        const alreadyOff = hyperVGuestBootDiagnostic?.state === "Off"
+            || hyperVGuestBootDiagnostic?.state === "OffCritical";
         if (!alreadyOff && (containedReason === "hyper-v-guest-first-logon-incomplete"
             || containedReason === "hyper-v-guest-provisioning-not-scrubbed"
             || (provisioningMediaRetained && !scrubConfirmed))) {
@@ -13666,10 +13676,13 @@ async function lifecycleCommandInvokeUnlocked(
     // the detail is built here rather than skipped.
     if (hyperVScrubContainmentFailed) {
         hyperVGuestReadyFailureCode = hyperVGuestReadyFailureCode || "hyper-v-guest-scrub-containment-failed";
+        // No null fallback for the execution: the flag is only ever set inside the containment
+        // block, which synthesises the execution in the same breath, so it is always present here.
+        // A fallback object would be dead code pretending to be defence — this file has already
+        // had to remove one of those (the existsSync catch that could never fire).
         hyperVGuestReadyFailureDetail = {
-            ...(hyperVGuestReadyFailureDetail ?? (hyperVGuestReadyExecution
-                ? hyperVGuestReadinessFailureDetail("windows-vm", hyperVGuestReadyExecution)
-                : { status: null, timedOut: false, stdoutBytes: 0, stderrBytes: 0 })),
+            ...(hyperVGuestReadyFailureDetail
+                ?? hyperVGuestReadinessFailureDetail("windows-vm", hyperVGuestReadyExecution!)),
             scrubContainmentFailed: true as const,
         };
     }

@@ -750,6 +750,9 @@ describe("device-lab host broker lifecycle commands", () => {
         // Running with no readiness result at all — the state where a failed containment used
         // to be recorded nowhere.
         let startObservationMismatch = false;
+        // Lets the post-failure boot diagnostic report a state other than the fixture's own
+        // vmState, which is what the containment skip-guard reads.
+        let diagnosticStateOverride = "";
         let containmentStopFailure = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
@@ -925,7 +928,7 @@ describe("device-lab host broker lifecycle commands", () => {
                         ok: true,
                         vmId,
                         vmName,
-                        state: vmState,
+                        state: diagnosticStateOverride || vmState,
                         uptimeMs: 60000,
                         generation: 2,
                         secureBootEnabled: true,
@@ -1202,6 +1205,31 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailureScrubbed = false;
             guestReadyScrubFailureDetached = false;
 
+            // The skip-guard is an exact list, not "anything that is not Running". Hyper-V reports
+            // 27 states; Paused, Saved, Starting and Stopping are all guests still holding a
+            // mounted answer file, and hyperVStopCommand's own `-ne 'Off'` test would stop them.
+            // Loosening the guard to `!== "Running"` would skip containment for every one of them
+            // and leave a live DefaultPassword un-contained and unreported.
+            for (const liveState of ["Paused", "Saved", "Starting", "Stopping"] as const) {
+                diagnosticStateOverride = liveState;
+                guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
+                const liveStops = containmentStops().length;
+                await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                expect(containmentStops().length, `${liveState} is not Off and must still be contained`).toBeGreaterThan(liveStops);
+            }
+            // And a genuinely powered-off guest is not "contained" by a stop that does nothing.
+            // OffCritical counts as off too — missing it would produce the same phantom stop.
+            for (const offState of ["Off", "OffCritical"] as const) {
+                diagnosticStateOverride = offState;
+                guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
+                const offStops = containmentStops().length;
+                await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                expect(containmentStops().length, `${offState} means there is nothing to contain`).toBe(offStops);
+            }
+            diagnosticStateOverride = "";
+            guestReadyScrubFailure = false;
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+
             // Readiness never runs: the identity gate rejects the start observation, one of the two
             // exits between Start-VM and readiness. The guest is Running with the media still on
             // disk, so containment fires — and when the stop ALSO fails, that has to be reported.
@@ -1213,6 +1241,13 @@ describe("device-lab host broker lifecycle commands", () => {
             const silentPath = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
             const silentBody = JSON.stringify(await silentPath.json());
             expect(silentBody, "a failed containment must never be silent").toContain("scrubContainmentFailed");
+            // Asserted on the PERSISTED record too, not just the reply. `toContain` over the whole
+            // body is satisfied by the boot.errorDetail copy alone — the same weakness this file
+            // already documents 40 lines down — so moving the synthesis below the persistence write
+            // would make the record vanish here and still pass. The record is the surface that
+            // outlives the reply, and the reply is exactly what gets lost to a caller timeout.
+            const silentRecord = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<Record<string, any>> };
+            expect(silentRecord.devices[0]?.lastBootCheck?.scrubContainmentFailed, "device_status must see the failed containment").toBe(true);
             containmentStopFailure = false;
             startObservationMismatch = false;
             await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
@@ -1638,18 +1673,19 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 110 over the pre-containment 105, across fourteen
+            // The scrub-containment cases add 159 over the pre-containment 105, across twenty-one
             // extra device_start round trips: two un-scrubbed reasons, four probe-never-returned
             // reasons, the first-boot media-retained case, the scrubbed-and-detached case, the
-            // scrubbed-but-still-mounted case, the identity-mismatch case where readiness never
+            // scrubbed-but-still-mounted case, four live guest states that must still be contained
+            // and two off states that must not, the identity-mismatch case where readiness never
             // runs and the containment stop also fails, one containment-stop failure, one
-            // containment success, and two recoveries back to success.
+            // containment success, and three recoveries back to success.
             // The two rejected waitForBoot:false calls add nothing by design — that is what their
             // own assertion checks. The per-case split is not spelled out because the obvious
             // accounting — "each contained case costs a stop plus an ownership read" — was measured
             // and is not what the cases actually cost; a plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(215);
+            expect(commandRunner).toHaveBeenCalledTimes(264);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

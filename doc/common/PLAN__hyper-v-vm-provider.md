@@ -323,9 +323,20 @@ Two consequences are deliberate and worth knowing:
 
     A contained failure reports `mutatesHost: true`. Deriving it from `success`
     alone said the host was unchanged by an operation that had just force-stopped
-    a VM. Containment is skipped entirely when the boot diagnostic already
-    reports the guest `Off`: the stop command is a no-op on an Off VM but still
-    returns success, which otherwise recorded a containment that never happened.
+    a VM.
+
+    Containment is skipped when the post-failure boot diagnostic reports the
+    guest `Off` or `OffCritical` — the stop command is a no-op on an Off VM but
+    still returns success, which otherwise recorded a containment that never
+    happened. The scope is narrow and an earlier version of this paragraph
+    overstated it: that diagnostic is only captured inside the readiness-failure
+    path, so it is absent whenever readiness never ran, including a start the
+    host capacity checks reject before `Start-VM`. That case still takes the
+    phantom stop. What is actually covered is a guest that reached readiness,
+    failed, and has since gone Off — a shutdown during OOBE, a sysprep shutdown,
+    a crash. The comparison is an explicit list rather than "not Running",
+    because `Paused`, `Saved`, `Starting` and `Stopping` are all guests still
+    holding a mounted answer file.
 
     When containment fails on a path where readiness never ran, the readiness
     execution is synthesised so `scrubContainmentFailed` still reaches the reply
