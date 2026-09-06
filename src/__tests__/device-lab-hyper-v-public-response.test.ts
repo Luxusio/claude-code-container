@@ -347,4 +347,40 @@ describe("Hyper-V public response projection", () => {
             },
         });
     });
+
+    // The flag was persisted into lastBootCheck and then stripped straight back out by this
+    // allowlist, so device_status showed a scrub-failure reason with nothing saying containment had
+    // failed to power the guest off. The broker test could not see it: it asserted
+    // toContain("scrubContainmentFailed") over the whole response body, which the separate
+    // boot.errorDetail copy already satisfied. Persisting it only helps if the projection keeps it —
+    // the HTTP reply that carries errorDetail is exactly what gets lost to a caller timeout while
+    // containment is still running.
+    it("projects scrubContainmentFailed so device_status can see an uncontained guest", () => {
+        const projected = redactHyperVDeviceSecrets({
+            id: "windows-vm-1",
+            backend: "windows-vm",
+            provider: "hyper-v",
+            lastBootCheck: {
+                ready: false,
+                provider: "hyper-v-powershell-direct",
+                error: "hyper-v-guest-provisioning-not-scrubbed",
+                scrubContainmentFailed: true,
+            },
+        }) as Record<string, any>;
+        expect(projected.lastBootCheck).toEqual({
+            ready: false,
+            provider: "hyper-v-powershell-direct",
+            error: "hyper-v-guest-provisioning-not-scrubbed",
+            scrubContainmentFailed: true,
+        });
+        // Literal true only. A stored non-true value must not be echoed back through the projection,
+        // and its absence must stay absent rather than becoming a false nobody reads.
+        const contained = redactHyperVDeviceSecrets({
+            id: "windows-vm-1",
+            backend: "windows-vm",
+            provider: "hyper-v",
+            lastBootCheck: { ready: false, provider: "hyper-v-powershell-direct", scrubContainmentFailed: "C:\\secret" },
+        }) as Record<string, any>;
+        expect(contained.lastBootCheck).not.toHaveProperty("scrubContainmentFailed");
+    });
 });

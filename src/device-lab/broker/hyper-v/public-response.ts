@@ -438,6 +438,13 @@ function publicHyperVBootCheck(value: unknown): Record<string, unknown> | null {
             "hyper-v-guest-not-ready",
         );
     }
+    // Projected as a literal true, never the stored value. Without this the flag was persisted into
+    // lastBootCheck and then stripped right back out by this allowlist, so device_status reported a
+    // scrub-failure reason with no indication that containment had not actually powered the guest
+    // off — the operator reads "readiness failed, containment presumably handled it" while the
+    // guest is still up with a live autologon. The whole point of persisting it is that the HTTP
+    // reply carrying it can be lost to the caller's own timeout while containment is still running.
+    if (record.scrubContainmentFailed === true) result.scrubContainmentFailed = true;
     const diagnostic = record.diagnostic;
     if (diagnostic && typeof diagnostic === "object" && !Array.isArray(diagnostic)) {
         const publicDiagnostic = pickPublicFields(
