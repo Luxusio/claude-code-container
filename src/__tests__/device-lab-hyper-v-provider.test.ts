@@ -2205,16 +2205,16 @@ describe("Hyper-V provider adapter", () => {
             .toEqual({ ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 4 });
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150, scrubConfirmed: false });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150, scrubConfirmed: false, mediaDetached: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72, scrubConfirmed: false });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72, scrubConfirmed: false, mediaDetached: false });
         // A precondition failure now round-trips its real reason instead of dying on stderr as an
         // unparseable PowerShell exception, which is what collapsed every early exit to a bare
         // powershell-direct-unavailable. Zero attempts is legitimate here and only here.
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0, scrubConfirmed: false });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0, scrubConfirmed: false, mediaDetached: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3, scrubConfirmed: false });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3, scrubConfirmed: false, mediaDetached: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-unavailable", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-elsewhere", reason: "hyper-v-guest-credential-unavailable", attempts: 1 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "C:\\secret", attempts: 0 }))).toBeNull();
@@ -2342,6 +2342,22 @@ describe("Hyper-V provider adapter", () => {
         // failed" on whichever path it actually gets.
         expect(script).toContain("$ScrubConfirmed = $false");
         expect(script.match(/scrubConfirmed = \[bool\]\$ScrubConfirmed/g)).toHaveLength(2);
+        // mediaDetached is a SECOND latch, and it must sit after the drive is actually gone —
+        // strictly after Remove-VMDvdDrive and after the ambiguity throw. scrubConfirmed says the
+        // guest's registry and Panther are clean; it says nothing about an ISO still mounted in the
+        // guest, which carries the local Administrator password in plaintext for anything running
+        // there. Latching them together would stand containment down on exactly that guest.
+        const detachLatch = script.indexOf("$MediaDetached = $true");
+        expect(detachLatch).toBeGreaterThan(-1);
+        expect(script).toContain("$MediaDetached = $false");
+        expect(script.match(/mediaDetached = \[bool\]\$MediaDetached/g)).toHaveLength(2);
+        const ambiguityThrow = script.indexOf("hyper-v-guest-provisioning-media-attachment-ambiguous");
+        expect(ambiguityThrow).toBeGreaterThan(-1);
+        expect(script.indexOf("$MediaDetached = $true", ambiguityThrow), "the detach latch must follow the ambiguity throw").toBeGreaterThan(ambiguityThrow);
+        expect(script.indexOf("$MediaDetached = $true", dvdRemoval), "the detach latch must follow Remove-VMDvdDrive").toBeGreaterThan(dvdRemoval);
+        // And the no-media case counts as detached, or a device provisioned without media could
+        // never satisfy the veto and would be contained on every failure forever.
+        expect(script).toContain("if (-not $ProvisioningMedia) { $MediaDetached = $true }");
         // The gate is its own statement, not a clause hanging off the network check, so it still
         // runs when $ExpectedNetworkAddress is empty.
         expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent -isnot \[bool\] -or \$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
@@ -2360,6 +2376,7 @@ describe("Hyper-V provider adapter", () => {
             reason: "hyper-v-guest-provisioning-not-scrubbed",
             attempts: 150,
             scrubConfirmed: false,
+            mediaDetached: false,
         });
         // Both reasons, not just one: these two are what the broker's containment switches on, so
         // a reason that failed to round-trip would silently stop a guest from being powered off.
@@ -2374,6 +2391,7 @@ describe("Hyper-V provider adapter", () => {
             reason: "hyper-v-guest-first-logon-incomplete",
             attempts: 150,
             scrubConfirmed: false,
+            mediaDetached: false,
         });
         // scrubConfirmed is what separates "never scrubbed" from "scrubbed, but the media removal
         // below the gates failed". The latter surfaces under at least three different reason codes
@@ -2386,12 +2404,14 @@ describe("Hyper-V provider adapter", () => {
             reason: "powershell-direct-unavailable",
             attempts: 150,
             scrubConfirmed: true,
+            mediaDetached: true,
         }))).toEqual({
             ok: false,
             error: "hyper-v-guest-ready-timeout",
             reason: "powershell-direct-unavailable",
             attempts: 150,
             scrubConfirmed: true,
+            mediaDetached: true,
         });
         // Only a literal true. An older broker omits the field, and anything else must read as
         // not-confirmed, because unknown has to fall on the containing side.

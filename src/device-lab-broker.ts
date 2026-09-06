@@ -270,7 +270,7 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v1
 // deleted is powered off on every start forever. Containment also no longer requires readiness to
 // have started, so a guest left Running by an expired deadline or a failed VM observation is still
 // contained, and a contained failure reports mutatesHost: true.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v23";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v24";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v2";
@@ -13595,12 +13595,25 @@ async function lifecycleCommandInvokeUnlocked(
         // ACL, a rejected reparse path. Containing on that powers off a healthy VM, and keeps doing
         // it, because the marker persists and every later start re-runs into the same failure. The
         // named reasons still contain unconditionally: they ARE the proof of un-scrubbed.
-        const scrubConfirmed = parseHyperVGuestReadyFailureObservation(
-            hyperVGuestReadyExecution?.stdout || "",
-        )?.scrubConfirmed === true;
-        if (containedReason === "hyper-v-guest-first-logon-incomplete"
+        // BOTH flags, not just scrubConfirmed. The latch fires when the guest's registry and
+        // Panther are clean, which is before the DVD is detached — so an ambiguous attachment or a
+        // failed Remove-VMDvdDrive leaves the ISO mounted INSIDE the guest, and that ISO carries the
+        // local Administrator password in plaintext for anything running there. The scrub does not
+        // remove that account. Vetoing on scrubConfirmed alone stood containment down on exactly
+        // that guest; the host-side-file argument only holds once the drive is actually gone.
+        const readyFailure = parseHyperVGuestReadyFailureObservation(hyperVGuestReadyExecution?.stdout || "");
+        const scrubConfirmed = readyFailure?.scrubConfirmed === true && readyFailure?.mediaDetached === true;
+        // A guest that is already Off has nothing to contain, and stopping it would claim otherwise.
+        // hyperVStopCommand is `if ($Vm.State -ne 'Off') { Stop-VM }` followed by a re-query, so on
+        // an Off VM it returns ok with state Off having done nothing — which then read as a
+        // successful containment, set hyperVContainedRuntimeState and reported mutatesHost: true for
+        // a stop that never happened. Reachable whenever the start failed before Start-VM ran, e.g.
+        // the host memory or CPU capacity checks. The diagnostic above is the evidence; when it is
+        // absent we still attempt the stop, which is the safe direction.
+        const alreadyOff = hyperVGuestBootDiagnostic?.state === "Off";
+        if (!alreadyOff && (containedReason === "hyper-v-guest-first-logon-incomplete"
             || containedReason === "hyper-v-guest-provisioning-not-scrubbed"
-            || (provisioningMediaRetained && !scrubConfirmed)) {
+            || (provisioningMediaRetained && !scrubConfirmed))) {
             const device = containedDevice;
             let scrubContained = false;
             try {
@@ -13629,13 +13642,36 @@ async function lifecycleCommandInvokeUnlocked(
             // A containment that failed must not read as one that was never needed. The reason is
             // preserved — replacing it the way the linux block does would discard the very
             // diagnostic that selected this path.
-            if (!scrubContained) hyperVScrubContainmentFailed = true;
+            if (!scrubContained) {
+                hyperVScrubContainmentFailed = true;
+                // Both surfaces for the flag — the failure detail and the persisted record —
+                // require hyperVGuestReadyExecution, and it is null on exactly the paths that
+                // dropping the readiness gate opened. Without this synthesis a failed containment
+                // on those paths reached neither the reply nor device_status: guest Running, ISO
+                // mounted, live autologon, containment attempted and failed, complete silence. The
+                // linux lane already does this; the windows one had no equivalent. Any existing
+                // execution is kept so a real readiness reason is never overwritten.
+                hyperVGuestReadyExecution = hyperVGuestReadyExecution ?? {
+                    mode: "exec",
+                    provider: "hyper-v",
+                    status: null,
+                    error: "hyper-v-guest-scrub-containment-failed",
+                };
+            }
         }
     }
     // Applied after containment because containment runs after the detail is first computed. The
-    // flag has to reach the payload the operator actually reads.
-    if (hyperVScrubContainmentFailed && hyperVGuestReadyFailureDetail) {
-        hyperVGuestReadyFailureDetail = { ...hyperVGuestReadyFailureDetail, scrubContainmentFailed: true as const };
+    // flag has to reach the payload the operator actually reads — and when readiness never ran
+    // there is no detail yet to carry it, which is precisely the case that used to go silent, so
+    // the detail is built here rather than skipped.
+    if (hyperVScrubContainmentFailed) {
+        hyperVGuestReadyFailureCode = hyperVGuestReadyFailureCode || "hyper-v-guest-scrub-containment-failed";
+        hyperVGuestReadyFailureDetail = {
+            ...(hyperVGuestReadyFailureDetail ?? (hyperVGuestReadyExecution
+                ? hyperVGuestReadinessFailureDetail("windows-vm", hyperVGuestReadyExecution)
+                : { status: null, timedOut: false, stdoutBytes: 0, stderrBytes: 0 })),
+            scrubContainmentFailed: true as const,
+        };
     }
     if (!success && windowsMinimizeWatchdog?.pid) {
         windowsMinimizeWatchdogCleanup = cancelBrokerWindowsMinimizeWatchdog(ownerId, parsed.deviceId);

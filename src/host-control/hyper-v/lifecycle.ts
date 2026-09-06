@@ -78,6 +78,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "$Attempts = 0",
         "$LastFailure = 'powershell-direct-unavailable'",
         "$ScrubConfirmed = $false",
+        "$MediaDetached = $false",
         "try {",
         ...ownedVmPrelude(options).map((line) => `  ${line}`),
         `  $CredentialPath = ${psQuote(credentialPath)}`,
@@ -154,10 +155,12 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // plaintext residue is the host-side file, which stopping the VM does nothing about.
         // Deleting here keeps the property the host relies on true — media present iff unscrubbed —
         // and still cannot race the first-logon program, because both scrub gates have passed.
+        "    if (-not $ProvisioningMedia) { $MediaDetached = $true }",
         "    if ($ProvisioningMedia) {",
         "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",
         "      if ($ProvisioningDrives.Count -gt 1) { throw 'hyper-v-guest-provisioning-media-attachment-ambiguous' }",
         "      if ($ProvisioningDrives.Count -eq 1) { Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0] -ErrorAction Stop }",
+        "      $MediaDetached = $true",
         "      Assert-NoReparsePath $ProvisioningMedia",
         "      if (Test-Path -LiteralPath $ProvisioningMedia) { Remove-Item -LiteralPath $ProvisioningMedia -Force -ErrorAction Stop }",
         "    }",
@@ -179,7 +182,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "  }",
         "  Start-Sleep -Seconds 2",
         "}",
-        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed }",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed; mediaDetached = [bool]$MediaDetached }",
         "  $Failure | ConvertTo-Json -Compress -Depth 4",
         "  exit 1",
         "} catch {",
@@ -187,7 +190,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // else is host text and is replaced by a constant that still says which phase failed.
         "  $Reason = [string]$_.Exception.Message",
         "  if ($Reason -notmatch '^hyper-v-[a-z0-9-]{3,120}$') { $Reason = 'hyper-v-guest-ready-precondition-failed' }",
-        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-failed'; reason = $Reason; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed }",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-failed'; reason = $Reason; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed; mediaDetached = [bool]$MediaDetached }",
         "  $Failure | ConvertTo-Json -Compress -Depth 4",
         "  exit 1",
         "}",

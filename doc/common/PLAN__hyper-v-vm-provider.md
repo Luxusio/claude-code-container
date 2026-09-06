@@ -126,7 +126,7 @@ sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
 verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v23`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v24`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 v17 additionally requires the Windows readiness script to emit its structured
 failure on every exit path rather than only the deadline one, and the not-ready
@@ -298,7 +298,15 @@ Two consequences are deliberate and worth knowing:
     is demonstrably clean. Those failures surface under at least three different
     reason codes, so they cannot be recognised by matching reasons. The readiness
     script therefore latches `scrubConfirmed` the moment both scrub gates pass
-    and reports it on every failure payload; it vetoes the media-retained arm.
+    and reports it on every failure payload; it vetoes the media-retained arm —
+    but only together with `mediaDetached`, a second latch set once the DVD is
+    actually gone from the VM. `scrubConfirmed` says the guest's registry and
+    Panther are clean; it says nothing about an ISO still mounted inside that
+    guest, which carries the local Administrator password in plaintext and is
+    readable by any process there. The scrub removes the autologon values, not
+    the account. An ambiguous attachment or a failed `Remove-VMDvdDrive` throws
+    between the two latches, which is exactly the guest that must still be
+    contained. A device provisioned without media counts as detached.
     Without it, a guest whose ISO could not be deleted would be powered off on
     every start forever, since the marker persists and readiness re-runs into the
     same failure. The two named reasons still contain unconditionally — they are
@@ -315,7 +323,16 @@ Two consequences are deliberate and worth knowing:
 
     A contained failure reports `mutatesHost: true`. Deriving it from `success`
     alone said the host was unchanged by an operation that had just force-stopped
-    a VM.
+    a VM. Containment is skipped entirely when the boot diagnostic already
+    reports the guest `Off`: the stop command is a no-op on an Off VM but still
+    returns success, which otherwise recorded a containment that never happened.
+
+    When containment fails on a path where readiness never ran, the readiness
+    execution is synthesised so `scrubContainmentFailed` still reaches the reply
+    and the persisted record. Both surfaces hang off that execution, and it is
+    null on exactly the paths the removed gate opened — so without this a failed
+    containment there was reported nowhere at all, which is the silence this
+    whole contract exists to remove.
   - **Containment uses `-TurnOff`, a hard kill.** A first boot that is merely
     slow past the budget is killed mid-script and can then never write the
     marker, because `FirstLogonCommands` fires once ever. That guest is
@@ -948,7 +965,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v23` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v24` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

@@ -359,6 +359,9 @@ export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVG
         // it cannot be recognised by reason matching. An older broker omits the field entirely,
         // which reads as false: unknown is treated as not-scrubbed, which is the safe direction.
         scrubConfirmed: parsed.scrubConfirmed === true,
+        // Same literal-true rule, same reason: an older broker omits it, and unknown has to fall
+        // on the containing side.
+        mediaDetached: parsed.mediaDetached === true,
     };
 }
 

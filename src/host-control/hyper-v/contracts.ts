@@ -138,6 +138,11 @@ export type HyperVGuestReadyFailureObservation = {
     // provisioning ISO is still on disk, because a failure in the media removal itself leaves that
     // ISO behind on a guest that is demonstrably clean.
     scrubConfirmed: boolean;
+    // True only once the provisioning DVD is actually gone from the VM. scrubConfirmed says the
+    // guest's registry and Panther are clean; it says nothing about the still-mounted ISO, which
+    // carries the local Administrator password in plaintext and is readable by anything inside
+    // the guest. Containment needs both before it stands down.
+    mediaDetached: boolean;
 };
 
 export type HyperVGuestBootDiagnosticObservation = {

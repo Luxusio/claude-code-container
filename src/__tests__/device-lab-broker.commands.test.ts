@@ -744,6 +744,12 @@ describe("device-lab host broker lifecycle commands", () => {
         // Mirrors the script's $ScrubConfirmed latch: true for failures thrown BELOW both scrub
         // gates, where the guest is clean and only the media removal or network check failed.
         let guestReadyScrubFailureScrubbed = false;
+        let guestReadyScrubFailureDetached = false;
+        // Renames the VM in the start observation so the broker's identity gate rejects it.
+        // That is one of the two exits between Start-VM and readiness, and it leaves the guest
+        // Running with no readiness result at all — the state where a failed containment used
+        // to be recorded nowhere.
+        let startObservationMismatch = false;
         let containmentStopFailure = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
@@ -987,6 +993,10 @@ describe("device-lab host broker lifecycle commands", () => {
                         // removal. Mirroring that here is what lets the media-retained arm be tested
                         // for the case where the guest is clean but its ISO could not be deleted.
                         scrubConfirmed: guestReadyScrubFailureScrubbed,
+                        // Latched separately in the real script, after the DVD is actually gone.
+                        // A scrubbed guest whose drive could not be detached still has the
+                        // plaintext answer file mounted and readable inside it.
+                        mediaDetached: guestReadyScrubFailureDetached,
                     }
                     : guestReady
                     ? { ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 2, networkAddress: expectedNetworkAddress }
@@ -1000,7 +1010,7 @@ describe("device-lab host broker lifecycle commands", () => {
                     ? { ok: true, checkpointPolicy: "ProductionOnly", candidateCount: snapshotExists ? 1 : 0 }
                     : snapshotOperation
                     ? { ok: true, snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery", state: vmState, ...(snapshotDelete ? { deleted: !snapshotDeleteConfirmationFailure } : {}) }
-                    : { ok: true, vmId, vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, checkpointPolicy, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
+                    : { ok: true, vmId, vmName: startObservationMismatch ? "ccc-renamed-out-of-band" : vmName, state: vmState, status: "Operating normally", generation: 2, diskPath, checkpointPolicy, snapshots: snapshotExists ? [{ snapshotId, snapshotName: `ccc-${ownerId}-before-install`, snapshotType: "Recovery" }] : [], ...(deleting ? { deleted: !deleteConfirmationFailure } : {}) }),
                 stderr: snapshotOperation
                     ? "host path C:\\snapshot-provider-host-secret"
                     : "",
@@ -1170,12 +1180,43 @@ describe("device-lab host broker lifecycle commands", () => {
             // flag and not a reason match: this case uses the same reason as the contained one
             // directly above, and only the flag differs.
             guestReadyScrubFailureScrubbed = true;
+            guestReadyScrubFailureDetached = true;
             const scrubbedRetainedStops = containmentStops().length;
             const mediaCleanupFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
             expect(JSON.stringify(await mediaCleanupFailed.json())).toContain("powershell-direct-attempt-timeout");
             expect(containmentStops().length, "a scrubbed guest must not be contained for a failed media cleanup").toBe(scrubbedRetainedStops);
             expect(vmState, "a scrubbed guest stays debuggable even with its media retained").toBe("Running");
+            // Scrubbed, but the DVD is STILL ATTACHED — an ambiguous attachment or a failed
+            // Remove-VMDvdDrive, both of which throw after the scrub latch and before the detach
+            // one. The guest is clean in registry and Panther, yet D:\Autounattend.xml is mounted
+            // and readable by anything inside it, carrying the local Administrator password in
+            // plaintext; the scrub does not remove that account. Vetoing on scrubConfirmed alone
+            // stood containment down here, which is why the veto needs both flags.
+            guestReadyScrubFailureDetached = false;
+            const mountedIsoStops = containmentStops().length;
+            const stillMounted = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await stillMounted.json())).toContain("powershell-direct-attempt-timeout");
+            expect(containmentStops().length, "a mounted answer-file ISO must still be contained").toBeGreaterThan(mountedIsoStops);
+            expect(vmState).toBe("Off");
+
             guestReadyScrubFailureScrubbed = false;
+            guestReadyScrubFailureDetached = false;
+
+            // Readiness never runs: the identity gate rejects the start observation, one of the two
+            // exits between Start-VM and readiness. The guest is Running with the media still on
+            // disk, so containment fires — and when the stop ALSO fails, that has to be reported.
+            // It previously was not: both surfaces for scrubContainmentFailed hung off the
+            // readiness execution, which is null here, so a failed containment on this exact path
+            // reached neither the reply nor device_status. Guest up, ISO mounted, total silence.
+            startObservationMismatch = true;
+            containmentStopFailure = true;
+            const silentPath = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const silentBody = JSON.stringify(await silentPath.json());
+            expect(silentBody, "a failed containment must never be silent").toContain("scrubContainmentFailed");
+            containmentStopFailure = false;
+            startObservationMismatch = false;
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
+
             rmSync(provisioningMediaPath, { force: true });
 
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
@@ -1597,16 +1638,18 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 83 over the pre-containment 105, across eleven extra
-            // device_start round trips: two un-scrubbed reasons, four probe-never-returned reasons,
-            // the first-boot media-retained case, the scrubbed-but-media-retained case, one
-            // containment-stop failure, one containment success, and one recovery back to success.
+            // The scrub-containment cases add 110 over the pre-containment 105, across fourteen
+            // extra device_start round trips: two un-scrubbed reasons, four probe-never-returned
+            // reasons, the first-boot media-retained case, the scrubbed-and-detached case, the
+            // scrubbed-but-still-mounted case, the identity-mismatch case where readiness never
+            // runs and the containment stop also fails, one containment-stop failure, one
+            // containment success, and two recoveries back to success.
             // The two rejected waitForBoot:false calls add nothing by design — that is what their
             // own assertion checks. The per-case split is not spelled out because the obvious
             // accounting — "each contained case costs a stop plus an ownership read" — was measured
             // and is not what the cases actually cost; a plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(188);
+            expect(commandRunner).toHaveBeenCalledTimes(215);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
