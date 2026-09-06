@@ -2252,10 +2252,10 @@ describe("Hyper-V provider adapter", () => {
         const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
         const credentialPath = `${deviceRoot}/secrets/guest.credential.xml`;
         const provisioningMediaPath = `${deviceRoot}/disks/autounattend.iso`;
-        // No expectedNetworkAddress: this is the shape the finding was about. With no address the
-        // network check is skipped, so PowerShell Direct authenticating was the *only* gate — and
-        // that becomes true as soon as the OOBE account exists, which can be before
-        // FirstLogonCommands runs. The scrub gate has to stand on its own here.
+        // WITH an expectedNetworkAddress, which is the default (`networking !== false`). Building
+        // this without one tested the single configuration where the network check is compiled out,
+        // and that is precisely the check the scrub gates have to precede — so the omission made
+        // the ordering assertions below unable to catch the bug they exist for.
         const script = scriptOf(hyperVGuestReadyCommand({
             executable: "powershell.exe",
             ownerId,
@@ -2266,6 +2266,7 @@ describe("Hyper-V provider adapter", () => {
             deviceRoot,
             credentialPath,
             provisioningMediaPath,
+            expectedNetworkAddress: "192.168.100.50",
             timeoutMs: 300000,
         }));
 
@@ -2317,6 +2318,15 @@ describe("Hyper-V provider adapter", () => {
         expect(gate).toBeLessThan(isoRemoval);
         expect(markerGate).toBeLessThan(dvdRemoval);
         expect(markerGate).toBeLessThan(isoRemoval);
+        // Both scrub gates must precede the NETWORK check too, not just the media removal. The
+        // first-logon program assigns the static address itself as its first action, so the network
+        // check is causally downstream of the marker: a launcher that never ran leaves the guest on
+        // DHCP and throws network-not-ready on every attempt, so with the network check first these
+        // gates were unreachable and the broker never contained the guest that had actually failed.
+        const networkGate = script.indexOf("if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }");
+        expect(networkGate).toBeGreaterThan(-1);
+        expect(markerGate).toBeLessThan(networkGate);
+        expect(gate).toBeLessThan(networkGate);
         // The gate is its own statement, not a clause hanging off the network check, so it still
         // runs when $ExpectedNetworkAddress is empty.
         expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent -isnot \[bool\] -or \$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);

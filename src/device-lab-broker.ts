@@ -243,7 +243,17 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v1
 // v17: guest readiness emits its structured failure on every exit path, not only the deadline one
 // (adding the hyper-v-guest-ready-failed shape), and the not-ready payload carries errorDetail. A
 // broker predating this answers powershell-direct-unavailable for causes it can now name.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v20";
+// v19: readiness holds the provisioning media until the guest proves the first-logon program ran,
+// via an incarnation-keyed HKLM\SOFTWARE\ccc\FirstLogonCompleted marker checked alongside the
+// secrets probe, both fail-closed. Absent secrets alone never certify the scrub: Windows clears
+// DefaultPassword and AutoAdminLogon itself once AutoLogonCount reaches zero.
+// v20: a windows-vm readiness refusal for hyper-v-guest-first-logon-incomplete or
+// hyper-v-guest-provisioning-not-scrubbed powers the guest off instead of leaving it running with
+// a live autologon and the plaintext answer file still mounted.
+// v21: both scrub gates run ahead of the network check. The first-logon program assigns the static
+// address itself, so a launcher that never ran failed on the network reason for the whole budget
+// and was never contained — containment powered off healthy guests and left the failed ones up.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v21";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v2";

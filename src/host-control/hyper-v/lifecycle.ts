@@ -104,15 +104,21 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         `    $CompletedJob = Wait-Job -Job $AttemptJob -Timeout ${HYPER_V_POWERSHELL_DIRECT_ATTEMPT_TIMEOUT_SECONDS} -ErrorAction Stop`,
         "    if (-not $CompletedJob) { throw 'powershell-direct-attempt-timeout' }",
         "    $Probe = Receive-Job -Job $AttemptJob -ErrorAction Stop",
-        "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
-        // Before the media goes, not after: this is what keeps the deletion from
-        // racing the program that reads it. A launcher that exited 3 or 4 now
-        // surfaces as this readiness reason on the attempt budget instead of as
-        // a scrub that quietly did not happen.
-        // Both written fail-closed, matching the network check above rather than the naive
-        // `if ($Probe.x)` form: an absent property or a null $Probe is falsy, so the naive form
-        // would have opened the gate on a malformed probe — the one case where the guest's answer
-        // is least trustworthy. `-isnot [bool]` refuses anything that is not an actual answer.
+        // These two run BEFORE the network check, and the order is load-bearing rather than
+        // stylistic. The first-logon program assigns the static address itself (New-NetIPAddress
+        // in windows-guest.ts) as its FIRST action, before the scrub and long before the marker.
+        // So the network check is causally downstream of these two: a launcher that never ran
+        // leaves the guest on DHCP/APIPA, and with the network check first it threw
+        // hyper-v-guest-network-not-ready on every attempt for the whole budget — these gates were
+        // never reached, the broker's containment switch never matched, and the guest stayed
+        // Running with the plaintext answer file still mounted. The inversion was total: a healthy
+        // guest got its address, reached the marker check, and was contained, while the guest that
+        // had actually failed was left up. Reporting "the address our program was supposed to set
+        // is missing" when the program never ran is also simply the wrong cause.
+        //
+        // Both written fail-closed rather than the naive `if ($Probe.x)` form: an absent property
+        // or a null $Probe is falsy, so the naive form would open the gate on a malformed probe —
+        // the one case where the guest's answer is least trustworthy.
         //
         // The marker is checked first because it is the only signal that proves our program ran.
         // The secrets check stays as a second, independent condition: the marker says the scrub
@@ -127,6 +133,9 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // stringifies to "" and fails the comparison, so this is fail-closed without a type guard.
         "    if ([string]$Probe.firstLogonCompleted -cne $ExpectedMarker) { throw 'hyper-v-guest-first-logon-incomplete' }",
         "    if ($Probe.provisioningSecretsPresent -isnot [bool] -or $Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }",
+        "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
+        // The media goes only after all three pass, which is what keeps the deletion from racing
+        // the program that is loaded from it.
         "    if ($ProvisioningMedia) {",
         "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",
         "      if ($ProvisioningDrives.Count -gt 1) { throw 'hyper-v-guest-provisioning-media-attachment-ambiguous' }",

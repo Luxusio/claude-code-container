@@ -734,6 +734,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let preparedSourcePath = "";
         let networkCleanupFailure: false | "nonzero" | "invalid" | "in-use" = false;
         let guestReadyScrubFailure: false | "hyper-v-guest-first-logon-incomplete" | "hyper-v-guest-provisioning-not-scrubbed" | "powershell-direct-attempt-timeout" = false;
+        let containmentStopFailure = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
@@ -746,6 +747,9 @@ describe("device-lab host broker lifecycle commands", () => {
             const nativeRequest = nativeLibraryRequest(command);
             if (nativeRequest) {
                 if (nativeRequest.operation === "Start-VM") vmState = "Running";
+                if (nativeRequest.operation === "Stop-VM" && containmentStopFailure) {
+                    return { ...command, status: 1, stdout: "", stderr: "simulated containment stop failure" };
+                }
                 if (nativeRequest.operation === "Stop-VM") vmState = "Off";
                 if (nativeRequest.operation === "Remove-VM" && !deleteConfirmationFailure) vmExists = false;
                 if (nativeRequest.operation === "Restore-VMSnapshot") {
@@ -829,6 +833,11 @@ describe("device-lab host broker lifecycle commands", () => {
                 };
             }
             if (script.includes("Start-VM")) vmState = "Running";
+            // The containment stop travels this script path, not the native-library one, so the
+            // failure injection has to sit here to be reached at all.
+            if (script.includes("Stop-VM") && containmentStopFailure) {
+                return { ...command, status: 1, stdout: "", stderr: "simulated containment stop failure" };
+            }
             if (script.includes("Stop-VM")) vmState = "Off";
             const deleting = script.includes("Remove-VM -VM $Vm");
             const snapshotCreate = script.includes("Checkpoint-VM") || script.includes("New-CccVmSnapshot");
@@ -1044,6 +1053,26 @@ describe("device-lab host broker lifecycle commands", () => {
             const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
             expect(JSON.stringify(await timedOut.json())).toContain("powershell-direct-attempt-timeout");
             expect(vmState, "an ordinary readiness timeout must stay debuggable, not be powered off").toBe("Running");
+            // A containment that could not power the guest off must say so. This flag is the only
+            // signal that a guest is still live with a hot credential, so silence here would be the
+            // same class of invisible failure the whole series exists to remove. The readiness
+            // reason must survive too — replacing it would discard the diagnostic that selected
+            // the containment path in the first place.
+            guestReadyScrubFailure = "hyper-v-guest-provisioning-not-scrubbed";
+            containmentStopFailure = true;
+            const containmentFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            const containmentFailedBody = JSON.stringify(await containmentFailed.json());
+            expect(containmentFailedBody).toContain("scrubContainmentFailed");
+            expect(containmentFailedBody).toContain("hyper-v-guest-provisioning-not-scrubbed");
+            expect(vmState).toBe("Running");
+            containmentStopFailure = false;
+
+            // And it is absent, not `false`, when containment worked — its presence always means
+            // something needs attention.
+            const containmentOk = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await containmentOk.json())).not.toContain("scrubContainmentFailed");
+            expect(vmState).toBe("Off");
+
             guestReadyScrubFailure = false;
             await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
 
@@ -1404,12 +1433,14 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 30: four extra device_start round trips (two
-            // un-scrubbed reasons, one ordinary timeout, one recovery back to success), and the two
-            // contained ones each pay an additional force-stop plus its ownership read. The
-            // timeout case deliberately pays no stop — that asymmetry is the behaviour under test.
+            // The scrub-containment cases add 48 over the pre-containment 105: six extra
+            // device_start round trips (two un-scrubbed reasons, one ordinary timeout, one
+            // containment-stop failure, one containment success, one recovery back to success),
+            // with every contained one paying an additional force-stop plus its ownership read —
+            // including the failed stop, which is attempted and rejected rather than skipped. The
+            // timeout case deliberately pays no stop; that asymmetry is the behaviour under test.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(135);
+            expect(commandRunner).toHaveBeenCalledTimes(153);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

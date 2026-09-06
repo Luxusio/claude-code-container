@@ -126,7 +126,7 @@ sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
 verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v20`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v21`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 v17 additionally requires the Windows readiness script to emit its structured
 failure on every exit path rather than only the deadline one, and the not-ready
@@ -186,6 +186,18 @@ surfaces as `hyper-v-guest-ready-timeout` with `reason`
 `hyper-v-guest-first-logon-incomplete` or
 `hyper-v-guest-provisioning-not-scrubbed`.
 
+Both scrub gates run **ahead of the network check**, and that order is
+load-bearing. The first-logon program assigns the static address itself, as its
+first action, before the scrub and long before the marker — so the network check
+is causally downstream of both. With the network check first, a launcher that
+never ran left the guest on DHCP and threw `hyper-v-guest-network-not-ready` on
+every attempt for the whole budget: the scrub gates were unreachable, the
+containment switch never matched, and the guest stayed up with the plaintext
+answer file mounted. The effect was an exact inversion — a guest whose scrub ran
+perfectly got its address, reached the marker check and was contained, while a
+guest whose scrub never ran was left running. Reporting a missing address as the
+cause when the program that assigns it never ran is also the wrong diagnosis.
+
 Two consequences are deliberate and worth knowing:
 
 - **Every Windows device created under an earlier contract must be recreated —
@@ -223,6 +235,22 @@ Two consequences are deliberate and worth knowing:
   path) and `scrubContainmentFailed: true` appears in the failure detail. It is
   present only when true, so its presence always means a guest is still running
   with a live autologon.
+
+  Two residuals of this scope, stated rather than implied:
+
+  - **Containment covers known-un-scrubbed, not unknown.** When the probe never
+    returns — `powershell-direct-attempt-timeout`,
+    `powershell-direct-authentication-failed`,
+    `powershell-direct-session-unavailable`, `powershell-direct-unavailable` —
+    the guest's scrub state is unknown, and it is left Running. That is the
+    debuggability half of the tradeoff, and it is pinned by test.
+  - **Containment uses `-TurnOff`, a hard kill.** A first boot that is merely
+    slow past the budget is killed mid-script and can then never write the
+    marker, because `FirstLogonCommands` fires once ever. That guest is
+    unrecoverable by restart and needs `device_delete` and recreate — the same
+    remedy as the migration case above, but caused by containment rather than by
+    the original fault. Fail-closed, and the reason is accurate, but it is a
+    cost the boot budget has to be set with in mind.
 The Linux readiness contract retains the seeded host key as the only
 authoritative identity. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
@@ -848,7 +876,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v20` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v21` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table
