@@ -338,6 +338,19 @@ Two consequences are deliberate and worth knowing:
     because `Paused`, `Saved`, `Starting` and `Stopping` are all guests still
     holding a mounted answer file.
 
+    Snapshot restore can put a guest back to a pre-scrub disk state, and nothing
+    gates `device_snapshot_create` on scrub state, so that state is reachable.
+    It is not a silent uncontained guest, though, and it is deliberately left to
+    the gates rather than given code of its own. Restoring reverts the marker
+    with the disk, so the next start fails `hyper-v-guest-first-logon-incomplete`
+    — a named reason, which contains unconditionally. If the host ISO is also
+    gone, the restored configuration re-attaches a DVD pointing at a missing
+    file and `Start-VM` fails, so no guest runs and no live credential is
+    exposed; what remains is a plaintext `unattend.xml` at rest inside the VHD,
+    reachable only through the disk-export surfaces. That second branch rests on
+    Hyper-V refusing to start with a missing attachment, which has not been
+    executed here — it is the load-bearing assumption of leaving this uncoded.
+
     When containment fails on a path where readiness never ran, the readiness
     execution is synthesised so `scrubContainmentFailed` still reaches the reply
     and the persisted record. Both surfaces hang off that execution, and it is

@@ -1248,6 +1248,13 @@ describe("device-lab host broker lifecycle commands", () => {
             // outlives the reply, and the reply is exactly what gets lost to a caller timeout.
             const silentRecord = JSON.parse(readFileSync(join(backendRoot(ownerId, "windows-vm"), "devices.json"), "utf8")) as { devices: Array<Record<string, any>> };
             expect(silentRecord.devices[0]?.lastBootCheck?.scrubContainmentFailed, "device_status must see the failed containment").toBe(true);
+            // The reply half, separately. The record write reads the flag directly, so a body-wide
+            // toContain — and even the record assertion above — is satisfied without the reply ever
+            // carrying it. Reverting the detail builder to patch only a detail that already exists
+            // leaves errorDetail absent on this path, where none exists yet, and that mutant
+            // survived both of the assertions above.
+            const silentReply = JSON.parse(silentBody) as Record<string, any>;
+            expect(silentReply?.result?.boot?.errorDetail?.scrubContainmentFailed, "the reply must carry it too").toBe(true);
             containmentStopFailure = false;
             startObservationMismatch = false;
             await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
