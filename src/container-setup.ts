@@ -154,6 +154,10 @@ mkdir -p "$VOL" || exit 1
 # not. Treating it as a version is the choice; the REQ records the cost.
 VERSION_RE='^[0-9]+[.][0-9]+[.][0-9]+([.]tmp[.][0-9]+[.][0-9]+[.][0-9]+)?$'
 is_version_name() {
+  # grep matches per line, so a name holding a newline passes whenever ANY of
+  # its lines is version-shaped — the whole name is not the thing tested. Count
+  # first: wc -l is 0 only when there is no newline at all.
+  [ "$(printf '%s' "$1" | wc -l)" -eq 0 ] || return 1
   printf '%s' "$1" | grep -qE "$VERSION_RE"
 }
 
@@ -446,17 +450,22 @@ find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/d
 # already-downloaded file into the staging name and renames it away within
 # seconds, so ten minutes is not a race it can lose.
 #
-# Shape-gated too, through the same function the clears use rather than a glob
-# of its own: a bare *.tmp.* took my.tmp.notes, and a glob cannot say "digits",
-# so it would have taken 2a.1b.3c.tmp.x as well. One rule, every site.
+# Shape-gated too, by the same pattern the clears use rather than a glob of its
+# own: a bare *.tmp.* took my.tmp.notes, and a glob cannot say "digits", so it
+# would have taken 2a.1b.3c.tmp.x as well. One pattern, every site.
 # -exec, not a read loop. Reading records back gave up the one property
 # find -delete had for free — that only a path find matched can be removed —
 # because a name holding a newline splits, and a fragment was a real version:
 # a working 215MB binary deleted out of the volume every project shares. In
-# argv the path arrives whole. The pattern travels as $0 so there is still one
-# definition of what a version name is.
+# argv the path arrives whole. The pattern travels as $0, and the newline check
+# is repeated here, so this reads the same rule is_version_name does without
+# being able to call it.
+#
+# The status is uninformative by construction: sh -c returns the last path's
+# test, so find exits 1 whenever the last entry in a batch is not a version.
+# Nothing reads it, and || true is what says so.
 find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 \\
-  -exec sh -c 'for p do printf "%s" "\${p##*/}" | grep -qE "$0" && rm -f "$p"; done' "$VERSION_RE" {} + 2>/dev/null || true
+  -exec sh -c 'for p do n="\${p##*/}"; [ "$(printf "%s" "$n" | wc -l)" -eq 0 ] || continue; printf "%s" "$n" | grep -qE "$0" && rm -f "$p"; done' "$VERSION_RE" {} + 2>/dev/null || true
 
 # Newest-first, first valid wins: normally one --version spawn. An earlier
 # version stopped after the five newest, which turned a versions/ holding five

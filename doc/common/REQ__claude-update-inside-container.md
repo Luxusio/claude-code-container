@@ -58,24 +58,26 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    surprised by: it can move them to a different version, or leave another
    project's launcher pointing at nothing. Clearing an entry that is not a
    file at all — a directory, a fifo, a socket — is reported too at a name
-   shaped like a version. At any other name under `versions/` the cautious
-   rule applies, and it removes only something holding nothing: an empty
-   directory, a fifo, a socket, silently. What it always says is a link it
-   removed, and why it refused when it could not. The argument for saying
-   nothing was that nothing anyone runs was inside it, which holds for a
-   junk directory at a real version name and not for an export named for a
-   date, which wears the same shape and cannot be told apart. A clear that
-   destroys bytes in a volume every project shares should not be the one
-   thing said quietly. A change reported by more than one probe of the same
-   start is said once. Every name ccc reads out of the volume and prints —
-   in a note, in a reuse line, in an error, in what `ccc doctor` shows — is
-   stripped of control and direction-marking characters first, because a
-   name is data and can otherwise repaint or reverse the line reporting it.
-   In `ccc doctor` that happens where a check is printed rather than where
-   each one is built: a rule applied at every call site is a rule the next
-   call site forgets. A start that fails carries its reason in the error
-   rather than as a note, and that error keeps only the last few lines of
-   what the container said.
+   shaped like a version. At any other name under `versions/`, the pass that
+   frees a blocked name leaves the entry alone entirely. The cautious rule
+   is reached only while publishing, and only at a name this container is
+   about to write; there it removes something holding no file contents — an
+   empty directory, a fifo, a socket, a device node — silently. What it
+   always says is a link it removed, and why it refused when it could not.
+   The argument for saying nothing was that nothing anyone runs was inside
+   it, which holds for a junk directory at a real version name and not for
+   an export named for a date, which wears the same shape and cannot be told
+   apart. A clear that destroys bytes in a volume every project shares
+   should not be the one thing said quietly. A change reported by more than
+   one probe of the same start is said once. Every name ccc reads out of the
+   volume and prints — in a note, in a reuse line, in an error, in what `ccc
+   doctor` shows — is stripped of control and direction-marking characters
+   first, because a name is data and can otherwise repaint or reverse the
+   line reporting it. In `ccc doctor` that happens where a check is printed
+   rather than where each one is built: a rule applied at every call site is
+   a rule the next call site forgets. A start that fails carries its reason
+   in the error rather than as a note, and that error keeps only the last
+   few lines of what the container said.
 10. When ccc reuses an already-installed claude, it says which version. "Why am
    I on an old claude" is the question that line exists to answer, and the
    previous wording ("Restored claude from cache") was also no longer true —
@@ -334,10 +336,10 @@ would be wrong precisely where it is permanent.
   the selection does not look at hidden names; the installer's are not hidden
   and are skipped by name. Both are pinned, and so is collecting the
   installer's once it is old enough — it is the one that can be 215MB. Removals
-  from `versions/` are announced except in two cases: where ccc is collecting
-  its own garbage, which is that reaper and the `.seed.*` ones, and where the
-  cautious rule succeeds, which takes only an entry holding no bytes at a name
-  that could not be a version. That
+  from `versions/` are announced except in two cases: where a staging file is
+  collected — the installer's by that reaper, ccc's own as `.seed.*` — and
+  where the cautious rule succeeds, which takes only an entry holding no file
+  contents at a name that could not be a version. That
   collector reads the same shape rule as the clears, so a name the installer
   would not write is not swept; ccc's own two are name-globs on a prefix only
   ccc writes. A directory wearing a staging name is not swept by any of them,

@@ -913,6 +913,10 @@ describe("claude launcher layout", () => {
             expect(result.stdout).toBe("RESTORED 2.1.261")
             // fresh: minutes old, so the reaper must not have taken it
             expect(existsSync(fresh)).toBe(true)
+            // and the stale one is not version-shaped — only one of its lines
+            // is, and grep matches per line, so the whole name was never the
+            // thing being tested
+            expect(existsSync(stale)).toBe(true)
         })
 
         it("says the right thing about a link nested under a version name", () => {
