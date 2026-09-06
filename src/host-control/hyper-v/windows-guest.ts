@@ -108,7 +108,18 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         "Remove-Item -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml' -Force -ErrorAction SilentlyContinue",
         "$Winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'",
         "foreach ($Name in @('DefaultPassword','DefaultUserName','AutoAdminLogon','AutoLogonCount')) { Remove-ItemProperty -LiteralPath $Winlogon -Name $Name -Force -ErrorAction SilentlyContinue }",
-        "Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+        // The completion marker, and it must stay the LAST statement. Readiness cannot infer that
+        // this program ran from the absence of the secrets: with LogonCount 1, Windows itself
+        // decrements AutoLogonCount to zero and drops DefaultPassword/AutoAdminLogon during the
+        // autologon, possibly before FirstLogonCommands fires at all, and Setup redacts its own
+        // cached answer file. All three absence signals are therefore reachable without us. Only
+        // this key is not. Every statement above runs under SilentlyContinue and cannot throw, so
+        // reaching this line means they all executed.
+        "New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -Force -ErrorAction SilentlyContinue | Out-Null",
+        "New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null",
+        // Deliberately no `Remove-Item $PSCommandPath`: this program lives on read-only ISO media,
+        // so the self-delete could never succeed and only read as a cleanup that was not happening.
+        // The host removes the media in hyperVGuestReadyCommand, after the gate below passes.
     ].join("\r\n");
     if (HYPER_V_FIRST_LOGON_LAUNCHER.length > HYPER_V_FIRST_LOGON_COMMAND_LINE_LIMIT) throw new Error("hyper-v-guest-first-logon-launcher-too-long");
     // Delivered as its own ISO file instead of an inline encoded command line: the program is ASCII

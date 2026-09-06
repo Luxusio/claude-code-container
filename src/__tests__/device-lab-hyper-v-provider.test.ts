@@ -2269,14 +2269,33 @@ describe("Hyper-V provider adapter", () => {
             timeoutMs: 300000,
         }));
 
-        // The probe carries the evidence back: both unattend.xml resting places and the Winlogon
-        // autologon password the first-logon program clears.
-        expect(script).toContain("provisioningSecretsPresent = [bool](");
-        expect(script).toContain("Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml'");
-        expect(script).toContain("Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml'");
-        expect(script).toContain("Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword'");
+        // The whole predicate as one exact string, not three independent toContain calls. Pinning
+        // the terms individually leaves the composition free: flipping -or to -and keeps every
+        // substring present and passes, while the gate then opens unless ALL THREE secrets are
+        // still there — so a scrub that deleted the Panther files but failed to clear Winlogon
+        // (every step runs under SilentlyContinue) reads as scrubbed with the password still live.
+        // A term can also be neutered while keeping its substring, e.g. appending .NoSuchMember.
+        // Exact-matching the expression is what closes that family.
+        expect(script).toContain(
+            "provisioningSecretsPresent = [bool]((Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml')"
+            + " -or (Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml')"
+            + " -or ($null -ne (Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue)))",
+        );
+        // The marker is the only signal that proves the first-logon program ran: Windows clears
+        // DefaultPassword/AutoAdminLogon itself once AutoLogonCount hits zero, and Setup redacts
+        // its own cached answer file, so all three absence signals above are reachable without us.
+        expect(script).toContain(
+            "firstLogonCompleted = [bool](1 -eq (Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc'"
+            + " -Name 'FirstLogonCompleted' -ErrorAction SilentlyContinue).FirstLogonCompleted)",
+        );
 
-        const gate = script.indexOf("if ($Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }");
+        // Both gates fail closed. The naive `if ($Probe.x)` form is falsy for an absent property
+        // or a null $Probe, which would open the gate exactly when the guest's answer is least
+        // trustworthy; -isnot [bool] refuses anything that is not an actual answer.
+        expect(script).toContain("if ($Probe.firstLogonCompleted -isnot [bool] -or -not $Probe.firstLogonCompleted) { throw 'hyper-v-guest-first-logon-incomplete' }");
+        const gate = script.indexOf("if ($Probe.provisioningSecretsPresent -isnot [bool] -or $Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }");
+        const markerGate = script.indexOf("if ($Probe.firstLogonCompleted -isnot [bool]");
+        expect(markerGate).toBeGreaterThan(-1);
         const dvdRemoval = script.indexOf("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
         const isoRemoval = script.indexOf("Remove-Item -LiteralPath $ProvisioningMedia");
         expect(gate).toBeGreaterThan(-1);
@@ -2288,9 +2307,12 @@ describe("Hyper-V provider adapter", () => {
         // silently never happen.
         expect(gate).toBeLessThan(dvdRemoval);
         expect(gate).toBeLessThan(isoRemoval);
+        expect(markerGate).toBeLessThan(dvdRemoval);
+        expect(markerGate).toBeLessThan(isoRemoval);
         // The gate is its own statement, not a clause hanging off the network check, so it still
         // runs when $ExpectedNetworkAddress is empty.
-        expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
+        expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent -isnot \[bool\] -or \$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
+        expect(script).toMatch(/\n\s*if \(\$Probe\.firstLogonCompleted -isnot \[bool\] -or -not \$Probe\.firstLogonCompleted\) \{ throw 'hyper-v-guest-first-logon-incomplete' \}\n/);
 
         // And the reason survives the failure sanitizer, so a guest stuck unscrubbed times out
         // with a name the broker can read instead of collapsing to powershell-direct-unavailable.
@@ -2487,6 +2509,20 @@ describe("Hyper-V provider adapter", () => {
         expect(firstLogonProgram).toContain("192.168.100.50");
         expect(firstLogonProgram).toContain("C:\\Windows\\Panther\\unattend.xml");
         expect(firstLogonProgram).toContain("AutoAdminLogon");
+        // The completion marker readiness gates on, and it has to be the LAST statement: it is what
+        // proves this program reached its end, so anything after it could be skipped while the
+        // marker still claimed a full run. Nothing above it can throw (SilentlyContinue throughout),
+        // so reaching the marker means every scrub statement executed.
+        const markerWrite = firstLogonProgram.indexOf(
+            "New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -Value 1 -PropertyType DWord -Force",
+        );
+        expect(markerWrite).toBeGreaterThan(-1);
+        expect(firstLogonProgram).toContain("New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -Force");
+        expect(markerWrite).toBeGreaterThan(firstLogonProgram.indexOf("AutoLogonCount"));
+        expect(firstLogonProgram.trimEnd().endsWith("| Out-Null")).toBe(true);
+        // The self-delete is gone: it targeted read-only ISO media and could never succeed, so it
+        // read as a cleanup that was not happening. The host removes the media instead.
+        expect(firstLogonProgram).not.toContain("$PSCommandPath");
 
         // Characterization of the defect this fix removes: the previous generator encoded the very
         // same program as a UTF-16LE -EncodedCommand argument, which is far past the documented
