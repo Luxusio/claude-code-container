@@ -58,15 +58,16 @@ cache is a volume shared by every ccc project, one stale binary pinned them all.
    surprised by: it can move them to a different version, or leave another
    project's launcher pointing at nothing. Clearing an entry that is not a
    file at all — a directory, a fifo, a socket — is reported too at a name
-   shaped like a version. At any other name under `versions/`, the pass that
-   frees a blocked name leaves the entry alone entirely. The cautious rule
-   is reached only while publishing, and only at a name this container is
-   about to write; there it removes something holding no file contents — an
-   empty directory, a fifo, a socket, a device node — silently. What it
-   always says is a link it removed, and why it refused when it could not.
-   The argument for saying nothing was that nothing anyone runs was inside
-   it, which holds for a junk directory at a real version name and not for
-   an export named for a date, which wears the same shape and cannot be told
+   shaped like a version. At any other name under `versions/`, that pass
+   leaves such an entry alone entirely — but not a link: a link there it
+   removes, and announces, whatever name it wears. The cautious rule is
+   reached only while publishing, and only at a name this container is about
+   to write; there it removes something holding no file contents — an empty
+   directory, a fifo, a socket, a device node — silently. What it always
+   says is a link it removed, and why it refused when it could not. The
+   argument for saying nothing was that nothing anyone runs was inside it,
+   which holds for a junk directory at a real version name and not for an
+   export named for a date, which wears the same shape and cannot be told
    apart. A clear that destroys bytes in a volume every project shares
    should not be the one thing said quietly. A change reported by more than
    one probe of the same start is said once. Every name ccc reads out of the

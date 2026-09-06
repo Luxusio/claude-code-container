@@ -1062,6 +1062,25 @@ describe("claude launcher layout", () => {
             expect(realpathSync(paths.bin)).toBe(join(volVersions, "2.1.261"))
         })
 
+        it("removes a link at a name that is not a version, and says so", () => {
+            // The shape rule licenses a recursive delete, not an unlink. A link
+            // destroys no bytes and can be what another project's launcher
+            // resolves through, so it goes whatever it is called — and the REQ
+            // said the opposite until this was measured.
+            const volVersions = join(paths.volumeDataDir, "versions")
+            mkdirSync(volVersions, { recursive: true })
+            const elsewhere = join(root, "elsewhere")
+            writeFakeClaude(join(elsewhere, "real"), "9.9.9")
+            symlinkSync(join(elsewhere, "real"), join(volVersions, "my-notes"))
+            writeFakeClaude(join(volVersions, "2.1.261"), "2.1.261")
+
+            const result = run()
+
+            expect(result.stdout).toBe("RESTORED 2.1.261")
+            expect(existsSync(join(volVersions, "my-notes"))).toBe(false)
+            expect(result.stderr).toMatch(/^removed my-notes: a version must be a real file, not a symlink$/m)
+        })
+
         it("does not reach into a directory whose name no installer would want", () => {
             // The licence for a recursive delete is that the entry holds a name
             // the installer needs. A name that is not a version holds nothing

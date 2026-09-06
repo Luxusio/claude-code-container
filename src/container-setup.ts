@@ -157,6 +157,10 @@ is_version_name() {
   # grep matches per line, so a name holding a newline passes whenever ANY of
   # its lines is version-shaped — the whole name is not the thing tested. Count
   # first: wc -l is 0 only when there is no newline at all.
+  #
+  # No caller can reach this with a multi-line name today: all three take names
+  # through read -r, which has already split one. It is here so the rule is the
+  # rule wherever it is asked, not because a case is known to arrive.
   [ "$(printf '%s' "$1" | wc -l)" -eq 0 ] || return 1
   printf '%s' "$1" | grep -qE "$VERSION_RE"
 }
@@ -461,9 +465,10 @@ find "$DATA/versions" -maxdepth 1 -name '.seed.*' -type f -mmin +10 -delete 2>/d
 # is repeated here, so this reads the same rule is_version_name does without
 # being able to call it.
 #
-# The status is uninformative by construction: sh -c returns the last path's
-# test, so find exits 1 whenever the last entry in a batch is not a version.
-# Nothing reads it, and || true is what says so.
+# The status is uninformative by construction: sh -c returns whatever the last
+# path did, so find exits 1 only when the last entry in a batch is single-line
+# and not version-shaped — 0 when it was reaped, and 0 when a multi-line name
+# was skipped, since continue succeeds. Nothing reads it, and || true says so.
 find "$DATA/versions" -maxdepth 1 -name '*.tmp.*' -type f -mmin +10 \\
   -exec sh -c 'for p do n="\${p##*/}"; [ "$(printf "%s" "$n" | wc -l)" -eq 0 ] || continue; printf "%s" "$n" | grep -qE "$0" && rm -f "$p"; done' "$VERSION_RE" {} + 2>/dev/null || true
 
