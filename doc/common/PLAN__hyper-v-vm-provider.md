@@ -126,7 +126,7 @@ sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
 verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v19`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v20`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 v17 additionally requires the Windows readiness script to emit its structured
 failure on every exit path rather than only the deadline one, and the not-ready
@@ -194,19 +194,26 @@ Two consequences are deliberate and worth knowing:
   media gone, scrub never ran — cannot self-heal, and now fails every start
   with the full boot budget burned. The remedy is `device_delete` and recreate.
   This is fail-closed by choice: such a guest holds a live autologon password.
-- On that failure path the guest is left **running**, not just holding media.
-  Containment is gated on `linux-vm`, so a `windows-vm` readiness refusal skips
-  the force-stop entirely. In the un-scrubbed case that leaves a running Windows
-  guest with `AutoAdminLogon` still set and `DefaultPassword` still in Winlogon,
-  an active desktop session as a local Administrator, and `CCC_UNATTEND` still
-  mounted carrying the plaintext answer file — until someone runs
-  `device_delete`. Under v17 the media was already gone by then, so this is a
-  strict superset of what v17 left, and worse in kind: v17 handed the user a
-  device they knew about, while this refuses it and leaves it powered on, so
-  nobody has a reason to look. Reachability is bounded by the internal/Default
-  switch with no forwarding. Containment for `windows-vm` is a deliberate open
-  decision, not an oversight: force-stopping on every readiness failure also
-  destroys the state needed to debug ordinary boot timeouts.
+- v20 contains that failure rather than leaving it running, but only for the two
+  reasons that prove the guest holds a live secret:
+  `hyper-v-guest-first-logon-incomplete` and
+  `hyper-v-guest-provisioning-not-scrubbed` force-stop the VM. Otherwise the
+  guest would sit there refused — so nobody looks at it — with `AutoAdminLogon`
+  set, `DefaultPassword` in Winlogon, a desktop session as a local
+  Administrator, and `CCC_UNATTEND` still mounted carrying the plaintext answer
+  file, until someone ran `device_delete`.
+
+  Containment is deliberately **not** widened to every readiness failure, unlike
+  the `linux-vm` lane: powering off an ordinary boot timeout or network mismatch
+  destroys the state needed to diagnose it. Both halves are pinned by test — the
+  two reasons must leave the guest `Off`, a `powershell-direct-attempt-timeout`
+  must leave it `Running`.
+
+  If the force-stop itself fails, the readiness reason is preserved (replacing
+  it the way the linux lane does would discard the diagnostic that selected the
+  path) and `scrubContainmentFailed: true` appears in the failure detail. It is
+  present only when true, so its presence always means a guest is still running
+  with a live autologon.
 The Linux readiness contract retains the seeded host key as the only
 authoritative identity. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
@@ -832,7 +839,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v19` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v20` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

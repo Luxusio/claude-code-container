@@ -733,6 +733,7 @@ describe("device-lab host broker lifecycle commands", () => {
         let orphanRecoveryCalls = 0;
         let preparedSourcePath = "";
         let networkCleanupFailure: false | "nonzero" | "invalid" | "in-use" = false;
+        let guestReadyScrubFailure: false | "hyper-v-guest-first-logon-incomplete" | "hyper-v-guest-provisioning-not-scrubbed" | "powershell-direct-attempt-timeout" = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
         let snapshotProviderFailure = false;
@@ -923,6 +924,8 @@ describe("device-lab host broker lifecycle commands", () => {
                     ? { ok: true, recoveredVm: orphanRecoveryCalls === 1, removedDisk: orphanRecoveryCalls === 1 }
                     : networkSetup
                     ? hyperVNetworkObservation(command)
+                    : guestReady && guestReadyScrubFailure
+                    ? { ok: false, error: "hyper-v-guest-ready-timeout", reason: guestReadyScrubFailure, attempts: 150 }
                     : guestReady
                     ? { ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 2, networkAddress: expectedNetworkAddress }
                     : guestProvision
@@ -1020,6 +1023,29 @@ describe("device-lab host broker lifecycle commands", () => {
             const started = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
             expect(started.status, JSON.stringify(await started.clone().json())).toBe(200);
             expect(await started.json()).toEqual(expect.objectContaining({ result: expect.objectContaining({ device: expect.objectContaining({ status: "running", runtimeState: "Running", bootReady: true }), boot: expect.objectContaining({ ready: true, provider: "hyper-v-powershell-direct" }) }) }));
+
+            // A readiness refusal for an un-scrubbed reason must not leave the guest Running: it
+            // still holds a live autologon password and the plaintext answer file. Containment is
+            // scoped to exactly these reasons, so the assertion pairs with the timeout case below.
+            // Asserted on vmState, not on Stop-VM call counts: plenty of provider scripts merely
+            // mention Stop-VM, so counting matches counted the wrong thing. The guest being Off is
+            // the invariant that matters anyway.
+            for (const scrubReason of ["hyper-v-guest-first-logon-incomplete", "hyper-v-guest-provisioning-not-scrubbed"] as const) {
+                guestReadyScrubFailure = scrubReason;
+                const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+                expect(JSON.stringify(await refused.json())).toContain(scrubReason);
+                expect(vmState, `expected containment to power off the guest for ${scrubReason}`).toBe("Off");
+            }
+
+            // The other half of the decision: an ordinary readiness timeout leaves the VM Running
+            // on purpose, because powering it off destroys the state needed to diagnose it. Without
+            // this, "contain every failure" would satisfy the loop above just as well.
+            guestReadyScrubFailure = "powershell-direct-attempt-timeout";
+            const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await timedOut.json())).toContain("powershell-direct-attempt-timeout");
+            expect(vmState, "an ordinary readiness timeout must stay debuggable, not be powered off").toBe("Running");
+            guestReadyScrubFailure = false;
+            await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId });
 
             const operationPath = join(deviceRoot, "operation.json");
             mkdirSync(dirname(diskPath), { recursive: true });
@@ -1378,8 +1404,12 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
+            // The scrub-containment cases add 30: four extra device_start round trips (two
+            // un-scrubbed reasons, one ordinary timeout, one recovery back to success), and the two
+            // contained ones each pay an additional force-stop plus its ownership read. The
+            // timeout case deliberately pays no stop — that asymmetry is the behaviour under test.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(105);
+            expect(commandRunner).toHaveBeenCalledTimes(135);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

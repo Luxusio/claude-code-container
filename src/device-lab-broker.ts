@@ -243,7 +243,7 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v1
 // v17: guest readiness emits its structured failure on every exit path, not only the deadline one
 // (adding the hyper-v-guest-ready-failed shape), and the not-ready payload carries errorDetail. A
 // broker predating this answers powershell-direct-unavailable for causes it can now name.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v19";
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v20";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v2";
@@ -11090,6 +11090,11 @@ type HyperVGuestReadinessFailureDetail = {
     readonly stdoutBytes: number;
     readonly stderrBytes: number;
     readonly diagnosticCode?: string;
+    // windows-vm only, and present only when true: the guest failed readiness for an un-scrubbed
+    // reason AND could not be powered off, so it is still Running with a live autologon password
+    // and the plaintext answer file mounted. Omitted otherwise so its presence always means
+    // something needs attention, rather than a `false` nobody reads.
+    readonly scrubContainmentFailed?: true;
 };
 
 // The readiness failure code collapses to a bare `powershell-direct-unavailable` whenever the
@@ -12950,6 +12955,7 @@ async function lifecycleCommandInvokeUnlocked(
     let hyperVGuestReadyFailureDetail: HyperVGuestReadinessFailureDetail | null = null;
     let hyperVGuestReadyTrace: HyperVLinuxGuestReadyTrace | null = null;
     let hyperVContainedRuntimeState: "Off" | null = null;
+    let hyperVScrubContainmentFailed = false;
     let windowsMinimizeWatchdog: ProviderCommandResult | null = null;
     let windowsMinimizeConfirmation: ProviderCommandResult | null = null;
     let windowsMinimizeWatchdogCleanup: ReturnType<typeof cancelBrokerWindowsMinimizeWatchdog> | null = null;
@@ -13379,15 +13385,63 @@ async function lifecycleCommandInvokeUnlocked(
             };
         }
     }
+    // Scrub-failure containment, windows-vm only, and deliberately narrower than the linux block
+    // above. These two reasons are the ones that prove the guest is sitting there with a live
+    // autologon password and the plaintext answer file still mounted, so leaving it Running until
+    // someone happens to run device_delete is the worst of both worlds: refused, so nobody looks,
+    // and still exploitable from inside. Every other readiness failure — an ordinary boot timeout,
+    // a network mismatch — stays Running on purpose, because powering those off destroys the state
+    // needed to diagnose them.
+    if (!success
+        && hyperVGuestReadyExecution
+        && parsed.backend === "windows-vm"
+        && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
+        const containedReason = hyperVGuestReadinessFailureCode("windows-vm", hyperVGuestReadyExecution);
+        if (containedReason === "hyper-v-guest-first-logon-incomplete"
+            || containedReason === "hyper-v-guest-provisioning-not-scrubbed") {
+            const device = payload.result?.device as Record<string, unknown>;
+            let scrubContained = false;
+            try {
+                const stopExecution = await hyperVProviderCommandRunner(normalized, hyperVStopCommand({
+                    executable: providerCommand.executable || "powershell.exe",
+                    ownerId,
+                    deviceId: parsed.deviceId,
+                    incarnationId: hyperVDeviceIncarnationId(device) || "",
+                    vmName: field(device, "vmName") || "",
+                    vmId: field(device, "vmId"),
+                }, true), {
+                    timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
+                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                });
+                const stopObservation = commandSucceeded(stopExecution)
+                    ? parseHyperVVmObservation(stopExecution.stdout || "")
+                    : null;
+                scrubContained = Boolean(stopObservation
+                    && stopObservation.state === "Off"
+                    && stopObservation.vmId === String(field(device, "vmId") || "").toLowerCase()
+                    && stopObservation.vmName === field(device, "vmName"));
+                if (scrubContained) hyperVContainedRuntimeState = "Off";
+            } catch {
+                scrubContained = false;
+            }
+            // A containment that failed must not read as one that was never needed. The reason is
+            // preserved — replacing it the way the linux block does would discard the very
+            // diagnostic that selected this path.
+            if (!scrubContained) hyperVScrubContainmentFailed = true;
+        }
+    }
     if (!success
         && hyperVGuestReadyExecution
         && isHyperVBackend(parsed.backend)
         && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
         hyperVGuestReadyFailureCode = hyperVGuestReadinessFailureCode(parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm", hyperVGuestReadyExecution);
-        hyperVGuestReadyFailureDetail = hyperVGuestReadinessFailureDetail(
-            parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm",
-            hyperVGuestReadyExecution,
-        );
+        hyperVGuestReadyFailureDetail = {
+            ...hyperVGuestReadinessFailureDetail(
+                parsed.backend === "linux-vm" ? "linux-vm" : "windows-vm",
+                hyperVGuestReadyExecution,
+            ),
+            ...(hyperVScrubContainmentFailed ? { scrubContainmentFailed: true as const } : {}),
+        };
         if (parsed.backend === "linux-vm") {
             hyperVGuestReadyFailureCode = hyperVLinuxGuestReadyTraceFailureCode(
                 hyperVGuestReadyTrace,
