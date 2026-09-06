@@ -1036,23 +1036,34 @@ describe("device-lab host broker lifecycle commands", () => {
             // A readiness refusal for an un-scrubbed reason must not leave the guest Running: it
             // still holds a live autologon password and the plaintext answer file. Containment is
             // scoped to exactly these reasons, so the assertion pairs with the timeout case below.
-            // Asserted on vmState, not on Stop-VM call counts: plenty of provider scripts merely
-            // mention Stop-VM, so counting matches counted the wrong thing. The guest being Off is
-            // the invariant that matters anyway.
+            // vmState alone is NOT enough, and my earlier comment claiming it escaped the substring
+            // proxy was wrong: the fixture sets vmState from `script.includes("Stop-VM")`, which
+            // the 14k-char reconcile script also matches. So the stop is identified by its actual
+            // shape as well. `-TurnOff` specifically: flipping it to `-Shutdown` asks a cooperating
+            // guest OS to shut itself down, which is exactly what a guest stuck at
+            // first-logon-incomplete does not have — it hangs to the cap and stays up with the live
+            // autologon, and vmState alone could not tell the difference.
+            const containmentStops = () => commandRunner.mock.calls
+                .map((call) => providerScript(call[0]))
+                .filter((script) => script.includes("Stop-VM -VM $Vm -TurnOff -Force -ErrorAction Stop"));
             for (const scrubReason of ["hyper-v-guest-first-logon-incomplete", "hyper-v-guest-provisioning-not-scrubbed"] as const) {
                 guestReadyScrubFailure = scrubReason;
+                const stopsBefore = containmentStops().length;
                 const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
                 expect(JSON.stringify(await refused.json())).toContain(scrubReason);
                 expect(vmState, `expected containment to power off the guest for ${scrubReason}`).toBe("Off");
+                expect(containmentStops().length, `expected a -TurnOff stop for ${scrubReason}`).toBeGreaterThan(stopsBefore);
             }
 
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
             // on purpose, because powering it off destroys the state needed to diagnose it. Without
             // this, "contain every failure" would satisfy the loop above just as well.
             guestReadyScrubFailure = "powershell-direct-attempt-timeout";
+            const stopsBeforeTimeout = containmentStops().length;
             const timedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
             expect(JSON.stringify(await timedOut.json())).toContain("powershell-direct-attempt-timeout");
             expect(vmState, "an ordinary readiness timeout must stay debuggable, not be powered off").toBe("Running");
+            expect(containmentStops().length, "no containment stop for an unknown scrub state").toBe(stopsBeforeTimeout);
             // A containment that could not power the guest off must say so. This flag is the only
             // signal that a guest is still live with a hot credential, so silence here would be the
             // same class of invisible failure the whole series exists to remove. The readiness
@@ -1433,12 +1444,12 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 48 over the pre-containment 105: six extra
-            // device_start round trips (two un-scrubbed reasons, one ordinary timeout, one
-            // containment-stop failure, one containment success, one recovery back to success),
-            // with every contained one paying an additional force-stop plus its ownership read —
-            // including the failed stop, which is attempted and rejected rather than skipped. The
-            // timeout case deliberately pays no stop; that asymmetry is the behaviour under test.
+            // The scrub-containment cases add 48 over the pre-containment 105, across six extra
+            // device_start round trips: two un-scrubbed reasons, one ordinary timeout, one
+            // containment-stop failure, one containment success, and one recovery back to success.
+            // The per-case split is not spelled out here because the obvious accounting — "each
+            // contained case costs a stop plus an ownership read" — was measured and is not what
+            // the cases actually cost; a plausible-looking breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
             expect(commandRunner).toHaveBeenCalledTimes(153);
         } finally {

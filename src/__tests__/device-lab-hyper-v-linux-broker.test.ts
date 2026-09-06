@@ -119,7 +119,7 @@ describe("device-lab Hyper-V broker", () => {
             .toEqual({ observed: false, matchesExpected: null });
     });
 
-    it("reserves containment time for Linux start and reboot deadlines", () => {
+    it("reserves containment time for Linux and Windows start and reboot deadlines", () => {
         const operationTimeoutMs = 17 * 60 * 1000;
         expect(hyperVLifecycleCleanupTimeoutMs("linux-vm", "device_start", operationTimeoutMs))
             .toBe(operationTimeoutMs + DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
@@ -130,7 +130,21 @@ describe("device-lab Hyper-V broker", () => {
             .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
         expect(hyperVProviderDeadlineAt("linux-vm", "device_reboot", cleanupDeadlineAt))
             .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        // windows-vm needs the same reserve now that it has containment of its own to run after
+        // readiness. Without it, a boot timeout near the residual budget lets the deadline throw
+        // and replace the readiness result with hyper-v-operation-deadline-exceeded — the
+        // un-scrubbed reason containment switches on is gone before containment reads it, so a
+        // guest with a live autologon is left running and nothing reports it.
+        expect(hyperVLifecycleCleanupTimeoutMs("windows-vm", "device_start", operationTimeoutMs))
+            .toBe(operationTimeoutMs + DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        expect(hyperVLifecycleCleanupTimeoutMs("windows-vm", "device_reboot", operationTimeoutMs))
+            .toBe(operationTimeoutMs + DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
         expect(hyperVProviderDeadlineAt("windows-vm", "device_start", cleanupDeadlineAt))
+            .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        expect(hyperVProviderDeadlineAt("windows-vm", "device_reboot", cleanupDeadlineAt))
+            .toBe(cleanupDeadlineAt - DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+        // Backends without a containment path keep the undiminished budget.
+        expect(hyperVProviderDeadlineAt("android-emulator", "device_start", cleanupDeadlineAt))
             .toBe(cleanupDeadlineAt);
     });
 
