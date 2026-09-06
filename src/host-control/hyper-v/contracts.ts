@@ -133,6 +133,11 @@ export type HyperVGuestReadyFailureObservation = {
     error: "hyper-v-guest-ready-timeout" | "hyper-v-guest-ready-failed";
     reason: string;
     attempts: number;
+    // True once the guest's marker and secrets checks have both passed, regardless of what failed
+    // afterwards. Containment uses this instead of inferring scrub state from whether the
+    // provisioning ISO is still on disk, because a failure in the media removal itself leaves that
+    // ISO behind on a guest that is demonstrably clean.
+    scrubConfirmed: boolean;
 };
 
 export type HyperVGuestBootDiagnosticObservation = {

@@ -265,7 +265,12 @@ const DEVICE_BROKER_CAPABILITY_HYPER_V_SETUP_NETWORK = "hyper-v-setup-network-v1
 // skipping it returned success with the plaintext answer file still mounted. windows-vm also takes
 // the cleanup reserve, containment runs after the boot diagnostic so the diagnostic is not a
 // post-mortem, and scrubContainmentFailed reaches the persisted lastBootCheck, not just the reply.
-const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v22";
+// v23: the readiness failure payload carries scrubConfirmed, latched once both scrub gates pass,
+// and containment vetoes its media-retained arm on it — otherwise a guest whose ISO could not be
+// deleted is powered off on every start forever. Containment also no longer requires readiness to
+// have started, so a guest left Running by an expired deadline or a failed VM observation is still
+// contained, and a contained failure reports mutatesHost: true.
+const DEVICE_BROKER_CAPABILITY_HYPER_V_GUEST_READINESS_DIAGNOSTICS = "hyper-v-guest-readiness-diagnostics-v23";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_AZURE_BOOTSTRAP_DHCP = "hyper-v-azure-bootstrap-dhcp-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_NIC_CLEANUP = "hyper-v-bootstrap-nic-cleanup-v1";
 const DEVICE_BROKER_CAPABILITY_HYPER_V_BOOTSTRAP_SSH_FINALIZE = "hyper-v-bootstrap-ssh-finalize-v2";
@@ -12937,9 +12942,14 @@ async function lifecycleCommandInvokeUnlocked(
         outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
         });
     const hyperVProviderDeadlineExpired = isHyperVBackend(parsed.backend) && hyperVOperationDeadlineExpired(hyperVDeadlineAt);
-    const linuxBootstrapMayNeedContainment = parsed.backend === "linux-vm"
+    // windows-vm joins the carve-out for the same reason the name gives linux: the guest may
+    // already be Running and need containing. Start-VM issues its start and only then re-queries,
+    // so an expired deadline here returned 504 with the guest booted, CCC_UNATTEND mounted and a
+    // live autologon password — no readiness, therefore no containment, and no state write to say
+    // so. Falling through lets the containment block below make that decision on evidence.
+    const guestBootstrapMayNeedContainment = (parsed.backend === "linux-vm" || parsed.backend === "windows-vm")
         && (parsed.command === "device_start" || parsed.command === "device_reboot");
-    if (hyperVProviderDeadlineExpired && !linuxBootstrapMayNeedContainment) {
+    if (hyperVProviderDeadlineExpired && !guestBootstrapMayNeedContainment) {
         return {
             status: 504,
             payload: { ok: false, error: "hyper-v-operation-deadline-exceeded", ownerId, backend: parsed.backend, deviceId: parsed.deviceId },
@@ -12948,7 +12958,7 @@ async function lifecycleCommandInvokeUnlocked(
     let success = !hyperVProviderDeadlineExpired && (commandSucceeded(execution)
         || commandToleratesMissingMacosVmDelete(parsed, execution)
         || commandToleratesStoppedAndroidEmulatorStatus(parsed, payload.result?.device, execution));
-    if (hyperVProviderDeadlineExpired && linuxBootstrapMayNeedContainment) {
+    if (hyperVProviderDeadlineExpired && guestBootstrapMayNeedContainment) {
         execution = { ...execution, error: "hyper-v-operation-deadline-exceeded" };
     }
     if (parsed.backend === "android-emulator" && parsed.command === "device_delete" && parsed.deleteAvd !== false) {
@@ -13531,14 +13541,19 @@ async function lifecycleCommandInvokeUnlocked(
     // Placed after the boot diagnostic on purpose. Run before it, the diagnostic that lands in
     // lastBootCheck describes a machine containment had already powered off — state, uptimeMs and
     // heartbeat all post-mortem — which is the very diagnosability this scope was chosen to keep.
+    // Deliberately NOT gated on hyperVGuestReadyExecution. Requiring it meant containment could
+    // only run once readiness had started, and two exits sit between Start-VM and readiness — the
+    // expired-deadline return and the VM-observation identity gate. Start-VM issues its start and
+    // only then re-queries, so both are reachable with the guest already booted: CCC_UNATTEND
+    // mounted, plaintext answer file, live autologon, and nothing contained or recorded. The gate
+    // made containment depend on how far the operation got rather than on what the host can see.
     if (!success
-        && hyperVGuestReadyExecution
         && parsed.backend === "windows-vm"
         && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
         // Reuses the code computed above rather than recomputing it. Two independent calls would
         // silently disagree the day anyone adds a windows equivalent of the linux lane's error
         // rewrite: containment would switch on the pre-rewrite reason and the report carry the
-        // post-rewrite one.
+        // post-rewrite one. Null when readiness never ran, which is exactly the case above.
         const containedReason = hyperVGuestReadyFailureCode;
         const containedDevice = payload.result?.device as Record<string, unknown>;
         // Those two reasons PROVE the guest is un-scrubbed, but they both require the PowerShell
@@ -13555,18 +13570,37 @@ async function lifecycleCommandInvokeUnlocked(
         // is nothing left to contain, and an ordinary boot timeout on an already-scrubbed guest
         // stays Running and debuggable, which is the whole point of the narrow scope.
         const provisioningMediaRetained = (() => {
-            const mediaPath = field(containedDevice, "guestUnattendPath") || "";
-            if (!mediaPath) return false;
+            // The path is COMPUTED, not read from the device record. Readiness one screen above
+            // refuses to trust that same field — it throws hyper-v-guest-metadata-invalid when
+            // guestUnattendPath disagrees with this exact join — so reading it here would let the
+            // precise record state readiness calls untrustworthy resolve to "no media, nothing to
+            // contain". A record missing the field (a pre-v20 guest; nothing gates starting one)
+            // would then boot and be left Running with its ISO still mounted.
+            const mediaPath = join(hyperVDeviceRoot(ownerId, "windows-vm", parsed.deviceId), "disks", "autounattend.iso");
             try {
-                return existsSync(mediaPath);
-            } catch {
-                // Unreadable is not proof of absence. Fail closed: treat it as still present.
+                // statSync, not existsSync: existsSync answers false for EVERY error, including
+                // EACCES on a parent directory, so the fail-closed branch it was wrapped in was
+                // dead code and an unreadable path silently skipped containment. statSync throws,
+                // which lets absence and unreadability be told apart. Only ENOENT/ENOTDIR mean
+                // gone; anything else is not proof of absence, so it counts as retained.
+                statSync(mediaPath);
                 return true;
+            } catch (error) {
+                const code = (error as NodeJS.ErrnoException)?.code;
+                return !(code === "ENOENT" || code === "ENOTDIR");
             }
         })();
+        // scrubConfirmed vetoes the media-retained arm. Once both scrub gates have passed the guest
+        // is clean, and a retained ISO then means the removal itself failed — a locked file, an
+        // ACL, a rejected reparse path. Containing on that powers off a healthy VM, and keeps doing
+        // it, because the marker persists and every later start re-runs into the same failure. The
+        // named reasons still contain unconditionally: they ARE the proof of un-scrubbed.
+        const scrubConfirmed = parseHyperVGuestReadyFailureObservation(
+            hyperVGuestReadyExecution?.stdout || "",
+        )?.scrubConfirmed === true;
         if (containedReason === "hyper-v-guest-first-logon-incomplete"
             || containedReason === "hyper-v-guest-provisioning-not-scrubbed"
-            || provisioningMediaRetained) {
+            || (provisioningMediaRetained && !scrubConfirmed)) {
             const device = containedDevice;
             let scrubContained = false;
             try {
@@ -13861,7 +13895,12 @@ async function lifecycleCommandInvokeUnlocked(
                 execution: {
                     mode: execution.mode,
                     providerExecution: "executed",
-                    mutatesHost: success && parsed.command !== "device_status",
+                    // Containment force-stops the guest on a FAILED start, so deriving this from
+                    // `success` alone reported mutatesHost:false for an operation whose entire
+                    // purpose was to change the host. That is the same invisible-mutation the
+                    // containment work exists to remove, restated in the response envelope.
+                    mutatesHost: (success || hyperVContainedRuntimeState !== null)
+                        && parsed.command !== "device_status",
                     command: isHyperVBackend(parsed.backend)
                         ? {
                             ...redactProviderCommandInput(

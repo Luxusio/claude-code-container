@@ -353,6 +353,12 @@ export function parseHyperVGuestReadyFailureObservation(stdout: string): HyperVG
         error: timedOut ? "hyper-v-guest-ready-timeout" : "hyper-v-guest-ready-failed",
         reason: parsed.reason,
         attempts: parsed.attempts,
+        // Only a literal true counts. The script latches this once both scrub gates pass, so it is
+        // the one signal that separates "never scrubbed" from "scrubbed, but something below the
+        // gates failed" — and the latter surfaces under at least three different reason codes, so
+        // it cannot be recognised by reason matching. An older broker omits the field entirely,
+        // which reads as false: unknown is treated as not-scrubbed, which is the safe direction.
+        scrubConfirmed: parsed.scrubConfirmed === true,
     };
 }
 

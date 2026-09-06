@@ -77,6 +77,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // `errorDetail.diagnosticCode` instead, so it is no longer silent either.
         "$Attempts = 0",
         "$LastFailure = 'powershell-direct-unavailable'",
+        "$ScrubConfirmed = $false",
         "try {",
         ...ownedVmPrelude(options).map((line) => `  ${line}`),
         `  $CredentialPath = ${psQuote(credentialPath)}`,
@@ -136,9 +137,23 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // stringifies to "" and fails the comparison, so this is fail-closed without a type guard.
         "    if ([string]$Probe.firstLogonCompleted -cne $ExpectedMarker) { throw 'hyper-v-guest-first-logon-incomplete' }",
         "    if ($Probe.provisioningSecretsPresent -isnot [bool] -or $Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }",
-        "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
-        // The media goes only after all three pass, which is what keeps the deletion from racing
-        // the program that is loaded from it.
+        // Latched the moment both scrub gates pass, and reported on the failure payload. The host
+        // otherwise has to infer "was this guest ever scrubbed" from whether the ISO is still on
+        // disk, and that inference breaks for every failure BELOW this line: if Remove-VMDvdDrive
+        // or Remove-Item fails (locked file, ACL), or Assert-NoReparsePath rejects the path, the
+        // media stays on a guest that is demonstrably scrubbed. The host would then power off a
+        // healthy VM — and keep doing it, because the marker persists and every later start
+        // re-runs into the same failure. Those cases surface under at least three different reason
+        // codes, so a flag is the only thing that catches all of them.
+        "    $ScrubConfirmed = $true",
+        // The media goes as soon as the two SCRUB gates pass, before the network check rather than
+        // after it. Waiting for the network check kept a fully scrubbed guest's ISO on disk
+        // whenever the address did not match — a stale DHCP lease answering first, a wrong switch,
+        // New-NetIPAddress losing a race. The host reads a retained ISO as "this guest was never
+        // scrubbed" and powers it off, which is wrong twice over: the guest IS scrubbed, and the
+        // plaintext residue is the host-side file, which stopping the VM does nothing about.
+        // Deleting here keeps the property the host relies on true — media present iff unscrubbed —
+        // and still cannot race the first-logon program, because both scrub gates have passed.
         "    if ($ProvisioningMedia) {",
         "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",
         "      if ($ProvisioningDrives.Count -gt 1) { throw 'hyper-v-guest-provisioning-media-attachment-ambiguous' }",
@@ -146,6 +161,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "      Assert-NoReparsePath $ProvisioningMedia",
         "      if (Test-Path -LiteralPath $ProvisioningMedia) { Remove-Item -LiteralPath $ProvisioningMedia -Force -ErrorAction Stop }",
         "    }",
+        "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
         "    $Result = [ordered]@{ ok = $true; vmId = [string]$Vm.Id; vmName = $Vm.Name; computerName = [string]$Probe.computerName; attempts = $Attempts; networkAddress = $ExpectedNetworkAddress }",
         "    $Result | ConvertTo-Json -Compress -Depth 5",
         "    exit 0",
@@ -163,7 +179,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "  }",
         "  Start-Sleep -Seconds 2",
         "}",
-        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts }",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-timeout'; reason = $LastFailure; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed }",
         "  $Failure | ConvertTo-Json -Compress -Depth 4",
         "  exit 1",
         "} catch {",
@@ -171,7 +187,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // else is host text and is replaced by a constant that still says which phase failed.
         "  $Reason = [string]$_.Exception.Message",
         "  if ($Reason -notmatch '^hyper-v-[a-z0-9-]{3,120}$') { $Reason = 'hyper-v-guest-ready-precondition-failed' }",
-        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-failed'; reason = $Reason; attempts = $Attempts }",
+        "  $Failure = [ordered]@{ ok = $false; error = 'hyper-v-guest-ready-failed'; reason = $Reason; attempts = $Attempts; scrubConfirmed = [bool]$ScrubConfirmed }",
         "  $Failure | ConvertTo-Json -Compress -Depth 4",
         "  exit 1",
         "}",

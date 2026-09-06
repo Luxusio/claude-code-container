@@ -126,7 +126,7 @@ sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
 verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v22`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v23`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 v17 additionally requires the Windows readiness script to emit its structured
 failure on every exit path rather than only the deadline one, and the not-ready
@@ -281,15 +281,41 @@ Two consequences are deliberate and worth knowing:
     its default state: plaintext answer file on the mounted ISO, live
     `DefaultPassword`.
 
-    The host cannot ask a guest whose probe is down, and does not need to.
-    Readiness deletes the provisioning ISO only after every gate has passed, so
-    the ISO still being on disk is durable evidence that no readiness has ever
-    completed for that device — and the ISO is itself the plaintext residue. So
-    any readiness failure with the media still retained contains. Once the media
-    is gone there is nothing left to contain, and an ordinary boot timeout on an
-    already-scrubbed guest stays Running and debuggable, which is the point of
-    the narrow scope. An unreadable media path is treated as still present:
-    unreadable is not proof of absence.
+    The host cannot ask a guest whose probe is down, and does not need to. The
+    provisioning ISO is deleted as soon as both scrub gates pass, so the ISO
+    still being on disk means no readiness ever got past them — and the ISO is
+    itself the plaintext residue. So any readiness failure with the media still
+    retained contains. Once the media is gone there is nothing left to contain,
+    and an ordinary boot timeout on an already-scrubbed guest stays Running and
+    debuggable, which is the point of the narrow scope. An unreadable media path
+    counts as present: unreadable is not proof of absence, and `existsSync`
+    cannot express that (it answers `false` for every error, including a
+    permission failure), so the check uses `statSync` and treats only
+    `ENOENT`/`ENOTDIR` as gone.
+
+    Media-presence alone is still not sufficient, because the deletion itself
+    can fail — a locked file, an ACL, a rejected reparse path — on a guest that
+    is demonstrably clean. Those failures surface under at least three different
+    reason codes, so they cannot be recognised by matching reasons. The readiness
+    script therefore latches `scrubConfirmed` the moment both scrub gates pass
+    and reports it on every failure payload; it vetoes the media-retained arm.
+    Without it, a guest whose ISO could not be deleted would be powered off on
+    every start forever, since the marker persists and readiness re-runs into the
+    same failure. The two named reasons still contain unconditionally — they are
+    the proof of un-scrubbed. A broker that omits the field reads as `false`,
+    which errs toward containing.
+
+    Containment is also **not** gated on readiness having started. Two exits sit
+    between `Start-VM` and readiness — the expired-deadline return and the
+    VM-observation identity gate — and `Start-VM` issues its start before it
+    re-queries, so both are reachable with the guest already booted and nothing
+    contained. `windows-vm` now shares the deadline carve-out that `linux-vm`
+    had, so those paths fall through to the containment decision instead of
+    returning 504 over a running guest.
+
+    A contained failure reports `mutatesHost: true`. Deriving it from `success`
+    alone said the host was unchanged by an operation that had just force-stopped
+    a VM.
   - **Containment uses `-TurnOff`, a hard kill.** A first boot that is merely
     slow past the budget is killed mid-script and can then never write the
     marker, because `FirstLogonCommands` fires once ever. That guest is
@@ -922,7 +948,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v22` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v23` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

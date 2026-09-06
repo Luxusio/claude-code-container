@@ -739,7 +739,11 @@ describe("device-lab host broker lifecycle commands", () => {
             | "powershell-direct-attempt-timeout"
             | "powershell-direct-authentication-failed"
             | "powershell-direct-session-unavailable"
-            | "powershell-direct-unavailable" = false;
+            | "powershell-direct-unavailable"
+            | "hyper-v-guest-network-not-ready" = false;
+        // Mirrors the script's $ScrubConfirmed latch: true for failures thrown BELOW both scrub
+        // gates, where the guest is clean and only the media removal or network check failed.
+        let guestReadyScrubFailureScrubbed = false;
         let containmentStopFailure = false;
         let deleteConfirmationFailure = false;
         let snapshotDeleteConfirmationFailure = false;
@@ -973,7 +977,17 @@ describe("device-lab host broker lifecycle commands", () => {
                     : networkSetup
                     ? hyperVNetworkObservation(command)
                     : guestReady && guestReadyScrubFailure
-                    ? { ok: false, error: "hyper-v-guest-ready-timeout", reason: guestReadyScrubFailure, attempts: 150 }
+                    ? {
+                        ok: false,
+                        error: "hyper-v-guest-ready-timeout",
+                        reason: guestReadyScrubFailure,
+                        attempts: 150,
+                        // The real script latches this once both scrub gates pass, so it is true for
+                        // exactly the failures thrown below them — the network check and the media
+                        // removal. Mirroring that here is what lets the media-retained arm be tested
+                        // for the case where the guest is clean but its ISO could not be deleted.
+                        scrubConfirmed: guestReadyScrubFailureScrubbed,
+                    }
                     : guestReady
                     ? { ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 2, networkAddress: expectedNetworkAddress }
                     : guestProvision
@@ -1139,9 +1153,29 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailure = "powershell-direct-attempt-timeout";
             const firstBootStops = containmentStops().length;
             const neverProbed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-            expect(JSON.stringify(await neverProbed.json())).toContain("powershell-direct-attempt-timeout");
+            const neverProbedBody = await neverProbed.json() as Record<string, any>;
+            expect(JSON.stringify(neverProbedBody)).toContain("powershell-direct-attempt-timeout");
             expect(containmentStops().length, "media still on disk means never scrubbed: contain").toBeGreaterThan(firstBootStops);
             expect(vmState).toBe("Off");
+            // A failed start that force-stopped the guest DID change the host. Derived from
+            // `success` alone this reported false — the envelope telling the caller nothing
+            // happened, on the one path whose whole purpose was to make something happen.
+            expect(neverProbedBody?.result?.execution?.mutatesHost, "containment mutated the host and must say so").toBe(true);
+
+            // Media retained AND the guest demonstrably scrubbed. This is the media removal itself
+            // failing — a locked ISO, an ACL, a rejected reparse path — below both scrub gates, so
+            // $ScrubConfirmed is latched. Containing here powers off a healthy VM, and keeps doing
+            // it on every later start, since the marker persists and readiness re-runs into the
+            // same failure. It surfaces under several reason codes, which is why the veto is the
+            // flag and not a reason match: this case uses the same reason as the contained one
+            // directly above, and only the flag differs.
+            guestReadyScrubFailureScrubbed = true;
+            const scrubbedRetainedStops = containmentStops().length;
+            const mediaCleanupFailed = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await mediaCleanupFailed.json())).toContain("powershell-direct-attempt-timeout");
+            expect(containmentStops().length, "a scrubbed guest must not be contained for a failed media cleanup").toBe(scrubbedRetainedStops);
+            expect(vmState, "a scrubbed guest stays debuggable even with its media retained").toBe("Running");
+            guestReadyScrubFailureScrubbed = false;
             rmSync(provisioningMediaPath, { force: true });
 
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
@@ -1563,16 +1597,16 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 77 over the pre-containment 105, across ten extra
+            // The scrub-containment cases add 83 over the pre-containment 105, across eleven extra
             // device_start round trips: two un-scrubbed reasons, four probe-never-returned reasons,
-            // the first-boot media-retained case, one containment-stop failure, one containment
-            // success, and one recovery back to success. The two rejected waitForBoot:false calls
-            // add nothing by design — that is what their own assertion checks. The per-case split
-            // is not spelled out because the obvious accounting — "each contained case costs a stop
-            // plus an ownership read" — was measured and is not what the cases actually cost; a
-            // plausible breakdown is worse than none.
+            // the first-boot media-retained case, the scrubbed-but-media-retained case, one
+            // containment-stop failure, one containment success, and one recovery back to success.
+            // The two rejected waitForBoot:false calls add nothing by design — that is what their
+            // own assertion checks. The per-case split is not spelled out because the obvious
+            // accounting — "each contained case costs a stop plus an ownership read" — was measured
+            // and is not what the cases actually cost; a plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(182);
+            expect(commandRunner).toHaveBeenCalledTimes(188);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

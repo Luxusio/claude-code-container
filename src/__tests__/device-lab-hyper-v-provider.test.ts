@@ -2205,16 +2205,16 @@ describe("Hyper-V provider adapter", () => {
             .toEqual({ ok: true, vmId, vmName, computerName: "CCC-WIN", attempts: 4 });
         expect(parseHyperVGuestReadyObservation(JSON.stringify({ ok: true, vmId, vmName, computerName: "", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150 });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-session-unavailable", attempts: 150, scrubConfirmed: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72 });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-attempt-timeout", attempts: 72, scrubConfirmed: false });
         // A precondition failure now round-trips its real reason instead of dying on stderr as an
         // unparseable PowerShell exception, which is what collapsed every early exit to a bare
         // powershell-direct-unavailable. Zero attempts is legitimate here and only here.
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0 });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-guest-credential-unavailable", attempts: 0, scrubConfirmed: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3 })))
-            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3 });
+            .toEqual({ ok: false, error: "hyper-v-guest-ready-failed", reason: "hyper-v-vm-ownership-mismatch", attempts: 3, scrubConfirmed: false });
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-timeout", reason: "powershell-direct-unavailable", attempts: 0 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-elsewhere", reason: "hyper-v-guest-credential-unavailable", attempts: 1 }))).toBeNull();
         expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({ ok: false, error: "hyper-v-guest-ready-failed", reason: "C:\\secret", attempts: 0 }))).toBeNull();
@@ -2327,6 +2327,21 @@ describe("Hyper-V provider adapter", () => {
         expect(networkGate).toBeGreaterThan(-1);
         expect(markerGate).toBeLessThan(networkGate);
         expect(gate).toBeLessThan(networkGate);
+        // The latch, and where it sits. It must come AFTER both scrub gates — latching earlier
+        // would certify a guest that never passed them — and BEFORE the media block, because every
+        // failure below it (a locked ISO, an ACL, a rejected reparse path) has to be reported as
+        // "scrubbed" so the host does not power off a clean VM for a cleanup it could not finish.
+        const latch = script.indexOf("$ScrubConfirmed = $true");
+        expect(latch).toBeGreaterThan(-1);
+        expect(latch).toBeGreaterThan(gate);
+        expect(latch).toBeGreaterThan(markerGate);
+        expect(latch).toBeLessThan(dvdRemoval);
+        expect(latch).toBeLessThan(networkGate);
+        // Initialised false, and reported on both failure payloads — the deadline one and the
+        // precondition one — or the host cannot tell "never scrubbed" from "scrubbed, cleanup
+        // failed" on whichever path it actually gets.
+        expect(script).toContain("$ScrubConfirmed = $false");
+        expect(script.match(/scrubConfirmed = \[bool\]\$ScrubConfirmed/g)).toHaveLength(2);
         // The gate is its own statement, not a clause hanging off the network check, so it still
         // runs when $ExpectedNetworkAddress is empty.
         expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent -isnot \[bool\] -or \$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
@@ -2344,6 +2359,7 @@ describe("Hyper-V provider adapter", () => {
             error: "hyper-v-guest-ready-timeout",
             reason: "hyper-v-guest-provisioning-not-scrubbed",
             attempts: 150,
+            scrubConfirmed: false,
         });
         // Both reasons, not just one: these two are what the broker's containment switches on, so
         // a reason that failed to round-trip would silently stop a guest from being powered off.
@@ -2357,7 +2373,37 @@ describe("Hyper-V provider adapter", () => {
             error: "hyper-v-guest-ready-timeout",
             reason: "hyper-v-guest-first-logon-incomplete",
             attempts: 150,
+            scrubConfirmed: false,
         });
+        // scrubConfirmed is what separates "never scrubbed" from "scrubbed, but the media removal
+        // below the gates failed". The latter surfaces under at least three different reason codes
+        // — a Remove-Item or Remove-VMDvdDrive failure carrying host text collapses to
+        // powershell-direct-unavailable, while Assert-NoReparsePath throws its own two named codes
+        // — so reason matching cannot recognise it and containment would power off a healthy VM.
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "powershell-direct-unavailable",
+            attempts: 150,
+            scrubConfirmed: true,
+        }))).toEqual({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "powershell-direct-unavailable",
+            attempts: 150,
+            scrubConfirmed: true,
+        });
+        // Only a literal true. An older broker omits the field, and anything else must read as
+        // not-confirmed, because unknown has to fall on the containing side.
+        for (const value of [undefined, "true", 1, null]) {
+            expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({
+                ok: false,
+                error: "hyper-v-guest-ready-timeout",
+                reason: "hyper-v-path-reparse-point-rejected",
+                attempts: 150,
+                ...(value === undefined ? {} : { scrubConfirmed: value }),
+            }))?.scrubConfirmed, `scrubConfirmed must not be inferred from ${JSON.stringify(value)}`).toBe(false);
+        }
     });
 
     it("collects bounded owner-fenced Hyper-V boot diagnostics", () => {
