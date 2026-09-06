@@ -22,6 +22,8 @@ import {
     DEVICE_BROKER_MAX_OPERATION_TIMEOUT_MS,
     DEVICE_BROKER_HYPER_V_CREATE_POST_ACQUIRE_BUDGET_MS,
     DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
+    DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS,
+    hyperVLifecycleCleanupTimeoutMs,
     DEVICE_BROKER_HYPER_V_CREATE_RPC_TIMEOUT_MS,
     DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS,
     DEVICE_BROKER_HYPER_V_IMAGE_ACQUIRE_TIMEOUT_MS,
@@ -105,6 +107,22 @@ describe("device-lab public timeout bounds", () => {
         // reply carrying scrubContainmentFailed — the one signal that a guest may still be up with
         // a live autologon. A silent divergence here loses that signal with nothing failing.
         expect(HYPER_V_CLEANUP_RESERVE_MS).toBe(DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+
+        // The equality above is not the invariant that matters — it only holds today because both
+        // sides independently spell out the same four-term sum. What must be true is that the
+        // client waits at least as long as the broker's outer window; otherwise the reply carrying
+        // scrubContainmentFailed is dropped exactly in the case the reserve exists to cover. Change
+        // the broker to add 2x the reserve and the equality above still passes while this fails.
+        for (const backend of ["windows-vm", "linux-vm"] as const) {
+            for (const command of ["device_start", "device_reboot"] as const) {
+                // Default boot budget, matching what the broker assumes when bootTimeoutMs is absent.
+                const operationTimeoutMs = DEVICE_BROKER_HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000);
+                const client = brokerLifecycleExecutionTimeout({ backend, command }).rpcTimeoutMs;
+                const brokerOuterWindow = DEVICE_BROKER_HYPER_V_HOST_LOCK_WAIT_MS
+                    + hyperVLifecycleCleanupTimeoutMs(backend, command, operationTimeoutMs);
+                expect(client, `${backend}/${command}: client must outwait the broker`).toBeGreaterThanOrEqual(brokerOuterWindow);
+            }
+        }
     });
 
     it("allows ordinary provider lifecycle operations to exceed 30 seconds", () => {
@@ -164,6 +182,10 @@ describe("device-lab public timeout bounds", () => {
         })).toEqual({
             rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
+        // The client still computes a no-boot timeout for this shape, but the broker refuses the
+        // request at validation, so the path is unreachable end to end. Kept as a pin on the
+        // client's arithmetic, labelled so it is not read as evidence the request is live —
+        // src/__tests__/device-lab-broker.commands.test.ts is where the refusal is asserted.
         expect(brokerLifecycleExecutionTimeout({
             backend: "windows-vm",
             command: "device_start",
