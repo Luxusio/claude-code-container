@@ -2335,6 +2335,19 @@ describe("Hyper-V provider adapter", () => {
             reason: "hyper-v-guest-provisioning-not-scrubbed",
             attempts: 150,
         });
+        // Both reasons, not just one: these two are what the broker's containment switches on, so
+        // a reason that failed to round-trip would silently stop a guest from being powered off.
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "hyper-v-guest-first-logon-incomplete",
+            attempts: 150,
+        }))).toEqual({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "hyper-v-guest-first-logon-incomplete",
+            attempts: 150,
+        });
     });
 
     it("collects bounded owner-fenced Hyper-V boot diagnostics", () => {

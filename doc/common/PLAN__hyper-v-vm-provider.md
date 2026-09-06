@@ -188,12 +188,21 @@ surfaces as `hyper-v-guest-ready-timeout` with `reason`
 
 Two consequences are deliberate and worth knowing:
 
-- Provisioning happens only in `device_create`; `FirstLogonCommands` fires once
-  ever, and there is no re-provision path on `device_start` or `device_reboot`.
-  So a device created under an earlier contract that already lost the race —
-  media gone, scrub never ran — cannot self-heal, and now fails every start
-  with the full boot budget burned. The remedy is `device_delete` and recreate.
-  This is fail-closed by choice: such a guest holds a live autologon password.
+- **Every Windows device created under an earlier contract must be recreated —
+  healthy ones included.** Provisioning happens only in `device_create`;
+  `FirstLogonCommands` fires once ever, and there is no re-provision path on
+  `device_start` or `device_reboot`. The capability bump replaces the broker; it
+  does not touch the VHDX. So no pre-v20 guest carries a marker and none ever
+  will, whether its scrub ran perfectly or never ran at all. On the first
+  `device_start` after upgrade each one burns the full boot budget, fails with
+  `hyper-v-guest-first-logon-incomplete`, and — since that is a contained reason
+  — is powered off. The remedy is `device_delete` and recreate.
+
+  This is fail-closed by choice, and the cost is deliberate: the entire premise
+  of this contract is that a pre-v20 guest's absent secrets prove nothing, so
+  admitting one on that evidence is precisely the false certification the marker
+  exists to prevent. For the duration of the migration the containment path is
+  therefore the common case, not the exceptional one.
 - v20 contains that failure rather than leaving it running, but only for the two
   reasons that prove the guest holds a live secret:
   `hyper-v-guest-first-logon-incomplete` and
