@@ -10,6 +10,7 @@ import {
     HYPER_V_CREATE_RPC_TIMEOUT_MS,
     HYPER_V_HOST_LOCK_WAIT_MS,
     HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+    HYPER_V_CLEANUP_RESERVE_MS,
     HYPER_V_MAX_BOOT_TIMEOUT_MS,
     HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS,
     brokerDeviceToolExecutionTimeout,
@@ -98,6 +99,14 @@ describe("device-lab public timeout bounds", () => {
         });
     });
 
+    it("keeps the MCP client's containment reserve equal to the broker's", () => {
+        // Two constants, two packages, one meaning. The broker adds this to its cleanup deadline so
+        // containment can run after the operation deadline; if the client waits less, it drops the
+        // reply carrying scrubContainmentFailed — the one signal that a guest may still be up with
+        // a live autologon. A silent divergence here loses that signal with nothing failing.
+        expect(HYPER_V_CLEANUP_RESERVE_MS).toBe(DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS);
+    });
+
     it("allows ordinary provider lifecycle operations to exceed 30 seconds", () => {
         expect(brokerLifecycleExecutionTimeout({ backend: "windows-sandbox" })).toEqual({
             rpcTimeoutMs: 120000,
@@ -125,13 +134,13 @@ describe("device-lab public timeout bounds", () => {
             sourceImage: "spoofed.vhdx",
             image: "spoofed-image",
         })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({ backend: "windows-vm", command: "device_start" })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({ backend: "linux-vm", command: "device_reboot", bootTimeoutMs: HYPER_V_MAX_BOOT_TIMEOUT_MS })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "linux-vm",
@@ -139,21 +148,21 @@ describe("device-lab public timeout bounds", () => {
             bootTimeoutMs: HYPER_V_MAX_BOOT_TIMEOUT_MS,
             rpcTimeoutMs: 30000,
         })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "windows-vm",
             command: "device_start",
             bootTimeoutMs: Number.MAX_SAFE_INTEGER,
         })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + HYPER_V_MAX_BOOT_TIMEOUT_MS + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "linux-vm",
             command: "device_reboot",
             rpcTimeoutMs: Number.MAX_SAFE_INTEGER,
         })).toEqual({
-            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
+            rpcTimeoutMs: HYPER_V_HOST_LOCK_WAIT_MS + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS + (5 * 60 * 1000) + HYPER_V_CLEANUP_RESERVE_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS,
         });
         expect(brokerLifecycleExecutionTimeout({
             backend: "windows-vm",

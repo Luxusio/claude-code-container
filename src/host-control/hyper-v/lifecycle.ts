@@ -105,8 +105,11 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "    if (-not $CompletedJob) { throw 'powershell-direct-attempt-timeout' }",
         "    $Probe = Receive-Job -Job $AttemptJob -ErrorAction Stop",
         // These two run BEFORE the network check, and the order is load-bearing rather than
-        // stylistic. The first-logon program assigns the static address itself (New-NetIPAddress
-        // in windows-guest.ts) as its FIRST action, before the scrub and long before the marker.
+        // stylistic whenever a static address is configured — the default. In that case the
+        // first-logon program assigns the address itself (New-NetIPAddress in windows-guest.ts) as
+        // its FIRST action, before the scrub and long before the marker. With networking:false the
+        // program emits no network block and $ExpectedNetworkAddress is empty, so there is no gate
+        // to be downstream of and the ordering is simply moot.
         // So the network check is causally downstream of these two: a launcher that never ran
         // leaves the guest on DHCP/APIPA, and with the network check first it threw
         // hyper-v-guest-network-not-ready on every attempt for the whole budget — these gates were

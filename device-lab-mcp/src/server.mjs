@@ -108,6 +108,10 @@ const DEFAULT_BROKER_LIFECYCLE_RPC_TIMEOUT_MS = 120000;
 // another 30 minutes for hashing, VM creation, and guest provisioning.
 export const HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS = 21600000;
 export const HYPER_V_LIFECYCLE_RPC_BUFFER_MS = 15000;
+// Mirrors DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS in src/device-lab-broker.ts. The broker adds
+// this to its cleanup deadline for linux-vm and windows-vm start/reboot so containment has time to
+// run after the operation deadline; the caller has to wait at least as long or it drops the reply.
+export const HYPER_V_CLEANUP_RESERVE_MS = 5 * 60 * 1000;
 export const HYPER_V_CREATE_RPC_TIMEOUT_MS = HYPER_V_IMAGE_ACQUIRE_RPC_TIMEOUT_MS + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
 export const HYPER_V_HOST_LOCK_WAIT_MS = 10 * 60 * 1000;
 export const HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS = 120000;
@@ -342,9 +346,16 @@ export function brokerLifecycleExecutionTimeout(args) {
                 ? Math.min(HYPER_V_MAX_BOOT_TIMEOUT_MS, Math.max(1000, Number(args.bootTimeoutMs)))
                 : 5 * 60 * 1000
             : 0;
+        // The broker reserves cleanup time on top of the operation deadline for linux-vm AND
+        // windows-vm start/reboot, so its outer window is that much longer than the sum below.
+        // Without matching it here the caller can time out while containment is still running, and
+        // the response carrying scrubContainmentFailed — the one signal that a guest may still be
+        // up with a live autologon — is simply lost.
+        const containmentReserveMs = waitsForBoot ? HYPER_V_CLEANUP_RESERVE_MS : 0;
         const automaticRpcTimeoutMs = HYPER_V_HOST_LOCK_WAIT_MS
             + HYPER_V_PROVIDER_LIFECYCLE_TIMEOUT_MS
             + bootTimeoutMs
+            + containmentReserveMs
             + HYPER_V_LIFECYCLE_RPC_BUFFER_MS;
         return { rpcTimeoutMs: automaticRpcTimeoutMs };
     }

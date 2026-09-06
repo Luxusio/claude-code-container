@@ -126,7 +126,7 @@ sub-second `hyper-v-windows-transport`, or a raw ENOENT from manifest
 verification, rather than as a named missing capability. Host CLI and
 packaged device-lab MCP compatibility checks reject and replace older broker
 runtimes. Readiness failure diagnostics additionally require
-`hyper-v-guest-readiness-diagnostics-v21`, so a same-version daemon started
+`hyper-v-guest-readiness-diagnostics-v22`, so a same-version daemon started
 before that contract was added is also replaced instead of silently reused.
 v17 additionally requires the Windows readiness script to emit its structured
 failure on every exit path rather than only the deadline one, and the not-ready
@@ -187,9 +187,12 @@ surfaces as `hyper-v-guest-ready-timeout` with `reason`
 `hyper-v-guest-provisioning-not-scrubbed`.
 
 Both scrub gates run **ahead of the network check**, and that order is
-load-bearing. The first-logon program assigns the static address itself, as its
-first action, before the scrub and long before the marker — so the network check
-is causally downstream of both. With the network check first, a launcher that
+load-bearing whenever a static address is configured — the default, since
+`networking` defaults to true. In that configuration the first-logon program
+assigns the address itself, as its first action, before the scrub and long
+before the marker, so the network check is causally downstream of both. With
+`networking: false` there is no address to check and no network gate to be
+downstream of, so the ordering is moot rather than wrong. With the network check first, a launcher that
 never ran left the guest on DHCP and threw `hyper-v-guest-network-not-ready` on
 every attempt for the whole budget: the scrub gates were unreachable, the
 containment switch never matched, and the guest stayed up with the plaintext
@@ -230,11 +233,40 @@ Two consequences are deliberate and worth knowing:
   two reasons must leave the guest `Off`, a `powershell-direct-attempt-timeout`
   must leave it `Running`.
 
-  If the force-stop itself fails, the readiness reason is preserved (replacing
-  it the way the linux lane does would discard the diagnostic that selected the
-  path) and `scrubContainmentFailed: true` appears in the failure detail. It is
-  present only when true, so its presence always means a guest is still running
-  with a live autologon.
+  If the force-stop is not confirmed, the readiness reason is preserved
+  (replacing it the way the linux lane does would discard the diagnostic that
+  selected the path) and `scrubContainmentFailed: true` appears in the failure
+  detail and in the persisted `lastBootCheck` — the HTTP response alone is not
+  enough, because the caller's own timeout can expire while containment runs.
+  "Not confirmed" is deliberately broader than "still running": the stop may
+  never have been attempted (the cleanup deadline can throw first), or it may
+  have powered the guest off and returned a confirmation that did not parse or
+  did not match the expected `vmId`/`vmName`. The flag licenses "go look", not
+  "it is definitely still up". It is present only when true.
+
+  Containment runs **after** the boot diagnostic. Taken the other way round,
+  every contained case would record a post-mortem of a machine ccc had just
+  powered off — the diagnosability this narrow scope exists to preserve. The
+  consequence is that on a contained failure the recorded diagnostic reports
+  `Running` while `runtimeState` reports `Off`; that pair is the evidence of
+  the ordering, not a contradiction to reconcile by moving the capture.
+
+  `windows-vm` also takes `CLEANUP_RESERVE_MS`, as `linux-vm` does. The reserve
+  is added to the cleanup deadline and subtracted from the provider deadline, so
+  the usable operation budget is unchanged and only the outer window grows.
+  Without it, a boot timeout near the residual budget lets the deadline throw
+  and replace the readiness result with `hyper-v-operation-deadline-exceeded` —
+  the un-scrubbed reason containment switches on is gone before containment
+  reads it. The packaged MCP client's automatic RPC timeout carries the same
+  reserve, or the reply carrying `scrubContainmentFailed` is dropped in transit.
+
+  `waitForBoot: false` is rejected for `windows-vm`, as it already was for
+  `linux-vm`. Readiness is now the only place the provisioning media is removed
+  and the only place containment runs, so skipping it returned `200 success`
+  with the guest running and `CCC_UNATTEND` still mounted — a DVD carrying the
+  local Administrator password in plaintext — with no failure and nothing to
+  report. Moving the scrub guarantee onto readiness is what turned that from a
+  fast path into an open door.
 
   Two residuals of this scope, stated rather than implied:
 
@@ -876,7 +908,7 @@ Real-provider tests:
   VHD source, direct QEMU VHDX generation, and brokers that leave this boot
   order nondeterministic or publish a native VHDX without content-equivalence
   verification. Broker compatibility also requires
-  `hyper-v-guest-readiness-diagnostics-v21` for the bounded readiness trace.
+  `hyper-v-guest-readiness-diagnostics-v22` for the bounded readiness trace.
   Linux bootstrap discovery treats the Hyper-V management-adapter view as an
   optional source: if that view fails, the provider may use only IPv4 prefixes
   from the exact `vEthernet (Default Switch)` host interface. Neighbor-table

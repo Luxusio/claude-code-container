@@ -897,6 +897,39 @@ describe("device-lab host broker lifecycle commands", () => {
             if (orphanRecovery) orphanRecoveryCalls += 1;
             const guestProvision = script.includes("Write-CccIso $IsoFiles $ProvisioningMedia 'CCC_UNATTEND'");
             const guestReady = script.includes("hyper-v-guest-ready-timeout");
+            // A boot diagnostic that actually parses, reporting the CURRENT vmState. Previously the
+            // fixture returned something invalid, so lastBootCheck carried no diagnostic at all and
+            // nothing could observe whether it had been captured before or after containment.
+            const guestBootDiagnostic = script.includes("Get-CccGuestBootDiagnosticResult $Vm");
+            if (guestBootDiagnostic) {
+                return {
+                    ...command,
+                    status: 0,
+                    stdout: JSON.stringify({
+                        ok: true,
+                        vmId,
+                        vmName,
+                        state: vmState,
+                        uptimeMs: 60000,
+                        generation: 2,
+                        secureBootEnabled: true,
+                        heartbeatEnabled: true,
+                        heartbeatPrimaryStatus: 2,
+                        heartbeatSecondaryStatus: 0,
+                        integrationServices: [],
+                        hardDiskCount: 1,
+                        dvdCount: 1,
+                        hardDiskControllers: ["scsi"],
+                        bootDeviceTypes: ["hard-disk"],
+                        bootEntries: [],
+                        hardDisks: [],
+                        dvdDrives: [],
+                        diagnosticComplete: true,
+                        diagnosticErrors: [],
+                    }),
+                    stderr: "",
+                };
+            }
             const guestExec = script.includes("Start-Process -FilePath 'powershell.exe'");
             const guestUpload = script.includes("-ToSession $Session");
             const guestDownload = script.includes("hyper-v-guest-download-source-missing")
@@ -1036,6 +1069,19 @@ describe("device-lab host broker lifecycle commands", () => {
             // A readiness refusal for an un-scrubbed reason must not leave the guest Running: it
             // still holds a live autologon password and the plaintext answer file. Containment is
             // scoped to exactly these reasons, so the assertion pairs with the timeout case below.
+            // waitForBoot:false skipped readiness entirely, and readiness is the ONLY place the
+            // provisioning media is removed and the only place containment runs. So this returned
+            // 200 success with the guest Running and CCC_UNATTEND still mounted — a DVD carrying
+            // the local Administrator password as PlainText — with no failure and nothing reporting
+            // it. Rejected now, and no provider call may be made before the rejection.
+            const callsBeforeUnsafeWindowsStart = commandRunner.mock.calls.length;
+            const unsafeWindowsStart = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, waitForBoot: false });
+            expect(unsafeWindowsStart.status).toBe(400);
+            expect(await unsafeWindowsStart.json()).toEqual(expect.objectContaining({ error: "windows-vm-bootstrap-requires-boot-wait" }));
+            const unsafeWindowsReboot = await invoke({ backend: "windows-vm", command: "device_reboot", deviceId, incarnationId, waitForBoot: false });
+            expect(unsafeWindowsReboot.status).toBe(400);
+            expect(commandRunner).toHaveBeenCalledTimes(callsBeforeUnsafeWindowsStart);
+
             // vmState alone is NOT enough, and my earlier comment claiming it escaped the substring
             // proxy was wrong: the fixture sets vmState from `script.includes("Stop-VM")`, which
             // the 14k-char reconcile script also matches. So the stop is identified by its actual
@@ -1050,9 +1096,25 @@ describe("device-lab host broker lifecycle commands", () => {
                 guestReadyScrubFailure = scrubReason;
                 const stopsBefore = containmentStops().length;
                 const refused = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-                expect(JSON.stringify(await refused.json())).toContain(scrubReason);
+                const refusedBody = await refused.json();
+                expect(JSON.stringify(refusedBody)).toContain(scrubReason);
                 expect(vmState, `expected containment to power off the guest for ${scrubReason}`).toBe("Off");
                 expect(containmentStops().length, `expected a -TurnOff stop for ${scrubReason}`).toBeGreaterThan(stopsBefore);
+                // The boot diagnostic must be captured BEFORE containment. Taken after, every
+                // contained case records a post-mortem of a machine we just killed — the exact
+                // diagnosability this narrow scope was chosen to preserve. Nothing else in this
+                // test can tell the two orderings apart: moving containment back above the
+                // diagnostic leaves every other assertion green.
+                // Read off the refusal itself, not a follow-up device_status: the fixture flips
+                // vmState back to "Running" for any script mentioning Start-VM, and the reconcile
+                // script does — the same loose-substring trap as the Stop-VM one above.
+                //
+                // The pair IS the proof of ordering: the recorded diagnostic saw Running, and
+                // containment then drove runtimeState to Off. Move the containment block back above
+                // the diagnostic and the recorded state becomes "Off", failing here.
+                const refusedDevice = refusedBody?.result?.device;
+                expect(refusedDevice?.lastBootCheck?.diagnostic?.state, "diagnostic must predate containment").toBe("Running");
+                expect(refusedDevice?.runtimeState, "containment must drive the recorded state Off").toBe("Off");
             }
 
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
