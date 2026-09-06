@@ -1207,6 +1207,9 @@ describe("device-lab host broker physical attach and CLI", () => {
                         runtimeState: "Running",
                         lastBootCheck: {
                             ready: false,
+                            // The value the broker really persists for this failure. An earlier
+                            // version of this fixture used a code the projection could not emit,
+                            // so it asserted a rendering that never happens in production.
                             error: "powershell-direct-timeout",
                             scrubContainmentFailed: true,
                         },
@@ -1217,7 +1220,10 @@ describe("device-lab host broker physical attach and CLI", () => {
 
         expect(await devicesCliAsync(["start", "win-y"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
         const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
-        expect(stderr).toContain("powershell-direct-timeout");
+        // Asserted on the bootError LINE specifically, not anywhere in stderr — `detail` also
+        // carries this string, so a body-wide check passed even when the projection flattened the
+        // persisted reason to the generic code and bootError disagreed with the line above it.
+        expect(stderr).toContain("bootError: powershell-direct-timeout");
         expect(stderr, "the failure path must say the guest may still be up").toContain("scrubContainmentFailed: true");
         expect(stderr).toContain("WARNING: this guest may still be running with provisioning secrets intact.");
         expect(log).not.toHaveBeenCalled();

@@ -355,6 +355,46 @@ describe("Hyper-V public response projection", () => {
     // boot.errorDetail copy already satisfied. Persisting it only helps if the projection keeps it —
     // the HTTP reply that carries errorDetail is exactly what gets lost to a caller timeout while
     // containment is still running.
+    it("preserves transport reasons instead of flattening them to the generic code", () => {
+        // hyperVBoundedErrorCode only admits `hyper-v-*`, so every powershell-direct-* and ssh-*
+        // reason was rewritten to hyper-v-guest-not-ready in the persisted record. The reply still
+        // carried the truth in `detail`, but device_status has no `detail` — so on the surface that
+        // is meant to outlive the reply, a stalled OOBE was indistinguishable from any other
+        // not-ready. These are the exact strings hyperVGuestReadinessFailureCode can return.
+        for (const reason of [
+            "powershell-direct-attempt-timeout",
+            "powershell-direct-authentication-failed",
+            "powershell-direct-session-unavailable",
+            "powershell-direct-unavailable",
+            "powershell-direct-timeout",
+            "ssh-connection-refused",
+            "ssh-connection-timeout",
+            "ssh-host-unreachable",
+            "ssh-host-key-rejected",
+            "ssh-authentication-failed",
+            "ssh-unavailable",
+        ]) {
+            const projected = redactHyperVDeviceSecrets({
+                id: "windows-vm-1",
+                backend: "windows-vm",
+                provider: "hyper-v",
+                lastBootCheck: { ready: false, error: reason },
+            }) as Record<string, any>;
+            expect(projected.lastBootCheck?.error, `${reason} must survive the projection`).toBe(reason);
+        }
+        // The set is closed: anything outside it still collapses to the bounded fallback, so this
+        // is not a hole for arbitrary strings that merely look like a transport code.
+        for (const rejected of ["powershell-direct-anything-else", "ssh-made-up", "C:\\secret"]) {
+            const projected = redactHyperVDeviceSecrets({
+                id: "windows-vm-1",
+                backend: "windows-vm",
+                provider: "hyper-v",
+                lastBootCheck: { ready: false, error: rejected },
+            }) as Record<string, any>;
+            expect(projected.lastBootCheck?.error, `${rejected} must not pass`).toBe("hyper-v-guest-not-ready");
+        }
+    });
+
     it("projects scrubContainmentFailed so device_status can see an uncontained guest", () => {
         const projected = redactHyperVDeviceSecrets({
             id: "windows-vm-1",

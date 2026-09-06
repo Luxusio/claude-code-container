@@ -244,6 +244,24 @@ const REDACTED_PROVIDER_DIAGNOSTIC_CODES = new Set([
     "hyper-v-state-reconciliation-failed",
 ]);
 
+// Every non-`hyper-v-` reason hyperVGuestReadinessFailureCode can return, for both guest lanes.
+// Kept as literals rather than a pattern: a pattern over `powershell-direct-*` / `ssh-*` would
+// admit whatever a future caller invents, and the point of this projection is that the set of
+// codes that can reach a reader is closed.
+const HYPER_V_GUEST_TRANSPORT_REASONS = new Set([
+    "powershell-direct-attempt-timeout",
+    "powershell-direct-authentication-failed",
+    "powershell-direct-session-unavailable",
+    "powershell-direct-unavailable",
+    "powershell-direct-timeout",
+    "ssh-connection-refused",
+    "ssh-connection-timeout",
+    "ssh-host-unreachable",
+    "ssh-host-key-rejected",
+    "ssh-authentication-failed",
+    "ssh-unavailable",
+]);
+
 export function hyperVBoundedErrorCode(
     error: unknown,
     fallback: string,
@@ -433,10 +451,16 @@ function publicHyperVBootCheck(value: unknown): Record<string, unknown> | null {
         "attempts",
     ]);
     if (record.error !== undefined) {
-        result.error = hyperVBoundedErrorCode(
-            record.error,
-            "hyper-v-guest-not-ready",
-        );
+        // The transport reasons are checked before the generic bounder, which only admits
+        // `hyper-v-*` and rewrites everything else to the fallback. That flattening meant a stalled
+        // OOBE persisted as a bare `hyper-v-guest-not-ready`: the reply still carried the truth in
+        // `detail`, but `device_status` has no `detail`, so the real reason was unrecoverable from
+        // the record — the surface that is supposed to outlive the reply. These are the exact
+        // strings hyperVGuestReadinessFailureCode can return for the two guest lanes, a closed set
+        // of literals, so admitting them widens nothing.
+        result.error = HYPER_V_GUEST_TRANSPORT_REASONS.has(String(record.error))
+            ? String(record.error)
+            : hyperVBoundedErrorCode(record.error, "hyper-v-guest-not-ready");
     }
     // Projected as a literal true, never the stored value. Without this the flag was persisted into
     // lastBootCheck and then stripped right back out by this allowlist, so device_status reported a
