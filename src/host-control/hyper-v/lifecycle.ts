@@ -100,7 +100,7 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         // first-logon program is now loaded FROM, so the program exited 3 (no
         // CCC_UNATTEND volume) and the scrub silently never happened. Nothing
         // reads that exit code, so the loss was invisible.
-        "    $AttemptJob = Invoke-Command -VMId $ExpectedId -Credential $Credential -ScriptBlock { $Winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; [ordered]@{ computerName = [Environment]::MachineName; addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress); firstLogonCompleted = [bool](1 -eq (Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -ErrorAction SilentlyContinue).FirstLogonCompleted); provisioningSecretsPresent = [bool]((Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml') -or (Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml') -or ($null -ne (Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue))) } } -AsJob -ErrorAction Stop",
+        "    $AttemptJob = Invoke-Command -VMId $ExpectedId -Credential $Credential -ScriptBlock { $Winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; [ordered]@{ computerName = [Environment]::MachineName; addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress); firstLogonCompleted = [string](Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -ErrorAction SilentlyContinue).FirstLogonCompleted; provisioningSecretsPresent = [bool]((Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml') -or (Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml') -or ($null -ne (Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue))) } } -AsJob -ErrorAction Stop",
         `    $CompletedJob = Wait-Job -Job $AttemptJob -Timeout ${HYPER_V_POWERSHELL_DIRECT_ATTEMPT_TIMEOUT_SECONDS} -ErrorAction Stop`,
         "    if (-not $CompletedJob) { throw 'powershell-direct-attempt-timeout' }",
         "    $Probe = Receive-Job -Job $AttemptJob -ErrorAction Stop",
@@ -116,8 +116,16 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         //
         // The marker is checked first because it is the only signal that proves our program ran.
         // The secrets check stays as a second, independent condition: the marker says the scrub
-        // executed, the secrets check says it achieved its purpose, and neither implies the other.
-        "    if ($Probe.firstLogonCompleted -isnot [bool] -or -not $Probe.firstLogonCompleted) { throw 'hyper-v-guest-first-logon-incomplete' }",
+        // ran to completion, the secrets check says the three signals it probes are gone, and
+        // neither implies the other. The scrub clears six things; the probe re-tests three of
+        // them, so a Remove-ItemProperty that failed on DefaultUserName, AutoAdminLogon or
+        // AutoLogonCount is not visible here. No password survives in that state.
+        //
+        // Compared against this incarnation's own ownership marker, the same string
+        // ownedVmPrelude already checks against $Vm.Notes, so a value baked into a captured base
+        // image belongs to a different incarnation and cannot satisfy it. An absent property
+        // stringifies to "" and fails the comparison, so this is fail-closed without a type guard.
+        "    if ([string]$Probe.firstLogonCompleted -cne $ExpectedMarker) { throw 'hyper-v-guest-first-logon-incomplete' }",
         "    if ($Probe.provisioningSecretsPresent -isnot [bool] -or $Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }",
         "    if ($ProvisioningMedia) {",
         "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",

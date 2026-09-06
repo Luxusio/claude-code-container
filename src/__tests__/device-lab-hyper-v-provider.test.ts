@@ -2285,16 +2285,24 @@ describe("Hyper-V provider adapter", () => {
         // DefaultPassword/AutoAdminLogon itself once AutoLogonCount hits zero, and Setup redacts
         // its own cached answer file, so all three absence signals above are reachable without us.
         expect(script).toContain(
-            "firstLogonCompleted = [bool](1 -eq (Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc'"
-            + " -Name 'FirstLogonCompleted' -ErrorAction SilentlyContinue).FirstLogonCompleted)",
+            "firstLogonCompleted = [string](Get-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc'"
+            + " -Name 'FirstLogonCompleted' -ErrorAction SilentlyContinue).FirstLogonCompleted",
         );
+        // Compared against this incarnation's own ownership marker — the same string the prelude
+        // checks against $Vm.Notes — so a marker baked into a captured base image belongs to a
+        // different incarnation and cannot satisfy the gate. An absent property stringifies to ""
+        // and fails, which is fail-closed without needing a type guard.
+        expect(script).toContain("$ExpectedMarker = 'ccc-device-lab:" + `${ownerId}:${deviceId}:${incarnationId}'`);
 
         // Both gates fail closed. The naive `if ($Probe.x)` form is falsy for an absent property
         // or a null $Probe, which would open the gate exactly when the guest's answer is least
         // trustworthy; -isnot [bool] refuses anything that is not an actual answer.
-        expect(script).toContain("if ($Probe.firstLogonCompleted -isnot [bool] -or -not $Probe.firstLogonCompleted) { throw 'hyper-v-guest-first-logon-incomplete' }");
+        expect(script).toContain("if ([string]$Probe.firstLogonCompleted -cne $ExpectedMarker) { throw 'hyper-v-guest-first-logon-incomplete' }");
         const gate = script.indexOf("if ($Probe.provisioningSecretsPresent -isnot [bool] -or $Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }");
-        const markerGate = script.indexOf("if ($Probe.firstLogonCompleted -isnot [bool]");
+        // The FULL statement, not a prefix. A prefix lets a decoy carrying it sit at the right
+        // position while the real gate is re-emitted after the deletion — the exact race this test
+        // exists to pin, passing green because the ordering assertions measured the decoy.
+        const markerGate = script.indexOf("if ([string]$Probe.firstLogonCompleted -cne $ExpectedMarker) { throw 'hyper-v-guest-first-logon-incomplete' }");
         expect(markerGate).toBeGreaterThan(-1);
         const dvdRemoval = script.indexOf("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
         const isoRemoval = script.indexOf("Remove-Item -LiteralPath $ProvisioningMedia");
@@ -2312,7 +2320,7 @@ describe("Hyper-V provider adapter", () => {
         // The gate is its own statement, not a clause hanging off the network check, so it still
         // runs when $ExpectedNetworkAddress is empty.
         expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent -isnot \[bool\] -or \$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
-        expect(script).toMatch(/\n\s*if \(\$Probe\.firstLogonCompleted -isnot \[bool\] -or -not \$Probe\.firstLogonCompleted\) \{ throw 'hyper-v-guest-first-logon-incomplete' \}\n/);
+        expect(script).toMatch(/\n\s*if \(\[string\]\$Probe\.firstLogonCompleted -cne \$ExpectedMarker\) \{ throw 'hyper-v-guest-first-logon-incomplete' \}\n/);
 
         // And the reason survives the failure sanitizer, so a guest stuck unscrubbed times out
         // with a name the broker can read instead of collapsing to powershell-direct-unavailable.
@@ -2513,13 +2521,30 @@ describe("Hyper-V provider adapter", () => {
         // proves this program reached its end, so anything after it could be skipped while the
         // marker still claimed a full run. Nothing above it can throw (SilentlyContinue throughout),
         // so reaching the marker means every scrub statement executed.
-        const markerWrite = firstLogonProgram.indexOf(
-            "New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -Value 1 -PropertyType DWord -Force",
+        // The whole marker argument rests on this preference: with SilentlyContinue nothing above
+        // the marker can throw, so reaching it means every statement was attempted. Flipping it to
+        // Stop was unpinned and passed, which left the premise of the invariant unguarded.
+        expect(firstLogonProgram.split("\r\n")[0]).toBe("$ErrorActionPreference = 'SilentlyContinue'");
+        // Pinned as the actual last LINE, not by a suffix. `endsWith("| Out-Null")` is satisfied by
+        // any Out-Null statement, so a scrub step appended after the marker passed it — the marker
+        // would then claim a full run while the appended step could still be skipped. Same gap as
+        // the predicate one: assert the invariant, not one symptom of it.
+        const programLines = firstLogonProgram.trimEnd().split("\r\n");
+        expect(programLines[programLines.length - 1]).toBe(
+            "New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted'"
+            + ` -Value 'ccc-device-lab:${ownerId}:${deviceId}:${incarnationId}'`
+            + " -PropertyType String -Force -ErrorAction SilentlyContinue | Out-Null",
         );
-        expect(markerWrite).toBeGreaterThan(-1);
-        expect(firstLogonProgram).toContain("New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -Force");
-        expect(markerWrite).toBeGreaterThan(firstLogonProgram.indexOf("AutoLogonCount"));
-        expect(firstLogonProgram.trimEnd().endsWith("| Out-Null")).toBe(true);
+        expect(programLines[programLines.length - 2]).toBe(
+            "New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -ErrorAction SilentlyContinue | Out-Null",
+        );
+        // No -Force here: on the registry provider it deletes an existing key and its subkeys, and
+        // `ccc` under HKLM\SOFTWARE is unnamespaced and case-insensitive.
+        expect(firstLogonProgram).not.toContain("New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -Force");
+        // The value is this incarnation's ownership marker, not a constant: a constant is satisfied
+        // by any stale copy of itself, and --source-image accepts a user-supplied VHDX that could
+        // carry one baked in from an earlier provision.
+        expect(firstLogonProgram).not.toContain("-Value 1 -PropertyType DWord");
         // The self-delete is gone: it targeted read-only ISO media and could never succeed, so it
         // read as a cleanup that was not happening. The host removes the media instead.
         expect(firstLogonProgram).not.toContain("$PSCommandPath");

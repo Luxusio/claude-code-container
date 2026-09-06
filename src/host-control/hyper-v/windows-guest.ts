@@ -19,6 +19,7 @@ import {
     ownedVmPrelude,
     guestSessionPrelude,
     assertGuestPath,
+    ownershipMarker,
 } from "./core.js";
 
 // Fixed name of the first-logon program carried as its own file on the CCC_UNATTEND ISO.
@@ -112,11 +113,34 @@ export function hyperVGuestProvisionCommand(options: HyperVGuestProvisionOptions
         // this program ran from the absence of the secrets: with LogonCount 1, Windows itself
         // decrements AutoLogonCount to zero and drops DefaultPassword/AutoAdminLogon during the
         // autologon, possibly before FirstLogonCommands fires at all, and Setup redacts its own
-        // cached answer file. All three absence signals are therefore reachable without us. Only
-        // this key is not. Every statement above runs under SilentlyContinue and cannot throw, so
-        // reaching this line means they all executed.
-        "New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -Force -ErrorAction SilentlyContinue | Out-Null",
-        "New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -Value 1 -PropertyType DWord -Force -ErrorAction SilentlyContinue | Out-Null",
+        // cached answer file. All three absence signals are therefore reachable without us; Windows
+        // cannot produce this key. Every statement above runs under SilentlyContinue and cannot
+        // throw, so reaching this line means they were all ATTEMPTED — not that they succeeded. A
+        // Remove-ItemProperty blocked by an ACL is silent and the marker is still written. What
+        // covers that is the second gate in lifecycle.ts, which re-observes the credential material
+        // independently. The marker's job is narrower and is the case this commit exists for: our
+        // program never ran at all, and Windows cleared the secrets by itself.
+        //
+        // The value is this incarnation's ownership marker, not a constant 1. A constant is
+        // satisfied by any stale copy of itself, and there is a supported way to produce one:
+        // `device_create --source-image` accepts a user-supplied VHDX, and nothing in
+        // hyperVPrepareBaseImageCommand checks for generalization. A base image captured from an
+        // already-provisioned guest would carry a constant marker into every device made from it,
+        // and each one would pass this gate without running anything. Keying it to the incarnation
+        // makes a stale value unsatisfiable rather than indistinguishable.
+        //
+        // No -Force on the New-Item: on the registry provider -Force deletes an existing key and
+        // its subkeys rather than opening it, and `ccc` under HKLM\SOFTWARE is unnamespaced and
+        // case-insensitive, so a third party's CCC key would be recursively destroyed. Without it
+        // the existing-key case is a non-terminating error the preference already swallows, and
+        // New-ItemProperty -Force below does the real work either way.
+        //
+        // Both sides are native 64-bit (OOBE powershell.exe from System32, and a 64-bit PowerShell
+        // Direct host), so no WOW6432Node redirection splits the writer from the reader. If that
+        // ever changed the two would read different views and the gate would never open — wrong,
+        // but fail-closed.
+        "New-Item -Path 'HKLM:\\SOFTWARE\\ccc' -ErrorAction SilentlyContinue | Out-Null",
+        `New-ItemProperty -LiteralPath 'HKLM:\\SOFTWARE\\ccc' -Name 'FirstLogonCompleted' -Value ${psQuote(ownershipMarker(options.ownerId, options.deviceId, options.incarnationId))} -PropertyType String -Force -ErrorAction SilentlyContinue | Out-Null`,
         // Deliberately no `Remove-Item $PSCommandPath`: this program lives on read-only ISO media,
         // so the self-delete could never succeed and only read as a cleanup that was not happening.
         // The host removes the media in hyperVGuestReadyCommand, after the gate below passes.

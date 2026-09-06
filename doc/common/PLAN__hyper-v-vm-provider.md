@@ -146,12 +146,40 @@ not proof and is not treated as proof: with `LogonCount 1` Windows itself
 decrements `AutoLogonCount` to zero and drops `DefaultPassword` and
 `AutoAdminLogon` during the autologon — possibly before `FirstLogonCommands`
 runs at all — and Setup redacts its own cached answer file. All three absence
-signals are therefore reachable without ccc, so a v18 gate built on them alone
-could certify a scrub that never happened. The marker cannot be. It is checked
-alongside, not instead of, the secrets probe: the marker says the program ran
-to completion, the secrets probe says it achieved its purpose, and neither
-implies the other. Both gates are written fail-closed (`-isnot [bool]`), so a
-malformed or absent probe answer refuses rather than opens.
+signals are therefore reachable without ccc, so a gate built on them alone
+could certify a scrub that never happened. Windows cannot produce the marker.
+
+What the marker proves is bounded, and the bound matters: every statement in the
+program runs under `SilentlyContinue`, so reaching the marker means each one was
+**attempted**, not that it succeeded. A `Remove-ItemProperty` blocked by an ACL
+is silent and the marker is still written. The credential material is covered by
+the second gate, which re-observes it independently; the marker's own job is the
+narrower case this contract exists for — the program never ran at all and
+Windows cleared the secrets by itself. Anything holding guest admin can also
+write the key, which is why the claim is "Windows cannot", not "only ccc can".
+
+The marker's value is the incarnation's ownership marker
+(`ccc-device-lab:<owner>:<device>:<incarnation>`), the same string the prelude
+checks against `$Vm.Notes`, not a constant. A constant would be satisfied by any
+stale copy of itself, and there is a supported way to make one: `device_create
+--source-image` accepts a user-supplied VHDX and does not check for
+generalization, so an image captured from an already-provisioned guest would
+carry the marker into every device built from it. Keyed to the incarnation, a
+stale marker belongs to a different incarnation and cannot satisfy the gate.
+
+The marker is checked alongside, not instead of, the secrets probe, and the two
+claims are deliberately different sizes. The marker says the program ran to
+completion. The secrets probe says the three signals it re-tests are gone — and
+only those three. The scrub clears six things (two Panther paths plus
+`DefaultPassword`, `DefaultUserName`, `AutoAdminLogon`, `AutoLogonCount`); a
+`Remove-ItemProperty` that failed on one of the last three is not visible to
+the gate, though no password survives in that state. Both gates are fail-closed:
+the secrets gate via `-isnot [bool]`, the marker gate because an absent property
+stringifies to `""` and fails the comparison.
+
+Known gap, deliberately not claimed: `C:\Windows\Panther\setupact.log` and
+`Panther\UnattendGC\setupact.log` are neither scrubbed nor probed. "Scrubbed"
+here means the six things the scrub clears, not that `Panther` is clean.
 
 A guest that never completes first logon consumes the attempt budget and
 surfaces as `hyper-v-guest-ready-timeout` with `reason`
@@ -166,12 +194,19 @@ Two consequences are deliberate and worth knowing:
   media gone, scrub never ran — cannot self-heal, and now fails every start
   with the full boot budget burned. The remedy is `device_delete` and recreate.
   This is fail-closed by choice: such a guest holds a live autologon password.
-- On that failure path the provisioning ISO stays attached and on disk, because
-  containment (stopping the VM) is implemented for `linux-vm` only. Under v17
-  the media was already gone by then, so the retained residue is a strict
-  superset of what v17 left. The device is refused rather than handed out, but
-  the ISO carries the plaintext answer file until `device_delete`. Containment
-  for `windows-vm` is a follow-up, not part of this contract.
+- On that failure path the guest is left **running**, not just holding media.
+  Containment is gated on `linux-vm`, so a `windows-vm` readiness refusal skips
+  the force-stop entirely. In the un-scrubbed case that leaves a running Windows
+  guest with `AutoAdminLogon` still set and `DefaultPassword` still in Winlogon,
+  an active desktop session as a local Administrator, and `CCC_UNATTEND` still
+  mounted carrying the plaintext answer file — until someone runs
+  `device_delete`. Under v17 the media was already gone by then, so this is a
+  strict superset of what v17 left, and worse in kind: v17 handed the user a
+  device they knew about, while this refuses it and leaves it powered on, so
+  nobody has a reason to look. Reachability is bounded by the internal/Default
+  switch with no forwarding. Containment for `windows-vm` is a deliberate open
+  decision, not an oversight: force-stopping on every readiness failure also
+  destroys the state needed to debug ordinary boot timeouts.
 The Linux readiness contract retains the seeded host key as the only
 authoritative identity. Bootstrap SSH limits
 host-key negotiation to ed25519 and disables the secondary real-IP lookup only
