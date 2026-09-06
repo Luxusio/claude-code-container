@@ -93,11 +93,23 @@ export function hyperVGuestReadyCommand(options: HyperVGuestReadyOptions): Hyper
         "    $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "    if ($Vm.Name -ne $ExpectedName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-vm-ownership-mismatch' }",
         "    if ($Vm.State -ne 'Running') { throw ('hyper-v-guest-vm-state:' + [string]$Vm.State) }",
-        "    $AttemptJob = Invoke-Command -VMId $ExpectedId -Credential $Credential -ScriptBlock { [ordered]@{ computerName = [Environment]::MachineName; addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress) } } -AsJob -ErrorAction Stop",
+        // The probe also reports whether first logon has scrubbed the provisioning
+        // secrets. Readiness used to mean only "PowerShell Direct authenticates",
+        // which becomes true as soon as the OOBE account exists — possibly before
+        // FirstLogonCommands has run. The block below then deleted the media the
+        // first-logon program is now loaded FROM, so the program exited 3 (no
+        // CCC_UNATTEND volume) and the scrub silently never happened. Nothing
+        // reads that exit code, so the loss was invisible.
+        "    $AttemptJob = Invoke-Command -VMId $ExpectedId -Credential $Credential -ScriptBlock { $Winlogon = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon'; [ordered]@{ computerName = [Environment]::MachineName; addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object IPAddress); provisioningSecretsPresent = [bool]((Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml') -or (Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml') -or ($null -ne (Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword' -ErrorAction SilentlyContinue))) } } -AsJob -ErrorAction Stop",
         `    $CompletedJob = Wait-Job -Job $AttemptJob -Timeout ${HYPER_V_POWERSHELL_DIRECT_ATTEMPT_TIMEOUT_SECONDS} -ErrorAction Stop`,
         "    if (-not $CompletedJob) { throw 'powershell-direct-attempt-timeout' }",
         "    $Probe = Receive-Job -Job $AttemptJob -ErrorAction Stop",
         "    if ($ExpectedNetworkAddress -and $Probe.addresses -notcontains $ExpectedNetworkAddress) { throw 'hyper-v-guest-network-not-ready' }",
+        // Before the media goes, not after: this is what keeps the deletion from
+        // racing the program that reads it. A launcher that exited 3 or 4 now
+        // surfaces as this readiness reason on the attempt budget instead of as
+        // a scrub that quietly did not happen.
+        "    if ($Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }",
         "    if ($ProvisioningMedia) {",
         "      $ProvisioningDrives = @(Get-VMDvdDrive -VM $Vm -ErrorAction Stop | Where-Object { $_.Path -eq $ProvisioningMedia })",
         "      if ($ProvisioningDrives.Count -gt 1) { throw 'hyper-v-guest-provisioning-media-attachment-ambiguous' }",

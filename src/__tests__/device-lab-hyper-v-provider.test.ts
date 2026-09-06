@@ -2247,6 +2247,66 @@ describe("Hyper-V provider adapter", () => {
         })).toThrow("hyper-v-guest-provisioning-media-path-outside-owner-root");
     });
 
+    it("refuses to remove the provisioning media until the guest reports the secrets scrubbed", () => {
+        const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
+        const deviceRoot = "/state/owners/0123456789abcdef/windows-vm/windows-ci-01";
+        const credentialPath = `${deviceRoot}/secrets/guest.credential.xml`;
+        const provisioningMediaPath = `${deviceRoot}/disks/autounattend.iso`;
+        // No expectedNetworkAddress: this is the shape the finding was about. With no address the
+        // network check is skipped, so PowerShell Direct authenticating was the *only* gate — and
+        // that becomes true as soon as the OOBE account exists, which can be before
+        // FirstLogonCommands runs. The scrub gate has to stand on its own here.
+        const script = scriptOf(hyperVGuestReadyCommand({
+            executable: "powershell.exe",
+            ownerId,
+            deviceId,
+            incarnationId,
+            vmName,
+            vmId,
+            deviceRoot,
+            credentialPath,
+            provisioningMediaPath,
+            timeoutMs: 300000,
+        }));
+
+        // The probe carries the evidence back: both unattend.xml resting places and the Winlogon
+        // autologon password the first-logon program clears.
+        expect(script).toContain("provisioningSecretsPresent = [bool](");
+        expect(script).toContain("Test-Path -LiteralPath 'C:\\Windows\\Panther\\unattend.xml'");
+        expect(script).toContain("Test-Path -LiteralPath 'C:\\Windows\\Panther\\Unattend\\unattend.xml'");
+        expect(script).toContain("Get-ItemProperty -LiteralPath $Winlogon -Name 'DefaultPassword'");
+
+        const gate = script.indexOf("if ($Probe.provisioningSecretsPresent) { throw 'hyper-v-guest-provisioning-not-scrubbed' }");
+        const dvdRemoval = script.indexOf("Remove-VMDvdDrive -VMDvdDrive $ProvisioningDrives[0]");
+        const isoRemoval = script.indexOf("Remove-Item -LiteralPath $ProvisioningMedia");
+        expect(gate).toBeGreaterThan(-1);
+        expect(dvdRemoval).toBeGreaterThan(-1);
+        expect(isoRemoval).toBeGreaterThan(-1);
+        // Ordering is the whole point. Containment passes just as happily with the gate placed
+        // after the deletion, which is the race this closes: the media is what the first-logon
+        // program is loaded from, so removing it first makes the program exit 3 and the scrub
+        // silently never happen.
+        expect(gate).toBeLessThan(dvdRemoval);
+        expect(gate).toBeLessThan(isoRemoval);
+        // The gate is its own statement, not a clause hanging off the network check, so it still
+        // runs when $ExpectedNetworkAddress is empty.
+        expect(script).toMatch(/\n\s*if \(\$Probe\.provisioningSecretsPresent\) \{ throw 'hyper-v-guest-provisioning-not-scrubbed' \}\n/);
+
+        // And the reason survives the failure sanitizer, so a guest stuck unscrubbed times out
+        // with a name the broker can read instead of collapsing to powershell-direct-unavailable.
+        expect(parseHyperVGuestReadyFailureObservation(JSON.stringify({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "hyper-v-guest-provisioning-not-scrubbed",
+            attempts: 150,
+        }))).toEqual({
+            ok: false,
+            error: "hyper-v-guest-ready-timeout",
+            reason: "hyper-v-guest-provisioning-not-scrubbed",
+            attempts: 150,
+        });
+    });
+
     it("collects bounded owner-fenced Hyper-V boot diagnostics", () => {
         const vmName = hyperVVmName(ownerId, deviceId, incarnationId);
         const command = hyperVGuestBootDiagnosticCommand({
