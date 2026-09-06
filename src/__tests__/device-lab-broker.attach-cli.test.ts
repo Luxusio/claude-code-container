@@ -1113,6 +1113,67 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(error).not.toHaveBeenCalled();
     });
 
+    it("shows a Windows guest that may still hold provisioning secrets, and what to do about it", async () => {
+        const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-scrub-cli-test";
+        // The CLI resolves the device from local owner state before it calls the broker.
+        const scrubOwnerId = deviceLabOwnerId(cwd);
+        const scrubStateRoot = join(homedir(), ".ccc/devices/owners", scrubOwnerId, "windows-vm");
+        mkdirSync(scrubStateRoot, { recursive: true });
+        writeFileSync(join(scrubStateRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-x", backend: "windows-vm", status: "stopped", incarnationId: "a".repeat(32) }],
+        }));
+        // A containment that could not power the guest off: the record still says running, and
+        // before this the CLI rendered a fixed key list that never touched lastBootCheck — so this
+        // printed byte-identically to a healthy device while the guest was up with a live autologon
+        // and a mounted plaintext answer file.
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            ownerId: deviceLabOwnerId(cwd),
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: true,
+                result: {
+                    device: {
+                        id: "win-x",
+                        backend: "windows-vm",
+                        status: "running",
+                        runtimeState: "Running",
+                        bootReady: false,
+                        lastBootCheck: {
+                            ready: false,
+                            error: "hyper-v-guest-provisioning-not-scrubbed",
+                            scrubContainmentFailed: true,
+                        },
+                    },
+                },
+            },
+        }));
+
+        const exitCode = await devicesCliAsync(["start", "win-x"], cwd, undefined, { invokeOwnerRpc });
+        expect(exitCode).toBe(0);
+        const rendered = log.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(rendered).toContain("bootError: hyper-v-guest-provisioning-not-scrubbed");
+        expect(rendered).toContain("scrubContainmentFailed: true");
+        expect(rendered).toContain("WARNING: this guest may still be running with provisioning secrets intact.");
+        // And the remedy, which lived only in doc/common/PLAN__hyper-v-vm-provider.md. Restarting
+        // cannot help — FirstLogonCommands fires once per OOBE and nothing re-provisions.
+        expect(rendered).toContain("delete and recreate the device");
+        expect(error).not.toHaveBeenCalled();
+
+        // The CLI must also wait as long as the broker does. Its RPC budget omitted the containment
+        // reserve, so it gave up 4m45s early — inside the window where containment runs — and lost
+        // the very reply that carries the warning above.
+        expect(invokeOwnerRpc).toHaveBeenCalledWith(
+            "broker.command.invoke",
+            expect.objectContaining({ backend: "windows-vm", command: "device_start" }),
+            expect.objectContaining({ rpcTimeoutMs: (10 * 60 * 1000) + 120000 + (5 * 60 * 1000) + (5 * 60 * 1000) + 15000 }),
+        );
+    });
+
     it("invokes authenticated owner RPC through a repaired host broker", async () => {
         const cwd = "/project/devices-owner-rpc-cli-test";
         const ownerId = deviceLabOwnerId(cwd);
@@ -1489,7 +1550,10 @@ describe("device-lab host broker physical attach and CLI", () => {
             bootTimeoutMs: 1200000,
             incarnationId,
         }), expect.objectContaining({
-            rpcTimeoutMs: 10 * 60 * 1000 + 120000 + 1200000 + 15000,
+            // Includes the containment reserve, matching what the broker actually waits. Without
+            // it the CLI abandoned the call while containment was still running and lost the reply
+            // that carries scrubContainmentFailed.
+            rpcTimeoutMs: 10 * 60 * 1000 + 120000 + 1200000 + (5 * 60 * 1000) + 15000,
         }));
 
         expect(await devicesCliAsync(["stop", "linux-dev"], cwd, undefined, { invokeOwnerRpc })).toBe(0);

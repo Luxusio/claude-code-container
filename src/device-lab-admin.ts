@@ -9,6 +9,7 @@ import {
     deviceBrokerCli,
     deviceBrokerCliAsync,
     DEVICE_BROKER_HYPER_V_MAX_BOOT_TIMEOUT_MS,
+    DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS,
     invokeHostDeviceBrokerOwnerRpc,
     type HostDeviceBrokerOwnerRpcResult,
 } from "./device-lab-broker.js";
@@ -1397,6 +1398,17 @@ function brokerRpcDevice(result: HostDeviceBrokerOwnerRpcResult): Record<string,
     return device && typeof device === "object" && !Array.isArray(device) ? device as Record<string, unknown> : null;
 }
 
+// The three readiness reasons that mean the guest's provisioning scrub is unproven. They are all
+// terminal for that device: FirstLogonCommands fires once per OOBE and there is no re-provision
+// path, so restarting cannot help. That was documented in doc/common/PLAN__hyper-v-vm-provider.md
+// and said nowhere the operator would actually be looking.
+const SCRUB_FAILURE_REASONS = new Set([
+    "hyper-v-guest-first-logon-incomplete",
+    "hyper-v-guest-provisioning-not-scrubbed",
+    "hyper-v-guest-scrub-containment-failed",
+]);
+const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this guest — delete and recreate the device";
+
 function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {
     const device = brokerRpcDevice(result);
     const lines = [
@@ -1410,6 +1422,22 @@ function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, d
     for (const key of ["name", "minimized", "minimizeConfirmed", "sandboxId", "runtimeState", "bootReady"]) {
         if (device?.[key] !== undefined) lines.push(`${key}: ${String(device[key])}`);
     }
+    // lastBootCheck was not rendered at all, so a guest refused for an un-scrubbed reason printed
+    // byte-identically to a healthy one — and a guest whose containment FAILED printed
+    // `status: running` with nothing saying it is still up holding a live autologon password and a
+    // mounted plaintext answer file. The reason and the flag are bounded codes, not host text.
+    const bootCheck = device?.lastBootCheck;
+    if (bootCheck && typeof bootCheck === "object" && !Array.isArray(bootCheck)) {
+        const record = bootCheck as Record<string, unknown>;
+        if (typeof record.error === "string") lines.push(`bootError: ${record.error}`);
+        if (record.scrubContainmentFailed === true) {
+            lines.push("scrubContainmentFailed: true");
+            lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
+        }
+        if (typeof record.error === "string" && SCRUB_FAILURE_REASONS.has(record.error)) {
+            lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
+        }
+    }
     return `${lines.join("\n")}\n`;
 }
 
@@ -1418,7 +1446,13 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     const error = typeof body?.error === "string" ? body.error : result.error || "broker-operation-failed";
     const detail = typeof body?.detail === "string" ? body.detail : result.detail;
     const missing = Array.isArray(body?.missing) && body.missing.length > 0 ? ` (missing: ${body.missing.join(", ")})` : "";
-    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}`;
+    // This is where an operator actually lands on a refused start, so the terminal reasons say what
+    // to do here rather than only in the plan doc. Restarting cannot help: FirstLogonCommands fires
+    // once per OOBE and nothing re-provisions.
+    const remedy = typeof detail === "string" && SCRUB_FAILURE_REASONS.has(detail)
+        ? `\n  ${SCRUB_FAILURE_REMEDY}`
+        : "";
+    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${remedy}`;
 }
 
 function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm" | "linux-vm", deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {
@@ -2490,7 +2524,14 @@ export async function devicesCliAsync(
                 : parsed.action === "create" && (parsed.backend === "windows-vm" || parsed.backend === "linux-vm")
                     ? 21615000
                     : (parsed.backend === "windows-vm" || parsed.backend === "linux-vm")
-                        ? (10 * 60 * 1000) + 120000 + hyperVBootTimeoutMs + 15000
+                        // The reserve term matches what the broker actually waits. Without it this
+                        // sum gave up 4m45s before the broker's own window closed — precisely the
+                        // stretch in which windows-vm containment runs — so `ccc devices start`
+                        // could time out mid-containment and lose the reply carrying
+                        // scrubContainmentFailed. The MCP client already includes it; the host CLI
+                        // did not, and windows-vm taking the reserve is what made that gap bite.
+                        ? (10 * 60 * 1000) + 120000 + hyperVBootTimeoutMs
+                            + (hyperVBootTimeoutMs > 0 ? DEVICE_BROKER_HYPER_V_CLEANUP_RESERVE_MS : 0) + 15000
                     : 300000,
         });
         if (!result.ok) {
