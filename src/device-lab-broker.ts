@@ -13454,59 +13454,6 @@ async function lifecycleCommandInvokeUnlocked(
                 hyperVGuestReadyFailureCode,
             );
         }
-    // Scrub-failure containment, windows-vm only, and deliberately narrower than the linux block
-    // above. These two reasons are the ones that prove the guest is sitting there with a live
-    // autologon password and the plaintext answer file still mounted, so leaving it Running until
-    // someone happens to run device_delete is the worst of both worlds: refused, so nobody looks,
-    // and still exploitable from inside. Every other readiness failure — an ordinary boot timeout,
-    // a network mismatch — stays Running on purpose, because powering those off destroys the state
-    // needed to diagnose them.
-    //
-    // Placed after the boot diagnostic on purpose. Run before it, the diagnostic that lands in
-    // lastBootCheck describes a machine containment had already powered off — state, uptimeMs and
-    // heartbeat all post-mortem — which is the very diagnosability this scope was chosen to keep.
-    if (!success
-        && hyperVGuestReadyExecution
-        && parsed.backend === "windows-vm"
-        && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
-        // Reuses the code computed above rather than recomputing it. Two independent calls would
-        // silently disagree the day anyone adds a windows equivalent of the linux lane's error
-        // rewrite: containment would switch on the pre-rewrite reason and the report carry the
-        // post-rewrite one.
-        const containedReason = hyperVGuestReadyFailureCode;
-        if (containedReason === "hyper-v-guest-first-logon-incomplete"
-            || containedReason === "hyper-v-guest-provisioning-not-scrubbed") {
-            const device = payload.result?.device as Record<string, unknown>;
-            let scrubContained = false;
-            try {
-                const stopExecution = await hyperVProviderCommandRunner(normalized, hyperVStopCommand({
-                    executable: providerCommand.executable || "powershell.exe",
-                    ownerId,
-                    deviceId: parsed.deviceId,
-                    incarnationId: hyperVDeviceIncarnationId(device) || "",
-                    vmName: field(device, "vmName") || "",
-                    vmId: field(device, "vmId"),
-                }, true), {
-                    timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
-                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
-                });
-                const stopObservation = commandSucceeded(stopExecution)
-                    ? parseHyperVVmObservation(stopExecution.stdout || "")
-                    : null;
-                scrubContained = Boolean(stopObservation
-                    && stopObservation.state === "Off"
-                    && stopObservation.vmId === String(field(device, "vmId") || "").toLowerCase()
-                    && stopObservation.vmName === field(device, "vmName"));
-                if (scrubContained) hyperVContainedRuntimeState = "Off";
-            } catch {
-                scrubContained = false;
-            }
-            // A containment that failed must not read as one that was never needed. The reason is
-            // preserved — replacing it the way the linux block does would discard the very
-            // diagnostic that selected this path.
-            if (!scrubContained) hyperVScrubContainmentFailed = true;
-        }
-    }
         const device = payload.result?.device as Record<string, unknown>;
         try {
             const diagnosticCommand = hyperVGuestBootDiagnosticCommand({
@@ -13567,6 +13514,59 @@ async function lifecycleCommandInvokeUnlocked(
         }
     }
 
+    // Scrub-failure containment, windows-vm only, and deliberately narrower than the linux block
+    // above. These two reasons are the ones that prove the guest is sitting there with a live
+    // autologon password and the plaintext answer file still mounted, so leaving it Running until
+    // someone happens to run device_delete is the worst of both worlds: refused, so nobody looks,
+    // and still exploitable from inside. Every other readiness failure — an ordinary boot timeout,
+    // a network mismatch — stays Running on purpose, because powering those off destroys the state
+    // needed to diagnose them.
+    //
+    // Placed after the boot diagnostic on purpose. Run before it, the diagnostic that lands in
+    // lastBootCheck describes a machine containment had already powered off — state, uptimeMs and
+    // heartbeat all post-mortem — which is the very diagnosability this scope was chosen to keep.
+    if (!success
+        && hyperVGuestReadyExecution
+        && parsed.backend === "windows-vm"
+        && (parsed.command === "device_start" || parsed.command === "device_reboot")) {
+        // Reuses the code computed above rather than recomputing it. Two independent calls would
+        // silently disagree the day anyone adds a windows equivalent of the linux lane's error
+        // rewrite: containment would switch on the pre-rewrite reason and the report carry the
+        // post-rewrite one.
+        const containedReason = hyperVGuestReadyFailureCode;
+        if (containedReason === "hyper-v-guest-first-logon-incomplete"
+            || containedReason === "hyper-v-guest-provisioning-not-scrubbed") {
+            const device = payload.result?.device as Record<string, unknown>;
+            let scrubContained = false;
+            try {
+                const stopExecution = await hyperVProviderCommandRunner(normalized, hyperVStopCommand({
+                    executable: providerCommand.executable || "powershell.exe",
+                    ownerId,
+                    deviceId: parsed.deviceId,
+                    incarnationId: hyperVDeviceIncarnationId(device) || "",
+                    vmName: field(device, "vmName") || "",
+                    vmId: field(device, "vmId"),
+                }, true), {
+                    timeoutMs: hyperVRemainingTimeout(hyperVCleanupDeadlineAt, 30000),
+                    outputLimit: DEVICE_BROKER_COMMAND_OUTPUT_LIMIT,
+                });
+                const stopObservation = commandSucceeded(stopExecution)
+                    ? parseHyperVVmObservation(stopExecution.stdout || "")
+                    : null;
+                scrubContained = Boolean(stopObservation
+                    && stopObservation.state === "Off"
+                    && stopObservation.vmId === String(field(device, "vmId") || "").toLowerCase()
+                    && stopObservation.vmName === field(device, "vmName"));
+                if (scrubContained) hyperVContainedRuntimeState = "Off";
+            } catch {
+                scrubContained = false;
+            }
+            // A containment that failed must not read as one that was never needed. The reason is
+            // preserved — replacing it the way the linux block does would discard the very
+            // diagnostic that selected this path.
+            if (!scrubContained) hyperVScrubContainmentFailed = true;
+        }
+    }
     // Applied after containment because containment runs after the detail is first computed. The
     // flag has to reach the payload the operator actually reads.
     if (hyperVScrubContainmentFailed && hyperVGuestReadyFailureDetail) {
