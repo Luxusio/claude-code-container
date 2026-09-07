@@ -1887,24 +1887,40 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
 // this caller launched or nothing, and a long create legitimately looks like a
 // long silence. It is the same reason the header deadline had to go.
 // `Readable.toWeb` would be the one-liner here, but it is experimental below Node 22.17.0 and this
-// package declares `engines.node: ">=20.19.0"`, so the repo's own lint gate rejects it. Building the
-// stream by hand keeps the declared floor honest. `pause`/`resume` preserve backpressure, which a
-// naive enqueue-everything adapter would drop — the response cap is 64 MiB and this must not buffer
-// it all because the consumer is slow.
+// package declares `engines.node: ">=20.19.0"`, so the repo's own lint gate rejects it.
+//
+// Driven from the async iterator inside pull(), NOT from 'data' events, and the difference is a
+// crash. An event-driven version enqueues from a listener, and `cancel()` -> `response.destroy()`
+// does not suppress 'data': chunks already buffered in the IncomingMessage still arrive after the
+// destroy. Measured — 130,929 bytes buffered, two 'data' events after destroy() — and each one
+// reaches enqueue on a stream the cancel already closed, which throws a TypeError inside an
+// EventEmitter handler where nothing catches it. Nothing on this path installs an
+// uncaughtException handler, so the CLI dies.
+//
+// The cap path is exactly where that lands: the byte counter cancels one read after it crosses the
+// limit, while the socket is still a read ahead. A tight consumer keeps the buffer empty and never
+// sees it, which is why a green cap test proves nothing here — it only appears when the consumer
+// lags. Pulling from the iterator removes the listeners entirely, so there is no uncatchable throw
+// to have, and backpressure is inherent: pull() is called only when the queue wants a chunk.
 function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Array> {
+    const iterator = response[Symbol.asyncIterator]();
     return new ReadableStream<Uint8Array>({
-        start(controller) {
-            response.on("data", (chunk: Buffer) => {
-                controller.enqueue(new Uint8Array(chunk));
-                if ((controller.desiredSize ?? 1) <= 0) response.pause();
-            });
-            response.on("end", () => controller.close());
-            response.on("error", (error) => controller.error(error));
+        async pull(controller) {
+            try {
+                const next = await iterator.next();
+                if (next.done === true) {
+                    controller.close();
+                    return;
+                }
+                controller.enqueue(new Uint8Array(next.value as Buffer));
+            } catch (error) {
+                controller.error(error);
+            }
         },
-        pull() {
-            response.resume();
-        },
-        cancel() {
+        async cancel() {
+            // Ends the iterator first, which destroys the stream through Node's own teardown
+            // rather than racing it.
+            await iterator.return?.(undefined).catch(() => undefined);
             response.destroy();
         },
     });
