@@ -1429,7 +1429,14 @@ function bootCheckLines(device: Record<string, unknown> | null): string[] {
         lines.push("scrubContainmentFailed: true");
         lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
     }
-    if (reason && SCRUB_FAILURE_REASONS.has(reason)) lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
+    // Also when containment failed, whatever the reason. Gating the remedy on the reason alone
+    // left the worst case mute: a stalled OOBE reports powershell-direct-timeout, which is not
+    // terminal, but if the stop then failed the operator was told a guest may be sitting there with
+    // a live autologon and given no next step. That guest is equally unrecoverable — the scrub
+    // cannot be retried either way — so it earns the same line.
+    if ((reason && SCRUB_FAILURE_REASONS.has(reason)) || record.scrubContainmentFailed === true) {
+        lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
+    }
     return lines;
 }
 

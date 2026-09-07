@@ -218,20 +218,32 @@ Two consequences are deliberate and worth knowing:
   admitting one on that evidence is precisely the false certification the marker
   exists to prevent. For the duration of the migration the containment path is
   therefore the common case, not the exceptional one.
-- v20 contains that failure rather than leaving it running, but only for the two
-  reasons that prove the guest holds a live secret:
+- Containment force-stops the guest rather than leaving it running. Two reasons
+  trigger it unconditionally, because they prove the guest holds a live secret:
   `hyper-v-guest-first-logon-incomplete` and
-  `hyper-v-guest-provisioning-not-scrubbed` force-stop the VM. Otherwise the
-  guest would sit there refused — so nobody looks at it — with `AutoAdminLogon`
-  set, `DefaultPassword` in Winlogon, a desktop session as a local
-  Administrator, and `CCC_UNATTEND` still mounted carrying the plaintext answer
-  file, until someone ran `device_delete`.
+  `hyper-v-guest-provisioning-not-scrubbed`. Otherwise the guest would sit there
+  refused — so nobody looks at it — with `AutoAdminLogon` set, `DefaultPassword`
+  in Winlogon, a desktop session as a local Administrator, and `CCC_UNATTEND`
+  still mounted carrying the plaintext answer file, until someone ran
+  `device_delete`.
 
-  Containment is deliberately **not** widened to every readiness failure, unlike
-  the `linux-vm` lane: powering off an ordinary boot timeout or network mismatch
-  destroys the state needed to diagnose it. Both halves are pinned by test — the
-  two reasons must leave the guest `Off`, a `powershell-direct-attempt-timeout`
-  must leave it `Running`.
+  Those two reasons are not the whole of it, and an earlier version of this
+  paragraph — written when they were — said containment is "deliberately not
+  widened to every readiness failure". That stopped being true once the
+  media-retained arm was added, and the paragraph was not revised with it. What
+  holds now: **any** readiness failure contains while the provisioning media is
+  still retained and the scrub is unconfirmed, because a guest that never
+  completed first logon is un-scrubbed whatever the reason says. A failure whose
+  probe never landed reports a transport code that proves nothing, and that is
+  the most likely way a fresh VM's first start fails.
+
+  Containment is still not universal, and the line is the media rather than the
+  reason: once the ISO is gone and `scrubConfirmed`/`mediaDetached` are both set,
+  an ordinary boot timeout or network mismatch on an already-scrubbed guest stays
+  `Running` and diagnosable. Both halves are pinned by test — the un-scrubbed
+  cases and the media-retained ones must leave the guest `Off`, while a scrubbed
+  guest with a network mismatch or a failed media cleanup must leave it
+  `Running`.
 
   If the force-stop is not confirmed, the readiness reason is preserved
   (replacing it the way the linux lane does would discard the diagnostic that
@@ -338,7 +350,18 @@ Two consequences are deliberate and worth knowing:
     because `Paused`, `Saved`, `Starting` and `Stopping` are all guests still
     holding a mounted answer file.
 
-    Snapshot restore can put a guest back to a pre-scrub disk state, and nothing
+    Two reporting surfaces remain narrower than the record, both known and neither
+  blocking. The remedy — delete and recreate — is emitted by the CLI only; the
+  broker sets no `remedy` field, so an MCP caller sees the reason and
+  `scrubContainmentFailed` but is not told the next step. And the fleet-level CLI
+  views (`ccc devices list`, bare `ccc devices`) render only id/name/status, so
+  an uncontained guest is indistinguishable there from a healthy one; the flag is
+  reachable through `ccc devices status <id>` and through MCP `device_list`,
+  which does project it. The asymmetry runs the opposite way from the earlier
+  rounds: an agent scanning over MCP sees the flag, an operator scanning the CLI
+  list does not.
+
+  Snapshot restore can put a guest back to a pre-scrub disk state, and nothing
     gates `device_snapshot_create` on scrub state, so that state is reachable.
     It is not a silent uncontained guest, though, and it is deliberately left to
     the gates rather than given code of its own. Restoring reverts the marker
