@@ -79,11 +79,21 @@ async function bootstrapSource() {
 }
 
 const bootstrap = libraryFixtureOnly ? null : await bootstrapSource();
-if (requireParser && !bootstrap) {
+// `--library-fixture-only` narrows the file set to the library fixture ON PURPOSE, so a null
+// bootstrap there is the mode working, not evidence of a missing build. Without this exemption the
+// two flags contradict each other and the combination can never succeed — which is exactly how
+// hyper-v-windows-library-command.mjs invokes this on win32, so the Windows library test threw
+// every time while Linux (no --require-parser) passed. The thrown message named a build as the
+// cause, so the failure read as a local environment problem rather than a flag conflict.
+if (requireParser && !bootstrap && !libraryFixtureOnly) {
     // --require-parser already hard-fails when PowerShell is missing; silently dropping a file in
     // that mode is the same defect in a different place — absence of evidence reported as success.
     // The usual cause is running this before `tsc`, since the bootstrap is read from dist/.
-    throw new Error("session bootstrap unavailable for parsing: build before running with --require-parser");
+    throw new Error(
+        "session bootstrap unavailable for parsing: dist/hyper-v-windows/low-level/powershell-session.js"
+        + " is missing or exports no HYPER_V_WINDOWS_SESSION_BOOTSTRAP string."
+        + " Run `npm run build:hyper-v:windows:library` (or any tsc build) before --require-parser.",
+    );
 }
 const files = (libraryFixtureOnly ? [libraryFixture] : [
     ...filesUnder(assetRoot),

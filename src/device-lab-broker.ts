@@ -1911,7 +1911,9 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
 // never fires, at lag >= 50ms it fires every run — one enqueue-after-cancel, one caught
 // TypeError, zero uncaught. Removing the catch on the reasoning that pull is not re-entered after
 // cancel restores the process kill; that reasoning is true and is not the hazard.
-function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Array> {
+// Exported as a test seam. The invariant worth pinning is structural — that this registers no
+// listeners — and that cannot be observed through invokeHostDeviceBrokerOwnerRpc.
+export function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Array> {
     const iterator = response[Symbol.asyncIterator]();
     return new ReadableStream<Uint8Array>({
         async pull(controller) {
