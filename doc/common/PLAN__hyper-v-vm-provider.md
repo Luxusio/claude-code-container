@@ -1110,13 +1110,24 @@ formatter that runs while building an error string, and elevating the launcher
 instead would detach the terminal stdin the evaluation-licence question uses.
 
 The code an operator will see and can grep for is
-`hyper-v-setup-diagnostics-mount-privilege-required[elevate,...]`. Two caveats
-worth knowing: the probe tests the local Administrators role, so membership of
-Hyper-V Administrators alone runs VMs but does not grant the mount privilege
-and elevating within that group will not resolve it; and on an unelevated host
-the code is emitted for *any* mount failure, including a transient category
-such as `ResourceBusy`, because `Mount-VHD` cannot succeed there whatever else
-is also true.
+`hyper-v-setup-diagnostics-mount-privilege-required[elevate,...]`.
+
+Two caveats, one of them **asserted rather than measured**. The probe tests the
+local Administrators role, and the warning text tells operators that membership
+of Hyper-V Administrators alone runs VMs but does not grant the mount
+privilege. What was actually observed is weaker: one unelevated run failed with
+`0x80070522`. If the stronger claim is wrong it is wrong for a whole host class
+— the elevation clause would abandon retries at attempt 1 on genuinely
+transient errors and print a remedy that does not help. It is a one-command
+check on a Windows host (`whoami /groups`, then whether `Mount-VHD` succeeds
+unelevated) and has not been run.
+
+The second: on an unelevated host the code is emitted for *any* mount failure,
+including a transient category such as `ResourceBusy`, because `Mount-VHD`
+cannot succeed there whatever else is also true. The emitted code then pairs
+`elevate` with the real category, which reads as a contradiction and is not
+one — `c=` reports what happened, the prefix reports what to do, and both are
+true. That pairing is pinned by test rather than left to be discovered.
 
 ## Known Gaps
 
