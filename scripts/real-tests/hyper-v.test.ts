@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
-import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, runHyperVLevel3, runHyperVTests } from "./hyper-v.ts";
+import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, runHyperVLevel3, runHyperVTests, warnIfSetupDiagnosticsWillLackPrivilege } from "./hyper-v.ts";
 import { repoRoot } from "./helpers.ts";
 import {
     buildLevel3Artifacts,
@@ -651,5 +651,62 @@ describe("Windows Server evaluation license prompt", () => {
         });
         expect(status).toBe(1);
         expect(runSupervisedProcessImpl).not.toHaveBeenCalled();
+    });
+    // The warning exists because a real host only revealed the missing privilege after two minutes
+    // of booting a VM, and then reported it as an unreadable host-locale blob. Warning before the
+    // wait is the whole point, so the placement matters as much as the text.
+    it("warns before the run when Windows Setup diagnostics will lack the privilege they need", () => {
+        const lines: string[] = [];
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
+            isAdministratorImpl: () => false,
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(true);
+        const output = lines.join("");
+        expect(output, "must name the code the operator will actually see").toContain("hyper-v-setup-diagnostics-mount-privilege-required");
+        expect(output, "must say what to do").toContain("elevated terminal");
+        expect(output, "must not imply the VM lifecycle is broken").toContain("lifecycle itself is unaffected");
+    });
+
+    it("stays silent when the run is already elevated", () => {
+        const lines: string[] = [];
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
+            isAdministratorImpl: () => true,
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(false);
+        expect(lines).toEqual([]);
+    });
+
+    // Off Windows there is no privilege to lack, and probing would spawn a PowerShell that is not
+    // there. This is also what keeps the linux suite from printing a Windows warning.
+    it("does not probe for elevation off Windows", () => {
+        const lines: string[] = [];
+        const isAdministratorImpl = vi.fn(() => false);
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+            platform: "linux",
+            isAdministratorImpl,
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(false);
+        expect(isAdministratorImpl).not.toHaveBeenCalled();
+        expect(lines).toEqual([]);
+    });
+
+    // A probe that throws must not be reported as "not elevated" — that would tell an operator to
+    // re-run elevated when they may already be. Say only what is known.
+    it("reports an undetermined probe as undetermined, not as unelevated", () => {
+        const lines: string[] = [];
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => { throw new Error("hyper-v-library-elevation-system-root-invalid"); },
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(false);
+        expect(lines.join("")).toContain("Could not determine whether this run is elevated");
     });
 });

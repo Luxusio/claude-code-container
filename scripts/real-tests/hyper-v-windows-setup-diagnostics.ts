@@ -181,6 +181,16 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // stays bounded by the MAX_OUTPUT_BYTES check on the whole stdout; a message large enough to
         // breach that fails the diagnostic outright, which loses the diagnosis but leaks nothing.
         "      $MountMessage = [string]$_.Exception.Message",
+        // ERROR_PRIVILEGE_NOT_HELD does not become true by waiting. A real host burned 7 attempts
+        // with exponential backoff on it, spending the diagnostic's whole budget to re-learn the
+        // same answer, and the operator got a mojibake blob instead of "run this elevated".
+        //
+        // Matched on the message rather than the HResult on purpose: the comment above already
+        // records that CategoryInfo/HResult come back generic (NotSpecified/0x80131500) on a real
+        // host, and that is what was observed here too — h=2146233088, with the only true cause,
+        // (0x80070522), inside the localized message. That substring is ASCII, so it survives a
+        // host locale this pipeline otherwise mangles.
+        "      if ($MountMessage -match '0x80070522') { $MountPrivilege = $true; break }",
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
         // included in the comparison, so a check passing just under the deadline cannot then add a
@@ -225,7 +235,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "} catch {",
         "  $Message = [string]$_.Exception.Message",
         "  if ($Message -eq 'hyper-v-setup-diagnostics-mount-failed' -and $MountAttempts -gt 0) {",
-        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult; message = $MountMessage } }",
+        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult; message = $MountMessage; privilege = [bool]$MountPrivilege } }",
         "  } else {",
         "    if ($Message -match '^hyper-v-setup-diagnostics-[a-z-]+$') { $Code = $Message } else { $Code = $Stage }",
         "    $Result = [ordered]@{ ok = $false; code = $Code }",
@@ -289,7 +299,17 @@ function mountFailureCode(value: unknown): string | null {
     // `m` is always last and its value may contain `,` and `=`, so read it greedily to the closing
     // `]` rather than splitting the bracket body on `,`.
     const message = mountFailureMessage((value as { message?: unknown }).message);
-    return `hyper-v-setup-diagnostics-mount-failed[a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}]`;
+    // A privilege failure gets its own code because it is the one mount failure with a fixed
+    // remedy. Rolled in with the rest it reached the operator as a generic bracket plus a
+    // host-locale message this pipeline mangles — on the run that prompted this, an unreadable
+    // Korean blob whose only usable content was an HRESULT nobody decodes by eye. `elevate` says
+    // what to do; the bracket is kept verbatim beside it so nothing that parsed the old shape
+    // loses its fields.
+    const detail = `a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}`;
+    if ((value as { privilege?: unknown }).privilege === true) {
+        return `hyper-v-setup-diagnostics-mount-privilege-required[elevate,${detail}]`;
+    }
+    return `hyper-v-setup-diagnostics-mount-failed[${detail}]`;
 }
 
 // A drive-lettered or UNC path, continuing across spaces while the next few segments still reach

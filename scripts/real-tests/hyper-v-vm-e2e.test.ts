@@ -1047,6 +1047,35 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891]",
         });
+        // A privilege failure is the one mount failure with a fixed remedy, so it gets its own code
+        // and says so. Shape taken from the real host that prompted it: ERROR_PRIVILEGE_NOT_HELD,
+        // with the generic HResult the comment below describes and the true cause only inside the
+        // message. attempts=1 because the PowerShell loop now stops on this instead of retrying an
+        // error that waiting cannot fix — the host burned 7 attempts with backoff to re-learn it.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: {
+                attempts: 1,
+                category: "NotSpecified",
+                hresult: 2146233088,
+                message: "The system failed to mount (0x80070522).",
+                privilege: true,
+            },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=The system failed to mount (0x80070522).]",
+        });
+        // And the negative: a busy mount is transient and retryable, so it must NOT be relabelled
+        // as needing elevation. Same bracket, same code as before this distinction existed.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, privilege: false },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891]",
+        });
         // The message is the only field that ever names the cause: a real host reported
         // NotSpecified/0x80131500, which says nothing. It is appended, and it is redacted.
         expect(run({

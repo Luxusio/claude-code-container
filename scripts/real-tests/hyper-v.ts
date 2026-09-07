@@ -7,6 +7,7 @@ import { repoRoot } from "./helpers.ts";
 import { withExclusiveRealProviderRun } from "./exclusive-real-provider-run.ts";
 import { runSupervisedProcess } from "./supervised-process.ts";
 import { buildLevel3Artifacts, ensureHostBrokerReady } from "./support/level3-host.ts";
+import { isAdministrator, resolveTrustedWindowsPowerShell } from "./hyper-v-windows-library-elevation.mjs";
 import { selectHyperVWindowsProfile } from "./select-windows-profile.ts";
 // Import ONLY the leaf contracts module (no transitive src imports) — importing the deeper
 // hyper-v-images.ts pulls `.js` src imports the real-test source loader can't resolve on Windows.
@@ -109,6 +110,41 @@ export async function ensureWindowsServerEvaluationLicense(target: string, deps:
     return { ok: true, reason: "accepted-now" };
 }
 
+// Says up front what a real host only revealed after two minutes of booting: Mount-VHD needs a
+// privilege that Hyper-V VM management does not carry, so an unelevated run creates the VM, waits
+// for it, fails, and only then reports the setup diagnostic as unavailable — with a host-locale
+// message this pipeline mangles. The diagnostic is what would have explained the failure.
+//
+// A warning rather than a prompt. The launcher owns the terminal stdin the evaluation-licence
+// question runs through, and re-launching it under UAC detaches that; a diagnostic is not worth
+// trading the interactive flow for. Elevation stays the operator's call, made before the wait
+// rather than discovered after it.
+export function warnIfSetupDiagnosticsWillLackPrivilege(dependencies: any = {}): boolean {
+    const platform = dependencies.platform || process.platform;
+    if (platform !== "win32") return false;
+    const write = dependencies.writeImpl || ((line: string) => process.stderr.write(line));
+    let elevated: boolean;
+    try {
+        const resolvePowerShell = dependencies.resolveTrustedWindowsPowerShellImpl || resolveTrustedWindowsPowerShell;
+        const probe = dependencies.isAdministratorImpl || isAdministrator;
+        elevated = probe({ powerShellPath: resolvePowerShell() });
+    } catch {
+        // The probe itself failing is not a reason to block or to claim elevation is missing. Say
+        // only what is true: it could not be determined.
+        write("NOTE Could not determine whether this run is elevated; Windows Setup diagnostics may be unavailable.\n");
+        return false;
+    }
+    if (elevated) return false;
+    write(
+        "NOTE This run is not elevated. Windows Setup diagnostics mount the guest VHDX to read Panther\n"
+        + "     logs, which needs a privilege Hyper-V VM management does not grant, so on a guest that\n"
+        + "     fails to boot you will get hyper-v-setup-diagnostics-mount-privilege-required instead of\n"
+        + "     the logs explaining why. The VM lifecycle itself is unaffected.\n"
+        + "     Re-run from an elevated terminal to keep the diagnostics.\n",
+    );
+    return true;
+}
+
 export async function runHyperVTests(target: string, dependencies: any = {}) {
     const testFiles = hyperVTestFiles(target);
     const env = dependencies.env || process.env;
@@ -118,6 +154,7 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
     const ensureLicense = dependencies.ensureWindowsEvaluationLicenseImpl || ensureWindowsServerEvaluationLicense;
     const buildStatus = build(repoRoot, { env });
     if (buildStatus !== 0) return buildStatus;
+    warnIfSetupDiagnosticsWillLackPrivilege(dependencies);
     const license = await ensureLicense(target, dependencies.licenseDeps || {});
     if (!license.ok) {
         process.stderr.write(
