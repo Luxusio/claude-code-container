@@ -741,6 +741,11 @@ describe("device-lab host broker lifecycle commands", () => {
             | "powershell-direct-session-unavailable"
             | "powershell-direct-unavailable"
             | "hyper-v-guest-network-not-ready" = false;
+        // The fifth probe-never-returned reason is not one the script can throw: the four above
+        // ride the readiness script's own structured failure JSON, while `powershell-direct-timeout`
+        // is synthesized by the broker when the readiness command itself times out and emits no
+        // JSON at all. Reaching it needs the command to time out, not a reason to be injected.
+        let guestReadyCommandTimedOut = false;
         // Mirrors the script's $ScrubConfirmed latch: true for failures thrown BELOW both scrub
         // gates, where the guest is clean and only the media removal or network check failed.
         let guestReadyScrubFailureScrubbed = false;
@@ -1017,6 +1022,10 @@ describe("device-lab host broker lifecycle commands", () => {
                 stderr: snapshotOperation
                     ? "host path C:\\snapshot-provider-host-secret"
                     : "",
+                // A readiness command that never came back: no structured JSON to parse, so the
+                // broker names the cause itself. Spread last so it overrides the stdout and status
+                // the branches above chose.
+                ...(guestReady && guestReadyCommandTimedOut ? { status: null, stdout: "", timedOut: true } : {}),
             };
         });
         const server = createDeviceBrokerServer({
@@ -1264,10 +1273,11 @@ describe("device-lab host broker lifecycle commands", () => {
             // The other half of the decision: an ordinary readiness timeout leaves the VM Running
             // on purpose, because powering it off destroys the state needed to diagnose it. Without
             // this, "contain every failure" would satisfy the loop above just as well.
-            // All four probe-never-returned reasons, not just one. The doc claims this set is
-            // pinned by test; listing three of them in prose while asserting only the fourth is the
-            // kind of claim this series has already had to retract more than once. They share a
-            // code path, so looping is a one-line cost.
+            // All four script-thrown probe-never-returned reasons, not just one. The doc claims
+            // this set is pinned by test; listing some of them in prose while asserting only one is
+            // the kind of claim this series has already had to retract more than once. These four
+            // share a code path — the script's structured failure JSON — so looping is a one-line
+            // cost. The fifth reason does not share it, and gets its own case below.
             for (const unknownReason of [
                 "powershell-direct-attempt-timeout",
                 "powershell-direct-authentication-failed",
@@ -1281,6 +1291,19 @@ describe("device-lab host broker lifecycle commands", () => {
                 expect(vmState, `${unknownReason} must stay debuggable, not be powered off`).toBe("Running");
                 expect(containmentStops().length, `no containment stop for ${unknownReason}`).toBe(stopsBeforeTimeout);
             }
+            // The fifth, reached the only way it can be: the readiness command times out with no
+            // output. It belongs to the same class as the four above — the probe never landed, so
+            // the reason proves nothing — and must be treated the same way. It was missing from
+            // both this file and the doc while sitting in the reader-facing projection allowlist,
+            // which is how a reason ends up unreviewed on either side of the boundary.
+            guestReadyScrubFailure = false;
+            guestReadyCommandTimedOut = true;
+            const stopsBeforeCommandTimeout = containmentStops().length;
+            const commandTimedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await commandTimedOut.json())).toContain("powershell-direct-timeout");
+            expect(vmState, "powershell-direct-timeout must stay debuggable, not be powered off").toBe("Running");
+            expect(containmentStops().length, "no containment stop for powershell-direct-timeout").toBe(stopsBeforeCommandTimeout);
+            guestReadyCommandTimedOut = false;
             // A containment that could not power the guest off must say so. This flag is the only
             // signal that a guest is still live with a hot credential, so silence here would be the
             // same class of invisible failure the whole series exists to remove. The readiness
@@ -1680,9 +1703,10 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 159 over the pre-containment 105, across twenty-one
-            // extra device_start round trips: two un-scrubbed reasons, four probe-never-returned
-            // reasons, the first-boot media-retained case, the scrubbed-and-detached case, the
+            // The scrub-containment cases add 165 over the pre-containment 105, across twenty-two
+            // extra device_start round trips: two un-scrubbed reasons, five probe-never-returned
+            // reasons (four thrown by the script, one synthesized from a command timeout),
+            // the first-boot media-retained case, the scrubbed-and-detached case, the
             // scrubbed-but-still-mounted case, four live guest states that must still be contained
             // and two off states that must not, the identity-mismatch case where readiness never
             // runs and the containment stop also fails, one containment-stop failure, one
@@ -1692,7 +1716,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // accounting — "each contained case costs a stop plus an ownership read" — was measured
             // and is not what the cases actually cost; a plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(264);
+            expect(commandRunner).toHaveBeenCalledTimes(270);
         } finally {
             await close(server);
             cleanupOwner(ownerId);

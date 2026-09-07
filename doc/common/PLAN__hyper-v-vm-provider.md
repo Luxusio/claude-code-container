@@ -287,7 +287,8 @@ Two consequences are deliberate and worth knowing:
     PowerShell Direct probe to have landed. When it never lands —
     `powershell-direct-attempt-timeout`,
     `powershell-direct-authentication-failed`,
-    `powershell-direct-session-unavailable`, `powershell-direct-unavailable` —
+    `powershell-direct-session-unavailable`, `powershell-direct-unavailable`,
+    `powershell-direct-timeout` —
     the reason proves nothing, and scoping containment to proof alone left the
     most likely failure of a fresh VM's first start (a stalled OOBE) running in
     its default state: plaintext answer file on the mounted ISO, live
