@@ -1,9 +1,10 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { spawn, spawnSync } from "child_process";
 import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
+import { Readable } from "stream";
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
 import { Worker } from "worker_threads";
@@ -1811,7 +1812,9 @@ function boundedHostBrokerRawText(text: string): string {
     return `${prefix}${suffix}`;
 }
 
-export async function readHostBrokerHttpJson(response: Response, maxBytes: number) {
+export type HostBrokerHttpResponse = Pick<Response, "status" | "headers" | "body">;
+
+export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, maxBytes: number) {
     if (response.status >= 300 && response.status < 400) {
         await response.body?.cancel().catch(() => undefined);
         return { ok: false as const, error: "broker-redirect-disallowed", body: null, maxBytes };
@@ -1859,6 +1862,47 @@ export async function readHostBrokerHttpJson(response: Response, maxBytes: numbe
             maxBytes,
         };
     }
+}
+
+// The runtime `fetch` enforces a header deadline of its own — undici aborts with
+// UND_ERR_HEADERS_TIMEOUT after 300s and no request option raises it. Every RPC
+// budget above five minutes (a Hyper-V create is measured in hours) would be cut
+// there and surface as `broker-rpc-unavailable`: the caller's own clock never
+// gets to speak. This transport carries no deadline, so the caller's abort
+// signal is the only one.
+async function hostBrokerHttpRequest(url: string, init: {
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    signal: AbortSignal;
+}): Promise<HostBrokerHttpResponse> {
+    const payload = Buffer.from(init.body, "utf8");
+    return await new Promise<HostBrokerHttpResponse>((resolveResponse, rejectResponse) => {
+        const request = httpRequest(url, {
+            method: init.method,
+            headers: { ...init.headers, "content-length": String(payload.byteLength) },
+            // A one-off agent: nothing is pooled, so a finished CLI process is not
+            // held open by a keep-alive socket waiting on the next request.
+            agent: false,
+            signal: init.signal,
+        }, (response) => {
+            const headers = new Headers();
+            for (const [name, value] of Object.entries(response.headers)) {
+                if (Array.isArray(value)) {
+                    for (const entry of value) headers.append(name, entry);
+                } else if (typeof value === "string") {
+                    headers.append(name, value);
+                }
+            }
+            resolveResponse({
+                status: response.statusCode || 0,
+                headers,
+                body: Readable.toWeb(response) as HostBrokerHttpResponse["body"],
+            });
+        });
+        request.on("error", rejectResponse);
+        request.end(payload);
+    });
 }
 
 async function probeHostBrokerHealth(host: string, port: number, timeoutMs: number) {
@@ -3012,7 +3056,9 @@ export async function invokeHostDeviceBrokerOwnerRpc(
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const response = await fetch(`http://${host}:${port}/v1/owners/${encodeURIComponent(ownerId)}/rpc`, {
+        // Node's http client never follows redirects, so the 3xx rejection in
+        // readHostBrokerHttpJson stays the only redirect policy this lane has.
+        const response = await hostBrokerHttpRequest(`http://${host}:${port}/v1/owners/${encodeURIComponent(ownerId)}/rpc`, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
@@ -3020,18 +3066,19 @@ export async function invokeHostDeviceBrokerOwnerRpc(
             },
             body: JSON.stringify({ method, params }),
             signal: controller.signal,
-            redirect: "manual",
         });
         const responseBody = await readHostBrokerHttpJson(response, DEVICE_BROKER_RPC_RESPONSE_LIMIT_BYTES);
         const parsed = responseBody.body as Record<string, unknown> | null;
+        // What `Response.ok` meant, spelled out: this transport reports a status, not a verdict.
+        const httpOk = response.status >= 200 && response.status < 300;
         return {
-            ok: responseBody.ok && response.ok && parsed?.ok === true,
+            ok: responseBody.ok && httpOk && parsed?.ok === true,
             status: response.status,
             ownerId,
             host,
             port,
             body: parsed,
-            ...(!responseBody.ok || !response.ok || parsed?.ok !== true
+            ...(!responseBody.ok || !httpOk || parsed?.ok !== true
                 ? { error: !responseBody.ok ? responseBody.error : typeof parsed?.error === "string" ? parsed.error : `broker-rpc-http-${response.status}` }
                 : {}),
         };

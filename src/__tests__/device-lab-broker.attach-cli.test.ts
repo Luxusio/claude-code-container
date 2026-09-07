@@ -1396,6 +1396,98 @@ describe("device-lab host broker physical attach and CLI", () => {
         }
     });
 
+    it("does not route the owner RPC through the runtime fetch", async () => {
+        // The runtime `fetch` carries undici's own 300s header deadline, which no request
+        // option raises. A Hyper-V create budget is measured in hours, so a lane that runs
+        // on `fetch` reports `broker-rpc-unavailable` five minutes in and calls the boot
+        // silent — the exact failure class this series set out to remove. Stubbing `fetch`
+        // to throw is what makes the transport choice observable from a test.
+        const cwd = "/project/devices-owner-rpc-transport-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const server = createDeviceBrokerServer({ cwd, host: "127.0.0.1", port: 0 });
+        const baseUrl = await listen(server);
+        const port = Number(new URL(baseUrl).port);
+        const runtimeFetch = vi.fn(async () => {
+            throw new Error("owner RPC must not use the runtime fetch");
+        });
+        vi.stubGlobal("fetch", runtimeFetch);
+        const ensureHostBroker = vi.fn(async () => ({
+            ok: true,
+            ownerId,
+            launched: false,
+            reused: true,
+            host: "127.0.0.1",
+            probeHost: "127.0.0.1",
+            port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
+            attempts: [],
+        }));
+        try {
+            const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", { value: "no-fetch" }, {
+                cwd,
+                rpcTimeoutMs: 5000,
+                ensureHostBroker,
+            });
+
+            expect(result).toEqual(expect.objectContaining({
+                ok: true,
+                status: 200,
+                body: expect.objectContaining({
+                    ok: true,
+                    result: expect.objectContaining({ params: { value: "no-fetch" } }),
+                }),
+            }));
+            expect(runtimeFetch).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllGlobals();
+            await close(server);
+        }
+    });
+
+    it("times out the owner RPC on the caller's budget when headers never arrive", async () => {
+        // The replacement transport sets no deadline of its own, so the abort signal is the
+        // only clock. A server that accepts the request and then says nothing must still
+        // land on `broker-rpc-timeout` — not on the transport's own error.
+        const cwd = "/project/devices-owner-rpc-header-silence-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const sockets: import("net").Socket[] = [];
+        const server = createServer(() => {
+            // Deliberately never respond: headers are the thing under test.
+        });
+        server.on("connection", (socket) => sockets.push(socket));
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as { port: number }).port;
+        const ensureHostBroker = vi.fn(async () => ({
+            ok: true,
+            ownerId,
+            launched: false,
+            reused: true,
+            host: "127.0.0.1",
+            probeHost: "127.0.0.1",
+            port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
+            attempts: [],
+        }));
+        try {
+            const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", {}, {
+                cwd,
+                rpcTimeoutMs: 250,
+                ensureHostBroker,
+            });
+
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                status: null,
+                error: "broker-rpc-timeout",
+            }));
+        } finally {
+            for (const socket of sockets) socket.destroy();
+            await close(server);
+        }
+    });
+
     it("does not send owner credentials after the broker listener generation changes", async () => {
         const cwd = "/project/devices-owner-rpc-listener-swap-test";
         const ownerId = deviceLabOwnerId(cwd);
