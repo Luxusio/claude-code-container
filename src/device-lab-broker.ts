@@ -3083,7 +3083,12 @@ export async function invokeHostDeviceBrokerOwnerRpc(
                 : {}),
         };
     } catch (error) {
-        const timedOut = error instanceof Error && error.name === "AbortError";
+        // The signal, not the error's shape. Node raises a real AbortError only when the abort
+        // lands before response headers; abort it mid-body and the socket is destroyed with a bare
+        // `Error: aborted` (code ECONNRESET), which read as `broker-rpc-unavailable` — the broker
+        // is gone — when the truth is that it is alive and slow. A long Hyper-V boot is the likely
+        // shape for that, since the broker can send headers well before it finishes replying.
+        const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
         return {
             ok: false,
             status: null,

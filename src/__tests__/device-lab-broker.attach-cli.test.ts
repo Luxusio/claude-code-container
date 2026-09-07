@@ -1488,6 +1488,52 @@ describe("device-lab host broker physical attach and CLI", () => {
         }
     });
 
+    it("times out the owner RPC on the caller's budget when the reply stalls mid-body", async () => {
+        // The other half of the classification, and the half a long Hyper-V boot actually lands on:
+        // the broker sends headers promptly and then stalls. Node destroys the socket with a bare
+        // `Error: aborted` rather than an AbortError, so keying off the error's name reported
+        // `broker-rpc-unavailable` — the broker is gone — for a broker that is alive and slow.
+        const cwd = "/project/devices-owner-rpc-body-stall-test";
+        const ownerId = deviceLabOwnerId(cwd);
+        const sockets: import("net").Socket[] = [];
+        const server = createServer((_req, res) => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.write("{");
+            // Headers are out and the body has begun; it never finishes.
+        });
+        server.on("connection", (socket) => sockets.push(socket));
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const port = (server.address() as { port: number }).port;
+        const ensureHostBroker = vi.fn(async () => ({
+            ok: true,
+            ownerId,
+            launched: false,
+            reused: true,
+            host: "127.0.0.1",
+            probeHost: "127.0.0.1",
+            port,
+            verifiedBrokerPid: process.pid,
+            verifiedBrokerProcessStartToken: readDeviceRuntimeProcessStartToken(process.pid),
+            attempts: [],
+        }));
+        try {
+            const result = await invokeHostDeviceBrokerOwnerRpc("broker.echo", {}, {
+                cwd,
+                rpcTimeoutMs: 250,
+                ensureHostBroker,
+            });
+
+            expect(result).toEqual(expect.objectContaining({
+                ok: false,
+                status: null,
+                error: "broker-rpc-timeout",
+            }));
+        } finally {
+            for (const socket of sockets) socket.destroy();
+            await close(server);
+        }
+    });
+
     it("does not send owner credentials after the broker listener generation changes", async () => {
         const cwd = "/project/devices-owner-rpc-listener-swap-test";
         const ownerId = deviceLabOwnerId(cwd);
