@@ -1184,6 +1184,23 @@ describe("device-lab host broker lifecycle commands", () => {
             // happened, on the one path whose whole purpose was to make something happen.
             expect(neverProbedBody?.result?.execution?.mutatesHost, "containment mutated the host and must say so").toBe(true);
 
+            // The same first-boot arm reached by a command that never returned rather than a reason
+            // that was thrown. This is the dangerous inverse of the debuggable case further down: a
+            // timed-out command emits no JSON, so there is no scrub observation to parse, so
+            // $ScrubConfirmed is false — and with the ISO still on disk this guest is holding a
+            // plaintext Administrator password. It must be contained. Nothing pinned it: the gate
+            // makes it structural, but "structural" is what the four other retractions in this
+            // series also looked like before they were measured.
+            guestReadyScrubFailure = false;
+            guestReadyCommandTimedOut = true;
+            const timedOutRetainedStops = containmentStops().length;
+            const timedOutRetained = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
+            expect(JSON.stringify(await timedOutRetained.json())).toContain("powershell-direct-timeout");
+            expect(containmentStops().length, "a timed-out probe with media retained must be contained").toBeGreaterThan(timedOutRetainedStops);
+            expect(vmState).toBe("Off");
+            guestReadyCommandTimedOut = false;
+            guestReadyScrubFailure = "powershell-direct-attempt-timeout";
+
             // Media retained AND the guest demonstrably scrubbed. This is the media removal itself
             // failing — a locked ISO, an ACL, a rejected reparse path — below both scrub gates, so
             // $ScrubConfirmed is latched. Containing here powers off a healthy VM, and keeps doing
@@ -1703,9 +1720,10 @@ describe("device-lab host broker lifecycle commands", () => {
             // reconciliation behind it, the drift case costs one ownership read (its reconciliation
             // moved here from the following delete rather than adding to the total), and the
             // corrupted-metadata case costs nothing at all — that is the point of its 400.
-            // The scrub-containment cases add 165 over the pre-containment 105, across twenty-two
+            // The scrub-containment cases add 176 over the pre-containment 105, across twenty-three
             // extra device_start round trips: two un-scrubbed reasons, five probe-never-returned
-            // reasons (four thrown by the script, one synthesized from a command timeout),
+            // reasons (four thrown by the script, one synthesized from a command timeout), that
+            // same command timeout again with the media retained so it contains instead,
             // the first-boot media-retained case, the scrubbed-and-detached case, the
             // scrubbed-but-still-mounted case, four live guest states that must still be contained
             // and two off states that must not, the identity-mismatch case where readiness never
@@ -1716,7 +1734,7 @@ describe("device-lab host broker lifecycle commands", () => {
             // accounting — "each contained case costs a stop plus an ownership read" — was measured
             // and is not what the cases actually cost; a plausible breakdown is worse than none.
             // This guard exists to catch runaway provider traffic, so it stays exact.
-            expect(commandRunner).toHaveBeenCalledTimes(270);
+            expect(commandRunner).toHaveBeenCalledTimes(281);
         } finally {
             await close(server);
             cleanupOwner(ownerId);
