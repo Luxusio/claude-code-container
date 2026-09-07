@@ -1870,6 +1870,15 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
 // there and surface as `broker-rpc-unavailable`: the caller's own clock never
 // gets to speak. This transport carries no deadline, so the caller's abort
 // signal is the only one.
+//
+// The trade, stated because it is easy to miss: undici enforced a body-inactivity
+// timeout alongside the header one, and dropping the header deadline drops that
+// too. A broker that sends headers and then dribbles now holds the socket for the
+// caller's whole budget — up to hours on a Hyper-V create — where it used to be
+// cut at five minutes. That is accepted rather than overlooked: the peer has
+// already been fenced by pid and process start token above, so it is the broker
+// this caller launched or nothing, and a long create legitimately looks like a
+// long silence. It is the same reason the header deadline had to go.
 async function hostBrokerHttpRequest(url: string, init: {
     method: string;
     headers: Record<string, string>;
@@ -3086,8 +3095,17 @@ export async function invokeHostDeviceBrokerOwnerRpc(
         // The signal, not the error's shape. Node raises a real AbortError only when the abort
         // lands before response headers; abort it mid-body and the socket is destroyed with a bare
         // `Error: aborted` (code ECONNRESET), which read as `broker-rpc-unavailable` — the broker
-        // is gone — when the truth is that it is alive and slow. A long Hyper-V boot is the likely
-        // shape for that, since the broker can send headers well before it finishes replying.
+        // is gone — when the truth is that it is alive and slow. `fetch` classified both phases as
+        // AbortError, so this is parity being restored rather than a new guard.
+        //
+        // On how a mid-body abort is reached, since the obvious story is wrong: writeJson is the
+        // only response writer and it is a writeHead immediately followed by res.end, so there is
+        // no application-level pause between headers and body to land in. The window is TCP flush
+        // time and it scales with the reply, which nothing on the server caps — a success reply
+        // passes through boundedBrokerErrorPayload unchanged, and the only bound is this client's
+        // 64 MiB. Measured against that exact write shape: a 2 KB reply never lands mid-body, a
+        // 60 MB one does. Small replies take the pre-headers path; the branch below is what keeps
+        // the large ones honest.
         const timedOut = controller.signal.aborted || (error instanceof Error && error.name === "AbortError");
         return {
             ok: false,

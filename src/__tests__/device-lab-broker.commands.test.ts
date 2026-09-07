@@ -1200,10 +1200,22 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailure = false;
             guestReadyCommandTimedOut = true;
             const timedOutRetainedStops = containmentStops().length;
+            // The local cost, captured here rather than left to the total. The exact guard at the
+            // end of this test is a sum, and a sum cannot tell a case that grew by one from a
+            // neighbour that shrank by one — it stays green through both. Asserting the delta
+            // where it is incurred makes "a contained case costs 11" a measurement instead of an
+            // arithmetic claim in a commit message, and points at the case that moved.
+            const timedOutRetainedCalls = commandRunner.mock.calls.length;
             const timedOutRetained = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
-            expect(JSON.stringify(await timedOutRetained.json())).toContain("powershell-direct-timeout");
+            const timedOutRetainedBody = await timedOutRetained.json() as Record<string, any>;
+            expect(JSON.stringify(timedOutRetainedBody)).toContain("powershell-direct-timeout");
             expect(containmentStops().length, "a timed-out probe with media retained must be contained").toBeGreaterThan(timedOutRetainedStops);
-            expect(vmState).toBe("Off");
+            expect(vmState, "a timed-out probe holding its ISO must be powered off").toBe("Off");
+            // Same reason the sibling case above asserts it: a containment that force-stopped the
+            // guest changed the host, and an envelope saying otherwise is wrong on the one path
+            // whose purpose was to make something happen.
+            expect(timedOutRetainedBody?.result?.execution?.mutatesHost, "containment mutated the host and must say so").toBe(true);
+            expect(commandRunner.mock.calls.length - timedOutRetainedCalls, "a contained device_start costs 11 provider commands").toBe(11);
             guestReadyCommandTimedOut = false;
             guestReadyScrubFailure = "powershell-direct-attempt-timeout";
 
@@ -1322,10 +1334,16 @@ describe("device-lab host broker lifecycle commands", () => {
             guestReadyScrubFailure = false;
             guestReadyCommandTimedOut = true;
             const stopsBeforeCommandTimeout = containmentStops().length;
+            // The uncontained half of the same pair, measured where it is spent. Its sibling above
+            // asserts 11; this one asserts 6, and the difference between them is the containment
+            // itself. Pinning both locally is what stops the exact guard at the end from being a
+            // number that gets updated rather than a constraint that gets checked.
+            const commandTimedOutCalls = commandRunner.mock.calls.length;
             const commandTimedOut = await invoke({ backend: "windows-vm", command: "device_start", deviceId, incarnationId, bootTimeoutMs: 1000 });
             expect(JSON.stringify(await commandTimedOut.json())).toContain("powershell-direct-timeout");
             expect(vmState, "powershell-direct-timeout must stay debuggable, not be powered off").toBe("Running");
             expect(containmentStops().length, "no containment stop for powershell-direct-timeout").toBe(stopsBeforeCommandTimeout);
+            expect(commandRunner.mock.calls.length - commandTimedOutCalls, "an uncontained device_start costs 6 provider commands").toBe(6);
             guestReadyCommandTimedOut = false;
             // A containment that could not power the guest off must say so. This flag is the only
             // signal that a guest is still live with a hot credential, so silence here would be the

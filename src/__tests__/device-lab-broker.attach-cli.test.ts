@@ -1489,10 +1489,18 @@ describe("device-lab host broker physical attach and CLI", () => {
     });
 
     it("times out the owner RPC on the caller's budget when the reply stalls mid-body", async () => {
-        // The other half of the classification, and the half a long Hyper-V boot actually lands on:
-        // the broker sends headers promptly and then stalls. Node destroys the socket with a bare
+        // The other half of the classification. Node destroys the socket with a bare
         // `Error: aborted` rather than an AbortError, so keying off the error's name reported
         // `broker-rpc-unavailable` — the broker is gone — for a broker that is alive and slow.
+        // `fetch` got both phases right, so this is a regression the transport swap introduced.
+        //
+        // What this fixture is and is not: writeHead then a partial write with no end is a shape
+        // the real broker never emits — writeJson is a writeHead immediately followed by res.end.
+        // It is a stand-in for the condition that does occur, a reply large enough that the abort
+        // lands during TCP flush rather than before headers. Measured against the real write
+        // shape, a 60 MB reply reaches mid-body and a 2 KB one never does. Reproducing that here
+        // would mean a multi-megabyte fixture to exercise one boolean, so this drives the same
+        // branch directly. Do not read it as evidence the broker stalls mid-reply.
         const cwd = "/project/devices-owner-rpc-body-stall-test";
         const ownerId = deviceLabOwnerId(cwd);
         const sockets: import("net").Socket[] = [];
