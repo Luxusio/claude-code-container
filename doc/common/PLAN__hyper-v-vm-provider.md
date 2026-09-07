@@ -1098,6 +1098,18 @@ introduced by the transport work; each predates it and is unchanged by it.
   bound chunk count alongside bytes, or grow one preallocated buffer.
   Note the shape of the trap: probes using large chunks show a flat heap and
   read as evidence the cap holds. Chunk count is the variable, not byte count.
+- **No test reaches the streaming cap path, and the obvious one does not
+  discriminate.** The only oversize RPC test sets `content-length` past the
+  limit with a two-byte body, so it exits at the declared-length precheck and
+  never calls `read()`; the streaming-counter test uses `fetch` rather than
+  this transport. The recipe that does discriminate, established while fixing
+  the adapter crash: chunked oversize body in 64 KiB frames, server bursting
+  several hundred writes ahead, the consumer's delay placed BEFORE
+  `reader.read()` rather than after, run in a child process, asserting on the
+  EXIT CODE. Asserting on the returned error passes against a broken adapter,
+  because the caller receives its correct `broker-response-too-large` first
+  and the process dies afterwards. Delay placed after the read never fires:
+  the pending `resume()` drains and re-pauses.
 - **Three broker-controlled fields on the lifecycle failure line render
   verbatim.** `BOUNDED_BOOT_CODE` guards `lastBootCheck.error`; `error`,
   `missing` and `detail` beside it are not guarded, and `detail` is fed from

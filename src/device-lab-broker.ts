@@ -1902,6 +1902,15 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
 // sees it, which is why a green cap test proves nothing here — it only appears when the consumer
 // lags. Pulling from the iterator removes the listeners entirely, so there is no uncatchable throw
 // to have, and backpressure is inherent: pull() is called only when the queue wants a chunk.
+//
+// THE try/catch BELOW IS THE SAFETY MECHANISM, not defensive decoration. The stream never CALLS
+// pull() again after cancel, but a pull already in flight still resolves afterwards, and its
+// enqueue lands on a closed controller and throws the same TypeError the listener version died
+// on. It survives only because the throw is inside our own try and the catch routes it to
+// controller.error(), a no-op on an already-closed stream. Measured on the cap path: at lag 0 it
+// never fires, at lag >= 50ms it fires every run — one enqueue-after-cancel, one caught
+// TypeError, zero uncaught. Removing the catch on the reasoning that pull is not re-entered after
+// cancel restores the process kill; that reasoning is true and is not the hazard.
 function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Array> {
     const iterator = response[Symbol.asyncIterator]();
     return new ReadableStream<Uint8Array>({
