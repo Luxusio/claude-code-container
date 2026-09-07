@@ -993,8 +993,21 @@ describe("Hyper-V E2E zero-config image selection", () => {
             // the outer catch and takes the whole mount bracket with it.
             expect(diagnosticProgram).toContain("try { $MountElevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $MountElevated = $true }");
             expect(diagnosticProgram.match(/WindowsIdentity\]::GetCurrent/g), "probed once, not per retry").toHaveLength(1);
-            expect(diagnosticProgram.indexOf("$MountElevated = (New-Object"))
-                .toBeLessThan(diagnosticProgram.indexOf("for ($Attempt"));
+            // indexOf returns -1 when absent, and -1 is less than everything, so an ordering
+            // assertion alone PASSES on a deleted probe. Each operand is asserted found first.
+            const probeIndex = diagnosticProgram.indexOf("$MountElevated = (New-Object");
+            // Anchored on the whole line. `"\ntry {"` matches the probe itself, which also begins
+            // with `try {` — my first attempt at this assertion failed for exactly that reason, and
+            // a looser anchor would have passed while comparing the probe against itself.
+            const outerTryIndex = diagnosticProgram.indexOf("\ntry {\n");
+            expect(probeIndex).toBeGreaterThanOrEqual(0);
+            expect(outerTryIndex).toBeGreaterThanOrEqual(0);
+            // Above the OUTER try, not merely above the retry loop. That position is what makes the
+            // guard load-bearing: unguarded here a throw kills the script and no JSON reaches the
+            // reader at all, where inside the try it would only cost the mount bracket. Moving the
+            // probe inside the try is silently harmless today and silently changes the blast radius
+            // of ever dropping the guard, so the position is the thing to pin.
+            expect(probeIndex).toBeLessThan(outerTryIndex);
             // Declared with its four siblings. Unassigned it resolves to $null and [bool]$null is
             // $false, so it works — until someone adds Set-StrictMode, at which point the catch
             // throws on an undefined variable and the whole a=/c=/h=/m= bracket collapses to a bare
@@ -1004,8 +1017,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
             // an unelevated host pays the full retry budget before concluding what it already knew.
             // That is the wasted-wall-clock half of the original defect (a=7 with exponential
             // backoff), and a reorder would restore it while every presence assertion still passed.
-            expect(diagnosticProgram.indexOf("$MountPrivilege = $true; break"))
-                .toBeLessThan(diagnosticProgram.indexOf("$MountSleep = [Math]::Min"));
+            const privilegeBreakIndex = diagnosticProgram.indexOf("$MountPrivilege = $true; break");
+            const backoffIndex = diagnosticProgram.indexOf("$MountSleep = [Math]::Min");
+            expect(privilegeBreakIndex).toBeGreaterThanOrEqual(0);
+            expect(backoffIndex).toBeGreaterThanOrEqual(0);
+            expect(privilegeBreakIndex).toBeLessThan(backoffIndex);
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
             const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);

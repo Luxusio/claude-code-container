@@ -5,6 +5,7 @@ import { deflateSync } from "zlib";
 import { describe, expect, it } from "vitest";
 import { compactMessage } from "./compact-message.ts";
 import { captureHyperVWindowsConsole, HYPER_V_WINDOWS_CONSOLE_CAPTURE_DIMENSIONS } from "./hyper-v-windows-console-capture.ts";
+import { MOUNT_MESSAGE_MAX_CHARS } from "./hyper-v-windows-setup-diagnostics.ts";
 
 const IDENTITY = {
     ownerId: "0123456789abcdef",
@@ -308,13 +309,19 @@ describe("captureHyperVWindowsConsole", () => {
         // at most 700 by construction. It reads like a budget check and is a tautology. The two
         // toContain assertions are the whole test.
         //
-        // This shape IS over budget — 962 chars raw, truncated to 700 — and that is expected. The
+        // This shape IS over budget — 981 chars raw at the current cap, truncated to 700 — and that is expected. The
         // `"services"` field the two narrower cases assert does not survive here; the remedy and
         // the failure do, with roughly 170 characters of headroom past the real message cap.
-        // 159 fillers, not 140: mountFailureMessage caps `m` at MOUNT_MESSAGE_MAX_CHARS = 200, and
-        // this is the length that actually reaches it. The first version of this case was 19 chars
-        // short of the real ceiling while calling itself the widest shape.
-        const privilegeMessage = `The system failed to mount ${"y".repeat(159)} (0x80070522).`;
+        // Derived from the cap, not hardcoded against it. A literal filler made this a snapshot of
+        // one moment: raise MOUNT_MESSAGE_MAX_CHARS — which the redaction comment in that module
+        // explicitly invites — and the real widest line grows past the reporter's cut while this
+        // case, frozen at its old width, keeps passing. Measured blind band with the literal: the
+        // assertions only began failing at filler 329, ~170 characters of undetected room, exactly
+        // where a cap increase lands.
+        const messagePrefix = "The system failed to mount ";
+        const messageSuffix = " (0x80070522).";
+        const privilegeMessage = `${messagePrefix}${"y".repeat(MOUNT_MESSAGE_MAX_CHARS - messagePrefix.length - messageSuffix.length)}${messageSuffix}`;
+        expect(privilegeMessage).toHaveLength(MOUNT_MESSAGE_MAX_CHARS);
         const widestReason = [
             "profile=windows-server",
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",

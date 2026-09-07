@@ -19,7 +19,11 @@ const MOUNT_BACKOFF_CEILING_MS = 15000;
 // Overrunning kills the process, and then the attempts/category/message this whole change exists to
 // capture are never read: the result degrades to hyper-v-setup-diagnostics-process-timeout.
 const MOUNT_RETRY_BUDGET_MS = 60000;
-const MOUNT_MESSAGE_MAX_CHARS = 200;
+// Exported so the compact-reporter budget test can derive its widest case from it instead of
+// hardcoding a filler length. With the number duplicated by hand, raising this cap left that test
+// passing against a frozen snapshot while the actionable half of the real line fell past the
+// reporter's cut.
+export const MOUNT_MESSAGE_MAX_CHARS = 200;
 const DIAGNOSTICS_PROCESS_TIMEOUT_MS = 180000;
 const MOUNT_ERROR_CATEGORIES = new Set([
     "NotSpecified", "OpenError", "CloseError", "DeviceError", "DeadlockDetected",
@@ -149,7 +153,11 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         //
         // Once because inside the retry loop it re-ran on every attempt for an elevated host — ten
         // identity lookups to answer a question whose answer cannot change mid-loop.
-        "$MountElevated = $true",
+        //
+        // No separate initializer for $MountElevated: both branches below assign it, so one would be
+        // dead code sitting immediately beside `$MountPrivilege = $false`, which is NOT dead — that
+        // one is what a future Set-StrictMode would otherwise break. Two lines that look symmetric
+        // when only one carries weight is how the wrong one gets deleted.
         "try { $MountElevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $MountElevated = $true }",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
@@ -461,6 +469,28 @@ function recoverDiagnosticMount(input: HyperVWindowsSetupDiagnosticsInput, vmNam
     } catch {
         return false;
     }
+}
+
+// The three programs this module emits, for the PowerShell parse gate. They are PowerShell built by
+// joining a TypeScript string array, so they sit on no disk path the gate's walker can find — the
+// same shape as the session bootstrap, which that gate already special-cases and reads out of dist
+// for exactly this reason. Nothing else parses them: PSScriptAnalyzer walks a directory and finds
+// no file either. String-containment tests were the only surface, and a containment assertion
+// cannot see an unterminated string or a stray brace.
+//
+// Placeholder arguments: the parser checks syntax, and syntax does not depend on which VM name or
+// path is interpolated. They only need to be shaped like the real ones — a GUID that parses, a path
+// with a drive letter — so the emitted quoting is representative.
+export function hyperVWindowsSetupDiagnosticsPrograms(): string[] {
+    const vmName = "ccc-parse-check";
+    const vmId = "00000000-0000-0000-0000-000000000000";
+    const marker = "ccc-device-lab:parse:check:0";
+    const diskPath = "C:\\ccc\\parse-check.vhdx";
+    return [
+        preflightProgram(vmName, vmId, marker),
+        diagnosticsProgram(vmName, vmId, marker, diskPath),
+        cleanupProgram(vmName, vmId, marker, diskPath),
+    ];
 }
 
 export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDiagnosticsInput): HyperVWindowsSetupDiagnosticsResult {
