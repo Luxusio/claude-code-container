@@ -1079,6 +1079,53 @@ Real-provider tests:
   signal, spawn error, and timeout instead of a generic no-output message.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
+## Known Gaps
+
+These are measured, not suspected, and deliberately left open. None was
+introduced by the transport work; each predates it and is unchanged by it.
+
+- **The RPC response cap bounds bytes, not memory.**
+  `readHostBrokerHttpJson` accumulates with `chunks.push(...)`, one JS object
+  per stream chunk and unbounded in count, so a broker using tiny chunked
+  framing makes per-chunk overhead the real bound and the process dies before
+  the byte cap fires. Measured at an 8 MiB cap: 64 KiB chunks cost 32 MB RSS,
+  1-byte chunks cost 1,291 MB — a 40x spread for the same byte count. At the
+  real 64 MiB cap that projects to gigabytes, and a fatal heap OOM was
+  demonstrated under a 1 GiB limit. Identical on the pre-`http.request` code
+  path, so the transport swap neither introduced nor meaningfully worsened it.
+  Availability only, and only from a peer that already passed pid and
+  process-start-token attestation. The fix belongs in the accumulation —
+  bound chunk count alongside bytes, or grow one preallocated buffer.
+  Note the shape of the trap: probes using large chunks show a flat heap and
+  read as evidence the cap holds. Chunk count is the variable, not byte count.
+- **Three broker-controlled fields on the lifecycle failure line render
+  verbatim.** `BOUNDED_BOOT_CODE` guards `lastBootCheck.error`; `error`,
+  `missing` and `detail` beside it are not guarded, and `detail` is fed from
+  raw provider stderr. ANSI escapes clear the screen or rewrite the terminal
+  title, and a newline forges a second CLI line an operator cannot distinguish
+  from real output. `truncateBrokerDiagnostic` bounds length only.
+- **Readiness diagnostics are dropped on the lifecycle path.** Failures carry
+  a `diagnostics` array, but the owner RPC forwards only a string `detail` and
+  `formatLifecycleError` reads only that. So `start` reports a bare
+  `host-broker-incompatible` while `broker status` knows the actual reason.
+- **A corrupt `devices.json` throws a raw stack trace** with host paths and
+  internal frames instead of a diagnostic. The error code is right; the
+  presentation is not.
+- **`Device not found for current owner: <id>` echoes raw argv**, so a crafted
+  id forges an additional output line. Self-inflicted via the operator's own
+  argument, and it dates to the original device-lab commit.
+- **A `broker-rpc-timeout` is distinguishable but not actionable.** The
+  transport fix is what makes that state reachable at all — before it, a
+  budget over five minutes was cut by the HTTP client and surfaced as
+  `broker-rpc-unavailable`. An advisory line was attempted and reverted: it
+  named `ccc devices status`, which runs inside the owner operation lock and
+  so cannot answer while the operation that timed out still holds it
+  (measured: 20s holder, follower acquired at 19.5s, CLI budget 15s). A
+  redesign needs the boot-timeout clause derived from
+  `START_OPTIONS_BY_BACKEND` rather than restated, snapshots pointed at
+  `snapshot list` rather than `status`, `formatSnapshotError` given coverage
+  first — it has none — and that lock contention accounted for in the wording.
+
 ## References
 
 - Hyper-V installation and supported Windows editions:
