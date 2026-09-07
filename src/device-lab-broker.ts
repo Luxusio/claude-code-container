@@ -1927,10 +1927,17 @@ function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Arr
             }
         },
         async cancel() {
-            // Ends the iterator first, which destroys the stream through Node's own teardown
-            // rather than racing it.
-            await iterator.return?.(undefined).catch(() => undefined);
+            // destroy() FIRST, and the order is the whole point. Node's Readable async iterator is
+            // an async generator: when a pull is parked in `await iterator.next()` the generator is
+            // mid-execution, so `return()` queues behind that pending next() and its teardown never
+            // runs. Awaiting return() before destroy() therefore deadlocks whenever the peer goes
+            // silent after the byte counter crossed the cap — measured HUNG past 12s, where
+            // destroying first returns in 59ms. destroy() fires 'close', the iterator's own
+            // end-of-stream watcher rejects the parked next(), and the queued return() then runs.
+            // The event-driven adapter this replaced cancelled synchronously and always freed the
+            // socket at once; this restores that property.
             response.destroy();
+            await iterator.return?.(undefined).catch(() => undefined);
         },
     });
 }
