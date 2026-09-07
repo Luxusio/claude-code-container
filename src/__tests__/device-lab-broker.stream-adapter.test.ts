@@ -35,7 +35,13 @@ describe("host-broker response stream adapter", () => {
     // The in-flight pull does resolve after cancel and its enqueue does throw. The catch is
     // what keeps that TypeError from killing the process, so assert the survival, not the
     // absence of the throw.
-    it("survives a chunk that resolves after the stream is cancelled", async () => {
+    //
+    // Named for what it actually holds. QA mutation-checked this file and found this case PASSES
+    // against the event-driven adapter that crashed — the PassThrough fixture never reproduces the
+    // socket timing that made a chunk land after cancel. The structural listener assertion above is
+    // the only case that catches that regression. This one pins that a post-cancel chunk is
+    // tolerated at all, which is worth keeping, but do not read it as crash coverage.
+    it("tolerates a post-cancel chunk without an uncaught error (not a crash regression test)", async () => {
         const { uncaught } = await withUncaughtCapture(async () => {
             const source = new PassThrough();
             for (let i = 0; i < 4; i += 1) source.write(Buffer.alloc(64 * 1024, 0x61));

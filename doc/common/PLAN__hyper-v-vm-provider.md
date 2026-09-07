@@ -1110,12 +1110,28 @@ introduced by the transport work; each predates it and is unchanged by it.
   because the caller receives its correct `broker-response-too-large` first
   and the process dies afterwards. Delay placed after the read never fires:
   the pending `resume()` drains and re-pauses.
+- **The containment-failed-AND-terminal state tells an operator to delete a
+  guest that may still be running.** With `scrubContainmentFailed: true` and a
+  terminal scrub reason, the render emits the live-secrets WARNING and
+  `remedy: delete and recreate`, with no stop-first step, because the reason
+  gate suppresses the `next:` line that would have said to stop it. The comment
+  beside that gate argues telling someone to destroy a possibly-running guest
+  is worse than saying nothing; this is that case. A judgement call rather than
+  an outright defect, but it is the one state where the two lines disagree.
 - **Three broker-controlled fields on the lifecycle failure line render
   verbatim.** `BOUNDED_BOOT_CODE` guards `lastBootCheck.error`; `error`,
   `missing` and `detail` beside it are not guarded, and `detail` is fed from
   raw provider stderr. ANSI escapes clear the screen or rewrite the terminal
   title, and a newline forges a second CLI line an operator cannot distinguish
-  from real output. `truncateBrokerDiagnostic` bounds length only.
+  from real output. `truncateBrokerDiagnostic` bounds length only. Newly
+  consequential rather than newly present: this series put the WARNING,
+  `remedy:` and `next:` lines directly adjacent, so a forged line is now
+  byte-identical in shape to the security guidance beside it. Demonstrated —
+  a `detail` carrying newlines injects both a fake containment WARNING and a
+  fake destructive remedy; ANSI reaches the terminal as raw ESC, and an OSC 8
+  payload renders as a clickable link to an attacker URL. The render-site
+  comment claims the output is self-defending; that holds for one of the four
+  fields on the same message.
 - **Readiness diagnostics are dropped on the lifecycle path.** Failures carry
   a `diagnostics` array, but the owner RPC forwards only a string `detail` and
   `formatLifecycleError` reads only that. So `start` reports a bare
