@@ -350,10 +350,14 @@ Two consequences are deliberate and worth knowing:
     because `Paused`, `Saved`, `Starting` and `Stopping` are all guests still
     holding a mounted answer file.
 
-    The destructive remedy — delete and recreate — is emitted only for the three
+    The destructive remedy — delete and recreate — is emitted only for the **two**
   reasons where the probe LANDED and reported a missing marker or live secrets,
   because only those establish that OOBE is past first logon and the scrub can
-  never fire again. It is deliberately **not** emitted on
+  never fire again. `hyper-v-guest-scrub-containment-failed` is not one of them,
+  despite naming a scrub: it is synthesised only when readiness never ran, so it
+  means the opposite, and counting it as a third re-admitted the destructive
+  advice through the reason branch right after it had been removed from the flag
+  branch. It is deliberately **not** emitted on
   `scrubContainmentFailed`, which was tried and is wrong in the dangerous
   direction: that flag means the stop was not confirmed, so the guest is still
   running and a slow first boot may yet complete — something a longer

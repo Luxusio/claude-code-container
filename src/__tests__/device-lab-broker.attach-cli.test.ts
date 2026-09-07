@@ -1236,6 +1236,56 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(log).not.toHaveBeenCalled();
     });
 
+    it("does not tell an operator to delete a guest whose readiness never ran", async () => {
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-synth-cli-test";
+        const synthOwnerId = deviceLabOwnerId(cwd);
+        const synthRoot = join(homedir(), ".ccc/devices/owners", synthOwnerId, "windows-vm");
+        mkdirSync(synthRoot, { recursive: true });
+        writeFileSync(join(synthRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-s", backend: "windows-vm", status: "stopped", incarnationId: "d".repeat(32) }],
+        }));
+        // hyper-v-guest-scrub-containment-failed is synthesised by the broker ONLY when readiness
+        // never ran — the identity gate or an expired deadline. So it means the opposite of the two
+        // probe-landed reasons: nothing established that OOBE is past first logon, and the stop was
+        // not confirmed, so the guest is still running and may yet finish. It was briefly in
+        // SCRUB_FAILURE_REASONS, which re-admitted the destructive advice through the reason branch
+        // immediately after it had been removed from the flag branch.
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: false,
+            status: 502,
+            ownerId: synthOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: false,
+                error: "hyper-v-guest-not-ready",
+                detail: "hyper-v-guest-scrub-containment-failed",
+                result: {
+                    device: {
+                        id: "win-s",
+                        backend: "windows-vm",
+                        status: "running",
+                        runtimeState: "Running",
+                        lastBootCheck: {
+                            ready: false,
+                            error: "hyper-v-guest-scrub-containment-failed",
+                            scrubContainmentFailed: true,
+                        },
+                    },
+                },
+            },
+        }));
+
+        expect(await devicesCliAsync(["start", "win-s"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(stderr).toContain("scrubContainmentFailed: true");
+        expect(stderr, "an unconfirmed containment gets a next step").toContain("raise --boot-timeout-ms");
+        // Both leak paths: bootCheckLines matches the reason, and formatLifecycleError matches the
+        // same string in `detail` independently. Neither may produce the destructive line.
+        expect(stderr, "must not tell the operator to destroy a guest that may still finish").not.toContain("cannot be retried on this guest");
+    });
+
     it("refuses to print an unbounded boot code", async () => {
         const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const cwd = "/project/devices-scrub-unbounded-cli-test";

@@ -1398,14 +1398,21 @@ function brokerRpcDevice(result: HostDeviceBrokerOwnerRpcResult): Record<string,
     return device && typeof device === "object" && !Array.isArray(device) ? device as Record<string, unknown> : null;
 }
 
-// The three readiness reasons that mean the guest's provisioning scrub is unproven. They are all
-// terminal for that device: FirstLogonCommands fires once per OOBE and there is no re-provision
-// path, so restarting cannot help. That was documented in doc/common/PLAN__hyper-v-vm-provider.md
-// and said nowhere the operator would actually be looking.
+// The TWO readiness reasons that are terminal for a device. Both require the PowerShell Direct
+// probe to have landed and reported either a missing completion marker or live secrets, which puts
+// OOBE past first logon — and FirstLogonCommands fires once per OOBE with no re-provision path, so
+// restarting cannot help. That was documented in doc/common/PLAN__hyper-v-vm-provider.md and said
+// nowhere the operator would actually be looking.
+//
+// hyper-v-guest-scrub-containment-failed is deliberately NOT here, though it was, and an earlier
+// version of this comment miscounted it as a third. It has one producer — the broker synthesizing
+// it when readiness never ran at all — so it means the exact opposite: nothing established that
+// OOBE is past first logon, and the unconfirmed stop means the guest is still running and may yet
+// finish. Including it re-admitted the destructive advice through the reason branch immediately
+// after it had been removed from the flag branch.
 const SCRUB_FAILURE_REASONS = new Set([
     "hyper-v-guest-first-logon-incomplete",
     "hyper-v-guest-provisioning-not-scrubbed",
-    "hyper-v-guest-scrub-containment-failed",
 ]);
 const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this guest — delete and recreate the device";
 // For a containment that was not confirmed. The scrub state is unknown rather than known-finished:
@@ -1433,7 +1440,7 @@ function bootCheckLines(device: Record<string, unknown> | null): string[] {
         lines.push("scrubContainmentFailed: true");
         lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
     }
-    // The destructive remedy is gated on the reason, and only on the three where the probe LANDED
+    // The destructive remedy is gated on the reason, and only on the two where the probe LANDED
     // and reported a missing marker or live secrets — OOBE is then past first logon, so the scrub
     // cannot fire again. `scrubContainmentFailed` does not carry that property, and briefly gating
     // on it too was wrong in the dangerous direction: that flag means the stop was not confirmed,
