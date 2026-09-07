@@ -132,6 +132,12 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "$MountCategory = $null",
         "$MountHResult = $null",
         "$MountMessage = $null",
+        // Initialized with its siblings rather than relying on [bool]$null being $false. That works
+        // only while nothing sets strict mode — -NoProfile keeps a profile from doing so today, but
+        // one Set-StrictMode anywhere and the catch below throws on an undefined variable, taking
+        // the whole a=/c=/h=/m= bracket down to a bare code. This field exists to carry that
+        // bracket; it should not be the one variable that can lose it.
+        "$MountPrivilege = $false",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "  if ($Vm.Name -cne $VmName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-setup-diagnostics-vm-not-exact' }",

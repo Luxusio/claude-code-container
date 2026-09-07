@@ -297,6 +297,25 @@ describe("captureHyperVWindowsConsole", () => {
         expect(compactedLayout).toContain("guestConsole=unavailable(hyper-v-console-rgb565-invalid");
         expect(compactedLayout).toContain('"diagnosticErrors":["hyper-v-diagnostic-integration-services-incomplete"]');
         expect(compactedLayout).toContain('"services":[["VSS",true,null]]');
+
+        // The widest real shape, which this test predated: BOTH failure fields present, with the
+        // setup-diagnostics one carrying the privilege code and a full-width redacted message. That
+        // is the longest line this reporter can be handed, and it is the case that pushed the field
+        // past its previous width. compactMessage truncates from the head, so what a breach costs is
+        // the tail — `originalReason`, the step name and the actual error, which is the only part an
+        // operator can act on. Asserting the limit alone would not catch that; the tail is asserted
+        // too.
+        const privilegeMessage = `The system failed to mount ${"y".repeat(140)} (0x80070522).`;
+        const widestReason = [
+            "profile=windows-server",
+            "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
+            `guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=${privilegeMessage}])`,
+            `start and wait for PowerShell Direct: hyper-v-guest-not-ready: ${diagnostic}`,
+        ].join("; ");
+        const compactedWidest = compactMessage(widestReason);
+        expect(compactedWidest.length).toBeLessThanOrEqual(700);
+        expect(compactedWidest, "the remedy must survive, it is the whole point of the code").toContain("mount-privilege-required[elevate");
+        expect(compactedWidest, "and so must the failure the operator has to act on").toContain("hyper-v-guest-not-ready");
     });
 
     it("exports the fixed capture dimensions", () => {
