@@ -324,8 +324,15 @@ describe("captureHyperVWindowsConsole", () => {
         // case, frozen at its old width, keeps passing. Measured blind band with the literal: the
         // assertions only began failing at filler 329, ~170 characters of undetected room, exactly
         // where a cap increase lands.
-        const messagePrefix = "The process cannot access ";
-        const messageSuffix = " because it is being used by another process.";
+        // Message, category and HResult kept coherent: a ResourceUnavailable mount failure naming
+        // ERROR_NOT_READY (0x80070015) in its text, beside the generic .NET HResult the real host
+        // produced. The hex in the message and `h=` differ on purpose — that split is the observed
+        // behaviour AC-003 exists for, and it is why detection reads the message rather than h=.
+        // (My first attempt used 0x80070015 as the HResult too and the reader rejected the whole
+        // mount object: it bounds hresult at 2147483648, below every real 0x8007xxxx value. Filed
+        // below as a pre-existing gap, not fixed here.)
+        const messagePrefix = "The device is not ready: ";
+        const messageSuffix = " (0x80070015).";
         const privilegeMessage = `${messagePrefix}${"y".repeat(MOUNT_MESSAGE_MAX_CHARS - messagePrefix.length - messageSuffix.length)}${messageSuffix}`;
         expect(privilegeMessage).toHaveLength(MOUNT_MESSAGE_MAX_CHARS);
         // The bracket comes from the producer, not from this file. Hand-typing it made the same
@@ -334,11 +341,17 @@ describe("captureHyperVWindowsConsole", () => {
         // producer no longer emits — and the ~170 characters of headroom hid that too. Driving
         // captureHyperVWindowsSetupDiagnostics means a new field, a longer value, or a renamed code
         // widens this fixture by itself. Inputs are the widest REACHABLE combination, not the
-        // widest imaginable: `unelevated` (11 chars, against 4 for `code`), the retry-exhausted
-        // attempts=10, and the longest real category — the unelevated+ResourceBusy pairing
-        // hyper-v-vm-e2e.test.ts pins. Its message is the busy one, because that is what a host in
-        // that state actually reports; a 0x80070522 message would have made the producer say
-        // `p=code` and the fixture would no longer describe a state any host can be in.
+        // widest imaginable, and the first version of this comment got that wrong twice while
+        // arguing against exactly that mistake:
+        //   - `p=unelevated` with `a=10` cannot happen. $MountElevated is loop-invariant, so an
+        //     unelevated host breaks on its FIRST mount failure; p=unelevated always carries a=1.
+        //     hyper-v-vm-e2e.test.ts pins that pairing, and this file had contradicted it.
+        //   - `ResourceBusy` is not the longest category. MOUNT_ERROR_CATEGORIES holds
+        //     `ResourceUnavailable` and `AuthenticationError` at 19 characters against its 12.
+        // So the widest reachable shape is `p=unelevated` (11 chars against 4 for `code`, which
+        // more than pays for the a=1) with the longest category. The message is a non-privilege
+        // one, because a 0x80070522 message would make the producer say `p=code` and the fixture
+        // would stop describing a state any host can be in.
         let mountCalls = 0;
         const produced = captureHyperVWindowsSetupDiagnostics({
             ...IDENTITY,
@@ -354,7 +367,7 @@ describe("captureHyperVWindowsConsole", () => {
                         stdout: JSON.stringify({
                             ok: false,
                             code: "hyper-v-setup-diagnostics-mount-failed",
-                            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: privilegeMessage, privilege: "unelevated" },
+                            mount: { attempts: 1, category: "ResourceUnavailable", hresult: 2146233088, message: privilegeMessage, privilege: "unelevated" },
                         }),
                     };
                 }
@@ -365,7 +378,7 @@ describe("captureHyperVWindowsConsole", () => {
         expect(produced.ok).toBe(false);
         const producedCode = "code" in produced ? produced.code : "";
         expect(producedCode, "the fixture is only the widest shape if the producer really emits it").toBe(
-            `hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=unelevated,a=10,c=ResourceBusy,h=2147024891,m=${privilegeMessage}]`,
+            `hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=unelevated,a=1,c=ResourceUnavailable,h=2146233088,m=${privilegeMessage}]`,
         );
         const widestReason = [
             "profile=windows-server",
@@ -380,6 +393,17 @@ describe("captureHyperVWindowsConsole", () => {
         const compactedWidest = compactMessage(widestReason);
         expect(compactedWidest, "the remedy must survive, it is the whole point of the code").toContain("mount-privilege-required[elevate");
         expect(compactedWidest, "and so must the failure the operator has to act on").toContain("hyper-v-guest-not-ready");
+        // Producing the fixture MOVED the blind band, it did not close it, and the paragraph above
+        // implied otherwise. Measured at HEAD: 152 characters sit between the end of the marker and
+        // the reporter's cut, so MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two
+        // assertions above still pass — against ~170 for the hand-typed literal. A ~18-character
+        // improvement is not "raise the cap and this fails", which is what the comment implied.
+        // So the band itself is pinned now: it is a measured number rather than one nobody has
+        // looked at since, and widening it fails here rather than quietly somewhere else.
+        const marker = "hyper-v-guest-not-ready";
+        const markerEnd = compactedWidest.indexOf(marker) + marker.length;
+        expect(markerEnd).toBeGreaterThan(marker.length - 1);
+        expect(700 - markerEnd, "undetected room before a cap increase cuts the actionable half").toBeLessThan(160);
     });
 
     it("exports the fixed capture dimensions", () => {

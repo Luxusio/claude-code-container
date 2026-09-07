@@ -153,13 +153,21 @@ describe("Hyper-V Level 3 launcher", () => {
     it("builds artifacts and prepares the broker before running the selected provider", async () => {
         const calls: string[] = [];
         let runnerArgs: string[] = [];
+        const warnSetupDiagnosticsPrivilegeImpl = vi.fn(() => false);
         const status = await runHyperVTests("windows", {
-            // `platform` is read by exactly one collaborator, warnIfSetupDiagnosticsWillLackPrivilege
-            // — the license gate takes its own `licenseDeps` bag. Without it, this test and the two
-            // below reach the production elevation probe on a Windows dev host: a real
-            // powershell.exe spawn with a 10s timeout, and a write to real stderr, from a unit test.
-            // The injectable seam was added for exactly this and these callers were left behind.
-            platform: "linux",
+            // This caller goes through the SEAM and asserts it below; the two further down use
+            // `platform: "linux"`, which is read by exactly one collaborator —
+            // warnIfSetupDiagnosticsWillLackPrivilege; the license gate takes its own `licenseDeps`
+            // bag. Either way, without one of them all three reach the production elevation probe
+            // on a Windows dev host: a real powershell.exe spawn with a 10s timeout, and a write to
+            // real stderr, from a unit test. The seam was added for exactly this and these callers
+            // were left behind.
+            //
+            // At least one of the three has to use the seam rather than the platform guard, or
+            // nothing defends the fix: deleting all three platform keys leaves this file green on
+            // Linux, and the regression shows only on a Windows host — which is how it survived the
+            // first time.
+            warnSetupDiagnosticsPrivilegeImpl,
             env: { TEST_ENV: "1" },
             buildLevel3ArtifactsImpl: () => {
                 calls.push("build");
@@ -176,6 +184,7 @@ describe("Hyper-V Level 3 launcher", () => {
             },
         });
         expect(status).toBe(0);
+        expect(warnSetupDiagnosticsPrivilegeImpl, "drop this key and the production probe spawns a real powershell.exe on Windows").toHaveBeenCalledWith("windows", expect.anything());
         expect(calls).toEqual(["build", "broker", "run:level2-hyper-v-windows-vm.ts"]);
         expect(runnerArgs.slice(0, 3)).toEqual([
             "--import",
@@ -665,13 +674,21 @@ describe("Windows Server evaluation license prompt", () => {
     // wait is the whole point, so the placement matters as much as the text.
     it("warns before the run when Windows Setup diagnostics will lack the privilege they need", () => {
         const lines: string[] = [];
+        // The resolver's return value is asserted to reach the probe. resolveTrustedWindowsPowerShell
+        // exists to stop a bare PATH lookup for powershell.exe; replacing the call-site argument
+        // with the literal "powershell.exe" — reintroducing exactly that — left the whole suite
+        // green. Both impls were injected and nothing checked the wiring between them, so the
+        // hardening could be deleted in a cleanup with no test objecting.
+        const trustedPowerShell = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+        const isAdministratorImpl = vi.fn(() => false);
         const warned = warnIfSetupDiagnosticsWillLackPrivilege("windows", {
             platform: "win32",
-            resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
-            isAdministratorImpl: () => false,
+            resolveTrustedWindowsPowerShellImpl: () => trustedPowerShell,
+            isAdministratorImpl,
             writeImpl: (line: string) => { lines.push(line); },
         });
         expect(warned).toBe(true);
+        expect(isAdministratorImpl, "the probe must get the resolved trusted path, not a PATH lookup").toHaveBeenCalledWith({ powerShellPath: trustedPowerShell });
         const output = lines.join("");
         expect(output, "must name the code the operator will actually see").toContain("hyper-v-setup-diagnostics-mount-privilege-required");
         expect(output, "must say what to do").toContain("elevated terminal");

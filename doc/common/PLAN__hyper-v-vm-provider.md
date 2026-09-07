@@ -1239,6 +1239,18 @@ introduced by the transport work; each predates it and is unchanged by it.
   `snapshot list` rather than `status`, `formatSnapshotError` given coverage
   first — it has none — and that lock contention accounted for in the wording.
 
+- **The setup-diagnostics HResult bound rejects every real Win32 HRESULT.**
+  `mountFailureCode` in `scripts/real-tests/hyper-v-windows-setup-diagnostics.ts`
+  requires `hresult <= 2147483648`. Every `0x8007xxxx` value is above it —
+  `ERROR_PRIVILEGE_NOT_HELD` itself is `0x80070522` = 2147943714 — so a host
+  that reported the Win32 HResult rather than a generic .NET one would have its
+  whole `mount` object rejected, and the operator would get a bare
+  `hyper-v-setup-diagnostics-mount-failed` with no `a=/c=/h=/m=` bracket and no
+  privilege detection at all. Not observed: the real host reported the generic
+  `2146233088`, which is under the bound, and detection reads the message rather
+  than `h=` precisely because the HResult arrives useless. Found while building
+  a test fixture, which the bound rejected. Pre-existing and not fixed here.
+
 ## References
 
 - Hyper-V installation and supported Windows editions:

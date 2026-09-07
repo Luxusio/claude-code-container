@@ -1031,6 +1031,18 @@ describe("Hyper-V E2E zero-config image selection", () => {
             const unelevatedBreakIndex = diagnosticProgram.indexOf("$MountPrivilege = 'unelevated'; break");
             expect(unelevatedBreakIndex).toBeGreaterThanOrEqual(0);
             expect(privilegeBreakIndex, "the code check is the stronger signal and goes first").toBeLessThan(unelevatedBreakIndex);
+            // The third ordering in this catch block, and the only one that decides whether p=code
+            // can fire at all. The two above cost wall clock and a mislabelled derivation; this one
+            // costs AC-003 outright. Moving the assignment below the two privilege ifs left the
+            // whole suite green while making $MountMessage $null on attempt 1 — so the match never
+            // fires — and the PREVIOUS attempt's message on 2..10. Every p=code on a real host
+            // becomes p=unelevated, or on an elevated host the full ten-attempt retry loop: the
+            // original defect restored, silently. The regex above pins that the two assignments
+            // exist and are the only two; it says nothing about where they sit relative to the
+            // match that consumes them.
+            const messageIndex = diagnosticProgram.indexOf("$MountMessage = [string]$_.Exception.Message");
+            expect(messageIndex).toBeGreaterThanOrEqual(0);
+            expect(messageIndex, "the match must read the message captured on THIS attempt").toBeLessThan(privilegeBreakIndex);
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
             const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);
@@ -1160,7 +1172,12 @@ describe("Hyper-V E2E zero-config image selection", () => {
         // null check left the whole suite green. A value from outside the pair is a producer this
         // reader does not understand, and guessing `elevate` for it would tell an operator to fix
         // something no signal said was wrong.
-        for (const bogus of ["yes", "true", "1", "", "Code", 1, true, {}] as unknown[]) {
+        // `["code"]` earns its place: it is the only one of these that separates `===` from `==`
+        // (`["code"] == "code"` is true through Array#toString), and `mount` arrives through
+        // JSON.parse, so an array is exactly as producible as a string. Without it a loosened
+        // comparison keeps the suite green while a producer sending an array gets the privilege
+        // code — the one over-report the comment promises cannot happen.
+        for (const bogus of ["yes", "true", "1", "", "Code", 1, true, {}, ["code"]] as unknown[]) {
             expect(run({
                 ok: false,
                 code: "hyper-v-setup-diagnostics-mount-failed",
