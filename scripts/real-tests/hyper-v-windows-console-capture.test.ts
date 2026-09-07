@@ -5,7 +5,7 @@ import { deflateSync } from "zlib";
 import { describe, expect, it } from "vitest";
 import { compactMessage } from "./compact-message.ts";
 import { captureHyperVWindowsConsole, HYPER_V_WINDOWS_CONSOLE_CAPTURE_DIMENSIONS } from "./hyper-v-windows-console-capture.ts";
-import { MOUNT_MESSAGE_MAX_CHARS } from "./hyper-v-windows-setup-diagnostics.ts";
+import { captureHyperVWindowsSetupDiagnostics, MOUNT_MESSAGE_MAX_CHARS } from "./hyper-v-windows-setup-diagnostics.ts";
 
 const IDENTITY = {
     ownerId: "0123456789abcdef",
@@ -315,7 +315,7 @@ describe("captureHyperVWindowsConsole", () => {
         // at most 700 by construction. It reads like a budget check and is a tautology. The two
         // toContain assertions are the whole test.
         //
-        // This shape IS over budget — 981 chars raw at the current cap, truncated to 700 — and that is expected. The
+        // This shape IS over budget — asserted below, not stated here — and that is expected. The
         // `"services"` field the two narrower cases assert does not survive here; the remedy and
         // the failure do, with roughly 170 characters of headroom past the real message cap.
         // Derived from the cap, not hardcoded against it. A literal filler made this a snapshot of
@@ -324,16 +324,59 @@ describe("captureHyperVWindowsConsole", () => {
         // case, frozen at its old width, keeps passing. Measured blind band with the literal: the
         // assertions only began failing at filler 329, ~170 characters of undetected room, exactly
         // where a cap increase lands.
-        const messagePrefix = "The system failed to mount ";
-        const messageSuffix = " (0x80070522).";
+        const messagePrefix = "The process cannot access ";
+        const messageSuffix = " because it is being used by another process.";
         const privilegeMessage = `${messagePrefix}${"y".repeat(MOUNT_MESSAGE_MAX_CHARS - messagePrefix.length - messageSuffix.length)}${messageSuffix}`;
         expect(privilegeMessage).toHaveLength(MOUNT_MESSAGE_MAX_CHARS);
+        // The bracket comes from the producer, not from this file. Hand-typing it made the same
+        // mistake the paragraph above argues against, one scale down: the literal was written
+        // before `p=` existed and still read `[elevate,a=1,...]`, so the guard measured a shape the
+        // producer no longer emits — and the ~170 characters of headroom hid that too. Driving
+        // captureHyperVWindowsSetupDiagnostics means a new field, a longer value, or a renamed code
+        // widens this fixture by itself. Inputs are the widest REACHABLE combination, not the
+        // widest imaginable: `unelevated` (11 chars, against 4 for `code`), the retry-exhausted
+        // attempts=10, and the longest real category — the unelevated+ResourceBusy pairing
+        // hyper-v-vm-e2e.test.ts pins. Its message is the busy one, because that is what a host in
+        // that state actually reports; a 0x80070522 message would have made the producer say
+        // `p=code` and the fixture would no longer describe a state any host can be in.
+        let mountCalls = 0;
+        const produced = captureHyperVWindowsSetupDiagnostics({
+            ...IDENTITY,
+            vmId: "12345678-1234-4123-8123-123456789abc",
+            powershell: "powershell.exe",
+            platform: "win32",
+            spawnSyncImpl: () => {
+                mountCalls += 1;
+                if (mountCalls === 1) return { status: 0, stdout: JSON.stringify({ ok: true, diskPath: "C:\\state\\root.vhdx" }) };
+                if (mountCalls === 2) {
+                    return {
+                        status: 0,
+                        stdout: JSON.stringify({
+                            ok: false,
+                            code: "hyper-v-setup-diagnostics-mount-failed",
+                            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, message: privilegeMessage, privilege: "unelevated" },
+                        }),
+                    };
+                }
+                return { status: 0, stdout: JSON.stringify({ ok: true, detached: true }) };
+            },
+        });
+        expect(mountCalls).toBe(3);
+        expect(produced.ok).toBe(false);
+        const producedCode = "code" in produced ? produced.code : "";
+        expect(producedCode, "the fixture is only the widest shape if the producer really emits it").toBe(
+            `hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=unelevated,a=10,c=ResourceBusy,h=2147024891,m=${privilegeMessage}]`,
+        );
         const widestReason = [
             "profile=windows-server",
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
-            `guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=${privilegeMessage}])`,
+            `guestSetupDiagnostics=unavailable(${producedCode})`,
             `start and wait for PowerShell Direct: hyper-v-guest-not-ready: ${diagnostic}`,
         ].join("; ");
+        // The premise of this case, asserted rather than asserted-in-a-comment: the shape must
+        // actually exceed the budget, or the two checks below prove nothing about truncation. A
+        // frozen raw length here would go stale the same way the bracket did.
+        expect(widestReason.length, "if this ever fits, the case stopped testing truncation").toBeGreaterThan(700);
         const compactedWidest = compactMessage(widestReason);
         expect(compactedWidest, "the remedy must survive, it is the whole point of the code").toContain("mount-privilege-required[elevate");
         expect(compactedWidest, "and so must the failure the operator has to act on").toContain("hyper-v-guest-not-ready");
