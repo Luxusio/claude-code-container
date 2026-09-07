@@ -154,6 +154,12 @@ describe("Hyper-V Level 3 launcher", () => {
         const calls: string[] = [];
         let runnerArgs: string[] = [];
         const status = await runHyperVTests("windows", {
+            // `platform` is read by exactly one collaborator, warnIfSetupDiagnosticsWillLackPrivilege
+            // — the license gate takes its own `licenseDeps` bag. Without it, this test and the two
+            // below reach the production elevation probe on a Windows dev host: a real
+            // powershell.exe spawn with a 10s timeout, and a write to real stderr, from a unit test.
+            // The injectable seam was added for exactly this and these callers were left behind.
+            platform: "linux",
             env: { TEST_ENV: "1" },
             buildLevel3ArtifactsImpl: () => {
                 calls.push("build");
@@ -201,6 +207,7 @@ describe("Hyper-V Level 3 launcher", () => {
     it("does not run providers when broker attestation fails", async () => {
         const calls: string[] = [];
         const status = await runHyperVTests("windows", {
+            platform: "linux", // see above: keeps the production elevation probe out of a unit test
             buildLevel3ArtifactsImpl: () => {
                 calls.push("build");
                 return 0;
@@ -644,6 +651,7 @@ describe("Windows Server evaluation license prompt", () => {
     it("stops runHyperVTests before the provider run when the license gate is not ok", async () => {
         const runSupervisedProcessImpl = vi.fn(async () => ({ status: 0 }));
         const status = await runHyperVTests("windows", {
+            platform: "linux", // see above: keeps the production elevation probe out of a unit test
             buildLevel3ArtifactsImpl: () => 0,
             ensureWindowsEvaluationLicenseImpl: async () => ({ ok: false, reason: "license-declined" }),
             ensureHostBrokerReadyImpl: async () => 0,
@@ -724,6 +732,24 @@ describe("Windows Server evaluation license prompt", () => {
         expect(warned).toBe(false);
         expect(isAdministratorImpl, "must not even probe for a target that never mounts").not.toHaveBeenCalled();
         expect(lines).toEqual([]);
+    });
+
+    // The inclusion the exclusion above is carved out of, and the one that was untested: `all` is
+    // what runHyperVLevel3 defaults to, so `npm run test:level3:hyper-v` with no --target lands
+    // here. Narrowing the guard to `target !== "windows"` left the whole suite green, which means
+    // the most-used invocation silently lost its warning and nothing said so.
+    it("warns for the default all target, which includes the Windows provider", () => {
+        const lines: string[] = [];
+        const isAdministratorImpl = vi.fn(() => false);
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("all", {
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
+            isAdministratorImpl,
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(true);
+        expect(isAdministratorImpl).toHaveBeenCalledOnce();
+        expect(lines.join("")).toContain("hyper-v-setup-diagnostics-mount-privilege-required");
     });
 
     // D2: every other collaborator in runHyperVTests is injectable. Before this was, three existing

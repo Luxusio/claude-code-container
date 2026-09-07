@@ -1023,6 +1023,14 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(privilegeBreakIndex).toBeGreaterThanOrEqual(0);
             expect(backoffIndex).toBeGreaterThanOrEqual(0);
             expect(privilegeBreakIndex).toBeLessThan(backoffIndex);
+            // And the two derivations are ordered relative to EACH OTHER, which nothing pinned:
+            // swapping the adjacent lines left the whole suite green while turning every `p=code`
+            // on an unelevated host into `p=unelevated`, erasing the exact distinction the field
+            // was added to carry. Windows naming the code is the stronger signal and must be
+            // consulted first; the probe is the fallback, not the other way round.
+            const unelevatedBreakIndex = diagnosticProgram.indexOf("$MountPrivilege = 'unelevated'; break");
+            expect(unelevatedBreakIndex).toBeGreaterThanOrEqual(0);
+            expect(privilegeBreakIndex, "the code check is the stronger signal and goes first").toBeLessThan(unelevatedBreakIndex);
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
             const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);
@@ -1147,6 +1155,21 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=code,a=1,c=NotSpecified,h=2146233088,m=denied for (host-path) password=(redacted)]",
         });
+        // Strict membership, which the reader's comment claims ("under-report, never over-report")
+        // and nothing tested: relaxing `privilege === "code" || privilege === "unelevated"` to a
+        // null check left the whole suite green. A value from outside the pair is a producer this
+        // reader does not understand, and guessing `elevate` for it would tell an operator to fix
+        // something no signal said was wrong.
+        for (const bogus of ["yes", "true", "1", "", "Code", 1, true, {}] as unknown[]) {
+            expect(run({
+                ok: false,
+                code: "hyper-v-setup-diagnostics-mount-failed",
+                mount: { attempts: 1, category: "NotSpecified", hresult: 2146233088, privilege: bogus },
+            }), `privilege=${JSON.stringify(bogus)} must not be read as a privilege failure`).toEqual({
+                ok: false,
+                code: "hyper-v-setup-diagnostics-mount-failed[a=1,c=NotSpecified,h=2146233088]",
+            });
+        }
         // And the negative that still matters: an ELEVATED host hitting a busy mount is genuinely
         // transient, keeps its retries, and must not be relabelled. Same bracket, same code as
         // before this distinction existed.

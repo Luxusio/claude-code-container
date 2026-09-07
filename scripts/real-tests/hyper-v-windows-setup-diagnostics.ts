@@ -147,7 +147,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // Wrapped because these are .NET method calls: -ErrorAction does not apply to them, so
         // under $ErrorActionPreference='Stop' a throw escapes to the outer catch, where $Message is
         // a .NET string that fails the mount-failed test, $Code falls back to $Stage and the whole
-        // mount object is gone. That is the same bracket collapse `$MountPrivilege = $false` was
+        // mount object is gone. That is the same bracket collapse `$MountPrivilege = $null` was
         // added to prevent, reintroduced by a different route. Defaulting to $true on failure keeps
         // the message the only signal, which is the pre-probe behaviour.
         //
@@ -155,9 +155,12 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // identity lookups to answer a question whose answer cannot change mid-loop.
         //
         // No separate initializer for $MountElevated: both branches below assign it, so one would be
-        // dead code sitting immediately beside `$MountPrivilege = $false`, which is NOT dead — that
+        // dead code sitting immediately beside `$MountPrivilege = $null`, which is NOT dead — that
         // one is what a future Set-StrictMode would otherwise break. Two lines that look symmetric
-        // when only one carries weight is how the wrong one gets deleted.
+        // when only one carries weight is how the wrong one gets deleted. (Both mentions said
+        // `$MountPrivilege = $false` until the field became 'code' | 'unelevated' | $null — a
+        // comment naming a value that no longer exists, in the comment whose whole job is telling
+        // someone which line not to delete.)
         "try { $MountElevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $MountElevated = $true }",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
