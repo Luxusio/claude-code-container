@@ -1164,6 +1164,38 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(rendered).toContain("delete and recreate the device");
         expect(error).not.toHaveBeenCalled();
 
+        // The sibling terminal reason, asserted separately. Coverage across the two-member set was
+        // asymmetric: deleting hyper-v-guest-provisioning-not-scrubbed from it failed the suite,
+        // but deleting hyper-v-guest-first-logon-incomplete passed, because nothing drove that one
+        // to the renderer. Both mean the probe landed and OOBE is past first logon, so both must
+        // carry the destructive remedy.
+        log.mockClear();
+        const firstLogonRpc = vi.fn(async () => ({
+            ok: true,
+            status: 200,
+            ownerId: deviceLabOwnerId(cwd),
+            host: "127.0.0.1",
+            port: 17373,
+            body: {
+                ok: true,
+                result: {
+                    device: {
+                        id: "win-x",
+                        backend: "windows-vm",
+                        status: "stopped",
+                        runtimeState: "Off",
+                        bootReady: false,
+                        lastBootCheck: { ready: false, error: "hyper-v-guest-first-logon-incomplete" },
+                    },
+                },
+            },
+        }));
+        expect(await devicesCliAsync(["start", "win-x"], cwd, undefined, { invokeOwnerRpc: firstLogonRpc })).toBe(0);
+        const firstLogonRendered = log.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(firstLogonRendered).toContain("bootError: hyper-v-guest-first-logon-incomplete");
+        expect(firstLogonRendered, "a marker that never appeared is terminal too").toContain("delete and recreate the device");
+        log.mockClear();
+
         // The CLI must also wait as long as the broker does. Its RPC budget omitted the containment
         // reserve, so it gave up 4m45s early — inside the window where containment runs — and lost
         // the very reply that carries the warning above.
