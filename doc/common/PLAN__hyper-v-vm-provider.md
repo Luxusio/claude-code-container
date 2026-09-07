@@ -351,39 +351,39 @@ Two consequences are deliberate and worth knowing:
     holding a mounted answer file.
 
     The destructive remedy — delete and recreate — is emitted only for the **two**
-  reasons where the probe LANDED and reported a missing marker or live secrets,
-  because only those establish that OOBE is past first logon and the scrub can
-  never fire again. `hyper-v-guest-scrub-containment-failed` is not one of them,
-  despite naming a scrub: it is synthesised only when readiness never ran, so it
-  means the opposite, and counting it as a third re-admitted the destructive
-  advice through the reason branch right after it had been removed from the flag
-  branch. It is deliberately **not** emitted on
-  `scrubContainmentFailed`, which was tried and is wrong in the dangerous
-  direction: that flag means the stop was not confirmed, so the guest is still
-  running and a slow first boot may yet complete — something a longer
-  `--boot-timeout-ms` would have allowed. An unconfirmed containment gets a
-  non-destructive next step instead.
+    reasons where the probe LANDED and reported a missing marker or live secrets,
+    because only those establish that OOBE is past first logon and the scrub can
+    never fire again. `hyper-v-guest-scrub-containment-failed` is not one of them,
+    despite naming a scrub: it is synthesised only when readiness never ran, so it
+    means the opposite, and counting it as a third re-admitted the destructive
+    advice through the reason branch right after it had been removed from the flag
+    branch. It is deliberately **not** emitted on
+    `scrubContainmentFailed`, which was tried and is wrong in the dangerous
+    direction: that flag means the stop was not confirmed, so the guest is still
+    running and a slow first boot may yet complete — something a longer
+    `--boot-timeout-ms` would have allowed. An unconfirmed containment gets a
+    non-destructive next step instead.
 
-  The inverse is a known residual: a slow first boot that the `-TurnOff` DID kill
-  mid-OOBE is genuinely terminal by the reasoning above, and gets no remedy,
-  because the flag is absent exactly there and the CLI cannot tell that stop from
-  an ordinary one. Closing it properly means the broker emitting terminality
-  rather than the CLI inferring it from the reason — it already has a `remedy`
-  field on other paths — and that is a broker contract change, not a rendering
-  one.
+    The inverse is a known residual: a slow first boot that the `-TurnOff` DID kill
+    mid-OOBE is genuinely terminal by the reasoning above, and gets no remedy,
+    because the flag is absent exactly there and the CLI cannot tell that stop from
+    an ordinary one. Closing it properly means the broker emitting terminality
+    rather than the CLI inferring it from the reason — it already has a `remedy`
+    field on other paths — and that is a broker contract change, not a rendering
+    one.
 
-  Two reporting surfaces remain narrower than the record, both known and neither
-  blocking. The remedy — delete and recreate — is emitted by the CLI only; the
-  broker sets no `remedy` field, so an MCP caller sees the reason and
-  `scrubContainmentFailed` but is not told the next step. And the fleet-level CLI
-  views (`ccc devices list`, bare `ccc devices`) render only id/name/status, so
-  an uncontained guest is indistinguishable there from a healthy one; the flag is
-  reachable through `ccc devices status <id>` and through MCP `device_list`,
-  which does project it. The asymmetry runs the opposite way from the earlier
-  rounds: an agent scanning over MCP sees the flag, an operator scanning the CLI
-  list does not.
+    Two reporting surfaces remain narrower than the record, both known and neither
+    blocking. The remedy — delete and recreate — is emitted by the CLI only; the
+    broker sets no `remedy` field, so an MCP caller sees the reason and
+    `scrubContainmentFailed` but is not told the next step. And the fleet-level CLI
+    views (`ccc devices list`, bare `ccc devices`) render only id/name/status, so
+    an uncontained guest is indistinguishable there from a healthy one; the flag is
+    reachable through `ccc devices status <id>` and through MCP `device_list`,
+    which does project it. The asymmetry runs the opposite way from the earlier
+    rounds: an agent scanning over MCP sees the flag, an operator scanning the CLI
+    list does not.
 
-  Snapshot restore can put a guest back to a pre-scrub disk state, and nothing
+    Snapshot restore can put a guest back to a pre-scrub disk state, and nothing
     gates `device_snapshot_create` on scrub state, so that state is reachable.
     It is not a silent uncontained guest, though, and it is deliberately left to
     the gates rather than given code of its own. Restoring reverts the marker
