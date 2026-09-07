@@ -1819,12 +1819,14 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
         await response.body?.cancel().catch(() => undefined);
         return { ok: false as const, error: "broker-redirect-disallowed", body: null, maxBytes };
     }
-    // This precheck and the streaming counter below now measure the same bytes. Under the runtime
-    // `fetch` they did not: undici sent its own accept-encoding and decompressed, so a declared
-    // length was compressed bytes while `total` counted decompressed ones — measured at 115 against
-    // 50,032 for one reply. Never a hole, since the streaming counter is the real bound and catches
-    // what the precheck lets through, but the cheap early rejection could not fire on a response
-    // that would expand past the cap. The RPC lane's own transport sends no accept-encoding.
+    // For the RPC lane this precheck and the streaming counter below measure the same bytes; for
+    // the three probe callers still on `fetch` they do not. undici sends its own accept-encoding
+    // and decompresses, so there a declared length is compressed bytes while `total` counts
+    // decompressed ones — measured at 115 against 50,032 for one reply. Never a hole, since the
+    // streaming counter is the real bound and catches what the precheck lets through, but on those
+    // callers the cheap early rejection cannot fire on a response that would expand past the cap.
+    // Nothing diverges today either way: the broker sets no content-encoding anywhere, and
+    // compression additionally needs the server to opt in, which it never does.
     const declaredLength = response.headers.get("content-length");
     if (declaredLength !== null && /^\d+$/.test(declaredLength)) {
         if (BigInt(declaredLength) > BigInt(maxBytes)) {
