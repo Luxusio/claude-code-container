@@ -1118,9 +1118,16 @@ of Hyper-V Administrators alone runs VMs but does not grant the mount
 privilege. What was actually observed is weaker: one unelevated run failed with
 `0x80070522`. If the stronger claim is wrong it is wrong for a whole host class
 — the elevation clause would abandon retries at attempt 1 on genuinely
-transient errors and print a remedy that does not help. It is a one-command
-check on a Windows host (`whoami /groups`, then whether `Mount-VHD` succeeds
-unelevated) and has not been run.
+transient errors and print a remedy that does not help.
+
+What settles it is `npm run test:level3:hyper-v:windows` run twice, unelevated
+then elevated: the emitted `p=code` / `p=unelevated` says which signal concluded
+privilege, and an elevated re-run that gets past the mount proves elevation is
+the remedy the code names. An earlier draft recorded `whoami /groups` as the
+check; it is the weaker instrument, because it reports group membership rather
+than outcome, and the host class the claim is about — Hyper-V Administrators
+*without* local Administrators — is by construction not a host on which the
+elevated path already works. Neither run has been made yet.
 
 The second: on an unelevated host the code is emitted for *any* mount failure,
 including a transient category such as `ResourceBusy`, because `Mount-VHD`
