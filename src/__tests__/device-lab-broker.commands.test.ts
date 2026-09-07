@@ -1025,7 +1025,13 @@ describe("device-lab host broker lifecycle commands", () => {
                 // A readiness command that never came back: no structured JSON to parse, so the
                 // broker names the cause itself. Spread last so it overrides the stdout and status
                 // the branches above chose.
-                ...(guestReady && guestReadyCommandTimedOut ? { status: null, stdout: "", timedOut: true } : {}),
+                // Carrying the real wrapper's error text, not just the shape. Without it the case
+                // asserts the timeout branch but never pins that a genuine timeout's message
+                // cannot satisfy the `/^hyper-v-[a-z0-9-]+$/` allowlist tested just above that
+                // branch — which is the thing that would silently reroute it.
+                ...(guestReady && guestReadyCommandTimedOut
+                    ? { status: null, stdout: "", timedOut: true, error: "device-lab provider wrapper timed out after 1000ms" }
+                    : {}),
             };
         });
         const server = createDeviceBrokerServer({
