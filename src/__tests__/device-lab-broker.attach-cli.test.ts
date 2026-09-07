@@ -1300,12 +1300,69 @@ describe("device-lab host broker physical attach and CLI", () => {
         const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
         expect(stderr).toContain("broker-rpc-timeout");
         expect(stderr, "must say the host may still be working").toContain("the host may still be working");
-        expect(stderr, "must point at the command that can answer").toContain("ccc devices status");
-        expect(stderr, "must offer the knob that would have avoided it").toContain("--boot-timeout-ms");
-        // Matched on the transport code, not on `detail` — Node names the abort differently either
-        // side of response headers ("aborted" mid-body, "The operation was aborted" before), so
-        // keying on the message would cover one half and silently miss the other.
-        expect(stderr, "must not tell anyone to destroy a guest that may still be booting").not.toContain("cannot be retried on this guest");
+        expect(stderr, "must point at the command that can answer").toContain("ccc devices status win-t");
+        expect(stderr, "start parses --boot-timeout-ms, so offer it").toContain("--boot-timeout-ms");
+
+        // The half that pins the design decision. Node names the abort differently either side of
+        // response headers — "aborted" mid-body, "The operation was aborted" before — so a
+        // predicate keyed on `detail` would satisfy the assertions above and silently miss this
+        // one. Without this case the suite is insensitive to exactly the bug shape 5289706 fixed,
+        // which is the reason the match is on the code.
+        error.mockClear();
+        const midBodyRpc = vi.fn(async () => ({
+            ok: false,
+            status: null,
+            ownerId: timeoutOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: null,
+            error: "broker-rpc-timeout",
+            detail: "aborted",
+        }));
+        expect(await devicesCliAsync(["start", "win-t"], cwd, undefined, { invokeOwnerRpc: midBodyRpc })).toBe(1);
+        const midBody = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(midBody, "the mid-body abort wording must get the same line").toContain("the host may still be working");
+        expect(midBody).toContain("ccc devices status win-t");
+    });
+
+    it("does not offer --boot-timeout-ms on the actions that reject it", async () => {
+        // The advice is only true for start and reboot. parseDeviceLifecycleArgs skips
+        // parseLifecycleOptions for everything else, status/stop/delete reject a third argument
+        // outright, and the windows-vm create option set has no bootTimeoutMs at all — create's
+        // budget is hardcoded. Naming the flag on those actions sends an operator to a command that
+        // answers with a usage line. That is the same shape as the two premise retractions in this
+        // series: guidance true where it was written, unqualified where someone else meets it.
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-rpc-timeout-scope-cli-test";
+        const scopeOwnerId = deviceLabOwnerId(cwd);
+        const scopeRoot = join(homedir(), ".ccc/devices/owners", scopeOwnerId, "windows-vm");
+        mkdirSync(scopeRoot, { recursive: true });
+        writeFileSync(join(scopeRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-u", backend: "windows-vm", status: "stopped", incarnationId: "a".repeat(32) }],
+        }));
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: false,
+            status: null,
+            ownerId: scopeOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: null,
+            error: "broker-rpc-timeout",
+            detail: "The operation was aborted",
+        }));
+
+        expect(await devicesCliAsync(["stop", "win-u"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const stopped = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(stopped, "stop still gets the wait-and-check half").toContain("the host may still be working");
+        expect(stopped, "stop rejects a third argument, so must not advertise the flag").not.toContain("--boot-timeout-ms");
+
+        // And status must not be told to run status: it is the command that just timed out.
+        error.mockClear();
+        expect(await devicesCliAsync(["status", "win-u"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const statused = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(statused, "status must not point at itself").not.toContain("ccc devices status win-u");
+        expect(statused, "status gets a next step that is actually different").toContain("re-run this command");
+        expect(statused).not.toContain("--boot-timeout-ms");
     });
 
     it("does not tell an operator to delete a guest whose readiness never ran", async () => {

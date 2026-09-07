@@ -1426,7 +1426,24 @@ const UNCONFIRMED_CONTAINMENT_NEXT_STEP = "stop the device, and if it recurs rai
 // honest "still working, I stopped listening" case could not be shown at all. Making it visible
 // without saying what it means would trade one silence for another.
 const RPC_TIMEOUT_REASONS = new Set(["broker-rpc-timeout"]);
-const RPC_TIMEOUT_NEXT_STEP = "the CLI stopped waiting; the host may still be working — check `ccc devices status <id>`, and raise --boot-timeout-ms if a first boot needs longer";
+// Composed per lane rather than fixed, because the advice is not true everywhere. Only start and
+// reboot parse --boot-timeout-ms: parseDeviceLifecycleArgs skips parseLifecycleOptions for the
+// others, status/stop/delete reject a third argument outright, and the windows-vm create option set
+// has no bootTimeoutMs at all — create's ~6h budget is hardcoded. Advertising the flag on those
+// actions sends an operator to a command that answers `Unsupported ... option` or a usage line.
+// Pointing at `ccc devices status` is right everywhere except status itself, which is the command
+// that just timed out.
+const RPC_TIMEOUT_BOOT_TIMEOUT_ACTIONS = new Set(["start", "reboot"]);
+function rpcTimeoutNextStep(action: DeviceLifecycleAction | DeviceSnapshotAction, deviceId: string): string {
+    const target = deviceId || "<id>";
+    const check = action === "status"
+        ? "re-run this command"
+        : `check \`ccc devices status ${target}\``;
+    const raise = RPC_TIMEOUT_BOOT_TIMEOUT_ACTIONS.has(action)
+        ? ", and raise --boot-timeout-ms if a first boot needs longer"
+        : "";
+    return `the CLI stopped waiting; the host may still be working — ${check}${raise}`;
+}
 // The broker bounds these codes to [a-z0-9-] before they leave it, but that invariant lives two
 // modules away and lastBootCheck rides a denylist redaction on non-hyper-v backends. Re-checking
 // at the render site costs one regex and makes the terminal output self-defending rather than
@@ -1482,7 +1499,7 @@ function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, d
     return `${lines.join("\n")}\n`;
 }
 
-function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceBrokerOwnerRpcResult): string {
+function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceBrokerOwnerRpcResult, deviceId = ""): string {
     const body = result.body;
     const error = typeof body?.error === "string" ? body.error : result.error || "broker-operation-failed";
     const detail = typeof body?.detail === "string" ? body.detail : result.detail;
@@ -1503,7 +1520,7 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     // Node called the abort — "aborted" mid-body, "The operation was aborted" before headers. The
     // code is the stable half.
     const rpcTimeout = RPC_TIMEOUT_REASONS.has(error)
-        ? `\n  next: ${RPC_TIMEOUT_NEXT_STEP}`
+        ? `\n  next: ${rpcTimeoutNextStep(action, deviceId)}`
         : "";
     return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}${rpcTimeout}`;
 }
@@ -1545,10 +1562,17 @@ function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm
     ].join("\n")}\n`;
 }
 
-function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBrokerOwnerRpcResult): string {
+function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBrokerOwnerRpcResult, deviceId = ""): string {
     const error = typeof result.body?.error === "string" ? result.body.error : result.error || "broker-operation-failed";
     const detail = typeof result.body?.detail === "string" ? result.body.detail : result.detail;
-    return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}`;
+    // The same transport, the same catch, the same code — so the same silence. It matters more here
+    // than on the lifecycle lane: the natural response to an apparently failed restore is to run it
+    // again, while the host is still applying the checkpoint. No --boot-timeout-ms clause, because
+    // snapshots have no such flag.
+    const rpcTimeout = RPC_TIMEOUT_REASONS.has(error)
+        ? `\n  next: ${rpcTimeoutNextStep(action, deviceId)}`
+        : "";
+    return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}${rpcTimeout}`;
 }
 
 function now(): string {
@@ -2542,7 +2566,7 @@ export async function devicesCliAsync(
             ...parsed.params,
         }, { cwd, profile, rpcTimeoutMs: 150000 });
         if (!result.ok) {
-            console.error(formatSnapshotError(parsed.action, result));
+            console.error(formatSnapshotError(parsed.action, result, parsed.deviceId));
             return 1;
         }
         console.log(formatSnapshotResult(parsed.action, parsed.backend, parsed.deviceId, result));
@@ -2588,7 +2612,7 @@ export async function devicesCliAsync(
                     : 300000,
         });
         if (!result.ok) {
-            console.error(formatLifecycleError(parsed.action, result));
+            console.error(formatLifecycleError(parsed.action, result, parsed.deviceId));
             return 1;
         }
         if (parsed.action !== "delete" && !brokerRpcDevice(result)) {
