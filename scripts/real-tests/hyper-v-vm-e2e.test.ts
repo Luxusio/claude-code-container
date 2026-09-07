@@ -988,7 +988,13 @@ describe("Hyper-V E2E zero-config image selection", () => {
             // the only surface that pins them. Every other mount line above is asserted here for
             // the same reason.
             expect(diagnosticProgram).toContain("if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }");
-            expect(diagnosticProgram).toContain("$MountElevated = $MountPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)");
+            // Probed once before the loop and wrapped: these are .NET calls, which -ErrorAction
+            // does not cover, so an unguarded throw under $ErrorActionPreference='Stop' escapes to
+            // the outer catch and takes the whole mount bracket with it.
+            expect(diagnosticProgram).toContain("try { $MountElevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $MountElevated = $true }");
+            expect(diagnosticProgram.match(/WindowsIdentity\]::GetCurrent/g), "probed once, not per retry").toHaveLength(1);
+            expect(diagnosticProgram.indexOf("$MountElevated = (New-Object"))
+                .toBeLessThan(diagnosticProgram.indexOf("for ($Attempt"));
             // Declared with its four siblings. Unassigned it resolves to $null and [bool]$null is
             // $false, so it works — until someone adds Set-StrictMode, at which point the catch
             // throws on an undefined variable and the whole a=/c=/h=/m= bracket collapses to a bare
@@ -1084,8 +1090,29 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=The system failed to mount (0x80070522).]",
         });
-        // And the negative: a busy mount is transient and retryable, so it must NOT be relabelled
-        // as needing elevation. Same bracket, same code as before this distinction existed.
+        // The combination the program actually emits on an unelevated host, which nothing covered:
+        // a transient category AND privilege true, because the elevation probe fires for any mount
+        // failure when we are not elevated. It reads as a contradiction and is not one — unelevated,
+        // Mount-VHD cannot succeed whatever else is wrong, so `elevate` is the actionable half and
+        // the busy category is reported beside it rather than suppressed. Pinned so the pairing is a
+        // decision on the record instead of a surprise in the field.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: {
+                attempts: 1,
+                category: "ResourceBusy",
+                hresult: 2147024891,
+                message: "The process cannot access the file because it is being used by another process.",
+                privilege: true,
+            },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=ResourceBusy,h=2147024891,m=The process cannot access the file because it is being used by another process.]",
+        });
+        // And the negative that still matters: an ELEVATED host hitting a busy mount is genuinely
+        // transient, keeps its retries, and must not be relabelled. Same bracket, same code as
+        // before this distinction existed.
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",

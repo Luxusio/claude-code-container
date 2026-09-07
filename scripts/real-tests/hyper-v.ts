@@ -135,7 +135,11 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
     } catch {
         // The probe itself failing is not a reason to block or to claim elevation is missing. Say
         // only what is true: it could not be determined.
-        write("NOTE Could not determine whether this run is elevated; Windows Setup diagnostics may be unavailable.\n");
+        write(
+            "NOTE Could not determine whether this run is elevated. If a guest fails to boot and the\n"
+            + "     result says hyper-v-setup-diagnostics-mount-privilege-required, re-run from an\n"
+            + "     elevated terminal to get the Panther logs. The VM lifecycle itself is unaffected.\n",
+        );
         return false;
     }
     if (elevated) return false;
@@ -144,7 +148,9 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         + "     logs, which needs a privilege Hyper-V VM management does not grant, so on a guest that\n"
         + "     fails to boot you will get hyper-v-setup-diagnostics-mount-privilege-required instead of\n"
         + "     the logs explaining why. The VM lifecycle itself is unaffected.\n"
-        + "     Re-run from an elevated terminal to keep the diagnostics.\n",
+        + "     Re-run from an elevated terminal to keep the diagnostics. Note this checks the local\n"
+        + "     Administrators role: membership of Hyper-V Administrators alone runs VMs but does not\n"
+        + "     grant the mount privilege, so elevating within that group will not resolve it.\n",
     );
     return true;
 }

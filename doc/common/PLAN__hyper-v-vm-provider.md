@@ -1098,12 +1098,25 @@ Two details worth keeping, because both cost time to find:
 - It was retried. The mount loop treated it as transient and spent seven
   attempts with exponential backoff on an error that waiting cannot change.
 
-`npm run test:level3:hyper-v:windows` now probes elevation after the build and
-warns before creating a VM, rather than letting the operator discover it two
-minutes into a boot. The warning is not a UAC prompt: the diagnostic is
-captured by a synchronous formatter that runs while building an error string,
-and elevating the launcher instead would detach the terminal stdin the
-evaluation-licence question uses.
+`npm run test:level3:hyper-v:windows` now probes elevation **before** the build
+and warns, rather than letting the operator discover it two minutes into a
+boot. Before the build specifically, because the action the warning asks for is
+a re-run and a re-run costs another `buildLevel3Artifacts` — warning afterwards
+charges for the build twice. It is skipped for a `linux` target, which never
+captures this diagnostic.
+
+The warning is not a UAC prompt: the diagnostic is captured by a synchronous
+formatter that runs while building an error string, and elevating the launcher
+instead would detach the terminal stdin the evaluation-licence question uses.
+
+The code an operator will see and can grep for is
+`hyper-v-setup-diagnostics-mount-privilege-required[elevate,...]`. Two caveats
+worth knowing: the probe tests the local Administrators role, so membership of
+Hyper-V Administrators alone runs VMs but does not grant the mount privilege
+and elevating within that group will not resolve it; and on an unelevated host
+the code is emitted for *any* mount failure, including a transient category
+such as `ResourceBusy`, because `Mount-VHD` cannot succeed there whatever else
+is also true.
 
 ## Known Gaps
 

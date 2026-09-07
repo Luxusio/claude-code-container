@@ -138,7 +138,19 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // the whole a=/c=/h=/m= bracket down to a bare code. This field exists to carry that
         // bracket; it should not be the one variable that can lose it.
         "$MountPrivilege = $false",
+        // Probed ONCE, here, and wrapped. Two reasons, both learned the hard way.
+        //
+        // Wrapped because these are .NET method calls: -ErrorAction does not apply to them, so
+        // under $ErrorActionPreference='Stop' a throw escapes to the outer catch, where $Message is
+        // a .NET string that fails the mount-failed test, $Code falls back to $Stage and the whole
+        // mount object is gone. That is the same bracket collapse `$MountPrivilege = $false` was
+        // added to prevent, reintroduced by a different route. Defaulting to $true on failure keeps
+        // the message the only signal, which is the pre-probe behaviour.
+        //
+        // Once because inside the retry loop it re-ran on every attempt for an elevated host — ten
+        // identity lookups to answer a question whose answer cannot change mid-loop.
         "$MountElevated = $true",
+        "try { $MountElevated = (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { $MountElevated = $true }",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "  if ($Vm.Name -cne $VmName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-setup-diagnostics-vm-not-exact' }",
@@ -207,11 +219,12 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // launcher also promises the operator they will get this code; message-matching alone
         // cannot keep that promise. `Mount-VHD failed AND we are not elevated` is the same
         // conclusion reached without depending on host text at all.
-        "      if (-not $MountPrivilege) {",
-        "        $MountIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()",
-        "        $MountPrincipal = New-Object Security.Principal.WindowsPrincipal($MountIdentity)",
-        "        $MountElevated = $MountPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
-        "      }",
+        // Two ways to conclude it, and the second one deliberately fires for ANY mount failure on
+        // an unelevated host — including a category that names a transient cause such as
+        // ResourceBusy. That looks like a contradiction in the emitted code (`elevate` beside
+        // `c=ResourceBusy`) and is not one: unelevated, Mount-VHD cannot succeed whatever else is
+        // also true, so the retries are wasted and elevation is a real prerequisite. Reporting the
+        // busy category and advising elevation are both correct; only elevation is actionable.
         "      if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }",
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is

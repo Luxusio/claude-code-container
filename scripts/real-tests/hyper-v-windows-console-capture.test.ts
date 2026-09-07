@@ -299,13 +299,22 @@ describe("captureHyperVWindowsConsole", () => {
         expect(compactedLayout).toContain('"services":[["VSS",true,null]]');
 
         // The widest real shape, which this test predated: BOTH failure fields present, with the
-        // setup-diagnostics one carrying the privilege code and a full-width redacted message. That
-        // is the longest line this reporter can be handed, and it is the case that pushed the field
-        // past its previous width. compactMessage truncates from the head, so what a breach costs is
-        // the tail — `originalReason`, the step name and the actual error, which is the only part an
-        // operator can act on. Asserting the limit alone would not catch that; the tail is asserted
-        // too.
-        const privilegeMessage = `The system failed to mount ${"y".repeat(140)} (0x80070522).`;
+        // setup-diagnostics one carrying the privilege code and a full-width redacted message.
+        //
+        // compactMessage KEEPS the head and drops the tail, so what a breach costs is the end of
+        // the line — `originalReason`, the step name and the actual error, the only part an
+        // operator can act on. That is why the assertions below are on content and not on length:
+        // `expect(length).toBeLessThanOrEqual(700)` can never fail, because compactMessage returns
+        // at most 700 by construction. It reads like a budget check and is a tautology. The two
+        // toContain assertions are the whole test.
+        //
+        // This shape IS over budget — 962 chars raw, truncated to 700 — and that is expected. The
+        // `"services"` field the two narrower cases assert does not survive here; the remedy and
+        // the failure do, with roughly 170 characters of headroom past the real message cap.
+        // 159 fillers, not 140: mountFailureMessage caps `m` at MOUNT_MESSAGE_MAX_CHARS = 200, and
+        // this is the length that actually reaches it. The first version of this case was 19 chars
+        // short of the real ceiling while calling itself the widest shape.
+        const privilegeMessage = `The system failed to mount ${"y".repeat(159)} (0x80070522).`;
         const widestReason = [
             "profile=windows-server",
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
@@ -313,7 +322,6 @@ describe("captureHyperVWindowsConsole", () => {
             `start and wait for PowerShell Direct: hyper-v-guest-not-ready: ${diagnostic}`,
         ].join("; ");
         const compactedWidest = compactMessage(widestReason);
-        expect(compactedWidest.length).toBeLessThanOrEqual(700);
         expect(compactedWidest, "the remedy must survive, it is the whole point of the code").toContain("mount-privilege-required[elevate");
         expect(compactedWidest, "and so must the failure the operator has to act on").toContain("hyper-v-guest-not-ready");
     });
