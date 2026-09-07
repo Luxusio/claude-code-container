@@ -4,7 +4,6 @@ import { accessSync, closeSync, constants as fsConstants, existsSync, fchmodSync
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { homedir, hostname, uptime } from "os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "path";
-import { Readable } from "stream";
 import { fileURLToPath, pathToFileURL } from "url";
 import { isDeepStrictEqual } from "util";
 import { Worker } from "worker_threads";
@@ -1887,6 +1886,30 @@ export async function readHostBrokerHttpJson(response: HostBrokerHttpResponse, m
 // already been fenced by pid and process start token above, so it is the broker
 // this caller launched or nothing, and a long create legitimately looks like a
 // long silence. It is the same reason the header deadline had to go.
+// `Readable.toWeb` would be the one-liner here, but it is experimental below Node 22.17.0 and this
+// package declares `engines.node: ">=20.19.0"`, so the repo's own lint gate rejects it. Building the
+// stream by hand keeps the declared floor honest. `pause`/`resume` preserve backpressure, which a
+// naive enqueue-everything adapter would drop — the response cap is 64 MiB and this must not buffer
+// it all because the consumer is slow.
+function incomingMessageBody(response: IncomingMessage): ReadableStream<Uint8Array> {
+    return new ReadableStream<Uint8Array>({
+        start(controller) {
+            response.on("data", (chunk: Buffer) => {
+                controller.enqueue(new Uint8Array(chunk));
+                if ((controller.desiredSize ?? 1) <= 0) response.pause();
+            });
+            response.on("end", () => controller.close());
+            response.on("error", (error) => controller.error(error));
+        },
+        pull() {
+            response.resume();
+        },
+        cancel() {
+            response.destroy();
+        },
+    });
+}
+
 async function hostBrokerHttpRequest(url: string, init: {
     method: string;
     headers: Record<string, string>;
@@ -1914,7 +1937,7 @@ async function hostBrokerHttpRequest(url: string, init: {
             resolveResponse({
                 status: response.statusCode || 0,
                 headers,
-                body: Readable.toWeb(response) as HostBrokerHttpResponse["body"],
+                body: incomingMessageBody(response) as HostBrokerHttpResponse["body"],
             });
         });
         request.on("error", rejectResponse);
