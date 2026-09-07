@@ -141,7 +141,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // one Set-StrictMode anywhere and the catch below throws on an undefined variable, taking
         // the whole a=/c=/h=/m= bracket down to a bare code. This field exists to carry that
         // bracket; it should not be the one variable that can lose it.
-        "$MountPrivilege = $false",
+        "$MountPrivilege = $null",
         // Probed ONCE, here, and wrapped. Two reasons, both learned the hard way.
         //
         // Wrapped because these are .NET method calls: -ErrorAction does not apply to them, so
@@ -233,7 +233,16 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // `c=ResourceBusy`) and is not one: unelevated, Mount-VHD cannot succeed whatever else is
         // also true, so the retries are wasted and elevation is a real prerequisite. Reporting the
         // busy category and advising elevation are both correct; only elevation is actionable.
-        "      if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }",
+        // Which signal fired is carried out, not just that one did. The two are different advice:
+        // `code` means Windows named ERROR_PRIVILEGE_NOT_HELD and elevation is the whole fix;
+        // `unelevated` means the probe concluded it and the category beside it may be an
+        // INDEPENDENT problem that survives elevating. Without the distinction an operator who
+        // elevates, re-runs and waits out another boot can hit the same ResourceBusy with nothing
+        // in the first output having warned them. The reader's own comment claims this code exists
+        // because it is the one failure with a fixed remedy; under the probe fallback that is only
+        // true of the `code` derivation, and saying which one applies is what keeps the claim honest.
+        "      if ($MountMessage -match '0x80070522') { $MountPrivilege = 'code'; break }",
+        "      if (-not $MountElevated) { $MountPrivilege = 'unelevated'; break }",
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
         // included in the comparison, so a check passing just under the deadline cannot then add a
@@ -278,7 +287,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         "} catch {",
         "  $Message = [string]$_.Exception.Message",
         "  if ($Message -eq 'hyper-v-setup-diagnostics-mount-failed' -and $MountAttempts -gt 0) {",
-        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult; message = $MountMessage; privilege = [bool]$MountPrivilege } }",
+        "    $Result = [ordered]@{ ok = $false; code = $Message; mount = [ordered]@{ attempts = $MountAttempts; category = $MountCategory; hresult = $MountHResult; message = $MountMessage; privilege = $MountPrivilege } }",
         "  } else {",
         "    if ($Message -match '^hyper-v-setup-diagnostics-[a-z-]+$') { $Code = $Message } else { $Code = $Stage }",
         "    $Result = [ordered]@{ ok = $false; code = $Code }",
@@ -349,8 +358,12 @@ function mountFailureCode(value: unknown): string | null {
     // what to do; the bracket is kept verbatim beside it so nothing that parsed the old shape
     // loses its fields.
     const detail = `a=${attempts},c=${category},h=${hresult}${message ? `,m=${message}` : ""}`;
-    if ((value as { privilege?: unknown }).privilege === true) {
-        return `hyper-v-setup-diagnostics-mount-privilege-required[elevate,${detail}]`;
+    // `p=` says which signal concluded it, because the two carry different next steps. Strict
+    // membership rather than a truthiness test: any other value falls through to the generic code,
+    // which is the safe direction — under-report, never over-report.
+    const privilege = (value as { privilege?: unknown }).privilege;
+    if (privilege === "code" || privilege === "unelevated") {
+        return `hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=${privilege},${detail}]`;
     }
     return `hyper-v-setup-diagnostics-mount-failed[${detail}]`;
 }

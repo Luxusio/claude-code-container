@@ -980,14 +980,15 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 "$MountMessage = $null",
                 "$MountMessage = [string]$_.Exception.Message",
             ]);
-            expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage; privilege = [bool]$MountPrivilege");
+            expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage; privilege = $MountPrivilege");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
             // The privilege half of this diagnostic lives entirely in the emitted program, and the
             // reader tests below cannot see it — they stub the spawn and hand mountFailureCode a
             // JSON object directly. Deleting both producer lines left those 45 green, so this is
             // the only surface that pins them. Every other mount line above is asserted here for
             // the same reason.
-            expect(diagnosticProgram).toContain("if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }");
+            expect(diagnosticProgram).toContain("if ($MountMessage -match '0x80070522') { $MountPrivilege = 'code'; break }");
+            expect(diagnosticProgram).toContain("if (-not $MountElevated) { $MountPrivilege = 'unelevated'; break }");
             // Probed once before the loop and wrapped: these are .NET calls, which -ErrorAction
             // does not cover, so an unguarded throw under $ErrorActionPreference='Stop' escapes to
             // the outer catch and takes the whole mount bracket with it.
@@ -1012,12 +1013,12 @@ describe("Hyper-V E2E zero-config image selection", () => {
             // $false, so it works — until someone adds Set-StrictMode, at which point the catch
             // throws on an undefined variable and the whole a=/c=/h=/m= bracket collapses to a bare
             // code. It is the one variable that can lose the thing this change delivers.
-            expect(diagnosticProgram).toContain("$MountPrivilege = $false");
+            expect(diagnosticProgram).toContain("$MountPrivilege = $null");
             // Ordering, not just presence: the privilege check must precede the backoff sleep, or
             // an unelevated host pays the full retry budget before concluding what it already knew.
             // That is the wasted-wall-clock half of the original defect (a=7 with exponential
             // backoff), and a reorder would restore it while every presence assertion still passed.
-            const privilegeBreakIndex = diagnosticProgram.indexOf("$MountPrivilege = $true; break");
+            const privilegeBreakIndex = diagnosticProgram.indexOf("$MountPrivilege = 'code'; break");
             const backoffIndex = diagnosticProgram.indexOf("$MountSleep = [Math]::Min");
             expect(privilegeBreakIndex).toBeGreaterThanOrEqual(0);
             expect(backoffIndex).toBeGreaterThanOrEqual(0);
@@ -1100,11 +1101,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 category: "NotSpecified",
                 hresult: 2146233088,
                 message: "The system failed to mount (0x80070522).",
-                privilege: true,
+                privilege: "code",
             },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=The system failed to mount (0x80070522).]",
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=code,a=1,c=NotSpecified,h=2146233088,m=The system failed to mount (0x80070522).]",
         });
         // The combination the program actually emits on an unelevated host, which nothing covered:
         // a transient category AND privilege true, because the elevation probe fires for any mount
@@ -1120,11 +1121,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 category: "ResourceBusy",
                 hresult: 2147024891,
                 message: "The process cannot access the file because it is being used by another process.",
-                privilege: true,
+                privilege: "unelevated",
             },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=ResourceBusy,h=2147024891,m=The process cannot access the file because it is being used by another process.]",
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=unelevated,a=1,c=ResourceBusy,h=2147024891,m=The process cannot access the file because it is being used by another process.]",
         });
         // Redaction on the privilege branch, measured rather than argued. It is structurally the
         // same path — `message` and `detail` are computed before the privilege test and both
@@ -1140,11 +1141,11 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 category: "NotSpecified",
                 hresult: 2146233088,
                 message: "denied for C:\\Users\\Luxus\\disk.vhdx\npassword: hunter2",
-                privilege: true,
+                privilege: "code",
             },
         })).toEqual({
             ok: false,
-            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=denied for (host-path) password=(redacted)]",
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=code,a=1,c=NotSpecified,h=2146233088,m=denied for (host-path) password=(redacted)]",
         });
         // And the negative that still matters: an ELEVATED host hitting a busy mount is genuinely
         // transient, keeps its retries, and must not be relabelled. Same bracket, same code as
@@ -1152,7 +1153,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(run({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed",
-            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891, privilege: false },
+            mount: { attempts: 10, category: "ResourceBusy", hresult: 2147024891 },
         })).toEqual({
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-failed[a=10,c=ResourceBusy,h=2147024891]",

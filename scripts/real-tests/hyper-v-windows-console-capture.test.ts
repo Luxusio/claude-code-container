@@ -282,7 +282,11 @@ describe("captureHyperVWindowsConsole", () => {
         const diagnostic = `boot={"state":"Running","heartbeat":null,"diagnosticComplete":false,"diagnosticErrors":["hyper-v-diagnostic-integration-services-incomplete"],"services":[["VSS",true,null]],"padding":"${"x".repeat(265)}"}`;
         const reason = `profile=windows-server; guestConsole=results/device-lab-real/hyper-v-windows-console-latest.png; start and wait for PowerShell Direct: hyper-v-guest-not-ready: ${diagnostic}`;
         const compacted = compactMessage(reason);
-        expect(compacted.length).toBeLessThanOrEqual(700);
+        // Not-truncated, not length. `toBeLessThanOrEqual(700)` cannot fail — compactMessage returns
+        // at most its limit by construction — so it read as a budget check and asserted nothing.
+        // Equality with the input is the assertion that matches this test's name: it fails the
+        // moment the shape outgrows the reporter, which is the regression worth catching.
+        expect(compacted).toBe(reason);
         expect(compacted).toContain("profile=windows-server");
         expect(compacted).toContain("guestConsole=results/device-lab-real/hyper-v-windows-console-latest.png");
         expect(compacted).toContain('"diagnosticErrors":["hyper-v-diagnostic-integration-services-incomplete"]');
@@ -293,7 +297,9 @@ describe("captureHyperVWindowsConsole", () => {
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
         );
         const compactedLayout = compactMessage(layoutReason);
-        expect(compactedLayout.length).toBeLessThanOrEqual(700);
+        // 650 of 700 raw. The narrowest headroom of the three shapes here, and until now it was
+        // guarded only incidentally by a toContain on the last field.
+        expect(compactedLayout).toBe(layoutReason);
         expect(compactedLayout).toContain("profile=windows-server");
         expect(compactedLayout).toContain("guestConsole=unavailable(hyper-v-console-rgb565-invalid");
         expect(compactedLayout).toContain('"diagnosticErrors":["hyper-v-diagnostic-integration-services-incomplete"]');

@@ -138,7 +138,16 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         write(
             "NOTE Could not determine whether this run is elevated. If a guest fails to boot and the\n"
             + "     result says hyper-v-setup-diagnostics-mount-privilege-required, re-run from an\n"
-            + "     elevated terminal to get the Panther logs. The VM lifecycle itself is unaffected.\n",
+            + "     elevated terminal to get the Panther logs — specifically as a member of local\n"
+            + "     Administrators, since Hyper-V Administrators alone runs VMs but is not believed to\n"
+            + "     grant the mount privilege. The VM lifecycle itself is unaffected.\n"
+            // The two probes fail in OPPOSITE directions, and this note is the one place that
+            // matters. This one throwing produced the message above; the in-guest probe defaults to
+            // "assume elevated", which biases it AGAINST emitting the code this note tells the
+            // operator to watch for, leaving the message match as the only detector. So the absence
+            // of that code here is weaker evidence than it looks.
+            + "     If the probe failed for an environmental reason the in-guest check may fail the\n"
+            + "     same way, so the absence of that code is not proof the diagnostics were captured.\n",
         );
         return false;
     }
@@ -148,9 +157,12 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         + "     logs, which needs a privilege Hyper-V VM management does not grant, so on a guest that\n"
         + "     fails to boot you will get hyper-v-setup-diagnostics-mount-privilege-required instead of\n"
         + "     the logs explaining why. The VM lifecycle itself is unaffected.\n"
-        + "     Re-run from an elevated terminal to keep the diagnostics. Note this checks the local\n"
-        + "     Administrators role: membership of Hyper-V Administrators alone runs VMs but does not\n"
-        + "     grant the mount privilege, so elevating within that group will not resolve it.\n",
+        + "     Re-run from an elevated terminal to keep the diagnostics.\n"
+        // The caveat names its audience. Unqualified it landed on the common reader — a local admin
+        // on a UAC-filtered token, for whom elevating DOES fix it — and read as "elevating might not
+        // help", contradicting the instruction directly above.
+        + "     (If your only administrative right is Hyper-V Administrators membership, elevating\n"
+        + "     will not help: this checks the local Administrators role.)\n",
     );
     return true;
 }
