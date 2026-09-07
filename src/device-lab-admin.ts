@@ -1419,6 +1419,14 @@ const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this gu
 // the guest is still running and a slow first boot may yet complete, so this says what to try
 // before anything destructive.
 const UNCONFIRMED_CONTAINMENT_NEXT_STEP = "stop the device, and if it recurs raise --boot-timeout-ms or delete and recreate";
+// The CLI gave up waiting; the broker did not answer. Everything an operator needs to know is
+// absent from the bare code, and `The operation was aborted` actively misleads — it reads as if
+// they cancelled. This is the state the transport fix newly makes reachable: before it, a budget
+// over five minutes was cut by the HTTP client and reported as `broker-rpc-unavailable`, so the
+// honest "still working, I stopped listening" case could not be shown at all. Making it visible
+// without saying what it means would trade one silence for another.
+const RPC_TIMEOUT_REASONS = new Set(["broker-rpc-timeout"]);
+const RPC_TIMEOUT_NEXT_STEP = "the CLI stopped waiting; the host may still be working — check `ccc devices status <id>`, and raise --boot-timeout-ms if a first boot needs longer";
 // The broker bounds these codes to [a-z0-9-] before they leave it, but that invariant lives two
 // modules away and lastBootCheck rides a denylist redaction on non-hyper-v backends. Re-checking
 // at the render site costs one regex and makes the terminal output self-defending rather than
@@ -1491,7 +1499,13 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     const remedy = typeof detail === "string" && SCRUB_FAILURE_REASONS.has(detail) && !details.includes(SCRUB_FAILURE_REMEDY)
         ? `\n  remedy: ${SCRUB_FAILURE_REMEDY}`
         : "";
-    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}`;
+    // Matched on the transport error rather than on `detail`, because `detail` here is whatever
+    // Node called the abort — "aborted" mid-body, "The operation was aborted" before headers. The
+    // code is the stable half.
+    const rpcTimeout = RPC_TIMEOUT_REASONS.has(error)
+        ? `\n  next: ${RPC_TIMEOUT_NEXT_STEP}`
+        : "";
+    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}${rpcTimeout}`;
 }
 
 function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm" | "linux-vm", deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {

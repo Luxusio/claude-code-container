@@ -1268,6 +1268,46 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(log).not.toHaveBeenCalled();
     });
 
+    it("tells an operator what a broker-rpc-timeout means and where to look", async () => {
+        // The state the transport fix newly makes reachable. Before it, a budget over five minutes
+        // was cut by the HTTP client's own header deadline and reported as `broker-rpc-unavailable`
+        // — the broker is gone — so the honest "still working, the CLI stopped listening" case
+        // could not be shown at all. Making it visible and leaving it unexplained would trade one
+        // silence for another, and the bare detail actively misleads: "The operation was aborted"
+        // reads as if the operator cancelled.
+        const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const cwd = "/project/devices-rpc-timeout-cli-test";
+        const timeoutOwnerId = deviceLabOwnerId(cwd);
+        const timeoutRoot = join(homedir(), ".ccc/devices/owners", timeoutOwnerId, "windows-vm");
+        mkdirSync(timeoutRoot, { recursive: true });
+        writeFileSync(join(timeoutRoot, "devices.json"), JSON.stringify({
+            devices: [{ id: "win-t", backend: "windows-vm", status: "stopped", incarnationId: "e".repeat(32) }],
+        }));
+        // No body at all: the transport failed before the broker could answer, which is exactly
+        // what separates this from every other failure the renderer handles.
+        const invokeOwnerRpc = vi.fn(async () => ({
+            ok: false,
+            status: null,
+            ownerId: timeoutOwnerId,
+            host: "127.0.0.1",
+            port: 17373,
+            body: null,
+            error: "broker-rpc-timeout",
+            detail: "The operation was aborted",
+        }));
+
+        expect(await devicesCliAsync(["start", "win-t"], cwd, undefined, { invokeOwnerRpc })).toBe(1);
+        const stderr = error.mock.calls.map((call) => String(call[0])).join("\n");
+        expect(stderr).toContain("broker-rpc-timeout");
+        expect(stderr, "must say the host may still be working").toContain("the host may still be working");
+        expect(stderr, "must point at the command that can answer").toContain("ccc devices status");
+        expect(stderr, "must offer the knob that would have avoided it").toContain("--boot-timeout-ms");
+        // Matched on the transport code, not on `detail` — Node names the abort differently either
+        // side of response headers ("aborted" mid-body, "The operation was aborted" before), so
+        // keying on the message would cover one half and silently miss the other.
+        expect(stderr, "must not tell anyone to destroy a guest that may still be booting").not.toContain("cannot be retried on this guest");
+    });
+
     it("does not tell an operator to delete a guest whose readiness never ran", async () => {
         const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const cwd = "/project/devices-synth-cli-test";
