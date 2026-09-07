@@ -1419,46 +1419,11 @@ const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this gu
 // the guest is still running and a slow first boot may yet complete, so this says what to try
 // before anything destructive.
 const UNCONFIRMED_CONTAINMENT_NEXT_STEP = "stop the device, and if it recurs raise --boot-timeout-ms or delete and recreate";
-// The CLI gave up waiting; the broker did not answer. Everything an operator needs to know is
-// absent from the bare code, and `The operation was aborted` actively misleads — it reads as if
-// they cancelled. This is the state the transport fix newly makes reachable: before it, a budget
-// over five minutes was cut by the HTTP client and reported as `broker-rpc-unavailable`, so the
-// honest "still working, I stopped listening" case could not be shown at all. Making it visible
-// without saying what it means would trade one silence for another.
-const RPC_TIMEOUT_REASONS = new Set(["broker-rpc-timeout"]);
-// Composed per lane rather than fixed, because the advice is not true everywhere. Only start and
-// reboot parse --boot-timeout-ms: parseDeviceLifecycleArgs skips parseLifecycleOptions for the
-// others, status/stop/delete reject a third argument outright, and the windows-vm create option set
-// has no bootTimeoutMs at all — create's ~6h budget is hardcoded. Advertising the flag on those
-// actions sends an operator to a command that answers `Unsupported ... option` or a usage line.
-// Pointing at `ccc devices status` is right everywhere except status itself, which is the command
-// that just timed out.
-const RPC_TIMEOUT_BOOT_TIMEOUT_ACTIONS = new Set(["start", "reboot"]);
-function rpcTimeoutNextStep(action: DeviceLifecycleAction | DeviceSnapshotAction, deviceId: string): string {
-    // Redundant today, and kept deliberately. This id lands inside backticks in a command an
-    // operator may paste, so an escape or a newline here would rewrite the terminal or forge a
-    // line. Two bounds already make that unreachable: `create` rejects a malformed id before any
-    // RPC, and every other action requires an exact match against a state file whose ids
-    // OWNER_DEVICE_ID_PATTERN validates on read. Both live in other modules, which is the same
-    // reason BOUNDED_BOOT_CODE re-checks a bound the broker also enforces. An id that does not look
-    // like an id degrades to the placeholder rather than being echoed.
-    const target = BOUNDED_DEVICE_ID.test(deviceId) ? deviceId : "<id>";
-    const check = action === "status"
-        ? "re-run this command"
-        : `check \`ccc devices status ${target}\``;
-    const raise = RPC_TIMEOUT_BOOT_TIMEOUT_ACTIONS.has(action)
-        ? ", and raise --boot-timeout-ms if a first boot needs longer"
-        : "";
-    return `the CLI stopped waiting; the host may still be working — ${check}${raise}`;
-}
 // The broker bounds these codes to [a-z0-9-] before they leave it, but that invariant lives two
 // modules away and lastBootCheck rides a denylist redaction on non-hyper-v backends. Re-checking
 // at the render site costs one regex and makes the terminal output self-defending rather than
 // trusting something maintained elsewhere.
 const BOUNDED_BOOT_CODE = /^[a-z0-9-]{1,128}$/;
-// The broker's own device-id bound, restated at the render site for the same reason as the line
-// above. Mirrors the [a-zA-Z0-9._:-]{1,128} test the broker applies on every write path.
-const BOUNDED_DEVICE_ID = /^[a-zA-Z0-9._:-]{1,128}$/;
 
 // Shared by the success and failure renderers. The failure path is where an operator actually
 // lands on a refused start, and it read only error/detail/missing — so the warning and the remedy
@@ -1509,7 +1474,7 @@ function formatLifecycleResult(action: DeviceLifecycleAction, backend: string, d
     return `${lines.join("\n")}\n`;
 }
 
-function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceBrokerOwnerRpcResult, deviceId = ""): string {
+function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceBrokerOwnerRpcResult): string {
     const body = result.body;
     const error = typeof body?.error === "string" ? body.error : result.error || "broker-operation-failed";
     const detail = typeof body?.detail === "string" ? body.detail : result.detail;
@@ -1526,13 +1491,7 @@ function formatLifecycleError(action: DeviceLifecycleAction, result: HostDeviceB
     const remedy = typeof detail === "string" && SCRUB_FAILURE_REASONS.has(detail) && !details.includes(SCRUB_FAILURE_REMEDY)
         ? `\n  remedy: ${SCRUB_FAILURE_REMEDY}`
         : "";
-    // Matched on the transport error rather than on `detail`, because `detail` here is whatever
-    // Node called the abort — "aborted" mid-body, "The operation was aborted" before headers. The
-    // code is the stable half.
-    const rpcTimeout = RPC_TIMEOUT_REASONS.has(error)
-        ? `\n  next: ${rpcTimeoutNextStep(action, deviceId)}`
-        : "";
-    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}${rpcTimeout}`;
+    return `CCC device ${action} failed: ${error}${missing}${detail ? ` - ${detail}` : ""}${details}${remedy}`;
 }
 
 function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm" | "linux-vm", deviceId: string, result: HostDeviceBrokerOwnerRpcResult): string {
@@ -1572,17 +1531,10 @@ function formatSnapshotResult(action: DeviceSnapshotAction, backend: "windows-vm
     ].join("\n")}\n`;
 }
 
-function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBrokerOwnerRpcResult, deviceId = ""): string {
+function formatSnapshotError(action: DeviceSnapshotAction, result: HostDeviceBrokerOwnerRpcResult): string {
     const error = typeof result.body?.error === "string" ? result.body.error : result.error || "broker-operation-failed";
     const detail = typeof result.body?.detail === "string" ? result.body.detail : result.detail;
-    // The same transport, the same catch, the same code — so the same silence. It matters more here
-    // than on the lifecycle lane: the natural response to an apparently failed restore is to run it
-    // again, while the host is still applying the checkpoint. No --boot-timeout-ms clause, because
-    // snapshots have no such flag.
-    const rpcTimeout = RPC_TIMEOUT_REASONS.has(error)
-        ? `\n  next: ${rpcTimeoutNextStep(action, deviceId)}`
-        : "";
-    return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}${rpcTimeout}`;
+    return `CCC device snapshot ${action} failed: ${error}${detail ? ` - ${detail}` : ""}`;
 }
 
 function now(): string {
@@ -2576,7 +2528,7 @@ export async function devicesCliAsync(
             ...parsed.params,
         }, { cwd, profile, rpcTimeoutMs: 150000 });
         if (!result.ok) {
-            console.error(formatSnapshotError(parsed.action, result, parsed.deviceId));
+            console.error(formatSnapshotError(parsed.action, result));
             return 1;
         }
         console.log(formatSnapshotResult(parsed.action, parsed.backend, parsed.deviceId, result));
@@ -2622,7 +2574,7 @@ export async function devicesCliAsync(
                     : 300000,
         });
         if (!result.ok) {
-            console.error(formatLifecycleError(parsed.action, result, parsed.deviceId));
+            console.error(formatLifecycleError(parsed.action, result));
             return 1;
         }
         if (parsed.action !== "delete" && !brokerRpcDevice(result)) {
