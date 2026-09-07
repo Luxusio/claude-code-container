@@ -1226,11 +1226,13 @@ describe("device-lab host broker physical attach and CLI", () => {
         expect(stderr).toContain("bootError: powershell-direct-timeout");
         expect(stderr, "the failure path must say the guest may still be up").toContain("scrubContainmentFailed: true");
         expect(stderr).toContain("WARNING: this guest may still be running with provisioning secrets intact.");
-        // And the remedy, on a reason that is NOT one of the three terminal ones. Gating it on the
-        // reason alone left this case mute: the operator is told a guest may be sitting there with
-        // a live autologon and given no next step. It is equally unrecoverable — the scrub cannot
-        // be retried either way.
-        expect(stderr, "a failed containment earns the remedy whatever the reason").toContain("delete and recreate the device");
+        // A next step, but NOT the destructive one. The reason here is powershell-direct-timeout —
+        // the probe never landed, so nothing establishes that OOBE is past first logon. A failed
+        // containment means the stop was not confirmed, i.e. the guest is still running and a slow
+        // boot may yet finish, which a longer --boot-timeout-ms would have allowed. Telling someone
+        // to destroy that device would be worse than silence.
+        expect(stderr, "an unconfirmed containment gets a next step").toContain("raise --boot-timeout-ms");
+        expect(stderr, "and must NOT be told to delete a guest that may still finish").not.toContain("cannot be retried on this guest");
         expect(log).not.toHaveBeenCalled();
     });
 

@@ -1408,6 +1408,10 @@ const SCRUB_FAILURE_REASONS = new Set([
     "hyper-v-guest-scrub-containment-failed",
 ]);
 const SCRUB_FAILURE_REMEDY = "the first-logon scrub cannot be retried on this guest — delete and recreate the device";
+// For a containment that was not confirmed. The scrub state is unknown rather than known-finished:
+// the guest is still running and a slow first boot may yet complete, so this says what to try
+// before anything destructive.
+const UNCONFIRMED_CONTAINMENT_NEXT_STEP = "stop the device, and if it recurs raise --boot-timeout-ms or delete and recreate";
 // The broker bounds these codes to [a-z0-9-] before they leave it, but that invariant lives two
 // modules away and lastBootCheck rides a denylist redaction on non-hyper-v backends. Re-checking
 // at the render site costs one regex and makes the terminal output self-defending rather than
@@ -1429,13 +1433,19 @@ function bootCheckLines(device: Record<string, unknown> | null): string[] {
         lines.push("scrubContainmentFailed: true");
         lines.push("WARNING: this guest may still be running with provisioning secrets intact.");
     }
-    // Also when containment failed, whatever the reason. Gating the remedy on the reason alone
-    // left the worst case mute: a stalled OOBE reports powershell-direct-timeout, which is not
-    // terminal, but if the stop then failed the operator was told a guest may be sitting there with
-    // a live autologon and given no next step. That guest is equally unrecoverable — the scrub
-    // cannot be retried either way — so it earns the same line.
-    if ((reason && SCRUB_FAILURE_REASONS.has(reason)) || record.scrubContainmentFailed === true) {
+    // The destructive remedy is gated on the reason, and only on the three where the probe LANDED
+    // and reported a missing marker or live secrets — OOBE is then past first logon, so the scrub
+    // cannot fire again. `scrubContainmentFailed` does not carry that property, and briefly gating
+    // on it too was wrong in the dangerous direction: that flag means the stop was not confirmed,
+    // i.e. the guest is still RUNNING and may yet finish a slow OOBE, which a longer
+    // --boot-timeout-ms would have allowed. Telling someone to destroy that device is worse than
+    // saying nothing. The inverse case — a slow boot the stop did kill mid-OOBE — is genuinely
+    // terminal, but the CLI cannot distinguish it here and the flag is absent there anyway.
+    if (reason && SCRUB_FAILURE_REASONS.has(reason)) {
         lines.push(`remedy: ${SCRUB_FAILURE_REMEDY}`);
+    } else if (record.scrubContainmentFailed === true) {
+        // Not nothing, which was the original complaint, and not a destructive instruction either.
+        lines.push(`next: ${UNCONFIRMED_CONTAINMENT_NEXT_STEP}`);
     }
     return lines;
 }
