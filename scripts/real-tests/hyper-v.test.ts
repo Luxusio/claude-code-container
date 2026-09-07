@@ -657,7 +657,7 @@ describe("Windows Server evaluation license prompt", () => {
     // wait is the whole point, so the placement matters as much as the text.
     it("warns before the run when Windows Setup diagnostics will lack the privilege they need", () => {
         const lines: string[] = [];
-        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("windows", {
             platform: "win32",
             resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
             isAdministratorImpl: () => false,
@@ -672,7 +672,7 @@ describe("Windows Server evaluation license prompt", () => {
 
     it("stays silent when the run is already elevated", () => {
         const lines: string[] = [];
-        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("windows", {
             platform: "win32",
             resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
             isAdministratorImpl: () => true,
@@ -687,7 +687,7 @@ describe("Windows Server evaluation license prompt", () => {
     it("does not probe for elevation off Windows", () => {
         const lines: string[] = [];
         const isAdministratorImpl = vi.fn(() => false);
-        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("windows", {
             platform: "linux",
             isAdministratorImpl,
             writeImpl: (line: string) => { lines.push(line); },
@@ -701,12 +701,62 @@ describe("Windows Server evaluation license prompt", () => {
     // re-run elevated when they may already be. Say only what is known.
     it("reports an undetermined probe as undetermined, not as unelevated", () => {
         const lines: string[] = [];
-        const warned = warnIfSetupDiagnosticsWillLackPrivilege({
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("windows", {
             platform: "win32",
             resolveTrustedWindowsPowerShellImpl: () => { throw new Error("hyper-v-library-elevation-system-root-invalid"); },
             writeImpl: (line: string) => { lines.push(line); },
         });
         expect(warned).toBe(false);
         expect(lines.join("")).toContain("Could not determine whether this run is elevated");
+    });
+    // D3: the diagnostic is Windows-only. captureHyperVWindowsSetupDiagnostics is reached solely
+    // through level2-hyper-v-windows-vm.ts, so a linux target never captures it — warning there
+    // would send the operator to redo a run for something that target does not collect.
+    it("does not warn about Windows Setup diagnostics for a linux target", () => {
+        const lines: string[] = [];
+        const isAdministratorImpl = vi.fn(() => false);
+        const warned = warnIfSetupDiagnosticsWillLackPrivilege("linux", {
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => "C:\\Windows\\System32\\powershell.exe",
+            isAdministratorImpl,
+            writeImpl: (line: string) => { lines.push(line); },
+        });
+        expect(warned).toBe(false);
+        expect(isAdministratorImpl, "must not even probe for a target that never mounts").not.toHaveBeenCalled();
+        expect(lines).toEqual([]);
+    });
+
+    // D2: every other collaborator in runHyperVTests is injectable. Before this was, three existing
+    // tests reached the production probe and spawned a real powershell.exe on a Windows dev host —
+    // a unit test making a 10s process call, three times, and writing to real stderr.
+    it("takes the elevation probe as an injectable dependency, and warns before paying for a build", async () => {
+        const calls: string[] = [];
+        const warnSetupDiagnosticsPrivilegeImpl = vi.fn((target: string) => {
+            calls.push(`warn:${target}`);
+            return true;
+        });
+        await runHyperVTests("windows", {
+            warnSetupDiagnosticsPrivilegeImpl,
+            buildLevel3ArtifactsImpl: () => {
+                calls.push("build");
+                return 0;
+            },
+            ensureWindowsEvaluationLicenseImpl: async () => {
+                calls.push("license");
+                return { ok: true };
+            },
+            ensureHostBrokerReadyImpl: () => {
+                calls.push("broker");
+                return 0;
+            },
+            runSupervisedProcessImpl: async () => {
+                calls.push("run");
+                return { status: 0 };
+            },
+        });
+        expect(warnSetupDiagnosticsPrivilegeImpl).toHaveBeenCalledOnce();
+        // Order is the assertion. The NOTE asks for a re-run, and a re-run costs another build, so
+        // warning after the build makes the operator pay for it twice.
+        expect(calls).toEqual(["warn:windows", "build", "license", "broker", "run"]);
     });
 });

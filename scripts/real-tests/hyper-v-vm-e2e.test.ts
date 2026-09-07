@@ -980,8 +980,26 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 "$MountMessage = $null",
                 "$MountMessage = [string]$_.Exception.Message",
             ]);
-            expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage");
+            expect(diagnosticProgram).toContain("hresult = $MountHResult; message = $MountMessage; privilege = [bool]$MountPrivilege");
             expect(diagnosticProgram).toContain("if (-not $Mounted) { throw 'hyper-v-setup-diagnostics-mount-failed' }");
+            // The privilege half of this diagnostic lives entirely in the emitted program, and the
+            // reader tests below cannot see it — they stub the spawn and hand mountFailureCode a
+            // JSON object directly. Deleting both producer lines left those 45 green, so this is
+            // the only surface that pins them. Every other mount line above is asserted here for
+            // the same reason.
+            expect(diagnosticProgram).toContain("if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }");
+            expect(diagnosticProgram).toContain("$MountElevated = $MountPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)");
+            // Declared with its four siblings. Unassigned it resolves to $null and [bool]$null is
+            // $false, so it works — until someone adds Set-StrictMode, at which point the catch
+            // throws on an undefined variable and the whole a=/c=/h=/m= bracket collapses to a bare
+            // code. It is the one variable that can lose the thing this change delivers.
+            expect(diagnosticProgram).toContain("$MountPrivilege = $false");
+            // Ordering, not just presence: the privilege check must precede the backoff sleep, or
+            // an unelevated host pays the full retry budget before concluding what it already knew.
+            // That is the wasted-wall-clock half of the original defect (a=7 with exponential
+            // backoff), and a reorder would restore it while every presence assertion still passed.
+            expect(diagnosticProgram.indexOf("$MountPrivilege = $true; break"))
+                .toBeLessThan(diagnosticProgram.indexOf("$MountSleep = [Math]::Min"));
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
             const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);

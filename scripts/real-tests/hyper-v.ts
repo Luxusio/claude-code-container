@@ -119,9 +119,13 @@ export async function ensureWindowsServerEvaluationLicense(target: string, deps:
 // question runs through, and re-launching it under UAC detaches that; a diagnostic is not worth
 // trading the interactive flow for. Elevation stays the operator's call, made before the wait
 // rather than discovered after it.
-export function warnIfSetupDiagnosticsWillLackPrivilege(dependencies: any = {}): boolean {
+export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependencies: any = {}): boolean {
     const platform = dependencies.platform || process.platform;
     if (platform !== "win32") return false;
+    // Windows-only diagnostic. captureHyperVWindowsSetupDiagnostics is reached solely through
+    // level2-hyper-v-windows-vm.ts; the linux target never touches it. Warning there would ask the
+    // operator to redo a Level 3 run for something that target does not capture.
+    if (target !== "all" && target !== "windows") return false;
     const write = dependencies.writeImpl || ((line: string) => process.stderr.write(line));
     let elevated: boolean;
     try {
@@ -152,9 +156,14 @@ export async function runHyperVTests(target: string, dependencies: any = {}) {
     const ensureBroker = dependencies.ensureHostBrokerReadyImpl || ensureHostBrokerReady;
     const runProcess = dependencies.runSupervisedProcessImpl || runSupervisedProcess;
     const ensureLicense = dependencies.ensureWindowsEvaluationLicenseImpl || ensureWindowsServerEvaluationLicense;
+    // Above the build, not below it. The action this NOTE asks for is a re-run, and a re-run costs
+    // another buildLevel3Artifacts — warning afterwards makes the operator pay for the build twice.
+    // hyperVTestFiles(target) has already validated the target, and the probe needs nothing the
+    // build establishes.
+    const warnPrivilege = dependencies.warnSetupDiagnosticsPrivilegeImpl || warnIfSetupDiagnosticsWillLackPrivilege;
+    warnPrivilege(target, dependencies);
     const buildStatus = build(repoRoot, { env });
     if (buildStatus !== 0) return buildStatus;
-    warnIfSetupDiagnosticsWillLackPrivilege(dependencies);
     const license = await ensureLicense(target, dependencies.licenseDeps || {});
     if (!license.ok) {
         process.stderr.write(

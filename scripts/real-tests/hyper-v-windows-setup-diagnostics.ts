@@ -138,6 +138,7 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // the whole a=/c=/h=/m= bracket down to a bare code. This field exists to carry that
         // bracket; it should not be the one variable that can lose it.
         "$MountPrivilege = $false",
+        "$MountElevated = $true",
         "try {",
         "  $Vm = Get-VM -Id $ExpectedId -ErrorAction Stop",
         "  if ($Vm.Name -cne $VmName -or [string]$Vm.Notes -cne $ExpectedMarker) { throw 'hyper-v-setup-diagnostics-vm-not-exact' }",
@@ -195,8 +196,23 @@ function diagnosticsProgram(vmName: string, vmId: string, marker: string, expect
         // records that CategoryInfo/HResult come back generic (NotSpecified/0x80131500) on a real
         // host, and that is what was observed here too — h=2146233088, with the only true cause,
         // (0x80070522), inside the localized message. That substring is ASCII, so it survives a
-        // host locale this pipeline otherwise mangles.
-        "      if ($MountMessage -match '0x80070522') { $MountPrivilege = $true; break }",
+        // host locale this pipeline otherwise mangles. The match runs here, inside PowerShell, on
+        // the pristine exception string — before the stdout encoding step that produces the
+        // mojibake — so the mangling is a reader-side artifact and cannot defeat it.
+        //
+        // Corroborated by an elevation probe rather than resting on the string alone, because the
+        // dangerous direction is a FALSE NEGATIVE: a locale or PowerShell version whose message
+        // omits the parenthesized code would silently revert to ten retries and the generic label,
+        // which is the exact failure this exists to fix, with nothing to say detection missed. The
+        // launcher also promises the operator they will get this code; message-matching alone
+        // cannot keep that promise. `Mount-VHD failed AND we are not elevated` is the same
+        // conclusion reached without depending on host text at all.
+        "      if (-not $MountPrivilege) {",
+        "        $MountIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()",
+        "        $MountPrincipal = New-Object Security.Principal.WindowsPrincipal($MountIdentity)",
+        "        $MountElevated = $MountPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        "      }",
+        "      if ($MountMessage -match '0x80070522' -or -not $MountElevated) { $MountPrivilege = $true; break }",
         // The deadline, not the attempt count, is what keeps the retry budget inside the process
         // budget: a slow mount failure costs wall-clock the sleeps do not account for. The sleep is
         // included in the comparison, so a check passing just under the deadline cannot then add a
