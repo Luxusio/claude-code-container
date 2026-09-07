@@ -1100,10 +1100,11 @@ Two details worth keeping, because both cost time to find:
 
 `npm run test:level3:hyper-v:windows` now probes elevation **before** the build
 and warns, rather than letting the operator discover it two minutes into a
-boot. Before the build specifically, because the action the warning asks for is
-a re-run and a re-run costs another `buildLevel3Artifacts` — warning afterwards
-charges for the build twice. It is skipped for a `linux` target, which never
-captures this diagnostic.
+boot. So does `npm run test:level3:hyper-v`, whose default target is `all` and
+which therefore includes the Windows provider. Before the build specifically,
+because the action the warning asks for is a re-run and a re-run costs another
+`buildLevel3Artifacts` — warning afterwards charges for the build twice. It is
+skipped for a `linux` target, which never captures this diagnostic.
 
 The warning is not a UAC prompt: the diagnostic is captured by a synchronous
 formatter that runs while building an error string, and elevating the launcher
@@ -1111,6 +1112,33 @@ instead would detach the terminal stdin the evaluation-licence question uses.
 
 The code an operator will see and can grep for is
 `hyper-v-setup-diagnostics-mount-privilege-required[elevate,...]`.
+
+`p=` says **which signal concluded it**, and the two carry different next steps:
+
+- `p=code` — Windows itself named `0x80070522` in the mount exception. The
+  privilege is the whole story; elevate and re-run.
+- `p=unelevated` — the exception said something else, and the in-guest probe
+  concluded the run is not elevated. `Mount-VHD` cannot succeed there whatever
+  else is true, so `elevate` is still the actionable half, but the category
+  beside it (`c=ResourceBusy`, say) may be a *second, independent* problem that
+  elevating will not fix. Expect to look again after the elevated re-run.
+
+The pairing of `elevate` with a transient category is therefore not a
+contradiction: `c=` reports what happened, the prefix reports what to do, and
+both are true.
+
+Two gaps in that story, recorded rather than fixed:
+
+- There is no third state for *elevated* **and** `0x80070522` — reachable when
+  the VHDX sits on a network share, `SeManageVolumePrivilege` is stripped, or
+  the run holds a constrained or service token. The launcher stays silent
+  because its probe says elevated, the producer still emits `elevate,p=code`,
+  and the operator is told to elevate when they already are. `$MountElevated`
+  is known at that moment and discarded.
+- The `p=` token is forgeable out of host text the same way `elevate,` is: a
+  *generic* mount failure whose message happens to contain `p=code elevate,`
+  will satisfy a `/p=(code|unelevated)/` grep. Keying on the code **name**
+  cannot be fooled. Nothing parses it the loose way today.
 
 Two caveats, one of them **asserted rather than measured**. The probe tests the
 local Administrators role, and the warning text tells operators that membership
