@@ -1079,6 +1079,32 @@ Real-provider tests:
   signal, spawn error, and timeout instead of a generic no-output message.
 - Unsupported hosts return short, categorized readiness diagnostics.
 
+## Level 3 requires elevation for setup diagnostics
+
+Confirmed on a real Windows host, not inferred. The Level 3 VM lifecycle runs
+unelevated — the broker attests, the VM is created and runs — but the Windows
+Setup diagnostic mounts the guest VHDX read-only to read Panther logs, and
+`Mount-VHD` needs a privilege that Hyper-V VM management membership does not
+grant. Unelevated, that fails with `ERROR_PRIVILEGE_NOT_HELD`, so a guest that
+fails to boot loses exactly the logs that would explain why.
+
+Two details worth keeping, because both cost time to find:
+
+- The HResult does not name the cause. A real host reported
+  `h=2146233088` with `CategoryInfo` `NotSpecified`; the only true signal,
+  `(0x80070522)`, was inside the localized exception message. Detection matches
+  that substring for that reason — it is ASCII and survives a host locale the
+  capture path otherwise renders as unreadable bytes.
+- It was retried. The mount loop treated it as transient and spent seven
+  attempts with exponential backoff on an error that waiting cannot change.
+
+`npm run test:level3:hyper-v:windows` now probes elevation after the build and
+warns before creating a VM, rather than letting the operator discover it two
+minutes into a boot. The warning is not a UAC prompt: the diagnostic is
+captured by a synchronous formatter that runs while building an error string,
+and elevating the launcher instead would detach the terminal stdin the
+evaluation-licence question uses.
+
 ## Known Gaps
 
 These are measured, not suspected, and deliberately left open. None was
