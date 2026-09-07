@@ -1110,6 +1110,26 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ok: false,
             code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=ResourceBusy,h=2147024891,m=The process cannot access the file because it is being used by another process.]",
         });
+        // Redaction on the privilege branch, measured rather than argued. It is structurally the
+        // same path — `message` and `detail` are computed before the privilege test and both
+        // returns interpolate the same string — but "structurally the same" is the claim this
+        // series has had to retract more than once, and no case paired privilege:true with a
+        // secret-bearing message. Same host path and password as the redaction cases below, so a
+        // divergence would show as a different bracket rather than as a subtle one.
+        expect(run({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-failed",
+            mount: {
+                attempts: 1,
+                category: "NotSpecified",
+                hresult: 2146233088,
+                message: "denied for C:\\Users\\Luxus\\disk.vhdx\npassword: hunter2",
+                privilege: true,
+            },
+        })).toEqual({
+            ok: false,
+            code: "hyper-v-setup-diagnostics-mount-privilege-required[elevate,a=1,c=NotSpecified,h=2146233088,m=denied for (host-path) password=(redacted)]",
+        });
         // And the negative that still matters: an ELEVATED host hitting a busy mount is genuinely
         // transient, keeps its retries, and must not be relabelled. Same bracket, same code as
         // before this distinction existed.
