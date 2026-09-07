@@ -1435,7 +1435,14 @@ const RPC_TIMEOUT_REASONS = new Set(["broker-rpc-timeout"]);
 // that just timed out.
 const RPC_TIMEOUT_BOOT_TIMEOUT_ACTIONS = new Set(["start", "reboot"]);
 function rpcTimeoutNextStep(action: DeviceLifecycleAction | DeviceSnapshotAction, deviceId: string): string {
-    const target = deviceId || "<id>";
+    // Redundant today, and kept deliberately. This id lands inside backticks in a command an
+    // operator may paste, so an escape or a newline here would rewrite the terminal or forge a
+    // line. Two bounds already make that unreachable: `create` rejects a malformed id before any
+    // RPC, and every other action requires an exact match against a state file whose ids
+    // OWNER_DEVICE_ID_PATTERN validates on read. Both live in other modules, which is the same
+    // reason BOUNDED_BOOT_CODE re-checks a bound the broker also enforces. An id that does not look
+    // like an id degrades to the placeholder rather than being echoed.
+    const target = BOUNDED_DEVICE_ID.test(deviceId) ? deviceId : "<id>";
     const check = action === "status"
         ? "re-run this command"
         : `check \`ccc devices status ${target}\``;
@@ -1449,6 +1456,9 @@ function rpcTimeoutNextStep(action: DeviceLifecycleAction | DeviceSnapshotAction
 // at the render site costs one regex and makes the terminal output self-defending rather than
 // trusting something maintained elsewhere.
 const BOUNDED_BOOT_CODE = /^[a-z0-9-]{1,128}$/;
+// The broker's own device-id bound, restated at the render site for the same reason as the line
+// above. Mirrors the [a-zA-Z0-9._:-]{1,128} test the broker applies on every write path.
+const BOUNDED_DEVICE_ID = /^[a-zA-Z0-9._:-]{1,128}$/;
 
 // Shared by the success and failure renderers. The failure path is where an operator actually
 // lands on a refused start, and it read only error/detail/missing — so the warning and the remedy
