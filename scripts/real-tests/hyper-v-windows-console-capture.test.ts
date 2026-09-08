@@ -380,10 +380,17 @@ describe("captureHyperVWindowsConsole", () => {
         expect(producedCode, "the fixture is only the widest shape if the producer really emits it").toBe(
             `hyper-v-setup-diagnostics-mount-privilege-required[elevate,p=unelevated,a=1,c=ResourceUnavailable,h=2146233088,m=${privilegeMessage}]`,
         );
+        // The elevation retry appends `(elevation=<why>)` when it does not land, so the widest
+        // reachable value of this field is the privilege code PLUS the longest of those reasons.
+        // `elevation-program-integrity-failed` is the longest errorCode requestAdministrator can
+        // return (34 characters; the local `attempted:false` reasons are all shorter). Adding the
+        // suffix moved the residual band from 149 to 107, which is the measurement I owed after
+        // making the code string longer and had not taken.
+        const widestElevationSuffix = "(elevation=elevation-program-integrity-failed)";
         const widestReason = [
             "profile=windows-server",
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
-            `guestSetupDiagnostics=unavailable(${producedCode})`,
+            `guestSetupDiagnostics=unavailable(${producedCode}${widestElevationSuffix})`,
             `start and wait for PowerShell Direct: hyper-v-guest-not-ready: ${diagnostic}`,
         ].join("; ");
         // The premise of this case, asserted rather than asserted-in-a-comment: the shape must
@@ -396,12 +403,12 @@ describe("captureHyperVWindowsConsole", () => {
         // Producing the fixture MOVED the blind band, it did not close it, and the paragraph above
         // implied otherwise. The cut is at 697, not 700: compactMessage returns
         // `slice(0, limit - 3) + "..."`, so content survives only while it ends at or before 697.
-        // Measured at HEAD: 149 characters sit between the end of the marker and that cut, so
+        // Measured at HEAD: 103 characters sit between the end of the marker and that cut, so
         // MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two assertions above still pass —
-        // against ~170 for the hand-typed literal. A ~21-character improvement is not "raise the
-        // cap and this fails", which is what the comment implied. The first version of this block
-        // said 152 by measuring against 700, overclaiming precision in the very comment that exists
-        // to stop numbers nobody has looked at since.
+        // against ~170 for the hand-typed literal, and 149 before the elevation suffix widened the
+        // shape. It is still not "raise the cap and this fails", which the first version implied.
+        // (That first version also said 152 by measuring against 700, overclaiming precision in the
+        // very comment that exists to stop numbers nobody has looked at since.)
         //
         // And be exact about what the assertion below does and does not catch, because the first
         // version overclaimed that too. Raising the cap makes this distance SHRINK monotonically
@@ -413,7 +420,7 @@ describe("captureHyperVWindowsConsole", () => {
         // worth a tripwire, and it is the one this guards.
         const marker = "hyper-v-guest-not-ready";
         const markerEnd = compactedWidest.indexOf(marker) + marker.length;
-        expect(697 - markerEnd, "the undetected band must not grow: something ahead of the marker got shorter").toBeLessThan(160);
+        expect(697 - markerEnd, "the undetected band must not grow: something ahead of the marker got shorter").toBeLessThan(115);
     });
 
     it("exports the fixed capture dimensions", () => {

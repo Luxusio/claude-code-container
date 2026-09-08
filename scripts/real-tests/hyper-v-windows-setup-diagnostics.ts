@@ -68,8 +68,16 @@ type SpawnResult = {
     error?: NodeJS.ErrnoException;
 };
 
+export type SetupDiagnosticsLog = { path: string; lines: string[] };
+
 export type HyperVWindowsSetupDiagnosticsResult =
-    | { ok: true; latestRelativePath: string; latestPath: string; timestampedPath: string }
+    // `logs` is the validated, redacted payload that was published. It is carried on the result so
+    // the elevated caller can hand the payload back to its unelevated parent and let the PARENT
+    // write the artifacts. An elevated process resolving its own output root got that root from
+    // `import.meta.url`, which under the staging directory the elevation library uses is two levels
+    // below the drive root — so it wrote to C:\results and reported a repo-relative path that never
+    // existed. See hyper-v-windows-setup-diagnostics-elevation.ts.
+    | { ok: true; latestRelativePath: string; latestPath: string; timestampedPath: string; logs: SetupDiagnosticsLog[] }
     | { ok: false; code: string };
 
 export type HyperVWindowsSetupDiagnosticsInput = {
@@ -617,5 +625,30 @@ export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDi
     } catch {
         return failure("hyper-v-setup-diagnostics-artifact-publish-failed");
     }
-    return { ok: true, latestRelativePath: LATEST_RELATIVE_PATH, latestPath, timestampedPath };
+    return { ok: true, latestRelativePath: LATEST_RELATIVE_PATH, latestPath, timestampedPath, logs };
+}
+
+// The publish half on its own, so the unelevated parent can write artifacts for logs an elevated
+// child collected. Same code both ways: two implementations of "where the artifacts go" is how the
+// elevated one ended up writing to the drive root without anybody noticing.
+export function publishHyperVWindowsSetupDiagnostics(
+    logs: SetupDiagnosticsLog[],
+    options: { outputRoot?: string; now?: () => Date } = {},
+): HyperVWindowsSetupDiagnosticsResult {
+    const validated = validatedLogs(logs);
+    if (!validated) return failure("hyper-v-setup-diagnostics-output-invalid");
+    const outputRoot = options.outputRoot || join(repoRoot, "results", "device-lab-real");
+    const generatedAt = (options.now || (() => new Date()))().toISOString();
+    const timestamp = generatedAt.replace(/[:.]/g, "-");
+    const timestampedPath = join(outputRoot, `hyper-v-windows-setup-diagnostics-${timestamp}.json`);
+    const latestPath = join(outputRoot, "hyper-v-windows-setup-diagnostics-latest.json");
+    const content = `${JSON.stringify({ version: 1, generatedAt, logs: validated }, null, 2)}\n`;
+    try {
+        mkdirSync(outputRoot, { recursive: true });
+        writeExclusiveThenRename(timestampedPath, content);
+        writeExclusiveThenRename(latestPath, content);
+    } catch {
+        return failure("hyper-v-setup-diagnostics-artifact-publish-failed");
+    }
+    return { ok: true, latestRelativePath: LATEST_RELATIVE_PATH, latestPath, timestampedPath, logs: validated };
 }

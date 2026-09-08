@@ -867,6 +867,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
                 latestRelativePath: "results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json",
                 latestPath: "ignored",
                 timestampedPath: "ignored",
+                logs: [],
             }),
         });
         expect(calls).toEqual([expect.objectContaining({

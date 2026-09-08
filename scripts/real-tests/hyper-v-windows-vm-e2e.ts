@@ -11,7 +11,7 @@ import { formatBrokerToolFailure, lifecycleDevice, parseToolPayload, withDeviceL
 import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 import { cachedImageManifests, selectHyperVWindowsProfile } from "./select-windows-profile.ts";
 import { captureHyperVWindowsConsole, type HyperVWindowsConsoleCaptureResult } from "./hyper-v-windows-console-capture.ts";
-import { captureHyperVWindowsSetupDiagnostics, type HyperVWindowsSetupDiagnosticsResult } from "./hyper-v-windows-setup-diagnostics.ts";
+import { captureHyperVWindowsSetupDiagnostics, publishHyperVWindowsSetupDiagnostics, type HyperVWindowsSetupDiagnosticsResult } from "./hyper-v-windows-setup-diagnostics.ts";
 import { requestElevatedSetupDiagnostics, type ElevatedSetupDiagnosticsOutcome } from "./hyper-v-windows-setup-diagnostics-elevation.ts";
 
 const DEVICE_PREFIX = "windows-vm-real-e2e-";
@@ -81,6 +81,7 @@ export async function hyperVWindowsFailureReason(input: {
     captureImpl?: typeof captureHyperVWindowsConsole;
     setupDiagnosticsImpl?: typeof captureHyperVWindowsSetupDiagnostics;
     elevateSetupDiagnosticsImpl?: typeof requestElevatedSetupDiagnostics;
+    publishSetupDiagnosticsImpl?: typeof publishHyperVWindowsSetupDiagnostics;
 }): Promise<string> {
     const profileTag = `profile=${input.profile}${input.sourceImage ? " sourceImage=set" : ""}`;
     const originalReason = `${input.step}: ${(input.error as any)?.message || String(input.error)}`;
@@ -127,19 +128,26 @@ export async function hyperVWindowsFailureReason(input: {
         const elevate = input.elevateSetupDiagnosticsImpl || requestElevatedSetupDiagnostics;
         let outcome: ElevatedSetupDiagnosticsOutcome;
         try {
+            // No PowerShell path is sent. The child resolves its own from \\?\GLOBALROOT\SystemRoot:
+            // this side's copy comes from `where powershell.exe` on the invoking user's PATH, and
+            // handing that to an elevated process means it runs an executable an unelevated user
+            // could choose. The digest does not help — it faithfully carries the path this side
+            // picked, which is the problem.
             outcome = await elevate({
                 ownerId: input.ownerId || ownerId(process.env, repoRoot),
                 deviceId: input.deviceId,
                 incarnationId: input.incarnationId,
                 vmId: input.vmId || "",
-                powershell: String(input.powershell || ""),
             }, { platform: input.platform || process.platform });
         } catch {
             outcome = { attempted: true, errorCode: "elevation-request-failed" };
         }
         if (outcome.attempted === true && "result" in outcome) {
+            // The elevated child collected the logs; THIS side writes them, under a repository root
+            // only this side knows. publishHyperVWindowsSetupDiagnostics re-validates and re-redacts
+            // the payload through the same validatedLogs the producer used.
             setupDiagnostics = outcome.result.ok === true
-                ? { ok: true, latestRelativePath: outcome.result.latestRelativePath, latestPath: "", timestampedPath: "" }
+                ? (input.publishSetupDiagnosticsImpl || publishHyperVWindowsSetupDiagnostics)(outcome.result.logs)
                 : { ok: false, code: outcome.result.code };
         } else {
             // The unelevated code is kept, not replaced. It is still what happened, and losing it
@@ -501,6 +509,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
                     captureImpl: options.captureConsoleImpl,
                     setupDiagnosticsImpl: options.captureSetupDiagnosticsImpl,
                     elevateSetupDiagnosticsImpl: options.elevateSetupDiagnosticsImpl,
+                    publishSetupDiagnosticsImpl: options.publishSetupDiagnosticsImpl,
                 }),
             };
         } finally {

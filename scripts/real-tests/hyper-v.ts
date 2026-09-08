@@ -147,7 +147,8 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         // only what is true: it could not be determined.
         write(
             "NOTE Could not determine whether this run is elevated. If a guest fails to boot, the\n"
-            + "     Windows Setup diagnostic may ask you to approve elevation for one VHDX mount —\n"
+            + "     Windows Setup diagnostic may ask you to approve elevation, which lets it\n"
+            + "     force-stop the test VM, detach and read-only mount its disk, then re-attach it —\n"
             + "     specifically as a member of local Administrators, since Hyper-V Administrators\n"
             + "     alone runs VMs but is not believed to grant the mount privilege.\n"
             + "     The VM lifecycle itself is unaffected.\n"
@@ -171,8 +172,15 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         // mount, at that moment. Warning here is still worth it — an unattended run should know a
         // UAC dialog may appear rather than meet one silently — but the old "re-run from an elevated
         // terminal" line was telling them to pay for a build and a two-minute boot again.
-        + "     If a guest fails to boot, Windows will ask you to approve elevation for that single\n"
-        + "     mount. Declining costs only the Panther logs, and the result then says\n"
+        // Says what the approval actually buys, not the flattering version. Review caught the
+        // earlier wording ("that single mount") describing less than the elevated child does: it
+        // force-stops the VM, detaches the disk, mounts it read-only, reads the logs, dismounts and
+        // re-attaches — all as Administrator, all confined to this test VM by its ownership marker
+        // and id. Consent given on a description that understates the action is not consent.
+        + "     If a guest fails to boot, Windows will ask you to approve elevation. That approval\n"
+        + "     lets the diagnostic force-stop THIS test VM, detach its disk, mount it read-only to\n"
+        + "     read the logs, then dismount and re-attach it. Nothing else is touched.\n"
+        + "     Declining costs only the Panther logs, and the result then says\n"
         + "     hyper-v-setup-diagnostics-mount-privilege-required, which is what to grep for.\n"
         // The caveat names its audience. Unqualified it landed on the common reader — a local admin
         // on a UAC-filtered token, for whom approving DOES fix it — and read as "approving might not
