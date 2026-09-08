@@ -399,14 +399,21 @@ describe("captureHyperVWindowsConsole", () => {
         // Measured at HEAD: 149 characters sit between the end of the marker and that cut, so
         // MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two assertions above still pass —
         // against ~170 for the hand-typed literal. A ~21-character improvement is not "raise the
-        // cap and this fails", which is what the comment implied. So the band is pinned now, and
-        // pinned against the real cut rather than the nominal limit — the first version of this
-        // block said 152 by measuring against 700, overclaiming precision in the very comment that
-        // exists to stop numbers nobody has looked at since.
+        // cap and this fails", which is what the comment implied. The first version of this block
+        // said 152 by measuring against 700, overclaiming precision in the very comment that exists
+        // to stop numbers nobody has looked at since.
+        //
+        // And be exact about what the assertion below does and does not catch, because the first
+        // version overclaimed that too. Raising the cap makes this distance SHRINK monotonically
+        // (149, 148, ...) until the marker is cut at cap 350, where it jumps to 675 — the same cap
+        // at which the toContain above already fails. So it gives no earlier warning for a cap
+        // increase. What it does catch is the band GROWING for a structural reason: shorten a field
+        // ahead of the marker and the room reappears silently. Measured: 10 characters off the
+        // guestConsole field moves it 149 -> 158, 12 characters trips it. That is the blind spot
+        // worth a tripwire, and it is the one this guards.
         const marker = "hyper-v-guest-not-ready";
         const markerEnd = compactedWidest.indexOf(marker) + marker.length;
-        expect(markerEnd).toBeGreaterThan(marker.length - 1);
-        expect(697 - markerEnd, "undetected room before a cap increase cuts the actionable half").toBeLessThan(160);
+        expect(697 - markerEnd, "the undetected band must not grow: something ahead of the marker got shorter").toBeLessThan(160);
     });
 
     it("exports the fixed capture dimensions", () => {

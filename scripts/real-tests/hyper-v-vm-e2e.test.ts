@@ -1043,6 +1043,25 @@ describe("Hyper-V E2E zero-config image selection", () => {
             const messageIndex = diagnosticProgram.indexOf("$MountMessage = [string]$_.Exception.Message");
             expect(messageIndex).toBeGreaterThanOrEqual(0);
             expect(messageIndex, "the match must read the message captured on THIS attempt").toBeLessThan(privilegeBreakIndex);
+            // Generalized, because pinning that ordering BY NAME is exactly what let the next three
+            // through. $MountCategory, $MountHResult and $MountAttempts carry the identical hazard
+            // and each costs MORE than the one above: moved below the privilege ifs they are $null
+            // on the attempt-1 break, `mountFailureCode` returns null, and the reader falls to
+            // `failure("")` — not in SAFE_CODES — so the operator gets
+            // `hyper-v-setup-diagnostics-output-invalid`. No bracket, no `p=`, and a code that
+            // sends them after a malformed-output bug instead of a mount failure. ($MountAttempts
+            // is worse still: the outer `-gt 0` guard then drops the mount object entirely.)
+            //
+            // So every capture assignment is asserted rather than the ones someone remembered, and
+            // a field added later is covered without anyone coming back for it. Only the two that
+            // legitimately sit at or after the break are excluded, by name and for a stated reason:
+            // $MountPrivilege IS the break, and $MountSleep is the backoff the break skips.
+            const captureAssignments = [...diagnosticProgram.matchAll(/\$Mount[A-Za-z]* = [^\n]*/g)]
+                .filter((match) => !match[0].startsWith("$MountPrivilege =") && !match[0].startsWith("$MountSleep ="));
+            expect(captureAssignments.length, "the regex must be finding the assignments, not nothing").toBeGreaterThanOrEqual(12);
+            for (const match of captureAssignments) {
+                expect(match.index, `${match[0].slice(0, 40)} must be captured before the privilege break reads it`).toBeLessThan(privilegeBreakIndex);
+            }
             expect(diagnosticProgram.match(/Mount-VHD -Path/g)).toHaveLength(1);
             const stopCommandIndex = diagnosticProgram.indexOf("Stop-VM -VM $Vm -TurnOff -Force");
             const stopVerificationIndex = diagnosticProgram.indexOf("$Vm.State -ne 'Off'", stopCommandIndex);

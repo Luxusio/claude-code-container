@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
-import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, runHyperVLevel3, runHyperVTests, warnIfSetupDiagnosticsWillLackPrivilege } from "./hyper-v.ts";
+import { ensureWindowsServerEvaluationLicense, hyperVTestFiles, PRIVILEGE_PROBE_DEFAULTS, runHyperVLevel3, runHyperVTests, warnIfSetupDiagnosticsWillLackPrivilege } from "./hyper-v.ts";
 import { repoRoot } from "./helpers.ts";
 import {
     buildLevel3Artifacts,
@@ -184,7 +184,12 @@ describe("Hyper-V Level 3 launcher", () => {
             },
         });
         expect(status).toBe(0);
-        expect(warnSetupDiagnosticsPrivilegeImpl, "drop this key and the production probe spawns a real powershell.exe on Windows").toHaveBeenCalledWith("windows", expect.anything());
+        // objectContaining, not expect.anything(): `anything()` matches `{}`, so passing an empty
+        // bag instead of `dependencies` survived — and that is not cosmetic. The two callers below
+        // rely on `platform: "linux"` reaching the warn function; drop the pass-through and they
+        // silently re-reach the production probe on a Windows host, which is the exact regression
+        // this key was added to fix.
+        expect(warnSetupDiagnosticsPrivilegeImpl, "drop this key and the production probe spawns a real powershell.exe on Windows").toHaveBeenCalledWith("windows", expect.objectContaining({ env: { TEST_ENV: "1" } }));
         expect(calls).toEqual(["build", "broker", "run:level2-hyper-v-windows-vm.ts"]);
         expect(runnerArgs.slice(0, 3)).toEqual([
             "--import",
@@ -698,15 +703,20 @@ describe("Windows Server evaluation license prompt", () => {
     // The other half of the same mutation, and the half the call-site assertion above does NOT
     // close. Every one of the five warn tests injects both impls, so neither production default is
     // ever executed by this suite: replacing only the default binding with
-    // `|| (() => "powershell.exe")` leaves 40/40 green, and tsc says nothing because the now-unused
-    // import is not flagged. So the hardening could still be removed from the live path with
-    // nothing objecting. Executing the real defaults is not an option — on Windows that spawns the
-    // powershell.exe this whole change exists to keep out of unit tests — so the binding is pinned
-    // as source text instead, which is what the mutation actually edits.
-    it("keeps the trusted resolver and the real probe as the production defaults", () => {
-        const source = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v.ts"), "utf8");
-        expect(source).toContain("dependencies.resolveTrustedWindowsPowerShellImpl || resolveTrustedWindowsPowerShell");
-        expect(source).toContain("dependencies.isAdministratorImpl || isAdministrator");
+    // `|| (() => "powershell.exe")` left 40/40 green, and tsc said nothing because the orphaned
+    // import is not flagged.
+    //
+    // The first attempt pinned the source TEXT of that expression. It closed the mutation it named
+    // and missed the same deletion one line up — repoint the import at a weakened module, leave the
+    // expression byte-identical, and the hardening is gone with the suite green. Third time that
+    // deletion moved rather than closed. Comparing the exported defaults against the module's own
+    // exports pins the BINDING, catches the import swap, and stops failing on a line wrap; it also
+    // executes neither, which is the point, since executing them on Windows spawns the
+    // powershell.exe this change exists to keep out of unit tests.
+    it("keeps the trusted resolver and the real probe as the production defaults", async () => {
+        const elevation: any = await import("./hyper-v-windows-library-elevation.mjs");
+        expect(PRIVILEGE_PROBE_DEFAULTS.resolveTrustedWindowsPowerShell).toBe(elevation.resolveTrustedWindowsPowerShell);
+        expect(PRIVILEGE_PROBE_DEFAULTS.isAdministrator).toBe(elevation.isAdministrator);
     });
 
     it("stays silent when the run is already elevated", () => {

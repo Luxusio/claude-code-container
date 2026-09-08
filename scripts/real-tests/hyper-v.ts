@@ -119,6 +119,16 @@ export async function ensureWindowsServerEvaluationLicense(target: string, deps:
 // question runs through, and re-launching it under UAC detaches that; a diagnostic is not worth
 // trading the interactive flow for. Elevation stays the operator's call, made before the wait
 // rather than discovered after it.
+// The two production defaults, exported as values so a test can assert the BINDING rather than the
+// spelling. Pinning the `|| resolveTrustedWindowsPowerShell` expression as source text closed the
+// mutation it named and missed the same deletion one line up: repoint the import at a weakened
+// module, leave the expression byte-identical, and the hardening is gone from the live path with
+// the suite green. It also failed on a behaviour-preserving line wrap, which is a false alarm any
+// formatter would trip. Comparing these against the module's own exports catches both, and executes
+// neither — which matters, because executing them on Windows spawns the powershell.exe this whole
+// change exists to keep out of unit tests.
+export const PRIVILEGE_PROBE_DEFAULTS = { resolveTrustedWindowsPowerShell, isAdministrator };
+
 export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependencies: any = {}): boolean {
     const platform = dependencies.platform || process.platform;
     if (platform !== "win32") return false;
@@ -129,8 +139,8 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
     const write = dependencies.writeImpl || ((line: string) => process.stderr.write(line));
     let elevated: boolean;
     try {
-        const resolvePowerShell = dependencies.resolveTrustedWindowsPowerShellImpl || resolveTrustedWindowsPowerShell;
-        const probe = dependencies.isAdministratorImpl || isAdministrator;
+        const resolvePowerShell = dependencies.resolveTrustedWindowsPowerShellImpl || PRIVILEGE_PROBE_DEFAULTS.resolveTrustedWindowsPowerShell;
+        const probe = dependencies.isAdministratorImpl || PRIVILEGE_PROBE_DEFAULTS.isAdministrator;
         elevated = probe({ powerShellPath: resolvePowerShell() });
     } catch {
         // The probe itself failing is not a reason to block or to claim elevation is missing. Say
