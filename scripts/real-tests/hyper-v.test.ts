@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
@@ -693,6 +693,20 @@ describe("Windows Server evaluation license prompt", () => {
         expect(output, "must name the code the operator will actually see").toContain("hyper-v-setup-diagnostics-mount-privilege-required");
         expect(output, "must say what to do").toContain("elevated terminal");
         expect(output, "must not imply the VM lifecycle is broken").toContain("lifecycle itself is unaffected");
+    });
+
+    // The other half of the same mutation, and the half the call-site assertion above does NOT
+    // close. Every one of the five warn tests injects both impls, so neither production default is
+    // ever executed by this suite: replacing only the default binding with
+    // `|| (() => "powershell.exe")` leaves 40/40 green, and tsc says nothing because the now-unused
+    // import is not flagged. So the hardening could still be removed from the live path with
+    // nothing objecting. Executing the real defaults is not an option — on Windows that spawns the
+    // powershell.exe this whole change exists to keep out of unit tests — so the binding is pinned
+    // as source text instead, which is what the mutation actually edits.
+    it("keeps the trusted resolver and the real probe as the production defaults", () => {
+        const source = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v.ts"), "utf8");
+        expect(source).toContain("dependencies.resolveTrustedWindowsPowerShellImpl || resolveTrustedWindowsPowerShell");
+        expect(source).toContain("dependencies.isAdministratorImpl || isAdministrator");
     });
 
     it("stays silent when the run is already elevated", () => {

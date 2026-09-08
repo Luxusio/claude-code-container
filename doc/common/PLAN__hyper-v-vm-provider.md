@@ -1239,17 +1239,22 @@ introduced by the transport work; each predates it and is unchanged by it.
   `snapshot list` rather than `status`, `formatSnapshotError` given coverage
   first — it has none — and that lock contention accounted for in the wording.
 
-- **The setup-diagnostics HResult bound rejects every real Win32 HRESULT.**
-  `mountFailureCode` in `scripts/real-tests/hyper-v-windows-setup-diagnostics.ts`
-  requires `hresult <= 2147483648`. Every `0x8007xxxx` value is above it —
-  `ERROR_PRIVILEGE_NOT_HELD` itself is `0x80070522` = 2147943714 — so a host
-  that reported the Win32 HResult rather than a generic .NET one would have its
-  whole `mount` object rejected, and the operator would get a bare
-  `hyper-v-setup-diagnostics-mount-failed` with no `a=/c=/h=/m=` bracket and no
-  privilege detection at all. Not observed: the real host reported the generic
-  `2146233088`, which is under the bound, and detection reads the message rather
-  than `h=` precisely because the HResult arrives useless. Found while building
-  a test fixture, which the bound rejected. Pre-existing and not fixed here.
+- **`h=` cannot be decoded back to an HRESULT.** The producer emits
+  `$MountHResult = [Math]::Abs([long]$_.Exception.HResult)`, so the sign is
+  discarded and every negative Int32 HRESULT prints as its absolute value:
+  `0x80070522` reaches the operator as `h=2147023582`, and the observed
+  `h=2146233088` is `Abs(0x80131500 as Int32)`. Reconstructing the hex means
+  knowing to subtract from 2^32, which nobody reading a CI log does. This is
+  part of why detection reads the message rather than `h=` (AC-003). Note that
+  the reader's `hresult <= 2147483648` bound is NOT a defect and must not be
+  "fixed": `Abs` of an Int32 lands in exactly `[0, 2147483648]`, so the bound is
+  a precisely fitted range check on semi-trusted PowerShell stdout, inclusive at
+  the boundary value `Abs(Int32.MinValue)`. An earlier version of this entry
+  claimed the bound rejected real Win32 HRESULTs and would drop the whole
+  bracket; that was wrong — it came from a test fixture using the *unsigned*
+  value `2147943714`, which the producer cannot emit — and raising the bound to
+  `4294967295` on the strength of it would have loosened an input validator for
+  nothing.
 
 ## References
 

@@ -394,16 +394,19 @@ describe("captureHyperVWindowsConsole", () => {
         expect(compactedWidest, "the remedy must survive, it is the whole point of the code").toContain("mount-privilege-required[elevate");
         expect(compactedWidest, "and so must the failure the operator has to act on").toContain("hyper-v-guest-not-ready");
         // Producing the fixture MOVED the blind band, it did not close it, and the paragraph above
-        // implied otherwise. Measured at HEAD: 152 characters sit between the end of the marker and
-        // the reporter's cut, so MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two
-        // assertions above still pass — against ~170 for the hand-typed literal. A ~18-character
-        // improvement is not "raise the cap and this fails", which is what the comment implied.
-        // So the band itself is pinned now: it is a measured number rather than one nobody has
-        // looked at since, and widening it fails here rather than quietly somewhere else.
+        // implied otherwise. The cut is at 697, not 700: compactMessage returns
+        // `slice(0, limit - 3) + "..."`, so content survives only while it ends at or before 697.
+        // Measured at HEAD: 149 characters sit between the end of the marker and that cut, so
+        // MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two assertions above still pass —
+        // against ~170 for the hand-typed literal. A ~21-character improvement is not "raise the
+        // cap and this fails", which is what the comment implied. So the band is pinned now, and
+        // pinned against the real cut rather than the nominal limit — the first version of this
+        // block said 152 by measuring against 700, overclaiming precision in the very comment that
+        // exists to stop numbers nobody has looked at since.
         const marker = "hyper-v-guest-not-ready";
         const markerEnd = compactedWidest.indexOf(marker) + marker.length;
         expect(markerEnd).toBeGreaterThan(marker.length - 1);
-        expect(700 - markerEnd, "undetected room before a cap increase cuts the actionable half").toBeLessThan(160);
+        expect(697 - markerEnd, "undetected room before a cap increase cuts the actionable half").toBeLessThan(160);
     });
 
     it("exports the fixed capture dimensions", () => {
