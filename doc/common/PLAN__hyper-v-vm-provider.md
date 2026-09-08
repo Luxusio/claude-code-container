@@ -1098,6 +1098,34 @@ Two details worth keeping, because both cost time to find:
 - It was retried. The mount loop treated it as transient and spent seven
   attempts with exponential backoff on an error that waiting cannot change.
 
+### Measured after the change, on the same host, unelevated
+
+    NOTE This run is not elevated. …
+         Re-run from an elevated terminal to keep the diagnostics.
+    …
+    guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-mount-privilege-
+      required[elevate,p=code,a=1,c=NotSpecified,h=2146233088,m=<mojibake> (0x80070522).])
+
+Three things this settles, none of them previously more than argued:
+
+- `a=1`, against `a=7` before. The retry budget is no longer spent re-learning
+  an answer that waiting cannot change.
+- `p=code` on a **Korean-locale** host whose message arrives as unreadable
+  bytes. Detection still fired, because the `-match` runs inside PowerShell on
+  the pristine string, before the encoding step that mangles it. That is the
+  locale-survivability argument, measured rather than reasoned.
+- `h=2146233088` again — `Abs(0x80131500 as Int32)` exactly, which is also the
+  observation behind the Known Gaps entry on `h=` below, and confirms the
+  reader's bound was never the problem.
+
+The warning printed **before** the build, which is its whole point.
+
+What this does **not** settle is whether elevation is the remedy for this host:
+`p=code` says Windows named the privilege, not that the local Administrators
+role is what supplies it. The elevated re-run decides that, and it also decides
+whether the recorded "elevated AND `0x80070522`" third state is hypothetical or
+is this host's actual situation.
+
 `npm run test:level3:hyper-v:windows` now probes elevation **before** the build
 and warns, rather than letting the operator discover it two minutes into a
 boot. So does `npm run test:level3:hyper-v`, whose default target is `all` and
