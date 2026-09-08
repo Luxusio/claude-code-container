@@ -696,7 +696,12 @@ describe("Windows Server evaluation license prompt", () => {
         expect(isAdministratorImpl, "the probe must get the resolved trusted path, not a PATH lookup").toHaveBeenCalledWith({ powerShellPath: trustedPowerShell });
         const output = lines.join("");
         expect(output, "must name the code the operator will actually see").toContain("hyper-v-setup-diagnostics-mount-privilege-required");
-        expect(output, "must say what to do").toContain("elevated terminal");
+        // The action changed when the diagnostic started requesting elevation itself. It used to be
+        // "re-run from an elevated terminal", which cost the operator a build and a two-minute boot
+        // to arrive at the same failure with one more right. The note now tells them what will be
+        // asked of them and when, so the assertion follows the action rather than the old wording.
+        expect(output, "must say what will be asked of the operator").toContain("approve elevation");
+        expect(output, "and must not send them back to re-run the whole thing").not.toContain("Re-run from an elevated terminal");
         expect(output, "must not imply the VM lifecycle is broken").toContain("lifecycle itself is unaffected");
     });
 

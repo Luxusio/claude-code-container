@@ -12,6 +12,7 @@ import { providerMcpSessionOptions } from "./provider-mcp-matrix.ts";
 import { cachedImageManifests, selectHyperVWindowsProfile } from "./select-windows-profile.ts";
 import { captureHyperVWindowsConsole, type HyperVWindowsConsoleCaptureResult } from "./hyper-v-windows-console-capture.ts";
 import { captureHyperVWindowsSetupDiagnostics, type HyperVWindowsSetupDiagnosticsResult } from "./hyper-v-windows-setup-diagnostics.ts";
+import { requestElevatedSetupDiagnostics, type ElevatedSetupDiagnosticsOutcome } from "./hyper-v-windows-setup-diagnostics-elevation.ts";
 
 const DEVICE_PREFIX = "windows-vm-real-e2e-";
 export const HYPER_V_WINDOWS_CONSOLE_TIMELINE_DELAYS_MS = [120000, 300000, 600000, 900000] as const;
@@ -65,7 +66,7 @@ function resultValue(value: any) {
     return value?.result && typeof value.result === "object" ? value.result : value;
 }
 
-export function hyperVWindowsFailureReason(input: {
+export async function hyperVWindowsFailureReason(input: {
     profile: string;
     sourceImage?: string;
     step: string;
@@ -79,7 +80,8 @@ export function hyperVWindowsFailureReason(input: {
     platform?: string;
     captureImpl?: typeof captureHyperVWindowsConsole;
     setupDiagnosticsImpl?: typeof captureHyperVWindowsSetupDiagnostics;
-}): string {
+    elevateSetupDiagnosticsImpl?: typeof requestElevatedSetupDiagnostics;
+}): Promise<string> {
     const profileTag = `profile=${input.profile}${input.sourceImage ? " sourceImage=set" : ""}`;
     const originalReason = `${input.step}: ${(input.error as any)?.message || String(input.error)}`;
     if (!input.created || !input.incarnationId) return `${profileTag}; ${originalReason}`;
@@ -110,6 +112,43 @@ export function hyperVWindowsFailureReason(input: {
         });
     } catch {
         setupDiagnostics = { ok: false, code: "hyper-v-setup-diagnostics-unexpected-failure" };
+    }
+    // The mount failed for want of a privilege, so ask for that privilege instead of telling the
+    // operator to spend another build and another two-minute boot to arrive here again with one
+    // more right. This is the only step in the Level 3 run that needs elevation, it needs it once,
+    // and only after a guest has already failed — so the request is made here, for this operation,
+    // rather than by relaunching the launcher (which owns the terminal stdin the evaluation-licence
+    // question reads).
+    //
+    // Elevation is attempted at most once, and only for the privilege code. Every other failure is
+    // returned as it was: prompting for UAC on a transient ResourceBusy would spend an operator's
+    // attention on something elevation cannot fix.
+    if (setupDiagnostics.ok === false && setupDiagnostics.code.startsWith("hyper-v-setup-diagnostics-mount-privilege-required[")) {
+        const elevate = input.elevateSetupDiagnosticsImpl || requestElevatedSetupDiagnostics;
+        let outcome: ElevatedSetupDiagnosticsOutcome;
+        try {
+            outcome = await elevate({
+                ownerId: input.ownerId || ownerId(process.env, repoRoot),
+                deviceId: input.deviceId,
+                incarnationId: input.incarnationId,
+                vmId: input.vmId || "",
+                powershell: String(input.powershell || ""),
+            }, { platform: input.platform || process.platform });
+        } catch {
+            outcome = { attempted: true, errorCode: "elevation-request-failed" };
+        }
+        if (outcome.attempted === true && "result" in outcome) {
+            setupDiagnostics = outcome.result.ok === true
+                ? { ok: true, latestRelativePath: outcome.result.latestRelativePath, latestPath: "", timestampedPath: "" }
+                : { ok: false, code: outcome.result.code };
+        } else {
+            // The unelevated code is kept, not replaced. It is still what happened, and losing it
+            // to report the elevation instead would tell the operator less than before. The reason
+            // the retry did not land is appended so the two are distinguishable: "we did not ask"
+            // and "we asked and it failed" call for different next steps.
+            const detail = outcome.attempted === true ? outcome.errorCode : outcome.reason;
+            setupDiagnostics = { ok: false, code: `${setupDiagnostics.code}(elevation=${detail})` };
+        }
     }
     const guestSetupDiagnostics = setupDiagnostics.ok === true
         ? setupDiagnostics.latestRelativePath
@@ -448,7 +487,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
         } catch (error: any) {
             return {
                 status: "FAIL",
-                reason: hyperVWindowsFailureReason({
+                reason: await hyperVWindowsFailureReason({
                     profile: capability.profile,
                     sourceImage: (capability as any).sourceImage,
                     step: currentStep,
@@ -461,6 +500,7 @@ export async function runHyperVWindowsVmE2E(options: any = {}) {
                     platform: options.platform || process.platform,
                     captureImpl: options.captureConsoleImpl,
                     setupDiagnosticsImpl: options.captureSetupDiagnosticsImpl,
+                    elevateSetupDiagnosticsImpl: options.elevateSetupDiagnosticsImpl,
                 }),
             };
         } finally {

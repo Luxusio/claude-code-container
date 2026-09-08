@@ -60,9 +60,26 @@ export function buildLevel3Artifacts(repoRoot, options: any = {}) {
     const bundled = spawn(process.execPath, [esbuild, "device-lab-mcp/server.mjs", "--bundle", "--platform=node", "--format=esm", "--outfile=dist/device-lab-mcp/server.mjs", "--banner:js=// device-lab-mcp-version: 1"], {
         cwd: repoRoot, env, encoding: "utf-8", windowsHide: true,
     });
-    if (bundled.status === 0) return 0;
-    process.stderr.write(bundled.stderr || bundled.stdout || "device-lab MCP build failed\n");
-    return bundled.status ?? 1;
+    if (bundled.status !== 0) {
+        process.stderr.write(bundled.stderr || bundled.stdout || "device-lab MCP build failed\n");
+        return bundled.status ?? 1;
+    }
+    // The elevated half of the Windows Setup diagnostic. requestAdministrator runs a single
+    // digest-verified program, so this has to be one file; it is built here rather than lazily at
+    // failure time because a bundler running inside an already-failing diagnostic would turn a
+    // missing privilege into a build error, and the operator would be reading the wrong problem.
+    const privileged = spawn(process.execPath, [
+        esbuild,
+        "scripts/real-tests/hyper-v-windows-setup-diagnostics-privileged.ts",
+        "--bundle",
+        "--platform=node",
+        "--format=esm",
+        "--target=node20",
+        "--outfile=dist/real-tests/hyper-v-windows-setup-diagnostics-privileged.mjs",
+    ], { cwd: repoRoot, env, encoding: "utf-8", windowsHide: true });
+    if (privileged.status === 0) return 0;
+    process.stderr.write(privileged.stderr || privileged.stdout || "Hyper-V Windows setup-diagnostics privileged bundle failed\n");
+    return privileged.status ?? 1;
 }
 
 export async function probeHostBrokerCapabilities(port: number, options: any = {}) {

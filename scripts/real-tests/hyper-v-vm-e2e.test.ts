@@ -837,7 +837,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(source).not.toContain("hyper-v-images.ts");
     });
 
-    it("captures the Windows guest console before cleanup while preserving the original failure", () => {
+    it("captures the Windows guest console before cleanup while preserving the original failure", async () => {
         const calls: any[] = [];
         const base = {
             profile: "windows-server",
@@ -851,7 +851,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
             ownerId: "0123456789abcdef",
             platform: "win32",
         };
-        const success = hyperVWindowsFailureReason({
+        const success = await hyperVWindowsFailureReason({
             ...base,
             captureImpl: (input: any) => {
                 calls.push(input);
@@ -878,7 +878,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         })]);
         expect(success).toBe("profile=windows-server; guestConsole=results/device-lab-real/hyper-v-windows-console-latest.png; guestSetupDiagnostics=results/device-lab-real/hyper-v-windows-setup-diagnostics-latest.json; start and wait for PowerShell Direct: hyper-v-guest-not-ready: diagnosticErrors=integration-services-incomplete");
 
-        const unavailable = hyperVWindowsFailureReason({
+        const unavailable = await hyperVWindowsFailureReason({
             ...base,
             sourceImage: "C:\\images\\windows.vhdx",
             captureImpl: () => ({ ok: false, code: "hyper-v-console-wmi-access-denied" }),
@@ -888,7 +888,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(unavailable).toContain("guestSetupDiagnostics=unavailable(hyper-v-setup-diagnostics-mount-failed);");
         expect(unavailable).toContain("hyper-v-guest-not-ready: diagnosticErrors=integration-services-incomplete");
 
-        const unexpected = hyperVWindowsFailureReason({
+        const unexpected = await hyperVWindowsFailureReason({
             ...base,
             captureImpl: () => { throw new Error("C:\\Users\\private token=secret"); },
             setupDiagnosticsImpl: () => { throw new Error("C:\\Users\\private token=secret"); },
@@ -1502,9 +1502,9 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(cleared).toEqual(scheduled.map((entry) => entry.handle));
     });
 
-    it("skips console capture before Windows VM creation and keeps catch-before-finally ordering", () => {
+    it("skips console capture before Windows VM creation and keeps catch-before-finally ordering", async () => {
         let invoked = false;
-        const reason = hyperVWindowsFailureReason({
+        const reason = await hyperVWindowsFailureReason({
             profile: "windows-server",
             step: "create VM",
             error: new Error("hyper-v-create-failed"),
@@ -1528,7 +1528,7 @@ describe("Hyper-V E2E zero-config image selection", () => {
         expect(functionSource).toContain("scheduleHyperVWindowsConsoleTimeline");
         expect(functionSource).toContain("stopConsoleTimeline");
         const catchIndex = functionSource.indexOf("} catch (error: any) {");
-        const captureIndex = functionSource.indexOf("reason: hyperVWindowsFailureReason", catchIndex);
+        const captureIndex = functionSource.indexOf("reason: await hyperVWindowsFailureReason", catchIndex);
         const finallyIndex = functionSource.indexOf("} finally {", captureIndex);
         const stopIndex = functionSource.indexOf('callTool("device_stop"', finallyIndex);
         expect(functionIndex).toBeGreaterThan(-1);

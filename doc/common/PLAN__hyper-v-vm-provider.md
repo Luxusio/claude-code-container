@@ -1120,23 +1120,50 @@ Three things this settles, none of them previously more than argued:
 
 The warning printed **before** the build, which is its whole point.
 
-What this does **not** settle is whether elevation is the remedy for this host:
-`p=code` says Windows named the privilege, not that the local Administrators
-role is what supplies it. The elevated re-run decides that, and it also decides
-whether the recorded "elevated AND `0x80070522`" third state is hypothetical or
-is this host's actual situation.
+What that run does **not** settle is whether elevation is the remedy for this
+host: `p=code` says Windows named the privilege, not that the local
+Administrators role is what supplies it. **The next run settles it without
+anyone re-running anything** — approving the UAC prompt either recovers the
+Panther logs, or comes back with the mount still refused, which is the
+"elevated AND `0x80070522`" state observed rather than reasoned about.
 
-`npm run test:level3:hyper-v:windows` now probes elevation **before** the build
-and warns, rather than letting the operator discover it two minutes into a
-boot. So does `npm run test:level3:hyper-v`, whose default target is `all` and
-which therefore includes the Windows provider. Before the build specifically,
-because the action the warning asks for is a re-run and a re-run costs another
-`buildLevel3Artifacts` — warning afterwards charges for the build twice. It is
-skipped for a `linux` target, which never captures this diagnostic.
+**The diagnostic now requests the privilege instead of asking for a re-run.**
+When the mount fails for want of it, `hyperVWindowsFailureReason` calls
+`requestElevatedSetupDiagnostics`, which raises a UAC prompt for that one
+operation and re-runs the diagnostic elevated. The launcher itself stays
+unelevated, so it keeps the terminal stdin the evaluation-licence question
+reads.
 
-The warning is not a UAC prompt: the diagnostic is captured by a synchronous
-formatter that runs while building an error string, and elevating the launcher
-instead would detach the terminal stdin the evaluation-licence question uses.
+The mechanism is the one this repository already uses for the same problem in
+`hyper-v-windows-library-command.mjs`: `requestAdministrator` stages a
+digest-verified program in an Administrators-only ProgramData root and streams
+its output back over a token-authenticated named pipe. One thing is added — the
+VM identity is embedded in the digested program bytes rather than passed as
+argv, so the VM an elevated `Mount-VHD` will open is covered by the same
+integrity check as the code that opens it.
+
+An earlier version of this section argued elevation was the wrong shape here,
+because the diagnostic is a synchronous formatter and elevating the launcher
+would detach that stdin. The first half was a property of the function as
+written, not a constraint — its only caller is already `async`. The second half
+described relaunching the launcher, which is not what this does. Recorded
+because the conclusion was wrong for two rounds and the reasoning read as though
+it had been tested.
+
+`npm run test:level3:hyper-v:windows` still probes elevation **before** the
+build, and so does `npm run test:level3:hyper-v`, whose default target is `all`.
+The note no longer asks for anything: it says a UAC dialog may appear later, so
+an unattended run is not surprised by one. It is skipped for a `linux` target,
+which never captures this diagnostic.
+
+What the operator sees when elevation does not land:
+
+- declined or failed → the unelevated code is **kept** and the reason appended,
+  `…mount-privilege-required[…](elevation=elevation-declined)`. Losing the
+  original code to report the elevation instead would say less than before.
+- already elevated → `(elevation=already-elevated)`. This is the state recorded
+  below as a gap; requesting elevation closed it, because the run no longer tells
+  someone to elevate when they already have.
 
 The code an operator will see and can grep for is
 `hyper-v-setup-diagnostics-mount-privilege-required[elevate,...]`.
@@ -1155,14 +1182,18 @@ The pairing of `elevate` with a transient category is therefore not a
 contradiction: `c=` reports what happened, the prefix reports what to do, and
 both are true.
 
-Two gaps in that story, recorded rather than fixed:
+One gap in that story, and one that requesting elevation closed:
 
-- There is no third state for *elevated* **and** `0x80070522` — reachable when
-  the VHDX sits on a network share, `SeManageVolumePrivilege` is stripped, or
-  the run holds a constrained or service token. The launcher stays silent
-  because its probe says elevated, the producer still emits `elevate,p=code`,
-  and the operator is told to elevate when they already are. `$MountElevated`
-  is known at that moment and discarded.
+- **Closed.** *Elevated* **and** `0x80070522` — reachable when the VHDX sits on
+  a network share, `SeManageVolumePrivilege` is stripped, or the run holds a
+  constrained or service token. The producer still emits `elevate,p=code` there,
+  because the message check runs first and `$MountElevated` is discarded at that
+  point. What used to happen next was the wrong answer: the operator was told to
+  elevate when they already had. Now `requestElevatedSetupDiagnostics` probes
+  before prompting, raises no dialog, and the reason carries
+  `(elevation=already-elevated)` — so the code still says `p=code`, which is
+  true, and the run says elevation was not the missing piece, which is the part
+  the operator needed.
 - The `p=` token is forgeable out of host text the same way `elevate,` is: a
   *generic* mount failure whose message happens to contain `p=code elevate,`
   will satisfy a `/p=(code|unelevated)/` grep. Keying on the code **name**

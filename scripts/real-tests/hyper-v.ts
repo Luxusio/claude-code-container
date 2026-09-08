@@ -146,11 +146,11 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         // The probe itself failing is not a reason to block or to claim elevation is missing. Say
         // only what is true: it could not be determined.
         write(
-            "NOTE Could not determine whether this run is elevated. If a guest fails to boot and the\n"
-            + "     result says hyper-v-setup-diagnostics-mount-privilege-required, re-run from an\n"
-            + "     elevated terminal to get the Panther logs — specifically as a member of local\n"
-            + "     Administrators, since Hyper-V Administrators alone runs VMs but is not believed to\n"
-            + "     grant the mount privilege. The VM lifecycle itself is unaffected.\n"
+            "NOTE Could not determine whether this run is elevated. If a guest fails to boot, the\n"
+            + "     Windows Setup diagnostic may ask you to approve elevation for one VHDX mount —\n"
+            + "     specifically as a member of local Administrators, since Hyper-V Administrators\n"
+            + "     alone runs VMs but is not believed to grant the mount privilege.\n"
+            + "     The VM lifecycle itself is unaffected.\n"
             // The two probes fail in OPPOSITE directions, and this note is the one place that
             // matters. This one throwing produced the message above; the in-guest probe defaults to
             // "assume elevated", which biases it AGAINST emitting the code this note tells the
@@ -164,15 +164,21 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
     if (elevated) return false;
     write(
         "NOTE This run is not elevated. Windows Setup diagnostics mount the guest VHDX to read Panther\n"
-        + "     logs, which needs a privilege Hyper-V VM management does not grant, so on a guest that\n"
-        + "     fails to boot you will get hyper-v-setup-diagnostics-mount-privilege-required instead of\n"
-        + "     the logs explaining why. The VM lifecycle itself is unaffected.\n"
-        + "     Re-run from an elevated terminal to keep the diagnostics.\n"
+        + "     logs, which needs a privilege Hyper-V VM management does not grant.\n"
+        + "     The VM lifecycle itself is unaffected, and nothing is asked of you now.\n"
+        // Says what will happen, not what to do. The run no longer asks the operator to start over
+        // with more rights: if a guest fails to boot, the diagnostic requests elevation for that one
+        // mount, at that moment. Warning here is still worth it — an unattended run should know a
+        // UAC dialog may appear rather than meet one silently — but the old "re-run from an elevated
+        // terminal" line was telling them to pay for a build and a two-minute boot again.
+        + "     If a guest fails to boot, Windows will ask you to approve elevation for that single\n"
+        + "     mount. Declining costs only the Panther logs, and the result then says\n"
+        + "     hyper-v-setup-diagnostics-mount-privilege-required, which is what to grep for.\n"
         // The caveat names its audience. Unqualified it landed on the common reader — a local admin
-        // on a UAC-filtered token, for whom elevating DOES fix it — and read as "elevating might not
-        // help", contradicting the instruction directly above.
-        + "     (If your only administrative right is Hyper-V Administrators membership, elevating\n"
-        + "     will not help: this checks the local Administrators role.)\n",
+        // on a UAC-filtered token, for whom approving DOES fix it — and read as "approving might not
+        // help", contradicting the sentence directly above.
+        + "     (If your only administrative right is Hyper-V Administrators membership, approving\n"
+        + "     will not help either: the mount checks the local Administrators role.)\n",
     );
     return true;
 }
