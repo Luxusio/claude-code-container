@@ -182,6 +182,10 @@ export function warnIfSetupDiagnosticsWillLackPrivilege(target: string, dependen
         + "     read the logs, then dismount and re-attach it. Nothing else is touched.\n"
         + "     Declining costs only the Panther logs, and the result then says\n"
         + "     hyper-v-setup-diagnostics-mount-privilege-required, which is what to grep for.\n"
+        // An unattended run meets this dialog with nobody there. Saying the bound matters: the run
+        // is not hung, it ends in ten minutes with the answer recorded either way.
+        + "     Left unanswered, the request expires after ten minutes and the run finishes without\n"
+        + "     the logs.\n"
         // The caveat names its audience. Unqualified it landed on the common reader — a local admin
         // on a UAC-filtered token, for whom approving DOES fix it — and read as "approving might not
         // help", contradicting the sentence directly above.

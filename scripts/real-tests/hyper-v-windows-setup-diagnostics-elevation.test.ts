@@ -1,9 +1,14 @@
 import { createHash } from "crypto";
+import { readFileSync } from "fs";
+import { join, sep } from "path";
 import { describe, expect, it, vi } from "vitest";
+import { repoRoot } from "./helpers.ts";
+import { buildLevel3Artifacts, HYPER_V_LEVEL3_PROVIDER_CONTRACT } from "./support/level3-host.ts";
 import { hyperVWindowsFailureReason } from "./hyper-v-windows-vm-e2e.ts";
 import {
     decodePrivilegedResultFrame,
     privilegedProgramPrelude,
+    PRIVILEGED_BUNDLE_RELATIVE_PATH,
     requestElevatedSetupDiagnostics,
 } from "./hyper-v-windows-setup-diagnostics-elevation.ts";
 import {
@@ -22,6 +27,7 @@ const IDENTITY = {
 
 const LOGS = [{ path: "Windows\\Panther\\setuperr.log", lines: ["setup failed"] }];
 const TRUSTED_POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+const elevationSource = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v-windows-library-elevation.mjs"), "utf8");
 
 // Reachable on an unelevated host for ANY mount failure, transient category included: $MountElevated
 // is loop-invariant so the producer breaks at attempt 1 and emits the privilege code with whatever
@@ -83,6 +89,11 @@ describe("Windows Setup diagnostics elevation request", () => {
         expect(sent).toEqual(IDENTITY);
         expect(Object.keys(sent), "an extra key here is a new thing crossing a privilege boundary").toEqual(["ownerId", "deviceId", "incarnationId", "vmId"]);
         expect(JSON.stringify(sent)).not.toContain("powershell");
+        // The dependency bag was never asserted, so dropping it entirely survived. It carries the
+        // platform, and without it the requester falls back to process.platform — which on a Linux
+        // CI box happens to be harmless and on a Windows one is the difference between honouring an
+        // injected platform and not.
+        expect(elevate.mock.calls[0][1], "the platform must reach the requester, not be re-derived").toEqual({ platform: "win32" });
     });
 
     it("resolves its own trusted PowerShell inside the elevated child", () => {
@@ -97,7 +108,22 @@ describe("Windows Setup diagnostics elevation request", () => {
         // Administrators only, reparse points refused. Anywhere else and an unelevated user can
         // pre-create or junction the target and steer an Administrator write.
         expect(seen.outputRoot).toBe("C:\\ProgramData\\ccc-staging\\collect");
+        expect(seen.platform, "the elevated child only ever runs on Windows and must not infer it").toBe("win32");
         expect(decodePrivilegedResultFrame(out.frame), "and no path crosses back").toEqual({ ok: true, logs: LOGS });
+        // The WHITELISTED object has to be what reaches the capture, not the raw embedded one.
+        // Passing the raw object through still validated, and still returned the right answer, so
+        // nothing caught it — but HyperVWindowsSetupDiagnosticsInput accepts `outputRoot`, and the
+        // whole point of validPrivilegedInput returning a rebuilt object is that an extra field
+        // cannot ride along into an elevated Mount-VHD.
+        let smuggled: any;
+        runPrivilegedSetupDiagnostics({ ...IDENTITY, outputRoot: "C:\\", spawnSyncImpl: "x" }, {
+            resolvePowerShellImpl: (() => TRUSTED_POWERSHELL) as any,
+            collectRoot: "C:\\ProgramData\\ccc-staging\\collect",
+            captureImpl: ((options: any) => { smuggled = options; return { ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }; }) as any,
+        });
+        expect(smuggled.outputRoot, "an extra embedded field must not steer where an elevated process writes").toBe("C:\\ProgramData\\ccc-staging\\collect");
+        expect(smuggled.spawnSyncImpl, "nor hand it something to run").toBeUndefined();
+        expect(Object.keys(smuggled).sort()).toEqual(["deviceId", "incarnationId", "outputRoot", "ownerId", "platform", "powershell", "vmId"]);
         const unresolved = runPrivilegedSetupDiagnostics(IDENTITY, {
             resolvePowerShellImpl: (() => { throw new Error("no system root"); }) as any,
         });
@@ -105,12 +131,20 @@ describe("Windows Setup diagnostics elevation request", () => {
     });
 
     // Declining UAC is a legitimate answer and must not cost the operator the diagnosis they had.
+    //
+    // `elevation-cancelled` is the REAL code — a UAC decline surfaces as Win32 1223, which the
+    // elevation library maps to CANCELLED. An earlier version of this test and of the durable doc
+    // both said `elevation-declined`, which exists nowhere in the repository: a stub produced the
+    // invented value, the assertion matched it, and the doc told an operator to grep for a string
+    // that can never appear. So the value is taken from the library rather than typed here.
     it("keeps the unelevated code and names why elevation did not land", async () => {
+        expect(String(elevationSource), "the decline mapping this test depends on").toContain('return { errorCode: "elevation-cancelled" }');
         for (const [outcome, suffix] of [
-            [{ attempted: true, errorCode: "elevation-declined" }, "elevation-declined"],
+            [{ attempted: true, errorCode: "elevation-cancelled" }, "elevation-cancelled"],
             [{ attempted: false, reason: "already-elevated" }, "already-elevated"],
             [{ attempted: false, reason: "identity-invalid" }, "identity-invalid"],
             [{ attempted: false, reason: "bundle-missing" }, "bundle-missing"],
+            [{ attempted: false, reason: "probe-failed" }, "probe-failed"],
         ] as const) {
             const reason = await hyperVWindowsFailureReason(failureReasonInput({ elevateSetupDiagnosticsImpl: async () => outcome }));
             expect(reason).toContain(`${PRIVILEGE_CODE}(elevation=${suffix})`);
@@ -119,6 +153,25 @@ describe("Windows Setup diagnostics elevation request", () => {
             elevateSetupDiagnosticsImpl: async () => { throw new Error("pipe exploded"); },
         }));
         expect(threw, "a throw out of the elevation path must not lose the diagnosis either").toContain(`${PRIVILEGE_CODE}(elevation=elevation-request-failed)`);
+    });
+
+    // The state the whole "asserted, not measured" question turns on: the operator approved, the
+    // diagnostic ran with full rights, and Windows refused anyway. Replacing the code outright made
+    // that render byte-identically to a build that never asked — so the report could not tell the
+    // two apart, and the run that was supposed to settle the premise settled nothing.
+    it("marks an elevated run that still failed, and keeps the original code beside it", async () => {
+        const reason = await hyperVWindowsFailureReason(failureReasonInput({
+            elevateSetupDiagnosticsImpl: async () => ({ attempted: true, result: { ok: false, code: PRIVILEGE_CODE } }),
+        }));
+        expect(reason).toContain(`${PRIVILEGE_CODE}(elevation=approved,still=hyper-v-setup-diagnostics-mount-privilege-required)`);
+        // Name only. The elevated failure can be another full privilege bracket, and nesting one
+        // bracket inside another spends the reporter budget on a field nobody parses.
+        expect(reason.match(/m=denied/g), "the elevated bracket's body must not be pasted in too").toHaveLength(1);
+        const rejected = await hyperVWindowsFailureReason(failureReasonInput({
+            elevateSetupDiagnosticsImpl: async () => ({ attempted: true, result: { ok: false, code: "hyper-v-setup-diagnostics-privileged-input-invalid" } }),
+        }));
+        expect(rejected, "a child that rejects its own input must not cost the operator the mount diagnosis")
+            .toContain(`${PRIVILEGE_CODE}(elevation=approved,still=hyper-v-setup-diagnostics-privileged-input-invalid)`);
     });
 
     // A prompt is requested for the privilege code, INCLUDING p=unelevated with a transient
@@ -204,6 +257,16 @@ describe("Windows Setup diagnostics elevation request", () => {
             `${privilegedResultFrame({ ok: true, logs: LOGS })}${privilegedResultFrame({ ok: false, code: "x" })}`,
         ), "two frames means something else can imitate the marker; picking one lets it choose").toBeNull();
         expect(decodePrivilegedResultFrame(`${PRIVILEGED_RESULT_MARKER}not-base64!!\n`)).toBeNull();
+        // The base64 SHAPE check, which that case does not exercise — `not-base64!!` is rejected by
+        // the JSON parse, not by the regex, so deleting the regex left it green. Node's decoder is
+        // lenient and silently skips characters outside the alphabet, so a valid payload with junk
+        // spliced in still decodes. Without the shape check this side accepts a frame whose bytes
+        // are not the bytes the child sent.
+        const clean = privilegedResultFrame({ ok: true, logs: LOGS }).slice(PRIVILEGED_RESULT_MARKER.length).trim();
+        const spliced = `${clean.slice(0, 8)}!! \t${clean.slice(8)}`;
+        expect(JSON.parse(Buffer.from(spliced, "base64").toString("utf8")).ok,
+            "the fixture must be one the lenient decoder still accepts, or it proves nothing").toBe(true);
+        expect(decodePrivilegedResultFrame(`${PRIVILEGED_RESULT_MARKER}${spliced}\n`)).toBeNull();
         expect(decodePrivilegedResultFrame(privilegedResultFrame({ ok: true, logs: "not-an-array" }))).toBeNull();
         expect(decodePrivilegedResultFrame(privilegedResultFrame({ ok: false, code: "Bad Code With Spaces" }))).toBeNull();
         expect(decodePrivilegedResultFrame(privilegedResultFrame({ ok: "yes" }))).toBeNull();
@@ -236,6 +299,61 @@ describe("Windows Setup diagnostics elevation request", () => {
         // An extra key is dropped rather than forwarded — notably a powershell path, which is the
         // field this boundary stopped carrying.
         expect(validPrivilegedInput({ ...IDENTITY, powershell: "C:\\Users\\Someone\\evil.exe" })).toEqual(IDENTITY);
+    });
+
+    // Nothing pinned the build at all: deleting the whole privileged-bundle block from
+    // buildLevel3Artifacts left the suite green, and on a real host that degrades the feature to
+    // (elevation=bundle-missing) after the guest has already failed. The outfile and
+    // PRIVILEGED_BUNDLE_RELATIVE_PATH were also two independent literals with nothing tying them
+    // together — the same "invisible to tsc, surfaces first on Windows CI" shape this task already
+    // records against the PowerShell parse gate.
+    it("builds the privileged bundle where the requester will look for it", () => {
+        const spawns: Array<{ args: string[] }> = [];
+        buildLevel3Artifacts("/repo", {
+            platform: "win32",
+            spawn: (_command: string, args: string[]) => {
+                spawns.push({ args });
+                return { status: 0, stdout: "", stderr: "" };
+            },
+            readFile: (path: string) => (path.endsWith("contracts.js")
+                ? `export const c = "${HYPER_V_LEVEL3_PROVIDER_CONTRACT}";`
+                : '{"version":"1.0.0"}'),
+            writeFile: () => undefined,
+        });
+        const bundling = spawns.find((call) => call.args.some((arg) => arg.includes("hyper-v-windows-setup-diagnostics-privileged.ts")));
+        expect(bundling, "the elevated child has to exist before a guest fails, not be built inside a failing diagnostic").toBeDefined();
+        const outfile = (bundling?.args || []).find((arg) => arg.startsWith("--outfile="))?.slice("--outfile=".length);
+        expect(outfile, "the builder's outfile and the requester's lookup path must be the same file")
+            .toBe(PRIVILEGED_BUNDLE_RELATIVE_PATH.split(sep).join("/"));
+    });
+
+    it("bounds the bundle it is willing to digest, and the frame it is willing to decode", async () => {
+        const request = vi.fn(async () => ({ status: 0, stdout: "" }));
+        const win32 = {
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => TRUSTED_POWERSHELL,
+            isAdministratorImpl: () => false,
+            bundlePath: "bundle.mjs",
+            readFileSyncImpl: () => Buffer.from("x"),
+            requestAdministratorImpl: request,
+        };
+        for (const size of [0, -1, 9 * 1024 * 1024, Number.NaN]) {
+            expect(await requestElevatedSetupDiagnostics(IDENTITY, { ...win32, statSyncImpl: () => ({ size }) }),
+                `a bundle reported as ${size} bytes is not something to hand an elevated process`)
+                .toEqual({ attempted: false, reason: "bundle-missing" });
+        }
+        expect(await requestElevatedSetupDiagnostics(IDENTITY, { ...win32, statSyncImpl: () => { throw new Error("ENOENT"); } }))
+            .toEqual({ attempted: false, reason: "bundle-missing" });
+        expect(request, "none of these may reach a UAC prompt").not.toHaveBeenCalled();
+        // The frame cap. It has to be exercised with a payload that would otherwise DECODE — my
+        // first attempt used 3 MiB of "A", which is valid base64 but not valid JSON, so the parse
+        // threw and the test passed with the cap deleted. The cap is what stops an elevated child
+        // from making this side base64-decode and JSON-parse an arbitrary amount.
+        const oversized = privilegedResultFrame({ ok: true, logs: [{ path: "Windows\\Panther\\setupact.log", lines: ["x".repeat(2 * 1024 * 1024)] }] });
+        expect(oversized.length, "the fixture has to actually exceed the cap or it proves nothing").toBeGreaterThan(2 * 1024 * 1024);
+        expect(JSON.parse(Buffer.from(oversized.slice(PRIVILEGED_RESULT_MARKER.length).trim(), "base64").toString("utf8")).ok,
+            "and it has to be a frame that would otherwise decode").toBe(true);
+        expect(decodePrivilegedResultFrame(oversized)).toBeNull();
     });
 
     it("emits exactly one frame and no host paths", () => {

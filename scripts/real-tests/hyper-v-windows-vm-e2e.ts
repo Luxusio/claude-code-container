@@ -143,12 +143,22 @@ export async function hyperVWindowsFailureReason(input: {
             outcome = { attempted: true, errorCode: "elevation-request-failed" };
         }
         if (outcome.attempted === true && "result" in outcome) {
-            // The elevated child collected the logs; THIS side writes them, under a repository root
-            // only this side knows. publishHyperVWindowsSetupDiagnostics re-validates and re-redacts
-            // the payload through the same validatedLogs the producer used.
-            setupDiagnostics = outcome.result.ok === true
-                ? (input.publishSetupDiagnosticsImpl || publishHyperVWindowsSetupDiagnostics)(outcome.result.logs)
-                : { ok: false, code: outcome.result.code };
+            if (outcome.result.ok === true) {
+                // The elevated child collected the logs; THIS side writes them, under a repository
+                // root only this side knows. publishHyperVWindowsSetupDiagnostics re-validates and
+                // re-redacts the payload through the same validatedLogs the producer used.
+                setupDiagnostics = (input.publishSetupDiagnosticsImpl || publishHyperVWindowsSetupDiagnostics)(outcome.result.logs);
+            } else {
+                // Approved, ran elevated, and still failed. Replacing the code outright here — which
+                // is what this did first — rendered that byte-identically to a build that never
+                // asked, and it is the one state the plan says the next run exists to settle: the
+                // mount refused with the operator's full rights. So the original is kept and the
+                // elevated outcome named beside it, by code NAME only. The elevated failure can be
+                // another full privilege bracket, and pasting one bracket inside another would spend
+                // the reporter budget the earlier ACs guard on a field nobody parses.
+                const elevatedName = outcome.result.code.split("[")[0];
+                setupDiagnostics = { ok: false, code: `${setupDiagnostics.code}(elevation=approved,still=${elevatedName})` };
+            }
         } else {
             // The unelevated code is kept, not replaced. It is still what happened, and losing it
             // to report the elevation instead would tell the operator less than before. The reason

@@ -1159,8 +1159,23 @@ which never captures this diagnostic.
 What the operator sees when elevation does not land:
 
 - declined or failed → the unelevated code is **kept** and the reason appended,
-  `…mount-privilege-required[…](elevation=elevation-declined)`. Losing the
+  `…mount-privilege-required[…](elevation=elevation-cancelled)` — that is the real
+  code for a UAC decline (Win32 1223); an earlier draft of this section said
+  `elevation-declined`, which exists nowhere in the repository. Losing the
   original code to report the elevation instead would say less than before.
+- approved, ran elevated, and the mount refused anyway →
+  `(elevation=approved,still=<code name>)`. The original code is kept beside it,
+  because replacing it outright made this render byte-identically to a build that
+  never asked — and this is precisely the state the premise question below turns
+  on. Only the code *name* is carried: the elevated failure can be another full
+  privilege bracket, and nesting one inside the other spends the reporter budget
+  on a field nobody parses.
+- the prompt was left unanswered → the request expires after ten minutes
+  (`ELEVATION_TIMEOUT_MILLISECONDS`), the VM is cleaned up then, and the answer
+  arrives as an elevation error code. Answering *after* that expiry starts an
+  elevated run against a VM that has already been deleted; it lands on
+  `hyper-v-setup-diagnostics-vm-not-exact` and writes nothing outside its own
+  staging root.
 - already elevated → `(elevation=already-elevated)`. This is the state recorded
   below as a gap; requesting elevation closed it, because the run no longer tells
   someone to elevate when they already have.

@@ -68,6 +68,13 @@ export function buildLevel3Artifacts(repoRoot, options: any = {}) {
     // digest-verified program, so this has to be one file; it is built here rather than lazily at
     // failure time because a bundler running inside an already-failing diagnostic would turn a
     // missing privilege into a build error, and the operator would be reading the wrong problem.
+    //
+    // Windows hosts only. buildLevel3Artifacts is the shared entry — level3.ts calls it too — so
+    // building unconditionally meant every Linux Level 3 run bundled a Windows-only program that
+    // pulls in the whole src/host-control/hyper-v barrel, and a failure there would have failed
+    // runs that can never use it. The elevation request is gated on win32 anyway, so off Windows
+    // the bundle has no reader.
+    if ((options.platform || process.platform) !== "win32") return 0;
     const privileged = spawn(process.execPath, [
         esbuild,
         "scripts/real-tests/hyper-v-windows-setup-diagnostics-privileged.ts",
