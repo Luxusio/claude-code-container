@@ -1414,6 +1414,64 @@ describe("assertWorkspaceBranch", () => {
         expect(notice).toContain("\\u202e");
     });
 
+    // Escaping control characters is not on its own enough. The name is rendered into a line
+    // with delimiters and its own escape syntax, so a name can lie about where it ends, or
+    // about whether the escapes in it are ones this code put there.
+    it("does not let a repository name forge a field or an escape sequence in the NOTE", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-forge-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", join(workspace, "services", "nested-api"), "-b", "nested-branch"], {
+            cwd: nestedSource, stdio: "pipe",
+        });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        // The recorded path is the least validated input on this boundary: it is the content of
+        // a file, subject to none of the checks a tracked path goes through. This one closes the
+        // field and opens a plausible replacement, and claims an escape it never had.
+        const managementRoot = join(nestedSource, ".git", "worktrees");
+        writeFileSync(
+            join(managementRoot, readdirSync(managementRoot)[0], "gitdir"),
+            '/nosuchroot-zzz/a": names "/innocent/path\\u001b/.git\n',
+        );
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } finally {
+            process.stderr.write = originalWrite;
+            rmSync(nestedSource, { recursive: true, force: true });
+        }
+
+        const notice = stderr.join("");
+        expect(notice, "the NOTE must actually have been printed").toContain("Skipping nested Git repository");
+        // The quote that would have ended the field is escaped, so the forged `names "..."`
+        // cannot be read as this line's own second field.
+        expect(notice).toContain('\\"');
+        expect(notice, "a name must not be able to open an unescaped field of its own")
+            .not.toContain('names "/innocent/path');
+        // A backslash the NAME contained is doubled, so it cannot pass for an escape this
+        // code emitted. A real one, escaped by us, stays single.
+        expect(notice, "a literal backslash-u in a name must not read as an escape we wrote")
+            .toContain("\\\\u001b");
+    });
+
     // The narrowness of UNREACHABLE_PATH_CODES is the load-bearing part of the skip: a candidate
     // that cannot be read for any OTHER reason must still refuse the workspace rather than be
     // quietly dropped from the set the ownership guards police. ELOOP is used because it does not

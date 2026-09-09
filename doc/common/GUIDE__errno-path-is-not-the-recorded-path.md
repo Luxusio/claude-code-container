@@ -89,10 +89,25 @@ terminal raw.
 That matters more than usual here, because the NOTE exists to tell an operator
 *which directory ccc declined to manage*. A right-to-left override reverses the
 path they are about to act on; an ESC sequence can rewrite the line entirely.
-`terminalSafe` now escapes `\p{Cc}` and `\p{Cf}` to `\uXXXX` — escaped rather
-than stripped, since the operator still has to identify the directory. Note
-that `\p{Cc}` alone is not enough: the bidi overrides are `\p{Cf}`, and a
-mutation dropping `\p{Cf}` is caught by the regression test.
+`terminalSafe` quotes with `JSON.stringify` and then escapes what that leaves
+raw — escaped rather than stripped, since the operator still has to identify
+the directory. Three separate things had to be right, and escaping control
+characters was only the first:
+
+- `\p{Cc}` alone is not enough. The bidi overrides are `\p{Cf}`, and
+  `JSON.stringify` does not touch them, nor C1.
+- **The delimiter has to be escaped too.** Before `JSON.stringify` was added,
+  a name could close the field and open a plausible replacement — `api":
+  names "/innocent/path` reads as a second field of the message itself.
+- **So does the escape character.** Without escaping the backslash, a
+  directory literally *named* `svc\u001b[31m` rendered identically to a real
+  ESC that this code had escaped. The operator could not tell which had
+  happened — the escaping was honest and unreadable at the same time.
+
+Worth knowing which inputs actually reach it: a tracked path containing `"` is
+already refused upstream by `trackedGitlinkPaths`. The **recorded path is the
+one with no validation at all** — it is the content of a file — so that is
+where the forgery test drives, and where any similar test should.
 
 Still open, and deliberately out of the scope that fixed this: the thrown
 errors in the same file (`Nested Git repository escapes its parent

@@ -2431,11 +2431,11 @@ function warnUnreachableNestedRepository(candidatePath: string, error: unknown):
     // to stderr would see nothing, and the channel would stop being pinned.
     const where = terminalSafe(candidatePath);
     process.stderr.write(recorded
-        ? `[ccc] NOTE: Skipping nested Git repository '${where}': its Git metadata\n`
-        + `      names '${terminalSafe(recorded)}', which does not exist here. It is left as ordinary files.\n`
+        ? `[ccc] NOTE: Skipping nested Git repository ${where}: its Git metadata\n`
+        + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary files.\n`
         + "      A worktree registered inside the container records a container path, which\n"
         + "      the host cannot resolve, and the reverse.\n"
-        : `[ccc] NOTE: Skipping nested Git repository '${where}': its Git metadata\n`
+        : `[ccc] NOTE: Skipping nested Git repository ${where}: its Git metadata\n`
         + `      could not be inspected (${terminalSafe(errorChainReason(error))}). It is left as ordinary files.\n`);
 }
 
@@ -2444,8 +2444,14 @@ function warnUnreachableNestedRepository(candidatePath: string, error: unknown):
 // of a file. Printed raw, an ESC sequence in a submodule name rewrites the operator's
 // screen and U+202E reverses the path they are reading — the decision this NOTE exists to
 // inform. Git quotes such paths itself (core.quotePath); this line has to as well.
+// Quoted by JSON.stringify first, then the characters it leaves raw are escaped. Escaping
+// alone was not enough on either count: it did not escape the quote, so a submodule named
+// `api": names "C:/innocent` closed the field and forged a second one; and it did not escape
+// the backslash, so a directory literally named `svc\u001b[31m` rendered identically to a
+// real ESC that had been escaped. JSON.stringify escapes quote, backslash and C0, and leaves
+// C1 and the format characters — the bidi overrides among them — which is what remains here.
 function terminalSafe(value: string): string {
-    return value.replace(
+    return JSON.stringify(value).replace(
         /[\p{Cc}\p{Cf}]/gu,
         (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
     );

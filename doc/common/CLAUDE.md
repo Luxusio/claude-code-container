@@ -8,3 +8,4 @@ updated: 2026-04-17
 - [INF: Initial Assumptions](INF__arch__initial-assumptions.md) — inferred architecture assumptions (Podman runtime abstraction)
 - [REQ: claude update inside a container](REQ__claude-update-inside-container.md) — the launcher must stay in the shape the native updater manages, and what the shared volume forces
 - [PLAN: Remote Terminal IDE Architecture](PLAN__remote-terminal-ide-architecture.md) — proposed long-term local/remote sync, Git authority, daemon, persistent workspace, and container/VM design
+- [GUIDE: an errno's path is not the recorded path](GUIDE__errno-path-is-not-the-recorded-path.md) — only realpathSync truncates; carry a recorded path from the site that read it; what an operator message must escape, and what a skip stops protecting
