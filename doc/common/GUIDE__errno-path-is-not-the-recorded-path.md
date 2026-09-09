@@ -200,6 +200,32 @@ repairable, the abort is in the wrong place. Note the state here is also
 perfectly ordinary — clone without `--recursive`, or interrupt a `submodule
 update` — so this was never only about a bug upstream of it.
 
+**One relaxed call is almost never enough, and a unit test will not tell you.**
+The abort lived in three places on the way to the operator: the scan that
+`detectWorktreeWorkspaceBranch` uses, the tracked-gitlink walk in
+`trackedWorktreeGitFiles`, and the metadata check in `getWorktreeGitMounts`.
+Relaxing only the first made things *worse* — detection now succeeded, printed
+a NOTE promising the workspace would open, and then died in a later function
+with a message naming neither the submodule nor a remedy. A test that stopped
+at `detectWorktreeWorkspaceBranch` passed the whole time. Drive the test
+through the call the caller actually makes next, not the one you changed.
+
+**And check the remedy you print by running it.** The first version of this
+NOTE told the operator to run `git submodule update --init`. Measured, that
+clones a plain submodule where a linked worktree belongs and leaves a workspace
+ccc cannot open at all — the advice was worse than the problem. The remedy that
+works is running `ccc` again, which repairs the worktree itself.
+
+Where the line was NOT moved, and why the obvious rationale is wrong:
+`branchRepositories` and `assertWorkspaceOwnership` also scan the *source*, and
+those scans still abort. The tempting explanation — "they are what stops a half
+checkout being created" — is false: `branchRepositories` has two callers and
+neither is on a creation path. Create-time protection comes from
+`repairWorkspace`'s own source scan. So the source-side scans abort for no
+articulated reason, and a source-side deinit reproduces the same trap this
+corollary is about. That is recorded here rather than fixed, because relaxing
+creation-time protection deserves its own measurement.
+
 And the same pairing applies as in the third corollary: whatever is skipped is
 registered with the removal guard, because unmanaged must not mean deletable.
 The path may hold the operator's files.

@@ -1586,6 +1586,14 @@ describe("assertWorkspaceBranch", () => {
 
             expect(branch, "an uninitialized submodule must not make the workspace unopenable")
                 .toBe("feature-login");
+
+            // Through the call the CLI actually makes next. Stopping at
+            // detectWorktreeWorkspaceBranch hid the fact that `ccc` then died in
+            // getWorktreeGitMounts with a message naming neither the submodule nor a remedy —
+            // strictly worse than the abort this change removed, because at least that one said
+            // what was wrong. `required` is true exactly when detection succeeded.
+            expect(() => getWorktreeGitMounts(workspace, true, repoPath))
+                .not.toThrow();
             const notice = stderr.join("");
             expect(notice, "and the operator has to be told what was left out")
                 .toContain("Tracked submodule");

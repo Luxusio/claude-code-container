@@ -1243,7 +1243,7 @@ function primarySourceRepositoryForWorktree(
 function branchRepositories(
     workspacePath: string,
     expectedTopology?: "root" | "children",
-    options: { allowTrackedGitlinks?: boolean; unreachable?: string[] } = {},
+    options: { allowTrackedGitlinks?: boolean } = {},
 ): Array<{ name: string; path: string }> {
     const rootGit = join(workspacePath, ".git");
     const hasRootGit = pathExistsStrict(rootGit);
@@ -1280,7 +1280,6 @@ function branchRepositories(
                 strict: true,
                 allowRegisteredWorktrees: true,
                 openingExistingWorkspace: true,
-                unreachable: options.unreachable,
             },
         );
         for (const entry of nestedRepositories) {
@@ -1339,7 +1338,7 @@ export function hasGitMetadata(repositoryPath: string): boolean {
 function assertWorkspaceOwnership(
     workspacePath: string,
     sourcePath: string,
-    options: { allowTrackedGitlinks?: boolean; unreachable?: string[] } = {},
+    options: { allowTrackedGitlinks?: boolean } = {},
 ): void {
     const resolvedSource = resolve(sourcePath);
     if (hasGitMetadata(resolvedSource)) {
@@ -1380,7 +1379,6 @@ function assertWorkspaceOwnership(
                 strict: true,
                 allowRegisteredWorktrees: true,
                 openingExistingWorkspace: true,
-                unreachable: options.unreachable,
             },
         );
         for (const destination of destinationRepositories) {
@@ -2458,24 +2456,41 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
+function directoryHoldsContent(path: string): boolean {
+    try {
+        return readdirSync(path).length > 0;
+    } catch {
+        return false;
+    }
+}
+
 function warnUnmanagedNestedRepository(candidatePath: string): void {
-    if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
-    warnedUnreachableNestedRepositories.add(candidatePath);
+    // Keyed by kind as well as path. Sharing the key with the unreachable-metadata NOTE meant
+    // whichever fired first silenced the other for that path forever, and the one that gets
+    // dropped is the more useful of the two: the container-boundary explanation.
+    if (warnedUnreachableNestedRepositories.has(`unmanaged:${candidatePath}`)) return;
+    warnedUnreachableNestedRepositories.add(`unmanaged:${candidatePath}`);
     // Same stream, same escaping and same dedup as the unreachable-metadata NOTE: the path
     // comes from the index and is chosen by whoever authored the repository.
+    // The remedy is `ccc` itself, and specifically NOT `git submodule update --init`. That was
+    // this NOTE's first advice and it was measured to make things worse: in a ccc workspace it
+    // clones a plain submodule where a linked worktree belongs, after which ccc cannot open the
+    // workspace at all ("Workspace tracked submodule is not a linked worktree") and there is no
+    // way back. Running ccc against the workspace repairs it, which is what it was already
+    // trying to do.
     process.stderr.write(
         `[ccc] NOTE: Tracked submodule ${terminalSafe(candidatePath)} is not initialized.\n`
-        + "      Opening the workspace without it. It is left unmanaged, and ccc will refuse to\n"
-        + "      delete the workspace while it stays that way. Run `git submodule update --init`\n"
-        + "      against it to have ccc manage it again.\n",
+        + "      Continuing without it. It is left unmanaged, and ccc will not delete it.\n"
+        + "      Run ccc against this workspace again to set it up as a linked worktree; if the\n"
+        + "      directory already holds files, ccc will ask before touching them.\n",
     );
 }
 
 function warnUnreachableNestedRepository(candidatePath: string, recorded: string): void {
     // The scan runs more than once per invocation, and repeating the same line
     // teaches an operator to skim past it.
-    if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
-    warnedUnreachableNestedRepositories.add(candidatePath);
+    if (warnedUnreachableNestedRepositories.has(`unreachable:${candidatePath}`)) return;
+    warnedUnreachableNestedRepositories.add(`unreachable:${candidatePath}`);
     // The container-boundary sentence is a diagnosis, and it is now the only case that
     // reaches here: the caller skips only when it has a recorded path that is not there.
     // There used to be a second branch for skips with no recorded path, which was how a
@@ -2623,9 +2638,14 @@ function scanUnifiedNestedRepositories(
                     // submodule update — and being an accurate diagnosis does not make it a good
                     // place to abort.
                     warnUnmanagedNestedRepository(candidatePath);
-                    // Unmanaged must not mean deletable. Same list the removal guard refuses on,
-                    // for the same reason: the directory may hold the operator's files.
-                    options.unreachable?.push(candidatePath);
+                    // Unmanaged must not mean deletable — but only when there is something to
+                    // protect. `removeWorkspace` runs its own scan and collects this; the open
+                    // path passes no array. Registering an absent or empty directory made `ccc
+                    // rm` refuse with a remedy that is a no-op ("delete it yourself" — it is
+                    // already gone, and the index entry brings the refusal straight back).
+                    if (directoryHoldsContent(candidatePath)) {
+                        options.unreachable?.push(candidatePath);
+                    }
                 }
                 continue;
             }
@@ -5337,7 +5357,15 @@ function trackedWorktreeGitFiles(
                 if (metadata.isFile()) gitFiles.push(gitMetadata);
                 collect(candidatePath);
             } catch (error) {
-                if (!strict && ["ENOENT", "ENOTDIR"].includes(
+                // An absent gitlink is an uninitialized submodule, and this function only ever
+                // runs against a workspace that already exists — it computes that workspace's
+                // mounts. Relaxing the scan without relaxing this left the operator worse off
+                // than before: detection now succeeded and printed a NOTE saying the workspace
+                // was being opened without the repository, and then this threw `Unable to
+                // inspect tracked Git link worktree`, which names neither the submodule nor a
+                // remedy. The judgements above ("escapes its repository", "metadata is
+                // invalid") carry no errno and keep throwing.
+                if (["ENOENT", "ENOTDIR"].includes(
                     (error as NodeJS.ErrnoException).code ?? "",
                 )) continue;
                 if (!strict) continue;
@@ -5446,7 +5474,14 @@ function workspaceWorktreeGitFiles(
     const nestedRepositories = unifiedWorkspace
         ? scanUnifiedNestedRepositories(
             resolved,
-            { strict: required, allowRegisteredWorktrees: true },
+            {
+                strict: required,
+                allowRegisteredWorktrees: true,
+                // Mounts are computed for a workspace that already exists, so this is the open
+                // side of the create/open split like the two scans in branchRepositories and
+                // assertWorkspaceOwnership.
+                openingExistingWorkspace: true,
+            },
         )
         : scanDirectory(resolved, { strict: required });
     for (const entry of nestedRepositories) {
@@ -5475,7 +5510,12 @@ function workspaceWorktreeGitFiles(
             try {
                 metadata = lstatSync(nestedGit);
             } catch (error) {
-                if (!required && ["ENOENT", "ENOTDIR"].includes(
+                // Same relaxation as the tracked-gitlink walk above, and for the same reason:
+                // the metadata is missing because the submodule is not initialized, which is an
+                // ordinary state and one this workspace can be opened without. This is the third
+                // place the abort lived; chasing them one at a time is why the first attempt at
+                // this change reached the operator as a different, worse error.
+                if (["ENOENT", "ENOTDIR"].includes(
                     (error as NodeJS.ErrnoException).code ?? "",
                 )) continue;
                 throw new Error(
