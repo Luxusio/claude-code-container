@@ -2361,6 +2361,7 @@ function nestedRepositoryCandidateIsSafe(
     candidatePath: string,
     strict: boolean,
     allowRegisteredWorktrees: boolean,
+    unreachable?: string[],
 ): boolean {
     try {
         const candidate = lstatSync(candidatePath);
@@ -2399,6 +2400,7 @@ function nestedRepositoryCandidateIsSafe(
             // contains, and the run that used to fail loudly would otherwise
             // succeed while saying nothing about what it dropped.
             warnUnreachableNestedRepository(candidatePath, error);
+            unreachable?.push(candidatePath);
             return false;
         }
         if (!strict) return false;
@@ -2492,6 +2494,10 @@ function scanUnifiedNestedRepositories(
     options: {
         strict?: boolean;
         allowRegisteredWorktrees?: boolean;
+        // Candidates dropped because their Git metadata could not be inspected. A caller that
+        // is about to DELETE what the scan returns needs these: they are repositories, they
+        // are simply not ones ccc can manage, and without this they look like ordinary files.
+        unreachable?: string[];
     } = {},
 ): WorkspaceEntry[] {
     const root = resolve(repositoryPath);
@@ -2567,6 +2573,7 @@ function scanUnifiedNestedRepositories(
                 candidate.path,
                 options.strict === true,
                 options.allowRegisteredWorktrees === true,
+                options.unreachable,
             )) continue;
             const name = relativePrefix
                 ? `${relativePrefix}/${candidate.name}`
@@ -6366,6 +6373,27 @@ export function removeWorkspace(
         resolved,
         { allowTrackedGitlinks: true },
     );
+    // A nested repository ccc declines to manage must not therefore be deletable. The scan
+    // drops such a candidate, so the removal path no longer excludes it from the root status
+    // check and its contents read as ordinary files — which `--force` then sweeps, reporting
+    // success while destroying another repository's uncommitted work. Before this change the
+    // scan aborted the whole command, so the situation could not arise. Refused under
+    // `--force` as well: `--force` means "delete my modified and untracked files", not
+    // "delete a repository you could not even inspect".
+    const unreachable: string[] = [];
+    scanUnifiedNestedRepositories(wsPath, {
+        allowRegisteredWorktrees: true,
+        unreachable,
+    });
+    if (unreachable.length > 0) {
+        return {
+            removed: [],
+            errors: unreachable.map((path) => (
+                `workspace holds a nested Git repository ccc could not inspect and will not delete: ${terminalSafe(path)}`
+            )),
+        };
+    }
+
     const workspaceIdentity = captureDirectoryIdentity(wsPath);
 
     // Unified mode: top-level is a git repo → remove single worktree

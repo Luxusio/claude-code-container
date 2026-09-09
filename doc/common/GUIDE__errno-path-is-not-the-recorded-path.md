@@ -6,17 +6,24 @@ operator, or asserts on one in a test.
 
 ## The trap
 
-`fs.realpathSync` (and `lstatSync` on a multi-component path) walks the path
-component by component and reports **the first component that is missing** as
+`fs.realpathSync` walks the path component by component in its JS
+implementation, and reports **the first component that is missing** as
 `error.path`. It is not the path passed in.
 
-    /project/definitely-missing-abc/services/x/.git  =>  ENOENT  path "/project/definitely-missing-abc"
-    /nosuchroot-zzz/services/x/.git                  =>  ENOENT  path "/nosuchroot-zzz"
+This is specific to `realpathSync`. Measured on Node v22.23.1, all four given
+the same missing four-component path:
 
-Both calls asked about a `.git` file four components deep. Neither error names
-it. Which value comes back depends on **which ancestors happen to exist on the
-machine running the call** — so the same input produces different output on a
-developer's container, on a Windows host, and on a CI runner.
+    realpathSync   ENOENT  path "/nosuchroot-zzz"
+    lstatSync      ENOENT  path "/nosuchroot-zzz/services/x/.git"
+    statSync       ENOENT  path "/nosuchroot-zzz/services/x/.git"
+    readFileSync   ENOENT  path "/nosuchroot-zzz/services/x/.git"
+
+So `lstat`, `stat` and `readFile` report the path you asked about and their
+`error.path` is exact. Only `realpathSync` truncates, and what it truncates to
+depends on **which ancestors happen to exist on the machine running the call**
+— so the same input yields different output on a developer's container, on a
+Windows host, and on a CI runner. Do not generalise the warning to every
+syscall: distrusting an exact value is its own kind of wrong.
 
 ## How it bit us
 
@@ -29,8 +36,11 @@ developer's container, on a Windows host, and on a CI runner.
    `/project/<workspace>-<hash>/services/<repo>/.git`. On a host without
    `C:\project` the NOTE collapses to `C:\project` — dropping the
    workspace-and-hash, which is the only part that tells the operator *which*
-   worktree to repair. It printed the full path on the reporting operator's
-   machine purely because `C:\project` happened to exist there.
+   worktree to repair. The operator's own output is the demonstration: their
+   NOTE named `C:\project\catchy-secrets--kjkim9-a78536cd7627` and stopped
+   there — the walk gave up at the workspace component, two of five, dropping
+   `\services\catchy-api\.git`. So `C:\project` did exist on that machine, and
+   the recorded path still was not what got printed.
 
 2. **The regression test passed only inside a ccc container.** It asserted
    `toContain("/project/unreachable-workspace-abc123")`, which holds because
@@ -88,6 +98,24 @@ Still open, and deliberately out of the scope that fixed this: the thrown
 errors in the same file (`Nested Git repository escapes its parent
 repository: ${candidatePath}` and its neighbours) interpolate the same
 untrusted paths and are printed by the CLI. They predate this change.
+
+## Third corollary — a repository you decline to manage is not one you may delete
+
+Degrading an abort into a skip moves the candidate out of every set the abort
+used to protect. `removeWorkspace` builds its `:(exclude,literal)` pathspecs
+from the scan, so a skipped nested repository stopped being excluded and its
+contents read as ordinary root content — which `ccc rm --force` then swept,
+reporting success while destroying another repository's uncommitted work.
+Measured A/B on the same fixture: before the skip, forced removal threw and the
+work survived; after it, `{"removed":[...],"errors":[]}` and the work was gone.
+
+`removeWorkspace` now collects skipped candidates from the scan and refuses,
+naming them, **including under `--force`** — `--force` means "delete my
+modified and untracked files", not "delete a repository you could not inspect".
+
+The general lesson: when you turn a failure into a skip, enumerate what the
+failure was protecting. The refusals themselves stayed intact here; the set
+they policed silently shrank.
 
 ## Testing note
 

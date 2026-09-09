@@ -1266,6 +1266,8 @@ describe("assertWorkspaceBranch", () => {
         }
         // Skipped, not silent: the run now succeeds while managing less than the workspace holds,
         // and the operator has to be able to tell that from a run with nothing nested in it.
+        rmSync(nestedSource, { recursive: true, force: true });
+
         const notice = stderr.join("");
         expect(notice).toContain("Skipping nested Git repository");
         expect(notice.split("Skipping nested Git repository").length - 1, "once, not once per scan").toBe(1);
@@ -1274,6 +1276,85 @@ describe("assertWorkspaceBranch", () => {
         // on a machine where `/project` exists — this container, not the ubuntu-latest CI runner.
         expect(notice, "and it must name the path that could not be resolved")
             .toContain("/project/unreachable-workspace-abc123/services/nested-api/.git");
+    });
+
+    // A nested repository ccc declines to manage must not become one it will delete. Before the
+    // skip existed the scan aborted the command outright, so `--force` could never reach this
+    // content; the skip removed that accident and this is the guard that replaces it.
+    it("refuses to delete a workspace holding a repository it could not inspect, even with --force", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-remove-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        const nestedPath = join(workspace, "services", "nested-api");
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", nestedPath, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+        const uncommitted = join(nestedPath, "UNCOMMITTED-WORK.txt");
+        writeFileSync(uncommitted, "work that has never left this machine");
+
+        const managementRoot = join(nestedSource, ".git", "worktrees");
+        writeFileSync(
+            join(managementRoot, readdirSync(managementRoot)[0], "gitdir"),
+            "/nosuchroot-zzz/ws/services/nested-api/.git\n",
+        );
+
+        const originalWrite = process.stderr.write;
+        process.stderr.write = (() => true) as typeof process.stderr.write;
+        let result;
+        try {
+            result = removeWorkspace(repoPath, "feature-login", { force: true });
+        } finally {
+            process.stderr.write = originalWrite;
+            rmSync(nestedSource, { recursive: true, force: true });
+        }
+
+        expect(result.removed, "nothing may be removed while a repository is uninspectable").toEqual([]);
+        expect(result.errors.join(" ")).toContain("could not inspect and will not delete");
+        expect(result.errors.join(" ")).toContain("services/nested-api");
+        expect(existsSync(uncommitted), "another repository's uncommitted work must survive").toBe(true);
+    });
+
+    // The third deliberate refusal. The other two are pinned by the tests around this one; this
+    // one had no test anywhere in the repository, so a mutation softening it shipped green.
+    it("still refuses a nested repository that escapes its parent through a symlinked component", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const outside = join(tmpdir(), `wt-outside-${randomUUID()}`);
+        mkdirSync(join(outside, "nested-api"), { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: join(outside, "nested-api"), stdio: "pipe" });
+
+        symlinkSync(outside, join(workspace, "services"));
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        try {
+            expect(() => detectWorktreeWorkspaceBranch(workspace))
+                .toThrow(/escapes its parent repository/);
+        } finally {
+            rmSync(outside, { recursive: true, force: true });
+        }
     });
 
     // Everything in that NOTE is repository-controlled. `git ls-files -z` is unquoted by design,
