@@ -2456,11 +2456,30 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
-function directoryHoldsContent(path: string): boolean {
+// Whether there is anything at this path that removal must not take. Absent means no; anything
+// else, including a directory that cannot be read, means yes.
+//
+// The first version caught every error and returned false. That is the errno-swallows-a-judgement
+// mistake for the third time in this file, and in the one function whose entire job is deciding
+// whether there is something worth protecting: a directory readable only by another user (mode
+// 0111 passes the existence check and fails readdir) reported "nothing here". Not knowing is the
+// strongest reason to refuse, not a reason to proceed.
+// Readable and empty. An unreadable directory is not empty for this purpose — see
+// pathMustNotBeDeleted for why not knowing is treated as content.
+function directoryIsEmpty(path: string): boolean {
     try {
-        return readdirSync(path).length > 0;
+        return readdirSync(path).length === 0;
     } catch {
         return false;
+    }
+}
+
+function pathMustNotBeDeleted(path: string): boolean {
+    try {
+        readdirSync(path);
+        return true;
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ENOENT";
     }
 }
 
@@ -2480,9 +2499,11 @@ function warnUnmanagedNestedRepository(candidatePath: string): void {
     // trying to do.
     process.stderr.write(
         `[ccc] NOTE: Tracked submodule ${terminalSafe(candidatePath)} is not initialized.\n`
-        + "      Continuing without it. It is left unmanaged, and ccc will not delete it.\n"
-        + "      Run ccc against this workspace again to set it up as a linked worktree; if the\n"
-        + "      directory already holds files, ccc will ask before touching them.\n",
+        + "      Continuing without it; ccc is not managing it and will not delete it.\n"
+        + "      To have ccc set it up as a linked worktree, run `ccc @<branch>` from the source\n"
+        + "      repository — that is the only invocation that repairs; plain `ccc` inside the\n"
+        + "      workspace will keep printing this. If the directory already holds files, ccc\n"
+        + "      asks before touching them.\n",
     );
 }
 
@@ -2638,12 +2659,13 @@ function scanUnifiedNestedRepositories(
                     // submodule update — and being an accurate diagnosis does not make it a good
                     // place to abort.
                     warnUnmanagedNestedRepository(candidatePath);
-                    // Unmanaged must not mean deletable — but only when there is something to
-                    // protect. `removeWorkspace` runs its own scan and collects this; the open
-                    // path passes no array. Registering an absent or empty directory made `ccc
-                    // rm` refuse with a remedy that is a no-op ("delete it yourself" — it is
-                    // already gone, and the index entry brings the refusal straight back).
-                    if (directoryHoldsContent(candidatePath)) {
+                    // Unmanaged must not mean deletable — but an absent path has nothing to
+                    // protect, and registering it made `ccc rm` refuse with a remedy that is a
+                    // no-op: "delete it yourself" when it is already gone, and the index entry
+                    // brings the refusal straight back. An EMPTY directory is different: it is
+                    // there, `rmdir` clears it, and removal then succeeds — so it is registered,
+                    // and the message below tells the operator which of the two they have.
+                    if (pathMustNotBeDeleted(candidatePath)) {
                         options.unreachable?.push(candidatePath);
                     }
                 }
@@ -6510,7 +6532,11 @@ export function removeWorkspace(
             forceWouldNotHelp: true,
             errors: unreachable.map((path) => (
                 `workspace holds a nested Git repository ccc could not inspect and will not delete: ${terminalSafe(path)}`
-                + " — move it out of the workspace, or delete it yourself, then run this again"
+                // The remedy has to match what is actually there. Telling someone to move files
+                // out of an empty directory sends them looking for files that do not exist.
+                + (directoryIsEmpty(path)
+                    ? " — the directory is empty; remove it and run this again"
+                    : " — move it out of the workspace, or delete it yourself, then run this again")
             )),
         };
     }

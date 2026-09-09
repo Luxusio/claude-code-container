@@ -201,9 +201,10 @@ perfectly ordinary — clone without `--recursive`, or interrupt a `submodule
 update` — so this was never only about a bug upstream of it.
 
 **One relaxed call is almost never enough, and a unit test will not tell you.**
-The abort lived in three places on the way to the operator: the scan that
+The abort lived in four places on the way to the operator: the scan that
 `detectWorktreeWorkspaceBranch` uses, the tracked-gitlink walk in
-`trackedWorktreeGitFiles`, and the metadata check in `getWorktreeGitMounts`.
+`trackedWorktreeGitFiles`, and — both inside `workspaceWorktreeGitFiles` — its
+own scan and its metadata check.
 Relaxing only the first made things *worse* — detection now succeeded, printed
 a NOTE promising the workspace would open, and then died in a later function
 with a message naming neither the submodule nor a remedy. A test that stopped
@@ -216,19 +217,32 @@ clones a plain submodule where a linked worktree belongs and leaves a workspace
 ccc cannot open at all — the advice was worse than the problem. The remedy that
 works is running `ccc` again, which repairs the worktree itself.
 
-Where the line was NOT moved, and why the obvious rationale is wrong:
-`branchRepositories` and `assertWorkspaceOwnership` also scan the *source*, and
-those scans still abort. The tempting explanation — "they are what stops a half
-checkout being created" — is false: `branchRepositories` has two callers and
-neither is on a creation path. Create-time protection comes from
-`repairWorkspace`'s own source scan. So the source-side scans abort for no
-articulated reason, and a source-side deinit reproduces the same trap this
-corollary is about. That is recorded here rather than fixed, because relaxing
-creation-time protection deserves its own measurement.
+Where the line was NOT moved: `branchRepositories` and `assertWorkspaceOwnership`
+also scan the *source*, and those scans still abort. They are create-time
+protection — `assertWorkspaceBranch` runs at `src/index.ts:1172`, which sits
+after the create/open branch in `prepareWorktreeUnlocked` and therefore executes
+on both arms, so `branchRepositories` is reached on the creation path.
 
-And the same pairing applies as in the third corollary: whatever is skipped is
+An earlier version of this paragraph asserted the opposite, on the strength of
+listing `branchRepositories`' two callers and stopping there. Listing callers is
+not tracing control flow: the call that mattered was several frames up and
+unconditional after an `if`/`else`. The claim was written into this file as
+verified. **A "who calls this" grep answers a different question than "can this
+run during X", and only the second one licenses moving a guard.**
+
+The residue: a source-side deinit still reproduces this trap, and blocks opening
+as well as creating. That is recorded rather than fixed, because relaxing
+creation-time protection is a separate decision needing its own measurement.
+
+And the same pairing applies as in the third corollary: what is skipped is
 registered with the removal guard, because unmanaged must not mean deletable.
-The path may hold the operator's files.
+Registration is conditional on there being something to protect — an absent path
+is not registered, since refusing to delete what is already gone hands the
+operator a remedy that cannot be performed. "Something to protect" includes a
+directory that cannot be READ: the first version of that check caught every
+error and returned "nothing here", which is the errno-swallows-a-judgement
+mistake yet again, in the one function whose job is to decide whether there is
+anything worth protecting. Not knowing is the strongest reason to refuse.
 
 ## The pattern behind three of these
 

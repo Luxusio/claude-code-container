@@ -1606,6 +1606,135 @@ describe("assertWorkspaceBranch", () => {
             expect(removal.removed).toEqual([]);
             expect(removal.forceWouldNotHelp).toBe(true);
             expect(existsSync(stranded), "content at the unmanaged path must survive").toBe(true);
+            expect(removal.errors.join(" "), "the remedy has to match what is actually there")
+                .toContain("move it out of the workspace");
+
+            // Empty: nothing to protect but the directory is there, and `rmdir` clears it. It is
+            // still refused — deleting the workspace around it is not ccc's call — but the
+            // message has to say `rmdir`, not "move your files out" of a directory with none.
+            rmSync(stranded);
+            const emptyRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
+            expect(emptyRemoval.removed).toEqual([]);
+            expect(emptyRemoval.forceWouldNotHelp).toBe(true);
+            expect(emptyRemoval.errors.join(" ")).toContain("the directory is empty");
+
+            // Unreadable: not knowing what is in there is the strongest reason to refuse, not a
+            // reason to proceed. The first version of the check caught every error and answered
+            // "nothing here", so a directory readable only by another user reported empty.
+            writeFileSync(stranded, "back again");
+            chmodSync(uninitialized, 0o111);
+            try {
+                const unreadable = removeWorkspace(repoPath, "feature-login", { force: true });
+                expect(unreadable.removed, "an unreadable directory is not an empty one").toEqual([]);
+                expect(unreadable.forceWouldNotHelp).toBe(true);
+            } finally {
+                chmodSync(uninitialized, 0o755);
+            }
+
+            // Absent: nothing there at all. Refusing would hand the operator a remedy they
+            // cannot perform, so removal proceeds.
+            rmSync(uninitialized, { recursive: true, force: true });
+            const absentRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
+            expect(absentRemoval.errors, "an absent path is not something to protect").toEqual([]);
+            expect(absentRemoval.removed.length).toBeGreaterThan(0);
+        } finally {
+            if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previous;
+            rmSync(origin, { recursive: true, force: true });
+        }
+    });
+
+    // Two different NOTEs can apply to the same path in one process. Sharing a dedup key by path
+    // alone meant whichever fired first silenced the other forever, and the one that loses is the
+    // more useful: the container-boundary explanation is the most actionable line ccc prints.
+    it("does not let one NOTE about a path suppress a different NOTE about the same path", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-twonote-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        const nested = join(workspace, "services", "nested-api");
+        spawnSync("git", ["worktree", "add", nested, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        const capture = (): string => {
+            const out: string[] = [];
+            const original = process.stderr.write;
+            process.stderr.write = ((chunk: any) => { out.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            try { detectWorktreeWorkspaceBranch(workspace); } catch { /* the second state may abort */ }
+            finally { process.stderr.write = original; }
+            return out.join("");
+        };
+
+        // First state: the gitlink is gone, so the path is an uninitialized submodule.
+        const gitFile = join(nested, ".git");
+        const savedGitFile = readFileSync(gitFile, "utf-8");
+        rmSync(gitFile);
+        expect(capture(), "the uninitialized NOTE must fire first").toContain("is not initialized");
+
+        // Second state, same path: the gitlink is back and names a path this machine cannot
+        // resolve. A different diagnosis, and it must not be swallowed by the first one's key.
+        writeFileSync(gitFile, savedGitFile);
+        const managementRoot = join(nestedSource, ".git", "worktrees");
+        writeFileSync(
+            join(managementRoot, readdirSync(managementRoot)[0], "gitdir"),
+            "/nosuchroot-zzz/ws/services/nested-api/.git\n",
+        );
+        const second = capture();
+        rmSync(nestedSource, { recursive: true, force: true });
+
+        expect(second, "the second, more actionable diagnosis must still be printed")
+            .toContain("its Git metadata");
+        expect(second).toContain("/nosuchroot-zzz/ws/services/nested-api/.git");
+    });
+
+    // The source side is create-time protection and stays strict. Nothing pinned it: a mutation
+    // relaxing it the same way passed the whole suite, while the guide told a future editor that
+    // scan protected nothing. Both were wrong, and neither would have objected.
+    it("still aborts when the SOURCE side of a tracked submodule is not initialized", () => {
+        const origin = join(tmpdir(), `wt-srcdeinit-origin-${randomUUID()}`);
+        mkdirSync(origin, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: origin, stdio: "pipe" });
+
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: repoPath, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add api submodule"], { cwd: repoPath, stdio: "pipe" });
+
+        const previous = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+        try {
+            const workspace = getWorkspacePath(repoPath, "feature-login");
+            spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+            spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+            const deinit = spawnSync("git", ["submodule", "deinit", "--force", "--", "services/api"], {
+                cwd: repoPath, encoding: "utf-8", stdio: "pipe",
+            });
+            expect(deinit.status, deinit.stderr).toBe(0);
+            expect(existsSync(join(repoPath, "services", "api", ".git"))).toBe(false);
+
+            expect(() => assertWorkspaceBranch(workspace, "feature-login", spawnSync, repoPath))
+                .toThrow("Tracked submodule repository is not initialized");
         } finally {
             if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
             else process.env.GIT_ALLOW_PROTOCOL = previous;
