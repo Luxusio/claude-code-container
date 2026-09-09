@@ -2456,36 +2456,43 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
-// Whether there is anything at this path that removal must not take. Absent means no; anything
-// else, including a directory that cannot be read, means yes.
+type PathContent = "absent" | "empty" | "unreadable" | "content";
+
+// One observation, from which both the decision to refuse and the sentence explaining it are
+// derived. It was two functions reading the same path twice, which meant the refusal could be
+// decided from one read and described from another — and left room for the two to disagree.
 //
-// The first version caught every error and returned false. That is the errno-swallows-a-judgement
-// mistake for the third time in this file, and in the one function whose entire job is deciding
-// whether there is something worth protecting: a directory readable only by another user (mode
-// 0111 passes the existence check and fails readdir) reported "nothing here". Not knowing is the
-// strongest reason to refuse, not a reason to proceed.
-// What the operator should actually do, decided from the same read that decided to refuse.
-// Measured across the shapes that reach here: an empty directory, one holding files, one that
-// cannot be read, and a path that is a file rather than a directory.
-function directoryRemedy(path: string): string {
+// `unreadable` is deliberately NOT folded into `absent`. The first version of this check caught
+// every error and answered "nothing here", which is the errno-swallows-a-judgement mistake for
+// the third time in this file, in the one place whose entire job is deciding whether there is
+// something worth protecting: a directory readable only by another user — mode 0111 passes the
+// existence check and fails the read — reported empty. Not knowing is the strongest reason to
+// refuse, not a reason to proceed.
+function pathContent(path: string): PathContent {
     try {
-        return readdirSync(path).length === 0
-            ? " — the directory is empty; remove it and run this again"
-            : " — move it out of the workspace, or delete it yourself, then run this again";
+        return readdirSync(path).length === 0 ? "empty" : "content";
     } catch (error) {
-        return (error as NodeJS.ErrnoException).code === "ENOTDIR"
-            ? " — that path is a file, not a repository; move or delete it, then run this again"
-            : ` — ccc could not read it (${(error as NodeJS.ErrnoException).code ?? "unknown"});`
-            + " make it readable or remove it yourself, then run this again";
+        return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
     }
 }
 
-function pathMustNotBeDeleted(path: string): boolean {
-    try {
-        readdirSync(path);
-        return true;
-    } catch (error) {
-        return (error as NodeJS.ErrnoException).code !== "ENOENT";
+// The whole sentence per state, because the fixed prefix was false on two of them: on an empty
+// directory there is no repository and ccc DID inspect it — a successful read returning nothing
+// is how that state is recognised — and on an unreadable one "could not inspect" is the one
+// accurate description and was the only state not being told so. That is this file's own first
+// rule, print a diagnosis only where its evidence exists, broken by a branch added to serve it.
+function unmanagedPathRefusal(path: string, content: PathContent): string {
+    const where = terminalSafe(path);
+    switch (content) {
+        case "empty":
+            return `workspace holds an empty directory where a tracked submodule belongs, and ccc will not delete it: ${where}`
+                + " — remove the directory and run this again";
+        case "unreadable":
+            return `workspace holds a nested Git repository ccc could not inspect and will not delete: ${where}`
+                + " — ccc could not read it; make it readable or remove it yourself, then run this again";
+        default:
+            return `workspace holds a nested Git repository ccc could not inspect and will not delete: ${where}`
+                + " — move it out of the workspace, or delete it yourself, then run this again";
     }
 }
 
@@ -2671,7 +2678,7 @@ function scanUnifiedNestedRepositories(
                     // brings the refusal straight back. An EMPTY directory is different: it is
                     // there, `rmdir` clears it, and removal then succeeds — so it is registered,
                     // and the message below tells the operator which of the two they have.
-                    if (pathMustNotBeDeleted(candidatePath)) {
+                    if (pathContent(candidatePath) !== "absent") {
                         options.unreachable?.push(candidatePath);
                     }
                 }
@@ -6536,14 +6543,11 @@ export function removeWorkspace(
         return {
             removed: [],
             forceWouldNotHelp: true,
-            errors: unreachable.map((path) => (
-                `workspace holds a nested Git repository ccc could not inspect and will not delete: ${terminalSafe(path)}`
-                // The remedy has to match what is actually there. Telling someone to move files
-                // out of an empty directory sends them looking for files that do not exist, and
-                // telling them to move files out of a directory they cannot read is worse still
-                // — the reason ccc refuses is that it could not look, and that is what to say.
-                + directoryRemedy(path)
-            )),
+            // Both the refusal and its remedy from one observation of the path: telling someone
+            // to move files out of an empty directory sends them looking for files that are not
+            // there, and telling them to move files out of a directory they cannot read is worse
+            // still — the reason ccc refuses is that it could not look, and that is what to say.
+            errors: unreachable.map((path) => unmanagedPathRefusal(path, pathContent(path))),
         };
     }
 

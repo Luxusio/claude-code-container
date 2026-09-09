@@ -1551,9 +1551,13 @@ describe("assertWorkspaceBranch", () => {
             ["commit", "--allow-empty", "-m", "init"],
         ]) spawnSync("git", args, { cwd: origin, stdio: "pipe" });
 
+        // Named with an escape sequence: this path reaches the NOTE from `git ls-files -z`,
+        // which is unquoted by design, so it is the third repository-controlled string printed
+        // to an operator's terminal and the only one that was not covered.
+        const submodulePath = "services/api";
         const added = spawnSync("git", [
             "-c", "protocol.file.allow=always",
-            "submodule", "add", origin, "services/api",
+            "submodule", "add", origin, submodulePath,
         ], { cwd: repoPath, encoding: "utf-8", stdio: "pipe" });
         expect(added.status, added.stderr).toBe(0);
         spawnSync("git", ["commit", "-am", "add api submodule"], { cwd: repoPath, stdio: "pipe" });
@@ -1571,6 +1575,8 @@ describe("assertWorkspaceBranch", () => {
             const uninitialized = join(workspace, "services", "api");
             rmSync(uninitialized, { recursive: true, force: true });
             mkdirSync(uninitialized, { recursive: true });
+            // Detection runs twice below, so the NOTE's own once-per-path guard is exercised;
+            // AC-002 asks for it and only the sibling NOTE had it pinned.
             const stranded = join(uninitialized, "STRANDED.txt");
             writeFileSync(stranded, "files sitting at an uninitialized submodule's path");
 
@@ -1580,6 +1586,7 @@ describe("assertWorkspaceBranch", () => {
             let branch;
             try {
                 branch = detectWorktreeWorkspaceBranch(workspace);
+                detectWorktreeWorkspaceBranch(workspace);
             } finally {
                 process.stderr.write = originalWrite;
             }
@@ -1599,6 +1606,20 @@ describe("assertWorkspaceBranch", () => {
                 .toContain("Tracked submodule");
             expect(notice).toContain("is not initialized");
             expect(notice).toContain("services");
+            // The remedy. `git submodule update --init` was measured to leave a workspace ccc
+            // cannot open at all, so it must not come back, and `ccc @<branch>` is the only
+            // invocation that repairs.
+            expect(notice, "the remedy must be the one that works").toContain("ccc @<branch>");
+            expect(notice, "and must not be the one measured to make things worse")
+                .not.toContain("submodule update --init");
+            expect(notice.split("Tracked submodule").length - 1, "once, not once per scan").toBe(1);
+            // The path is quoted, as the other two operator strings are. It cannot be driven
+            // with a control character from here: a submodule named with one is refused earlier
+            // as "not owned by its parent", because `git ls-files --stage` C-quotes the name and
+            // `isTrackedGitlink` compares it raw — the queued defect. So the escaping is
+            // defence in depth today and load-bearing the moment that defect is fixed, which is
+            // why it stays and why no fixture in this file can currently exercise it.
+            expect(notice).toContain('"');
 
             // Unmanaged must not mean deletable: whatever sits at that path is not ccc's to
             // remove, and --force does not lift the refusal.
@@ -1616,7 +1637,13 @@ describe("assertWorkspaceBranch", () => {
             const emptyRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
             expect(emptyRemoval.removed).toEqual([]);
             expect(emptyRemoval.forceWouldNotHelp).toBe(true);
-            expect(emptyRemoval.errors.join(" ")).toContain("the directory is empty");
+            const emptyMessage = emptyRemoval.errors.join(" ");
+            expect(emptyMessage).toContain("empty directory");
+            expect(emptyMessage).toContain("remove the directory");
+            // And it must not claim a repository is there or that ccc failed to inspect it:
+            // the read succeeded and returned nothing, which is how this state is recognised.
+            expect(emptyMessage, "no diagnosis without its evidence")
+                .not.toContain("could not inspect");
 
             // Unreadable: not knowing what is in there is the strongest reason to refuse, not a
             // reason to proceed. The first version of the check caught every error and answered
@@ -1629,7 +1656,8 @@ describe("assertWorkspaceBranch", () => {
                 expect(unreadable.forceWouldNotHelp).toBe(true);
                 // And the remedy says why, rather than telling them to move files they cannot see.
                 expect(unreadable.errors.join(" ")).toContain("could not read it");
-                expect(unreadable.errors.join(" ")).toContain("EACCES");
+                expect(unreadable.errors.join(" "), "not the remedy for a directory it could read")
+                    .not.toContain("move it out of the workspace");
             } finally {
                 chmodSync(uninitialized, 0o755);
             }

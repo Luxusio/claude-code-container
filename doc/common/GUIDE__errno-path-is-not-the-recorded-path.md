@@ -201,10 +201,13 @@ perfectly ordinary — clone without `--recursive`, or interrupt a `submodule
 update` — so this was never only about a bug upstream of it.
 
 **One relaxed call is almost never enough, and a unit test will not tell you.**
-The abort lived in four places on the way to the operator: the scan that
-`detectWorktreeWorkspaceBranch` uses, the tracked-gitlink walk in
+Six sites had to move in total. Four sit on the journey a plain `ccc` inside the
+workspace takes: the workspace scan `detectWorktreeWorkspaceBranch` reaches
+through `branchRepositories`, the tracked-gitlink walk in
 `trackedWorktreeGitFiles`, and — both inside `workspaceWorktreeGitFiles` — its
-own scan and its metadata check.
+own scan and its metadata check. The other two are the workspace scan in
+`assertWorkspaceOwnership`, on the `ccc @<branch>` path, and the removal guard's
+own scan.
 Relaxing only the first made things *worse* — detection now succeeded, printed
 a NOTE promising the workspace would open, and then died in a later function
 with a message naming neither the submodule nor a remedy. A test that stopped
@@ -218,7 +221,9 @@ ccc cannot open at all — the advice was worse than the problem. The remedy tha
 works is running `ccc` again, which repairs the worktree itself.
 
 Where the line was NOT moved: `branchRepositories` and `assertWorkspaceOwnership`
-also scan the *source*, and those scans still abort. They are create-time
+each scan TWICE — the workspace, which is relaxed, and the source, which is not.
+Both names therefore appear on both lists above, and the source scans still
+abort. They are create-time
 protection — `assertWorkspaceBranch` runs at `src/index.ts:1172`, which sits
 after the create/open branch in `prepareWorktreeUnlocked` and therefore executes
 on both arms, so `branchRepositories` is reached on the creation path.
@@ -236,13 +241,26 @@ creation-time protection is a separate decision needing its own measurement.
 
 And the same pairing applies as in the third corollary: what is skipped is
 registered with the removal guard, because unmanaged must not mean deletable.
-Registration is conditional on there being something to protect — an absent path
-is not registered, since refusing to delete what is already gone hands the
-operator a remedy that cannot be performed. "Something to protect" includes a
-directory that cannot be READ: the first version of that check caught every
-error and returned "nothing here", which is the errno-swallows-a-judgement
-mistake yet again, in the one function whose job is to decide whether there is
-anything worth protecting. Not knowing is the strongest reason to refuse.
+The implemented condition is presence, not content: everything except an absent
+path is registered. Absent is excluded because refusing to delete what is
+already gone hands the operator a remedy they cannot perform. An EMPTY directory
+*is* registered even though it holds nothing — `rmdir` is a remedy they can
+perform, and without the guard that shape died later with an unrelated message
+about a race that had not happened.
+
+A directory that cannot be READ registers too. The first version of that check
+caught every error and returned "nothing here", which is the
+errno-swallows-a-judgement mistake yet again, in the one function whose job is
+to decide whether there is anything worth protecting. Not knowing is the
+strongest reason to refuse.
+
+The decision and the sentence explaining it come from one observation of the
+path (`pathContent`). Two functions each reading it separately left room for the
+refusal to be decided from one read and described from another, and produced a
+message claiming "a nested Git repository ccc could not inspect" for an empty
+directory — where there is no repository, and the read that recognised the state
+succeeded. That is the first corollary above, broken by a branch added to serve
+this one.
 
 ## The pattern behind three of these
 
