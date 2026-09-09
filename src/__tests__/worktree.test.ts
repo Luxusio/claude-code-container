@@ -4761,6 +4761,71 @@ describe("fixBrokenWorktree", () => {
         expect(existsSync(join(wsResult.workspacePath, "frontend", "precious.ts"))).toBe(true);
         expect(readFileSync(join(wsResult.workspacePath, "frontend", "precious.ts"), "utf-8")).toBe("don't lose me");
     });
+
+    // The same failure with a NESTED repository name. `dirname(destPath)` is the workspace root
+    // only when the name has no slash, and every rollback was pinned against the workspace root,
+    // so for `services/catchy-api` the identity check could not pass — the rollback threw before
+    // restoring and the content stayed in the quarantine directory. Reported from a real host:
+    // answering the repair prompt lost the submodule, every time.
+    it("restores content when a nested-name worktree fails to be recreated", () => {
+        const origin = join(dirname(tmpDir), `${basename(tmpDir)}-nested-origin`);
+        try {
+            initRepo(tmpDir);
+            initRepo(origin);
+            writeFileSync(join(origin, "api.txt"), "api");
+            spawnSync("git", ["add", "api.txt"], { cwd: origin, stdio: "pipe" });
+            spawnSync("git", ["commit", "-m", "add api"], { cwd: origin, stdio: "pipe" });
+            const added = spawnSync("git", [
+                "-c", "protocol.file.allow=always",
+                "submodule", "add", origin, "services/catchy-api",
+            ], { cwd: tmpDir, encoding: "utf-8", stdio: "pipe" });
+            expect(added.status, added.stderr).toBe(0);
+            spawnSync("git", ["commit", "-am", "add api submodule"], { cwd: tmpDir, stdio: "pipe" });
+
+            const previous = process.env.GIT_ALLOW_PROTOCOL;
+            process.env.GIT_ALLOW_PROTOCOL = "file";
+            try {
+                const wsResult = createWorkspace(tmpDir, "fail-nested");
+                // The quarantine base is dirname(workspacePath), which is the system temp
+                // directory — shared with every other test and with anything else on the box. So
+                // the leftovers assertion below has to compare against a baseline taken here,
+                // not against an empty list. Asserting emptiness measured unrelated litter and
+                // reported a defect that was not there.
+                const quarantineBase = dirname(wsResult.workspacePath);
+                const quarantinesBefore = new Set(readdirSync(quarantineBase)
+                    .filter((entry) => entry.startsWith(".ccc-worktree-quarantine-")));
+                const source = join(tmpDir, "services", "catchy-api");
+                const dest = join(wsResult.workspacePath, "services", "catchy-api");
+                spawnSync("git", ["worktree", "remove", "--force", dest], { cwd: source, stdio: "pipe" });
+                mkdirSync(dest, { recursive: true });
+                writeFileSync(join(dest, "precious.ts"), "don't lose me");
+
+                // Same forced failure as the flat-name test above: the branch is checked out in
+                // the source, so `git worktree add` cannot take it.
+                spawnSync("git", ["checkout", "fail-nested"], { cwd: source, stdio: "pipe" });
+
+                const result = fixBrokenWorktree(
+                    tmpDir, wsResult.workspacePath, "services/catchy-api", "fail-nested", true,
+                );
+
+                expect(result).toBeNull();
+                expect(existsSync(join(dest, "precious.ts")), "content must come back out of quarantine").toBe(true);
+                expect(readFileSync(join(dest, "precious.ts"), "utf-8")).toBe("don't lose me");
+                // And this call must not leave a quarantine directory of its own behind — that
+                // is where the operator's submodule was found sitting after each failed repair.
+                const leftovers = readdirSync(quarantineBase)
+                    .filter((entry) => entry.startsWith(".ccc-worktree-quarantine-"))
+                    .filter((entry) => !quarantinesBefore.has(entry))
+                    .map((entry) => `${entry}: ${JSON.stringify(readdirSync(join(quarantineBase, entry)))}`);
+                expect(leftovers, "the quarantine directory must not survive the rollback").toEqual([]);
+            } finally {
+                if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+                else process.env.GIT_ALLOW_PROTOCOL = previous;
+            }
+        } finally {
+            rmSync(origin, { recursive: true, force: true });
+        }
+    });
     it("repairs its stale registration without pruning unrelated worktrees", () => {
         initRepo(tmpDir);
         initRepo(join(tmpDir, "frontend"));

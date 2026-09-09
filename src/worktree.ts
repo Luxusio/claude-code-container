@@ -6125,7 +6125,14 @@ export function fixBrokenWorktree(
     let backup: QuarantineLocation | null = null;
     let backupIdentity: DirectoryIdentity | null = null;
     let quarantinedStaleRegistration: QuarantinedMissingWorktreeRegistration | null = null;
-    const workspaceIdentity = captureDirectoryIdentity(wsPath);
+    // The directory rollback renames the quarantined content back INTO, which is the
+    // destination's own parent — not the workspace root. Those are the same path only for a
+    // top-level repository name; for a nested one such as `services/catchy-api` they never are,
+    // so every rollback below threw `identity changed before deletion: <ws>/services` BEFORE
+    // restoring anything, and the content stayed in the quarantine directory. The operator saw
+    // it as `ccc` losing a submodule on every attempt: answering the repair prompt moved the
+    // directory away and the failed rollback left it there.
+    const destinationParentIdentity = captureDirectoryIdentity(dirname(destPath));
     const restoreStaleRegistration = (): void => {
         if (!quarantinedStaleRegistration) return;
         restoreQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
@@ -6166,7 +6173,7 @@ export function fixBrokenWorktree(
                     destPath,
                     backup,
                     backupIdentity,
-                    workspaceIdentity,
+                    destinationParentIdentity,
                     "directory",
                 );
                 operationGuard();
@@ -6216,7 +6223,7 @@ export function fixBrokenWorktree(
                 destPath,
                 backup,
                 backupIdentity,
-                workspaceIdentity,
+                destinationParentIdentity,
                 "directory",
             );
             operationGuard();
@@ -6265,7 +6272,7 @@ export function fixBrokenWorktree(
                 destPath,
                 backup,
                 backupIdentity,
-                workspaceIdentity,
+                destinationParentIdentity,
                 "directory",
             );
             operationGuard();
@@ -6332,7 +6339,7 @@ export function fixBrokenWorktree(
                 destPath,
                 backup,
                 backupIdentity,
-                workspaceIdentity,
+                destinationParentIdentity,
                 "directory",
             );
             operationGuard();
