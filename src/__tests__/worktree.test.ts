@@ -1537,6 +1537,74 @@ describe("assertWorkspaceBranch", () => {
         });
     });
 
+    // Refusing to CREATE a half checkout is right and is pinned elsewhere. Refusing to OPEN a
+    // workspace that already exists is not: it removes the only tool that could repair it. The
+    // reporting operator hit this three times in one session and every recovery was a manual
+    // move, because `ccc` would not start at all.
+    it("opens an existing workspace whose tracked submodule is not initialized", () => {
+        const origin = join(tmpdir(), `wt-uninit-origin-${randomUUID()}`);
+        mkdirSync(origin, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: origin, stdio: "pipe" });
+
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: repoPath, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add api submodule"], { cwd: repoPath, stdio: "pipe" });
+
+        const previous = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+        try {
+            const workspace = getWorkspacePath(repoPath, "feature-login");
+            spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+            spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+            // The state: tracked in the index, nothing at the path. Reached by a clone without
+            // --recursive, by an interrupted submodule update, or by a repair that moved the
+            // directory away and failed to put it back.
+            const uninitialized = join(workspace, "services", "api");
+            rmSync(uninitialized, { recursive: true, force: true });
+            mkdirSync(uninitialized, { recursive: true });
+            const stranded = join(uninitialized, "STRANDED.txt");
+            writeFileSync(stranded, "files sitting at an uninitialized submodule's path");
+
+            const stderr: string[] = [];
+            const originalWrite = process.stderr.write;
+            process.stderr.write = ((chunk: any) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+            let branch;
+            try {
+                branch = detectWorktreeWorkspaceBranch(workspace);
+            } finally {
+                process.stderr.write = originalWrite;
+            }
+
+            expect(branch, "an uninitialized submodule must not make the workspace unopenable")
+                .toBe("feature-login");
+            const notice = stderr.join("");
+            expect(notice, "and the operator has to be told what was left out")
+                .toContain("Tracked submodule");
+            expect(notice).toContain("is not initialized");
+            expect(notice).toContain("services");
+
+            // Unmanaged must not mean deletable: whatever sits at that path is not ccc's to
+            // remove, and --force does not lift the refusal.
+            const removal = removeWorkspace(repoPath, "feature-login", { force: true });
+            expect(removal.removed).toEqual([]);
+            expect(removal.forceWouldNotHelp).toBe(true);
+            expect(existsSync(stranded), "content at the unmanaged path must survive").toBe(true);
+        } finally {
+            if (previous === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+            else process.env.GIT_ALLOW_PROTOCOL = previous;
+            rmSync(origin, { recursive: true, force: true });
+        }
+    });
+
     // The skip must not swallow a judgement that simply happened to raise an errno on its way.
     // `gitLinkKind` inspects ownership with bare filesystem calls, so a candidate can make one
     // of them fail at the exact point a judgement was about to be made — and an errno cannot be

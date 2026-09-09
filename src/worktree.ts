@@ -1243,7 +1243,7 @@ function primarySourceRepositoryForWorktree(
 function branchRepositories(
     workspacePath: string,
     expectedTopology?: "root" | "children",
-    options: { allowTrackedGitlinks?: boolean } = {},
+    options: { allowTrackedGitlinks?: boolean; unreachable?: string[] } = {},
 ): Array<{ name: string; path: string }> {
     const rootGit = join(workspacePath, ".git");
     const hasRootGit = pathExistsStrict(rootGit);
@@ -1271,9 +1271,17 @@ function branchRepositories(
                     .map((entry) => [entry.name, entry.path]),
             )
             : null;
+        // The workspace scan, and only it. The `sourceRoot` scan above keeps aborting: a
+        // submodule missing on the SOURCE side is what makes a newly created workspace a half
+        // checkout, which is the case the refusal exists for.
         const nestedRepositories = scanUnifiedNestedRepositories(
             workspacePath,
-            { strict: true, allowRegisteredWorktrees: true },
+            {
+                strict: true,
+                allowRegisteredWorktrees: true,
+                openingExistingWorkspace: true,
+                unreachable: options.unreachable,
+            },
         );
         for (const entry of nestedRepositories) {
             if (!entry.isGitRepo) continue;
@@ -1331,7 +1339,7 @@ export function hasGitMetadata(repositoryPath: string): boolean {
 function assertWorkspaceOwnership(
     workspacePath: string,
     sourcePath: string,
-    options: { allowTrackedGitlinks?: boolean } = {},
+    options: { allowTrackedGitlinks?: boolean; unreachable?: string[] } = {},
 ): void {
     const resolvedSource = resolve(sourcePath);
     if (hasGitMetadata(resolvedSource)) {
@@ -1364,9 +1372,16 @@ function assertWorkspaceOwnership(
                 );
             }
         }
+        // Also the workspace, also already existing. The source scan in this same function keeps
+        // aborting; it is the one that decides whether a workspace can be created at all.
         const destinationRepositories = scanUnifiedNestedRepositories(
             workspacePath,
-            { strict: true, allowRegisteredWorktrees: true },
+            {
+                strict: true,
+                allowRegisteredWorktrees: true,
+                openingExistingWorkspace: true,
+                unreachable: options.unreachable,
+            },
         );
         for (const destination of destinationRepositories) {
             const source = sourceRepositories.get(destination.name);
@@ -2443,6 +2458,19 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
+function warnUnmanagedNestedRepository(candidatePath: string): void {
+    if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
+    warnedUnreachableNestedRepositories.add(candidatePath);
+    // Same stream, same escaping and same dedup as the unreachable-metadata NOTE: the path
+    // comes from the index and is chosen by whoever authored the repository.
+    process.stderr.write(
+        `[ccc] NOTE: Tracked submodule ${terminalSafe(candidatePath)} is not initialized.\n`
+        + "      Opening the workspace without it. It is left unmanaged, and ccc will refuse to\n"
+        + "      delete the workspace while it stays that way. Run `git submodule update --init`\n"
+        + "      against it to have ccc manage it again.\n",
+    );
+}
+
 function warnUnreachableNestedRepository(candidatePath: string, recorded: string): void {
     // The scan runs more than once per invocation, and repeating the same line
     // teaches an operator to skim past it.
@@ -2524,6 +2552,10 @@ function scanUnifiedNestedRepositories(
         // is about to DELETE what the scan returns needs these: they are repositories, they
         // are simply not ones ccc can manage, and without this they look like ordinary files.
         unreachable?: string[];
+        // The workspace exists already and is being opened, rather than being created. Only
+        // then may a tracked submodule with no `.git` be skipped instead of aborting — see the
+        // branch that reads this.
+        openingExistingWorkspace?: boolean;
     } = {},
 ): WorkspaceEntry[] {
     const root = resolve(repositoryPath);
@@ -2577,10 +2609,23 @@ function scanUnifiedNestedRepositories(
             if (candidates.has(name)) continue;
             const candidatePath = join(currentRepository, ...name.split("/"));
             if (!pathExistsStrict(join(candidatePath, ".git"))) {
-                if (options.strict) {
+                if (options.strict && !options.openingExistingWorkspace) {
                     throw new Error(
                         `Tracked submodule repository is not initialized: ${candidatePath}`,
                     );
+                }
+                if (options.openingExistingWorkspace) {
+                    // Refusing to CREATE a half checkout is right. Refusing to OPEN a workspace
+                    // that already exists is not: it removes the only tool that could repair it.
+                    // An operator hit this three times in one session and each recovery was a
+                    // manual move dictated over chat, because `ccc` would not start at all. The
+                    // state is also ordinary — clone without --recursive, or interrupt a
+                    // submodule update — and being an accurate diagnosis does not make it a good
+                    // place to abort.
+                    warnUnmanagedNestedRepository(candidatePath);
+                    // Unmanaged must not mean deletable. Same list the removal guard refuses on,
+                    // for the same reason: the directory may hold the operator's files.
+                    options.unreachable?.push(candidatePath);
                 }
                 continue;
             }
@@ -6416,6 +6461,7 @@ export function removeWorkspace(
     const unreachable: string[] = [];
     scanUnifiedNestedRepositories(wsPath, {
         allowRegisteredWorktrees: true,
+        openingExistingWorkspace: true,
         unreachable,
     });
     if (unreachable.length > 0) {

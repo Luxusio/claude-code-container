@@ -177,6 +177,33 @@ absence, so a symlink loop still aborts — makes the skip exactly as wide as
 the portability case. It also made the NOTE's "could not be inspected" branch
 unreachable, and it was deleted rather than left as untested prose.
 
+## Fifth corollary — an accurate diagnosis is not automatically a place to abort
+
+`Tracked submodule repository is not initialized` is true when it fires. It was
+still wrong to abort on, because it fired on the path that OPENS an existing
+workspace, and `ccc` was then the only tool that could have repaired the state
+it was complaining about. The operator hit it three times in one session and
+every recovery was a `Move-Item` dictated over chat.
+
+The distinction that matters is not skip-versus-abort, it is **create versus
+open**:
+
+- Creating a workspace whose branch tracks a submodule that is not initialized
+  produces a half checkout the operator would not notice. Keep aborting. There
+  is a test that pins this on purpose.
+- Opening a workspace that already exists cannot make it any worse, and
+  refusing removes the only way back. Skip, and say so.
+
+Ask, of any abort: does the operator have a way out that does not require
+somebody else to dictate shell commands? If the answer is no and the state is
+repairable, the abort is in the wrong place. Note the state here is also
+perfectly ordinary — clone without `--recursive`, or interrupt a `submodule
+update` — so this was never only about a bug upstream of it.
+
+And the same pairing applies as in the third corollary: whatever is skipped is
+registered with the removal guard, because unmanaged must not mean deletable.
+The path may hold the operator's files.
+
 ## The pattern behind three of these
 
 Three separate defects here were the same mistake: **a list of remembered
