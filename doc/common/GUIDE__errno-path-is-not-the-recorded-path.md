@@ -65,7 +65,7 @@ the place that read it. Do not recover it from the error afterwards.
     );
 
 Then read `recordedGitPath` off the cause chain. `src/worktree.ts` does this
-with `recordedGitPathFromErrorChain`, which deliberately never falls back to
+with `unreachableRecordedGitPath`, which deliberately never falls back to
 `error.path` — a wrong-but-plausible path is worse than none, because the
 operator cannot tell it is wrong.
 
@@ -196,8 +196,9 @@ would have caught this immediately.
 
 ## Related
 
-- `src/worktree.ts` — `gitLinkKind`, `recordedGitPathFromErrorChain`,
-  `warnUnreachableNestedRepository`
+- `src/worktree.ts` — `gitLinkKind` (the throw site that attaches
+  `recordedGitPath`), `unreachableRecordedGitPath` (the two-condition key),
+  `warnUnreachableNestedRepository`, `terminalSafe`
 - `src/__tests__/worktree.test.ts` — "skips a nested repository whose Git
   metadata names an unreachable path"
 - `doc/harness/tasks/TASK__worktree-nested-gitlink-unreachable-path/PLAN.md`
