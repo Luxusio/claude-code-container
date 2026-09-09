@@ -2464,13 +2464,19 @@ const warnedUnreachableNestedRepositories = new Set<string>();
 // whether there is something worth protecting: a directory readable only by another user (mode
 // 0111 passes the existence check and fails readdir) reported "nothing here". Not knowing is the
 // strongest reason to refuse, not a reason to proceed.
-// Readable and empty. An unreadable directory is not empty for this purpose — see
-// pathMustNotBeDeleted for why not knowing is treated as content.
-function directoryIsEmpty(path: string): boolean {
+// What the operator should actually do, decided from the same read that decided to refuse.
+// Measured across the shapes that reach here: an empty directory, one holding files, one that
+// cannot be read, and a path that is a file rather than a directory.
+function directoryRemedy(path: string): string {
     try {
-        return readdirSync(path).length === 0;
-    } catch {
-        return false;
+        return readdirSync(path).length === 0
+            ? " — the directory is empty; remove it and run this again"
+            : " — move it out of the workspace, or delete it yourself, then run this again";
+    } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "ENOTDIR"
+            ? " — that path is a file, not a repository; move or delete it, then run this again"
+            : ` — ccc could not read it (${(error as NodeJS.ErrnoException).code ?? "unknown"});`
+            + " make it readable or remove it yourself, then run this again";
     }
 }
 
@@ -6533,10 +6539,10 @@ export function removeWorkspace(
             errors: unreachable.map((path) => (
                 `workspace holds a nested Git repository ccc could not inspect and will not delete: ${terminalSafe(path)}`
                 // The remedy has to match what is actually there. Telling someone to move files
-                // out of an empty directory sends them looking for files that do not exist.
-                + (directoryIsEmpty(path)
-                    ? " — the directory is empty; remove it and run this again"
-                    : " — move it out of the workspace, or delete it yourself, then run this again")
+                // out of an empty directory sends them looking for files that do not exist, and
+                // telling them to move files out of a directory they cannot read is worse still
+                // — the reason ccc refuses is that it could not look, and that is what to say.
+                + directoryRemedy(path)
             )),
         };
     }

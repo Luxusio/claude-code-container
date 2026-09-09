@@ -1627,6 +1627,9 @@ describe("assertWorkspaceBranch", () => {
                 const unreadable = removeWorkspace(repoPath, "feature-login", { force: true });
                 expect(unreadable.removed, "an unreadable directory is not an empty one").toEqual([]);
                 expect(unreadable.forceWouldNotHelp).toBe(true);
+                // And the remedy says why, rather than telling them to move files they cannot see.
+                expect(unreadable.errors.join(" ")).toContain("could not read it");
+                expect(unreadable.errors.join(" ")).toContain("EACCES");
             } finally {
                 chmodSync(uninitialized, 0o755);
             }
