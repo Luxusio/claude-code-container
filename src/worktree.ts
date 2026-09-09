@@ -2304,6 +2304,43 @@ function relativePathEscapesRoot(relativePath: string): boolean {
         || relativePath.split(/[\\/]/)[0] === "..";
 }
 
+/**
+ * True when this error, or anything it wraps, is one of the given filesystem
+ * errnos.
+ *
+ * The nested-repository scan already decided that a candidate it cannot stat is
+ * one to skip rather than to abort on. That decision was unreachable, because
+ * the only route to it wraps: `gitLinkKind` ends its worktree-inspection block
+ * by rethrowing everything as `Unable to inspect worktree common directory`
+ * with the original as `cause`, and a wrapper built that way has no `code` of
+ * its own. So a raw `realpathSync` ENOENT arrived as an error with
+ * `code === undefined`, missed the escape, and took workspace detection down.
+ *
+ * Reached in practice by a Git worktree registered from inside the container:
+ * its management `gitdir` file records `/project/<workspace>-<hash>`, which the
+ * Windows host reads as `C:\project\<workspace>-<hash>` and cannot stat. Neither
+ * side is wrong about its own path; the file is simply not portable across the
+ * mount boundary.
+ *
+ * Only errnos are unwrapped this way. The scan's deliberate refusals — escapes
+ * its parent, metadata is a symbolic link, not owned by parent or a registered
+ * worktree — carry no `code` anywhere in their chain and keep aborting, which
+ * is the point: this moves the line between "skip" and "abort" and the risk is
+ * moving it too far.
+ */
+function errorChainHasFilesystemCode(error: unknown, codes: readonly string[]): boolean {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current && typeof current === "object" && !seen.has(current)) {
+        seen.add(current);
+        if (codes.includes((current as NodeJS.ErrnoException).code ?? "")) return true;
+        current = (current as { cause?: unknown }).cause;
+    }
+    return false;
+}
+
+const UNREACHABLE_PATH_CODES = ["ENOENT", "ENOTDIR"] as const;
+
 function nestedRepositoryCandidateIsSafe(
     parentRepository: string,
     candidateName: string,
@@ -2343,9 +2380,13 @@ function nestedRepositoryCandidateIsSafe(
             `Nested Git repository metadata is not owned by its parent or a registered worktree: ${candidatePath}`,
         );
     } catch (error) {
-        if (["ENOENT", "ENOTDIR"].includes(
-            (error as NodeJS.ErrnoException).code ?? "",
-        )) return false;
+        if (errorChainHasFilesystemCode(error, UNREACHABLE_PATH_CODES)) {
+            // Skipped, not silent. `ccc` now manages less than the workspace
+            // contains, and the run that used to fail loudly would otherwise
+            // succeed while saying nothing about what it dropped.
+            warnUnreachableNestedRepository(candidatePath, error);
+            return false;
+        }
         if (!strict) return false;
         if ((error as Error).message.startsWith("Nested Git repository ")) {
             throw error;
@@ -2355,6 +2396,34 @@ function nestedRepositoryCandidateIsSafe(
             { cause: error },
         );
     }
+}
+
+const warnedUnreachableNestedRepositories = new Set<string>();
+
+function warnUnreachableNestedRepository(candidatePath: string, error: unknown): void {
+    // The scan runs more than once per invocation, and repeating the same line
+    // teaches an operator to skim past it.
+    if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
+    warnedUnreachableNestedRepositories.add(candidatePath);
+    const unreachable = unreachablePathFromErrorChain(error);
+    process.stderr.write(
+        `NOTE Skipping nested Git repository '${candidatePath}': its Git metadata names `
+        + `${unreachable ? `'${unreachable}'` : "a path"}, which does not exist here.\n`
+        + "     It is left as ordinary files. A worktree registered inside the container records\n"
+        + "     a container path, which the host cannot resolve, and the reverse.\n",
+    );
+}
+
+function unreachablePathFromErrorChain(error: unknown): string | null {
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current && typeof current === "object" && !seen.has(current)) {
+        seen.add(current);
+        const candidate = (current as NodeJS.ErrnoException).path;
+        if (typeof candidate === "string" && candidate) return candidate;
+        current = (current as { cause?: unknown }).cause;
+    }
+    return null;
 }
 
 /**

@@ -1216,6 +1216,79 @@ describe("assertWorkspaceBranch", () => {
             .toThrow("belongs to branch 'feature-login'");
     });
 
+    // The operator's shape, end to end: a worktree workspace holding a tracked gitlink that is
+    // itself a registered worktree, whose management `gitdir` names a path this machine cannot
+    // resolve. That happens whenever `git worktree add` runs inside the container — the file
+    // records /project/<workspace>-<hash>, which the Windows host reads as C:\project\... and
+    // cannot stat.
+    //
+    // Driven through detectWorktreeWorkspaceBranch rather than the classifier, because the defect
+    // was that the WHOLE call failed: `ccc <workspace> --resume` was refused outright. A unit test
+    // on the classifier alone would have passed before the fix, since the escape hatch it needed
+    // was already written — it was just unreachable, the errno arriving wrapped with no `code`.
+    it("skips a nested repository whose Git metadata names an unreachable path", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-nested-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        const nestedPath = join(workspace, "services", "nested-api");
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", nestedPath, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        const management = join(nestedSource, ".git", "worktrees", "nested-api", "gitdir");
+        expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
+        writeFileSync(management, "/project/unreachable-workspace-abc123/services/nested-api/.git\n");
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        try {
+            expect(detectWorktreeWorkspaceBranch(workspace), "an unreachable nested repository must not refuse the workspace")
+                .toBe("feature-login");
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+        // Skipped, not silent: the run now succeeds while managing less than the workspace holds,
+        // and the operator has to be able to tell that from a run with nothing nested in it.
+        const notice = stderr.join("");
+        expect(notice).toContain("Skipping nested Git repository");
+        expect(notice, "and it must name the path that could not be resolved").toContain("/project/unreachable-workspace-abc123");
+    });
+
+    // The other side of the line this change moves. These are judgements, not I/O failures, and
+    // softening one of them would turn a repository ccc refuses to touch into one it quietly
+    // ignores — a worse outcome than the bug being fixed.
+    it("still refuses a nested repository whose metadata is a symbolic link", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedPath = join(workspace, "services", "linked-api");
+        mkdirSync(nestedPath, { recursive: true });
+        const decoy = join(tmpdir(), `wt-decoy-git-${randomUUID()}`);
+        mkdirSync(decoy, { recursive: true });
+        symlinkSync(decoy, join(nestedPath, ".git"));
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/linked-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        expect(() => detectWorktreeWorkspaceBranch(workspace)).toThrow(/symbolic link/);
+    });
+
     it("detects a unified workspace only when .git is a worktree file", () => {
         const workspace = getWorkspacePath(repoPath, "feature-login");
         spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
