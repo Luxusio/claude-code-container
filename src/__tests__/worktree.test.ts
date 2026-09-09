@@ -1601,6 +1601,13 @@ describe("assertWorkspaceBranch", () => {
             // what was wrong. `required` is true exactly when detection succeeded.
             expect(() => getWorktreeGitMounts(workspace, true, repoPath))
                 .not.toThrow();
+            // And the call after THAT. Stopping at getWorktreeGitMounts hid that
+            // assertWorkspaceBranch still refused with "not owned by its source repository" —
+            // the same shape as before, one message further along. The options are the ones
+            // src/index.ts passes on the arm that opens an existing workspace.
+            expect(() => assertWorkspaceBranch(
+                workspace, "feature-login", spawnSync, repoPath, { allowTrackedGitlinks: true },
+            )).not.toThrow();
             const notice = stderr.join("");
             expect(notice, "and the operator has to be told what was left out")
                 .toContain("Tracked submodule");

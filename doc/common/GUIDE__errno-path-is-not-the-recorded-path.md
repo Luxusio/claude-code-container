@@ -200,6 +200,17 @@ repairable, the abort is in the wrong place. Note the state here is also
 perfectly ordinary — clone without `--recursive`, or interrupt a `submodule
 update` — so this was never only about a bug upstream of it.
 
+**Count what you were asked about, not what is easy to count.** Asked whether
+the relaxation flag was absent from every scan that can run during CREATION, the
+answer given was "all four flagged scans target the workspace, so none is
+creation-reachable". That answers a different question: `src/index.ts:1172` runs
+on both arms of the create/open branch, so three of the flagged scans *are*
+creation-reachable — they are simply reached with a workspace that already
+exists. The half checkout is prevented somewhere else entirely
+(`assertWorkspaceOwnership`'s source loop, and `repairWorkspace`'s scan). Twice
+in one change the substitute question was the tempting one: callers-instead-of-
+control-flow, then target-instead-of-reachability.
+
 **One relaxed call is almost never enough, and a unit test will not tell you.**
 Six sites had to move in total. Four sit on the journey a plain `ccc` inside the
 workspace takes: the workspace scan `detectWorktreeWorkspaceBranch` reaches

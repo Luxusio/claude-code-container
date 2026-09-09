@@ -2458,9 +2458,14 @@ const warnedUnreachableNestedRepositories = new Set<string>();
 
 type PathContent = "absent" | "empty" | "unreadable" | "content";
 
-// One observation, from which both the decision to refuse and the sentence explaining it are
-// derived. It was two functions reading the same path twice, which meant the refusal could be
-// decided from one read and described from another — and left room for the two to disagree.
+// One rule for reading the path, used by both the decision to refuse and the sentence
+// explaining it. It replaced two functions that classified the same errors differently.
+//
+// Be precise about what that did and did not fix: the duplicated LOGIC is gone, the duplicated
+// READ is not. This is called once during the scan to decide registration and again when the
+// refusal is worded, so a path that changes between them still yields a sentence describing a
+// state it no longer has. That is cosmetic — the second call cannot un-register anything — but
+// the comment here previously claimed a single observation, which was not true then either.
 //
 // `unreadable` is deliberately NOT folded into `absent`. The first version of this check caught
 // every error and answered "nothing here", which is the errno-swallows-a-judgement mistake for
@@ -2496,7 +2501,7 @@ function unmanagedPathRefusal(path: string, content: PathContent): string {
     }
 }
 
-function warnUnmanagedNestedRepository(candidatePath: string): void {
+function warnUnmanagedNestedRepository(candidatePath: string, protectedFromDeletion: boolean): void {
     // Keyed by kind as well as path. Sharing the key with the unreachable-metadata NOTE meant
     // whichever fired first silenced the other for that path forever, and the one that gets
     // dropped is the more useful of the two: the container-boundary explanation.
@@ -2512,7 +2517,9 @@ function warnUnmanagedNestedRepository(candidatePath: string): void {
     // trying to do.
     process.stderr.write(
         `[ccc] NOTE: Tracked submodule ${terminalSafe(candidatePath)} is not initialized.\n`
-        + "      Continuing without it; ccc is not managing it and will not delete it.\n"
+        + (protectedFromDeletion
+            ? "      Continuing without it; ccc is not managing it and will not delete it.\n"
+            : "      Continuing without it; there is nothing at that path for ccc to manage.\n")
         + "      To have ccc set it up as a linked worktree, run `ccc @<branch>` from the source\n"
         + "      repository — that is the only invocation that repairs; plain `ccc` inside the\n"
         + "      workspace will keep printing this. If the directory already holds files, ccc\n"
@@ -2671,16 +2678,19 @@ function scanUnifiedNestedRepositories(
                     // state is also ordinary — clone without --recursive, or interrupt a
                     // submodule update — and being an accurate diagnosis does not make it a good
                     // place to abort.
-                    warnUnmanagedNestedRepository(candidatePath);
+                    // Decide first, then say what was decided. The NOTE used to promise "ccc
+                    // will not delete it" unconditionally while registration was already
+                    // conditional, so for an absent path — or a dangling symlink, which reads
+                    // as absent — it promised protection the next line declined to provide.
+                    const content = pathContent(candidatePath);
+                    warnUnmanagedNestedRepository(candidatePath, content !== "absent");
                     // Unmanaged must not mean deletable — but an absent path has nothing to
                     // protect, and registering it made `ccc rm` refuse with a remedy that is a
                     // no-op: "delete it yourself" when it is already gone, and the index entry
                     // brings the refusal straight back. An EMPTY directory is different: it is
                     // there, `rmdir` clears it, and removal then succeeds — so it is registered,
                     // and the message below tells the operator which of the two they have.
-                    if (pathContent(candidatePath) !== "absent") {
-                        options.unreachable?.push(candidatePath);
-                    }
+                    if (content !== "absent") options.unreachable?.push(candidatePath);
                 }
                 continue;
             }
@@ -5402,7 +5412,15 @@ function trackedWorktreeGitFiles(
                 // invalid") carry no errno and keep throwing.
                 if (["ENOENT", "ENOTDIR"].includes(
                     (error as NodeJS.ErrnoException).code ?? "",
-                )) continue;
+                )) {
+                    // In multi-repo mode this is the ONLY place the skip happens: that branch
+                    // goes through scanDirectory and never reaches the scan that carries the
+                    // NOTE. Without this the relaxation was silent there — and multi-repo has
+                    // no removal guard either, so silence is the worst of the two modes to
+                    // have it in. Deduplicated per path, so the unified mode still prints once.
+                    if (strict) warnUnmanagedNestedRepository(candidatePath, pathContent(candidatePath) !== "absent");
+                    continue;
+                }
                 if (!strict) continue;
                 throw new Error(
                     `Unable to inspect tracked Git link worktree '${candidatePath}'.`,

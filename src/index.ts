@@ -1169,7 +1169,15 @@ async function prepareWorktreeUnlocked(
         }
     }
 
-    assertWorkspaceBranch(wsPath, branch, spawnSync, cwd);
+    // `allowTrackedGitlinks` because this runs on both arms of the branch above, including the
+    // one that just opened an existing workspace. Without it, a tracked submodule whose
+    // workspace copy has no `.git` is refused here as "not owned by its source repository" —
+    // after ccc has already printed that it is continuing without it. The skip reached
+    // detection and the mounts and then died one call later, which is the same shape this task
+    // was opened to remove. The flag is not a blanket permission: isNestedTrackedGitlink checks
+    // the entry really is a tracked gitlink of its owner, and `removeWorkspace` already relies
+    // on exactly this. Creation-time protection is elsewhere — repairWorkspace's source scan.
+    assertWorkspaceBranch(wsPath, branch, spawnSync, cwd, { allowTrackedGitlinks: true });
     return wsPath;
 }
 
