@@ -2427,13 +2427,26 @@ function warnUnreachableNestedRepository(candidatePath: string, error: unknown):
     // Written straight to the stream rather than through console.warn: console binds its
     // stream once, so a test that intercepts process.stderr.write to prove this line goes
     // to stderr would see nothing, and the channel would stop being pinned.
+    const where = terminalSafe(candidatePath);
     process.stderr.write(recorded
-        ? `[ccc] NOTE: Skipping nested Git repository '${candidatePath}': its Git metadata\n`
-        + `      names '${recorded}', which does not exist here. It is left as ordinary files.\n`
+        ? `[ccc] NOTE: Skipping nested Git repository '${where}': its Git metadata\n`
+        + `      names '${terminalSafe(recorded)}', which does not exist here. It is left as ordinary files.\n`
         + "      A worktree registered inside the container records a container path, which\n"
         + "      the host cannot resolve, and the reverse.\n"
-        : `[ccc] NOTE: Skipping nested Git repository '${candidatePath}': its Git metadata\n`
-        + `      could not be inspected (${errorChainReason(error)}). It is left as ordinary files.\n`);
+        : `[ccc] NOTE: Skipping nested Git repository '${where}': its Git metadata\n`
+        + `      could not be inspected (${terminalSafe(errorChainReason(error))}). It is left as ordinary files.\n`);
+}
+
+// Everything interpolated into the NOTE is repository-controlled: submodule names arrive
+// from `git ls-files -z`, which is unquoted by design, and the recorded path is the content
+// of a file. Printed raw, an ESC sequence in a submodule name rewrites the operator's
+// screen and U+202E reverses the path they are reading — the decision this NOTE exists to
+// inform. Git quotes such paths itself (core.quotePath); this line has to as well.
+function terminalSafe(value: string): string {
+    return value.replace(
+        /[\p{Cc}\p{Cf}]/gu,
+        (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
+    );
 }
 
 // One traversal, two questions. Nothing else in the repository walks `cause`, so there is

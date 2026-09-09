@@ -1276,6 +1276,63 @@ describe("assertWorkspaceBranch", () => {
             .toContain("/project/unreachable-workspace-abc123/services/nested-api/.git");
     });
 
+    // Everything in that NOTE is repository-controlled. `git ls-files -z` is unquoted by design,
+    // so a submodule name carries whatever bytes its author chose straight to the terminal of
+    // whoever opens the workspace — including the ESC sequences that rewrite what they see and
+    // the bidi override that reverses the path they are about to act on.
+    it("escapes repository-controlled control characters before printing them", () => {
+        const escape = String.fromCharCode(0x1b);
+        const bell = String.fromCharCode(0x07);
+        const rightToLeftOverride = String.fromCharCode(0x202e);
+
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-control-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        const hostile = `svc${escape}[31m-${rightToLeftOverride}api${bell}`;
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", join(workspace, "services", hostile), "-b", "nested-branch"], {
+            cwd: nestedSource, stdio: "pipe",
+        });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/${hostile}`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        const managementRoot = join(nestedSource, ".git", "worktrees");
+        const management = join(managementRoot, readdirSync(managementRoot)[0], "gitdir");
+        expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
+        writeFileSync(management, `/nosuchroot-zzz/ws/services/${escape}[5mBLINK/.git\n`);
+
+        const stderr: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: any) => { stderr.push(String(chunk)); return true; }) as typeof process.stderr.write;
+        try {
+            detectWorktreeWorkspaceBranch(workspace);
+        } finally {
+            process.stderr.write = originalWrite;
+            rmSync(nestedSource, { recursive: true, force: true });
+        }
+
+        const notice = stderr.join("");
+        expect(notice, "the NOTE must actually have been printed").toContain("Skipping nested Git repository");
+        expect(notice, "an escape sequence must not reach the terminal").not.toContain(escape);
+        expect(notice, "a bidi override must not reach the terminal").not.toContain(rightToLeftOverride);
+        expect(notice, "a bell must not reach the terminal").not.toContain(bell);
+        // Escaped, not deleted — the operator still has to be able to identify the directory.
+        expect(notice).toContain("\\u001b");
+        expect(notice).toContain("\\u202e");
+    });
+
     // The narrowness of UNREACHABLE_PATH_CODES is the load-bearing part of the skip: a candidate
     // that cannot be read for any OTHER reason must still refuse the workspace rather than be
     // quietly dropped from the set the ownership guards police. ELOOP is used because it does not

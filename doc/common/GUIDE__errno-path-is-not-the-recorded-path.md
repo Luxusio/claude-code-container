@@ -68,6 +68,27 @@ submodule metadata to look for a mount problem they did not have. Print a
 diagnosis only on the branch where its evidence exists; otherwise state the
 errno and stop.
 
+## Second corollary — the values in an operator message are attacker-controlled
+
+The same NOTE interpolates two repository-controlled strings. Submodule names
+reach it from `git ls-files -z`, which is **unquoted by design**, and the
+recorded path is the content of a file inside `.git`. Measured end to end: an
+ESC sequence, a BEL and U+202E placed in a submodule name all arrived at the
+terminal raw.
+
+That matters more than usual here, because the NOTE exists to tell an operator
+*which directory ccc declined to manage*. A right-to-left override reverses the
+path they are about to act on; an ESC sequence can rewrite the line entirely.
+`terminalSafe` now escapes `\p{Cc}` and `\p{Cf}` to `\uXXXX` — escaped rather
+than stripped, since the operator still has to identify the directory. Note
+that `\p{Cc}` alone is not enough: the bidi overrides are `\p{Cf}`, and a
+mutation dropping `\p{Cf}` is caught by the regression test.
+
+Still open, and deliberately out of the scope that fixed this: the thrown
+errors in the same file (`Nested Git repository escapes its parent
+repository: ${candidatePath}` and its neighbours) interpolate the same
+untrusted paths and are printed by the CLI. They predate this change.
+
 ## Testing note
 
 A test that asserts on a path is only as portable as the ancestors that path
