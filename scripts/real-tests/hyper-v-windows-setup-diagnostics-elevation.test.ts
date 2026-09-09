@@ -202,6 +202,35 @@ describe("Windows Setup diagnostics elevation request", () => {
             expect(multiline.ok === true ? multiline.timestampedPath : "", "both artifacts, not just latest")
                 .toSatisfy((p: string) => existsSync(p));
 
+            // Every character JavaScript's `.` refuses to match, not the two that happened to be
+            // reported. The first fix collapsed [\r\n\t] and its comment named the mechanism
+            // exactly — "`.` stops at a line terminator" — while missing that U+2028 and U+2029 ARE
+            // line terminators to `.`, so the same defect with the same cause survived a commit
+            // named for closing it. QA found them; enumerating the class is what stops the third
+            // round. NEL, VT and FF are included as controls: `.` does match those, so they must
+            // have been fine all along, and a test that cannot tell the two groups apart proves
+            // less than it looks.
+            const terminators = [0x0a, 0x0d, 0x2028, 0x2029];
+            const matchedByDot = [0x0085, 0x0b, 0x0c, 0x09];
+            for (const code of [...terminators, ...matchedByDot]) {
+                const separated = publishHyperVWindowsSetupDiagnostics(
+                    [{ path: "Windows\\Panther\\setuperr.log", lines: [`password: hunter2-SECRET${String.fromCharCode(code)}tail`] }],
+                    { outputRoot: join(out, `sep-${code}`) },
+                );
+                const separatedLine = separated.ok === true ? separated.logs[0].lines[0] : "";
+                expect(separatedLine, `U+${code.toString(16).padStart(4, "0")} must not carry a secret past redaction`).not.toContain("hunter2");
+                expect(separatedLine).toContain("password=[redacted]");
+            }
+            // The property the loop rests on, asserted rather than assumed: these four really are
+            // the characters `.` will not match. If a future runtime adds one, this fails here
+            // instead of silently leaking.
+            for (const code of terminators) {
+                expect(/^a.b$/.test(`a${String.fromCharCode(code)}b`), `U+${code.toString(16)} is a line terminator for .`).toBe(false);
+            }
+            for (const code of matchedByDot) {
+                expect(/^a.b$/.test(`a${String.fromCharCode(code)}b`), `U+${code.toString(16)} is matched by .`).toBe(true);
+            }
+
             const started = Date.now();
             const huge = publishHyperVWindowsSetupDiagnostics(
                 [{ path: "Windows\\Panther\\setuperr.log", lines: ["<Value>".repeat(60000)] }],

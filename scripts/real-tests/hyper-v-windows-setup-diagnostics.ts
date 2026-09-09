@@ -424,7 +424,7 @@ function mountFailureMessage(value: unknown): string | null {
     // Brackets become parentheses rather than being dropped: the code itself is bracketed, so a
     // nested `[` would break its shape, but the redaction markers stay legible as `(redacted)`.
     // `;` becomes `,` for the same reason one level up — the e2e failure line is `;`-separated.
-    const collapsed = String(value).replace(/[\r\n\t]+/g, " ").replace(HOST_PATH_PATTERN, "[host-path]");
+    const collapsed = String(value).replace(/[\r\n\t\u2028\u2029]+/g, " ").replace(HOST_PATH_PATTERN, "[host-path]");
     const redacted = redactLine(collapsed)
         ?.replace(/;/g, ",")
         .replace(/\[/g, "(")
@@ -447,7 +447,7 @@ function redactLine(value: unknown): string | null {
     // lazy and quadratic against a long run of unclosed `<Value>`: a 400 000-character line took
     // 3.4 s here with the event loop blocked, and still returned ok. Truncating first makes every
     // pass linear in MAX_LINE_CHARS regardless of what the producer sent.
-    const bounded = value.replace(/[\r\n\t]+/g, " ").slice(0, MAX_LINE_CHARS);
+    const bounded = value.replace(/[\r\n\t\u2028\u2029]+/g, " ").slice(0, MAX_LINE_CHARS);
     return bounded
         .replace(/<Value>[\s\S]*?<\/Value>/gi, "<Value>[redacted]</Value>")
         .replace(/(password|token|secret)\s*[:=].*$/gi, "$1=[redacted]")
