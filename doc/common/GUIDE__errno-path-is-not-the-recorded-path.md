@@ -109,10 +109,11 @@ already refused upstream by `trackedGitlinkPaths`. The **recorded path is the
 one with no validation at all** — it is the content of a file — so that is
 where the forgery test drives, and where any similar test should.
 
-Still open, and deliberately out of the scope that fixed this: the thrown
-errors in the same file (`Nested Git repository escapes its parent
-repository: ${candidatePath}` and its neighbours) interpolate the same
-untrusted paths and are printed by the CLI. They predate this change.
+To be clear about ownership: the forgeable field was **new code**, introduced
+by the NOTE this task added, not inherited. What *is* inherited, and still
+open: the thrown errors in the same file (`Nested Git repository escapes its
+parent repository: ${candidatePath}` and its neighbours) interpolate the same
+untrusted paths and are printed by the CLI.
 
 ## Third corollary — a repository you decline to manage is not one you may delete
 
@@ -131,6 +132,37 @@ modified and untracked files", not "delete a repository you could not inspect".
 The general lesson: when you turn a failure into a skip, enumerate what the
 failure was protecting. The refusals themselves stayed intact here; the set
 they policed silently shrank.
+
+## Fourth corollary — key a skip on what it is *for*, not on what it *looks like*
+
+The first version of the skip keyed on "an ENOENT/ENOTDIR appears anywhere in
+the error's cause chain". That is a description of the symptom, and it was much
+wider than the situation the skip exists for. `gitLinkKind` establishes
+ownership with bare filesystem calls, so an errno can be raised *while a
+judgement is still being made*, before the judgement can run. Measured: a
+`commondir` naming a repository with no `worktrees` directory makes
+`lstat(managementRootPath)` throw at exactly the point where `worktree
+management entry is outside its source repository` was about to be decided —
+turning an ownership refusal into a silent skip.
+
+The refusal was intact and unreachable, which is the worst combination: it
+reads as safe in the source and never runs.
+
+The fix is to key on evidence attached at the one site that knows what the
+failure is about. `recordedGitPath` is set only where the registration
+back-pointer fails to resolve, so requiring it — *and* an errno meaning
+absence, so a symlink loop still aborts — makes the skip exactly as wide as
+the portability case. It also made the NOTE's "could not be inspected" branch
+unreachable, and it was deleted rather than left as untested prose.
+
+## The pattern behind three of these
+
+Three separate defects here were the same mistake: **a list of remembered
+characters or symptoms standing in for a category.** The redaction that missed
+U+2028; the escaping that covered `Cc`/`Cf` and missed `Zl`/`Zp`; the skip
+keyed on errnos rather than on what the errno was about. Each time the list was
+right about everything on it. Prefer the category — a Unicode property, a
+marker attached at the deciding site — and assert its premise.
 
 ## Testing note
 

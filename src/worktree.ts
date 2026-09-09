@@ -2319,8 +2319,8 @@ function relativePathEscapesRoot(relativePath: string): boolean {
 }
 
 /**
- * True when this error, or anything it wraps, is one of the given filesystem
- * errnos.
+ * The recorded path, when this error says a worktree registration named a path
+ * this machine cannot resolve — and `null` for every other failure.
  *
  * The nested-repository scan already decided that a candidate it cannot stat is
  * one to skip rather than to abort on. That decision was unreachable, because
@@ -2336,24 +2336,32 @@ function relativePathEscapesRoot(relativePath: string): boolean {
  * side is wrong about its own path; the file is simply not portable across the
  * mount boundary.
  *
- * Only errnos are unwrapped this way. The scan's deliberate refusals — escapes
- * its parent, metadata is a symbolic link, not owned by parent or a registered
- * worktree — carry no `code` anywhere in their chain and keep aborting, which
- * is the point: this moves the line between "skip" and "abort" and the risk is
- * moving it too far.
+ * TWO conditions, because either alone is too wide. The marker is attached at
+ * exactly one site — resolving the registration back-pointer — so it says the
+ * failure is about a recorded path rather than about anything else `gitLinkKind`
+ * touches. Keying on the errno alone was much wider than the portability case it
+ * was written for: `gitLinkKind` raises unwrapped errnos from seven places
+ * inside its ownership block, some of them BEFORE the judgement they precede can
+ * run. A `commondir` naming a repository with no `worktrees` directory made
+ * `lstat` throw where `worktree management entry is outside its source
+ * repository` was about to be decided, and that ownership refusal became a
+ * silent skip — measured against both sides of the change. And the errno is
+ * still required alongside the marker, so a registration that fails to resolve
+ * for a reason other than absence (a symlink loop, say) keeps aborting.
  */
-function errorChainHasFilesystemCode(error: unknown, codes: readonly string[]): boolean {
-    const seen = new Set<unknown>();
-    let current: unknown = error;
-    while (current && typeof current === "object" && !seen.has(current)) {
-        seen.add(current);
-        if (codes.includes((current as NodeJS.ErrnoException).code ?? "")) return true;
-        current = (current as { cause?: unknown }).cause;
+export function unreachableRecordedGitPath(error: unknown): string | null {
+    let recorded: string | null = null;
+    let absent = false;
+    for (const link of errorChain(error)) {
+        if (recorded === null && typeof link.recordedGitPath === "string" && link.recordedGitPath) {
+            recorded = link.recordedGitPath;
+        }
+        if (typeof link.code === "string" && UNREACHABLE_PATH_CODES.includes(link.code)) absent = true;
     }
-    return false;
+    return recorded !== null && absent ? recorded : null;
 }
 
-const UNREACHABLE_PATH_CODES = ["ENOENT", "ENOTDIR"] as const;
+const UNREACHABLE_PATH_CODES: readonly string[] = ["ENOENT", "ENOTDIR"];
 
 function nestedRepositoryCandidateIsSafe(
     parentRepository: string,
@@ -2395,18 +2403,22 @@ function nestedRepositoryCandidateIsSafe(
             `Nested Git repository metadata is not owned by its parent or a registered worktree: ${candidatePath}`,
         );
     } catch (error) {
-        if (errorChainHasFilesystemCode(error, UNREACHABLE_PATH_CODES)) {
+        // The deliberate refusals are answered first. None of them can carry an errno today,
+        // so the order is not load-bearing — but nothing tested that, and having the judgement
+        // win by construction rather than by accident costs nothing.
+        if (strict && (error as Error).message?.startsWith?.("Nested Git repository ")) {
+            throw error;
+        }
+        const recorded = unreachableRecordedGitPath(error);
+        if (recorded !== null) {
             // Skipped, not silent. `ccc` now manages less than the workspace
             // contains, and the run that used to fail loudly would otherwise
             // succeed while saying nothing about what it dropped.
-            warnUnreachableNestedRepository(candidatePath, error);
+            warnUnreachableNestedRepository(candidatePath, recorded);
             unreachable?.push(candidatePath);
             return false;
         }
         if (!strict) return false;
-        if ((error as Error).message.startsWith("Nested Git repository ")) {
-            throw error;
-        }
         throw new Error(
             `Unable to inspect nested Git repository '${candidatePath}'.`,
             { cause: error },
@@ -2416,27 +2428,25 @@ function nestedRepositoryCandidateIsSafe(
 
 const warnedUnreachableNestedRepositories = new Set<string>();
 
-function warnUnreachableNestedRepository(candidatePath: string, error: unknown): void {
+function warnUnreachableNestedRepository(candidatePath: string, recorded: string): void {
     // The scan runs more than once per invocation, and repeating the same line
     // teaches an operator to skim past it.
     if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
     warnedUnreachableNestedRepositories.add(candidatePath);
-    const recorded = recordedGitPathFromErrorChain(error);
-    // The container-boundary sentence is a diagnosis, so it is only printed where the
-    // evidence for it exists: a worktree registration naming a path this machine cannot
-    // resolve. Attaching it to every skip sent an operator with merely malformed metadata
-    // looking for a mount problem they do not have.
+    // The container-boundary sentence is a diagnosis, and it is now the only case that
+    // reaches here: the caller skips only when it has a recorded path that is not there.
+    // There used to be a second branch for skips with no recorded path, which was how a
+    // malformed-metadata failure got this diagnosis attached to it; narrowing the skip
+    // removed those failures from this function rather than rewording them.
     // Written straight to the stream rather than through console.warn: console binds its
     // stream once, so a test that intercepts process.stderr.write to prove this line goes
     // to stderr would see nothing, and the channel would stop being pinned.
-    const where = terminalSafe(candidatePath);
-    process.stderr.write(recorded
-        ? `[ccc] NOTE: Skipping nested Git repository ${where}: its Git metadata\n`
+    process.stderr.write(
+        `[ccc] NOTE: Skipping nested Git repository ${terminalSafe(candidatePath)}: its Git metadata\n`
         + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary files.\n`
         + "      A worktree registered inside the container records a container path, which\n"
-        + "      the host cannot resolve, and the reverse.\n"
-        : `[ccc] NOTE: Skipping nested Git repository ${where}: its Git metadata\n`
-        + `      could not be inspected (${terminalSafe(errorChainReason(error))}). It is left as ordinary files.\n`);
+        + "      the host cannot resolve, and the reverse.\n",
+    );
 }
 
 // Everything interpolated into the NOTE is repository-controlled: submodule names arrive
@@ -2448,13 +2458,25 @@ function warnUnreachableNestedRepository(candidatePath: string, error: unknown):
 // alone was not enough on either count: it did not escape the quote, so a submodule named
 // `api": names "C:/innocent` closed the field and forged a second one; and it did not escape
 // the backslash, so a directory literally named `svc\u001b[31m` rendered identically to a
-// real ESC that had been escaped. JSON.stringify escapes quote, backslash and C0, and leaves
-// C1 and the format characters — the bidi overrides among them — which is what remains here.
+// real ESC that had been escaped. JSON.stringify escapes quote, backslash, C0 and lone
+// surrogates, and leaves everything below.
+//
+// The class is written as the four categories rather than as the characters I could name.
+// Twice now — here and in the Hyper-V log redaction — enumerating remembered characters
+// missed U+2028 and U+2029, which are Zl and Zp: not control characters, not format
+// characters, and line terminators to a terminal all the same. Cc and Cf carry the ESC and
+// BEL and the bidi overrides; Zl and Zp carry the two that keep being forgotten.
+const TERMINAL_UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+
 function terminalSafe(value: string): string {
-    return JSON.stringify(value).replace(
-        /[\p{Cc}\p{Cf}]/gu,
-        (character) => `\\u${character.codePointAt(0)!.toString(16).padStart(4, "0")}`,
-    );
+    return JSON.stringify(value).replace(TERMINAL_UNSAFE, (character) => {
+        const code = character.codePointAt(0)!;
+        // Astral code points need six digits and `\u{...}`; `\u` plus five digits is not an
+        // escape any reader, human or machine, can parse back.
+        return code > 0xffff
+            ? `\\u{${code.toString(16)}}`
+            : `\\u${code.toString(16).padStart(4, "0")}`;
+    });
 }
 
 // One traversal, two questions. Nothing else in the repository walks `cause`, so there is
@@ -2468,23 +2490,6 @@ function* errorChain(error: unknown): Generator<Record<string, unknown>> {
         yield current as Record<string, unknown>;
         current = (current as { cause?: unknown }).cause;
     }
-}
-
-// Only the path Git recorded, never an errno's own `path` — see the throw site in
-// gitLinkKind for why those two are different values.
-function recordedGitPathFromErrorChain(error: unknown): string | null {
-    for (const link of errorChain(error)) {
-        if (typeof link.recordedGitPath === "string" && link.recordedGitPath) return link.recordedGitPath;
-    }
-    return null;
-}
-
-function errorChainReason(error: unknown): string {
-    let reason = "";
-    for (const link of errorChain(error)) {
-        if (typeof link.message === "string" && link.message) reason = link.message;
-    }
-    return reason || "no reason reported";
 }
 
 /**

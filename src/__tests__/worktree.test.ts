@@ -27,6 +27,7 @@ import {
     branchExistsInRepo,
     createWorkspace,
     removeWorkspace,
+    unreachableRecordedGitPath,
     repairWorkspace,
     isValidWorktree,
     detectBrokenWorktrees,
@@ -1365,6 +1366,10 @@ describe("assertWorkspaceBranch", () => {
         const escape = String.fromCharCode(0x1b);
         const bell = String.fromCharCode(0x07);
         const rightToLeftOverride = String.fromCharCode(0x202e);
+        // Zl and Zp. Not control characters, not format characters, and line terminators all
+        // the same — the pair that a list of remembered characters keeps leaving out.
+        const lineSeparator = String.fromCharCode(0x2028);
+        const paragraphSeparator = String.fromCharCode(0x2029);
 
         const workspace = getWorkspacePath(repoPath, "feature-login");
         spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
@@ -1392,7 +1397,10 @@ describe("assertWorkspaceBranch", () => {
         const managementRoot = join(nestedSource, ".git", "worktrees");
         const management = join(managementRoot, readdirSync(managementRoot)[0], "gitdir");
         expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
-        writeFileSync(management, `/nosuchroot-zzz/ws/services/${escape}[5mBLINK/.git\n`);
+        writeFileSync(
+            management,
+            `/nosuchroot-zzz/ws/services/${escape}[5mBLINK${lineSeparator}x${paragraphSeparator}y/.git\n`,
+        );
 
         const stderr: string[] = [];
         const originalWrite = process.stderr.write;
@@ -1409,9 +1417,15 @@ describe("assertWorkspaceBranch", () => {
         expect(notice, "an escape sequence must not reach the terminal").not.toContain(escape);
         expect(notice, "a bidi override must not reach the terminal").not.toContain(rightToLeftOverride);
         expect(notice, "a bell must not reach the terminal").not.toContain(bell);
+        expect(notice, "U+2028 is a line terminator too").not.toContain(lineSeparator);
+        expect(notice, "and so is U+2029").not.toContain(paragraphSeparator);
         // Escaped, not deleted — the operator still has to be able to identify the directory.
         expect(notice).toContain("\\u001b");
         expect(notice).toContain("\\u202e");
+        expect(notice).toContain("\\u2028");
+        expect(notice).toContain("\\u2029");
+        // One line per NOTE. A separator that survived would split it into what looks like two.
+        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(4);
     });
 
     // Escaping control characters is not on its own enough. The name is rendered into a line
@@ -1470,6 +1484,94 @@ describe("assertWorkspaceBranch", () => {
         // code emitted. A real one, escaped by us, stays single.
         expect(notice, "a literal backslash-u in a name must not read as an escape we wrote")
             .toContain("\\\\u001b");
+    });
+
+    // Driven directly, because the production route always wraps: the marker is attached two
+    // frames below, so the raw form is reachable only through a TOCTOU window I could not make
+    // deterministic. That is iteration 1 of the same loop, not a separate branch, and pinning it
+    // here is honest where building a race fixture would not be.
+    describe("unreachableRecordedGitPath", () => {
+        const marked = (extra: Record<string, unknown>) => Object.assign(new Error("x"), extra);
+
+        it("answers on the error itself, not only on what it wraps", () => {
+            expect(unreachableRecordedGitPath(marked({ recordedGitPath: "/a/.git", code: "ENOENT" })))
+                .toBe("/a/.git");
+        });
+
+        it("finds a marker and an errno that sit on different links of the chain", () => {
+            const cause = marked({ code: "ENOENT" });
+            const middle = new Error("wrapped", { cause });
+            (middle as unknown as Record<string, unknown>).recordedGitPath = "/b/.git";
+            expect(unreachableRecordedGitPath(new Error("outer", { cause: middle }))).toBe("/b/.git");
+        });
+
+        it("accepts ENOTDIR as well as ENOENT", () => {
+            expect(unreachableRecordedGitPath(marked({ recordedGitPath: "/c/.git", code: "ENOTDIR" })))
+                .toBe("/c/.git");
+        });
+
+        it("refuses a recorded path whose resolution failed for some other reason", () => {
+            expect(unreachableRecordedGitPath(marked({ recordedGitPath: "/d/.git", code: "ELOOP" })))
+                .toBeNull();
+        });
+
+        it("refuses an errno that carries no recorded path", () => {
+            expect(unreachableRecordedGitPath(marked({ code: "ENOENT" }))).toBeNull();
+        });
+
+        it("terminates on a chain that points at itself", () => {
+            const looping = marked({ code: "ENOENT" }) as Error & { cause?: unknown };
+            looping.cause = looping;
+            expect(unreachableRecordedGitPath(looping)).toBeNull();
+        });
+    });
+
+    // The skip must not swallow a judgement that simply happened to raise an errno on its way.
+    // `gitLinkKind` inspects ownership with bare filesystem calls, so a candidate can make one
+    // of them fail at the exact point a judgement was about to be made — and an errno cannot be
+    // told apart from the portability case it was widened for.
+    it("still aborts when an ownership check fails before it can be decided", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-own-source-${randomUUID()}`);
+        const unrelated = join(tmpdir(), `wt-own-unrelated-${randomUUID()}`);
+        for (const repository of [nestedSource, unrelated]) {
+            mkdirSync(repository, { recursive: true });
+            for (const args of [
+                ["init"],
+                ["config", "user.email", "t@example.com"],
+                ["config", "user.name", "t"],
+                ["commit", "--allow-empty", "-m", "init"],
+            ]) spawnSync("git", args, { cwd: repository, stdio: "pipe" });
+        }
+
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", join(workspace, "services", "nested-api"), "-b", "nested-branch"], {
+            cwd: nestedSource, stdio: "pipe",
+        });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        // Points the management entry at a repository that has no `worktrees` directory, so the
+        // lstat of that directory raises ENOENT exactly where "management entry is outside its
+        // source repository" was about to be decided.
+        const managementRoot = join(nestedSource, ".git", "worktrees");
+        writeFileSync(
+            join(managementRoot, readdirSync(managementRoot)[0], "commondir"),
+            `${join(unrelated, ".git")}\n`,
+        );
+
+        try {
+            expect(() => detectWorktreeWorkspaceBranch(workspace))
+                .toThrow("Unable to inspect nested Git repository");
+        } finally {
+            rmSync(nestedSource, { recursive: true, force: true });
+            rmSync(unrelated, { recursive: true, force: true });
+        }
     });
 
     // The narrowness of UNREACHABLE_PATH_CODES is the load-bearing part of the skip: a candidate
