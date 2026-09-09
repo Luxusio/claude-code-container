@@ -1296,12 +1296,16 @@ describe("assertWorkspaceBranch", () => {
             ["commit", "--allow-empty", "-m", "init"],
         ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
 
-        const nestedPath = join(workspace, "services", "nested-api");
+        // Named with an escape sequence, because the refusal interpolates the same
+        // repository-controlled path the NOTE does, into a string the CLI prints — and only the
+        // NOTE's escaping was covered. A mutation dropping it from here survived the suite.
+        const nestedName = `nested-api${String.fromCharCode(0x1b)}[31m`;
+        const nestedPath = join(workspace, "services", nestedName);
         mkdirSync(join(workspace, "services"), { recursive: true });
         spawnSync("git", ["worktree", "add", nestedPath, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
         spawnSync("git", [
             "update-index", "--add", "--cacheinfo",
-            `160000,${"0".repeat(39)}1,services/nested-api`,
+            `160000,${"0".repeat(39)}1,services/${nestedName}`,
         ], { cwd: workspace, stdio: "pipe" });
         const uncommitted = join(nestedPath, "UNCOMMITTED-WORK.txt");
         writeFileSync(uncommitted, "work that has never left this machine");
@@ -1324,8 +1328,15 @@ describe("assertWorkspaceBranch", () => {
 
         expect(result.removed, "nothing may be removed while a repository is uninspectable").toEqual([]);
         expect(result.errors.join(" ")).toContain("could not inspect and will not delete");
-        expect(result.errors.join(" ")).toContain("services/nested-api");
+        expect(result.errors.join(" ")).toContain("nested-api");
+        expect(result.errors.join(" "), "the refusal reaches a terminal too")
+            .not.toContain(String.fromCharCode(0x1b));
+        expect(result.errors.join(" ")).toContain("\\u001b");
         expect(existsSync(uncommitted), "another repository's uncommitted work must survive").toBe(true);
+        // The CLI's standing advice is "use -f to force". This refusal holds under --force, so
+        // that advice would send the operator to a command that fails identically.
+        expect(result.forceWouldNotHelp, "the caller has to be able to tell -f will not help").toBe(true);
+        expect(result.errors.join(" "), "and the refusal has to say what would").toMatch(/move it out|delete it yourself/);
     });
 
     // The third deliberate refusal. The other two are pinned by the tests around this one; this

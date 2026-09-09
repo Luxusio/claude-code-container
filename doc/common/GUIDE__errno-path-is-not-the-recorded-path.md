@@ -36,11 +36,12 @@ syscall: distrusting an exact value is its own kind of wrong.
    `/project/<workspace>-<hash>/services/<repo>/.git`. On a host without
    `C:\project` the NOTE collapses to `C:\project` — dropping the
    workspace-and-hash, which is the only part that tells the operator *which*
-   worktree to repair. The operator's own output is the demonstration: their
-   NOTE named `C:\project\catchy-secrets--kjkim9-a78536cd7627` and stopped
-   there — the walk gave up at the workspace component, two of five, dropping
-   `\services\catchy-api\.git`. So `C:\project` did exist on that machine, and
-   the recorded path still was not what got printed.
+   worktree to repair. The operator's own output is the demonstration — from
+   the abort that preceded the NOTE, whose cause line read `ENOENT: lstat
+   'C:\project\catchy-secrets--kjkim9-a78536cd7627'`. The walk gave up at the
+   workspace component, two of five, dropping `\services\catchy-api\.git`. So
+   `C:\project` did exist on that machine, and the recorded path still was not
+   the value that surfaced.
 
 2. **The regression test passed only inside a ccc container.** It asserted
    `toContain("/project/unreachable-workspace-abc123")`, which holds because
@@ -128,6 +129,18 @@ work survived; after it, `{"removed":[...],"errors":[]}` and the work was gone.
 `removeWorkspace` now collects skipped candidates from the scan and refuses,
 naming them, **including under `--force`** — `--force` means "delete my
 modified and untracked files", not "delete a repository you could not inspect".
+A refusal that `--force` does not lift also has to say so: the CLI's standing
+"use -f to force" advice would otherwise send the operator to a command that
+fails identically, which is why `RemoveResult` carries `forceWouldNotHelp`.
+
+**Know the guard's reach, and do not overstate it.** It runs
+`scanUnifiedNestedRepositories(wsPath, …)`, so it covers the unified removal
+path. In multi-repo mode `wsPath` is not a Git repository, that scan yields no
+candidates at all, and the guard protects nothing — the below-top-level
+deletion there is still open, and is pre-existing rather than caused by the
+skip. Counting the *call sites* that delete is not the same as checking which
+of them the guard's scan can actually see; the first reading of this said both
+modes were covered, and only measuring showed otherwise.
 
 The general lesson: when you turn a failure into a skip, enumerate what the
 failure was protecting. The refusals themselves stayed intact here; the set

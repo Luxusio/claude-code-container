@@ -648,6 +648,11 @@ export interface WorktreeRepoResult {
 export interface RemoveResult {
     removed: string[];
     errors: string[];
+    // True when re-running with --force would fail in exactly the same way. The CLI's standing
+    // advice is "use -f to force", which is worse than useless for a refusal that force does not
+    // lift: it sends the operator to a command that cannot work and says nothing about what
+    // would.
+    forceWouldNotHelp?: boolean;
 }
 
 // === Pure Functions ===
@@ -2409,6 +2414,16 @@ function nestedRepositoryCandidateIsSafe(
         if (strict && (error as Error).message?.startsWith?.("Nested Git repository ")) {
             throw error;
         }
+        // A candidate that vanished between the readdir and the lstat, unwrapped and raw. This
+        // is the pre-existing behaviour, restored: narrowing the skip to the recorded-path case
+        // removed it by accident, which would abort a whole scan because an install happened to
+        // delete a directory while it ran. Silent, and not added to `unreachable`, because the
+        // path is gone — there is nothing to tell the operator and nothing to protect from a
+        // later delete. Only the top-level error, never a cause: an errno reached through a
+        // wrapper came from inside an ownership judgement, and that is the case this must not
+        // swallow.
+        const rawCode = (error as NodeJS.ErrnoException)?.code;
+        if (typeof rawCode === "string" && UNREACHABLE_PATH_CODES.includes(rawCode)) return false;
         const recorded = unreachableRecordedGitPath(error);
         if (recorded !== null) {
             // Skipped, not silent. `ccc` now manages less than the workspace
@@ -6399,8 +6414,10 @@ export function removeWorkspace(
     if (unreachable.length > 0) {
         return {
             removed: [],
+            forceWouldNotHelp: true,
             errors: unreachable.map((path) => (
                 `workspace holds a nested Git repository ccc could not inspect and will not delete: ${terminalSafe(path)}`
+                + " — move it out of the workspace, or delete it yourself, then run this again"
             )),
         };
     }

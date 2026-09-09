@@ -1379,8 +1379,10 @@ function handleWorktreeRemove(
         }
 
         if (!workspaceRemovalCompleted(result)) {
-            if (!force) {
+            if (!force && !result.forceWouldNotHelp) {
                 console.error(`\nSome items could not be removed. Use -f to force.`);
+            } else if (result.forceWouldNotHelp) {
+                console.error("\nWorkspace removal was refused. -f does not lift this refusal.");
             } else {
                 console.error("\nWorkspace removal did not complete.");
             }
