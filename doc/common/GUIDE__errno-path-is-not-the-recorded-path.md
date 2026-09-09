@@ -133,6 +133,15 @@ A refusal that `--force` does not lift also has to say so: the CLI's standing
 "use -f to force" advice would otherwise send the operator to a command that
 fails identically, which is why `RemoveResult` carries `forceWouldNotHelp`.
 
+Do not mistake an incidental throw for a backstop. Removing the guard does not
+lose data in *every* shape: where the source-side copy is an ordinary clone and
+only the workspace-side one is a registered worktree, a later `gitLinkKind`
+call resolves far enough to throw before anything is deleted. That is a
+consequence of topology, not a designed second line of defence, and it is
+absent from the shape the operator actually hit — there, removing the guard
+destroys the work. Two people measured this and got opposite answers from
+different fixtures; the guard is what makes the outcome not depend on which.
+
 **Know the guard's reach, and do not overstate it.** It runs
 `scanUnifiedNestedRepositories(wsPath, …)`, so it covers the unified removal
 path. In multi-repo mode `wsPath` is not a Git repository, that scan yields no
