@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { pathToFileURL } from "url";
@@ -702,6 +702,18 @@ describe("Windows Server evaluation license prompt", () => {
         // asked of them and when, so the assertion follows the action rather than the old wording.
         expect(output, "must say what will be asked of the operator").toContain("approve elevation");
         expect(output, "and must not send them back to re-run the whole thing").not.toContain("Re-run from an elevated terminal");
+        // `approve elevation` alone was satisfied by the earlier wording too, so reverting the
+        // description survived. What the approval actually permits is the thing consent is given
+        // on: a forced power-off, a detach, the mount, a re-attach — not "that single mount".
+        for (const scope of ["force-stop", "detach", "read-only", "re-attach"]) {
+            expect(output, `the operator is consenting to this and must be told: ${scope}`).toContain(scope);
+        }
+        // And the expiry, with its number taken from the library rather than typed as prose. A
+        // number in a NOTE tied to nothing is how `elevation-declined` got shipped.
+        const elevationSource = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v-windows-library-elevation.mjs"), "utf8");
+        const timeout = elevationSource.match(/ELEVATION_TIMEOUT_MILLISECONDS = ([^;\n]+)/)?.[1] ?? "";
+        expect(timeout.trim(), "if this changes, the NOTE below is a lie").toBe("10 * 60 * 1000");
+        expect(output, "an unattended run must know the request ends rather than hangs").toContain("expires after ten minutes");
         expect(output, "must not imply the VM lifecycle is broken").toContain("lifecycle itself is unaffected");
     });
 

@@ -5,7 +5,7 @@ import { deflateSync } from "zlib";
 import { describe, expect, it } from "vitest";
 import { compactMessage } from "./compact-message.ts";
 import { captureHyperVWindowsConsole, HYPER_V_WINDOWS_CONSOLE_CAPTURE_DIMENSIONS } from "./hyper-v-windows-console-capture.ts";
-import { captureHyperVWindowsSetupDiagnostics, MOUNT_MESSAGE_MAX_CHARS } from "./hyper-v-windows-setup-diagnostics.ts";
+import { captureHyperVWindowsSetupDiagnostics, MOUNT_MESSAGE_MAX_CHARS, SETUP_DIAGNOSTICS_SAFE_CODES } from "./hyper-v-windows-setup-diagnostics.ts";
 
 const IDENTITY = {
     ownerId: "0123456789abcdef",
@@ -382,11 +382,20 @@ describe("captureHyperVWindowsConsole", () => {
         );
         // The elevation retry appends a suffix whenever it does not recover the logs, so the widest
         // reachable value of this field is the privilege code PLUS the longest of those suffixes.
-        // The longest is the approved-but-still-refused marker carrying the privilege code NAME (50
-        // chars) — longer than any requestAdministrator errorCode or local reason. Adding the
-        // suffix moved the residual band from 149 to 107, which is the measurement I owed after
-        // making the code string longer and had not taken.
-        const widestElevationSuffix = "(elevation=approved,still=hyper-v-setup-diagnostics-mount-privilege-required)";
+        // Derived rather than typed, because it has already moved once: the `still=` form (77 chars
+        // at its longest name) was widest until `published=` was added, and `published=` carries a
+        // longer keyword, so the fixture was silently measuring against the second-widest shape
+        // within one commit of being written.
+        //
+        // `still=` carries only the code NAME (split at `[`); `published=` carries a publish failure
+        // code, which has no bracket. Both draw from SAFE_CODES, whose longest members are 49
+        // characters — asserted below, so this stops being true-by-inspection.
+        const longestSafeCode = [...SETUP_DIAGNOSTICS_SAFE_CODES].reduce((a, b) => (b.length > a.length ? b : a));
+        const widestElevationSuffix = `(elevation=approved,published=${longestSafeCode})`;
+        expect(widestElevationSuffix, "the suffix must be DERIVED from the code set, not typed — typing it is how it went stale")
+            .toContain(longestSafeCode);
+        expect(widestElevationSuffix.length, "and it must still beat the other suffix family, which was widest until published= arrived")
+            .toBeGreaterThan("(elevation=approved,still=hyper-v-setup-diagnostics-mount-privilege-required)".length);
         const widestReason = [
             "profile=windows-server",
             "guestConsole=unavailable(hyper-v-console-rgb565-invalid[c=async,s=bitmap-stride,k=byte-array,b=614400,t=1279])",
@@ -403,7 +412,7 @@ describe("captureHyperVWindowsConsole", () => {
         // Producing the fixture MOVED the blind band, it did not close it, and the paragraph above
         // implied otherwise. The cut is at 697, not 700: compactMessage returns
         // `slice(0, limit - 3) + "..."`, so content survives only while it ends at or before 697.
-        // Measured at HEAD: 72 characters sit between the end of the marker and that cut, so
+        // Measured at HEAD: 69 characters sit between the end of the marker and that cut, so
         // MOUNT_MESSAGE_MAX_CHARS can rise by that much and the two assertions above still pass —
         // against ~170 for the hand-typed literal, and 149 before the elevation suffix widened the
         // shape. It is still not "raise the cap and this fails", which the first version implied.
@@ -420,7 +429,7 @@ describe("captureHyperVWindowsConsole", () => {
         // worth a tripwire, and it is the one this guards.
         const marker = "hyper-v-guest-not-ready";
         const markerEnd = compactedWidest.indexOf(marker) + marker.length;
-        expect(697 - markerEnd, "the undetected band must not grow: something ahead of the marker got shorter").toBeLessThan(85);
+        expect(697 - markerEnd, "the undetected band must not grow: something ahead of the marker got shorter").toBeLessThan(80);
     });
 
     it("exports the fixed capture dimensions", () => {

@@ -41,7 +41,10 @@ const ALLOWED_LOG_PATHS = new Set([
     "Windows\\Panther\\UnattendGC\\setupact.log",
     "Windows\\Panther\\UnattendGC\\setuperr.log",
 ]);
-const SAFE_CODES = new Set([
+// Exported so the reporter-budget fixture can derive its widest suffix from the real set instead
+// of hand-typing the longest name it happens to know about — which it already got wrong once,
+// within one commit of arguing against exactly that.
+export const SETUP_DIAGNOSTICS_SAFE_CODES = new Set([
     "hyper-v-setup-diagnostics-host-not-windows",
     "hyper-v-setup-diagnostics-identity-invalid",
     "hyper-v-setup-diagnostics-powershell-unavailable",
@@ -351,7 +354,7 @@ function cleanupProgram(vmName: string, vmId: string, marker: string, expectedDi
 }
 
 function failure(code: string): HyperVWindowsSetupDiagnosticsResult {
-    return { ok: false, code: SAFE_CODES.has(code) ? code : "hyper-v-setup-diagnostics-output-invalid" };
+    return { ok: false, code: SETUP_DIAGNOSTICS_SAFE_CODES.has(code) ? code : "hyper-v-setup-diagnostics-output-invalid" };
 }
 
 function mountFailureCode(value: unknown): string | null {

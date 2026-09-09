@@ -6,11 +6,13 @@ import { repoRoot } from "./helpers.ts";
 import { PRIVILEGED_RESULT_MARKER, validPrivilegedInput, type PrivilegedSetupDiagnosticsInput } from "./hyper-v-windows-setup-diagnostics-privileged.ts";
 import { publishHyperVWindowsSetupDiagnostics, type SetupDiagnosticsLog } from "./hyper-v-windows-setup-diagnostics.ts";
 
-// No path crosses this boundary. The elevated child returns the validated, redacted log payload and
-// the unelevated parent writes the artifacts under its own repository root — the only side that
-// knows where that is. The first version let the child publish, and under the elevation library's
-// staging directory its `repoRoot` resolved to the drive root: artifacts landed in C:\results while
-// the reported path stayed repo-relative and pointed at nothing.
+// No HOST path crosses this boundary in either direction — the allowlisted guest-relative log path
+// (`Windows\Panther\setuperr.log`) does, constrained to ALLOWED_LOG_PATHS. The elevated child
+// returns the validated, redacted log payload and the unelevated parent writes the artifacts under
+// its own repository root, the only side that knows where that is. The first version let the child
+// publish, and under the elevation library's staging directory its `repoRoot` resolved to the drive
+// root: artifacts landed in C:\results while the reported path stayed repo-relative and pointed at
+// nothing.
 export type ElevatedSetupDiagnosticsResult =
     | { ok: true; logs: SetupDiagnosticsLog[] }
     | { ok: false; code: string };

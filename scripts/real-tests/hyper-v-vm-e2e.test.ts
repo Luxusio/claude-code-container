@@ -1082,6 +1082,14 @@ describe("Hyper-V E2E zero-config image selection", () => {
             expect(diagnosticProgram.indexOf("Dismount-VHD")).toBeLessThan(diagnosticProgram.indexOf("$Result | ConvertTo-Json"));
             expect(diagnosticProgram).not.toContain("Add-VMHardDiskDrive");
             expect(diagnosticProgram).not.toMatch(/Get-VMHardDiskDrive[^\n]*Where-Object/);
+            // Pinned to the injected root, not merely readable. Dropping `outputRoot` from what
+            // capture hands to publish left every assertion below green — because this test reads
+            // back whatever path the result names, so it followed the mutant to the DEFAULT root and
+            // the suite silently wrote into the repository's real results/ directory. "The content
+            // is right" says nothing about where the content went, which is the whole subject of
+            // this task's blocking defect.
+            expect((captured as any).latestPath.startsWith(outputRoot), "the artifact must land in the root it was given").toBe(true);
+            expect((captured as any).timestampedPath.startsWith(outputRoot)).toBe(true);
             const content = readFileSync((captured as any).latestPath, "utf8");
             expect(content).toContain("Shell-Setup oobeSystem rejected setting 0x8007000d");
             expect(content).toContain("<Value>[redacted]</Value>");

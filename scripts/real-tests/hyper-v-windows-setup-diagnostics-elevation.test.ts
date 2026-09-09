@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
-import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join, sep } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 import { describe, expect, it, vi } from "vitest";
 import { repoRoot } from "./helpers.ts";
 import { buildLevel3Artifacts, HYPER_V_LEVEL3_PROVIDER_CONTRACT } from "./support/level3-host.ts";
@@ -15,6 +16,7 @@ import {
 import {
     PRIVILEGED_RESULT_MARKER,
     privilegedResultFrame,
+    invokedAsEntrypoint,
     runPrivilegedSetupDiagnostics,
     validPrivilegedInput,
 } from "./hyper-v-windows-setup-diagnostics-privileged.ts";
@@ -30,6 +32,7 @@ const IDENTITY = {
 const LOGS = [{ path: "Windows\\Panther\\setuperr.log", lines: ["setup failed"] }];
 const TRUSTED_POWERSHELL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 const elevationSource = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v-windows-library-elevation.mjs"), "utf8");
+const publishSource = readFileSync(join(repoRoot, "scripts", "real-tests", "hyper-v-windows-setup-diagnostics.ts"), "utf8");
 
 // Reachable on an unelevated host for ANY mount failure, transient category included: $MountElevated
 // is loop-invariant so the producer breaks at attempt 1 and emits the privilege code with whatever
@@ -187,6 +190,17 @@ describe("Windows Setup diagnostics elevation request", () => {
             expect(line, "an embedded newline must not carry a secret past redaction").not.toContain("hunter2");
             expect(line).toContain("password=[redacted]");
             expect(line, "and the newline itself must not survive into a single-line reporter field").not.toContain("\n");
+            // The RETURNED value being clean is not the property that matters — the artifact is what
+            // an operator opens. Asserting only the return left "write raw `logs` to disk while
+            // returning `validated`" alive, which is exactly "a child that skipped redaction got
+            // text past the parent", the thing the decoder's shape-only check defers to this
+            // function for. On the unelevated path the two are the same object; on the elevated
+            // path `logs` is the child's unvalidated payload.
+            const artifact = multiline.ok === true ? readFileSync(multiline.latestPath, "utf8") : "";
+            expect(artifact, "the file is what the operator reads, and it must be redacted too").not.toContain("hunter2");
+            expect(artifact).toContain("password=[redacted]");
+            expect(multiline.ok === true ? multiline.timestampedPath : "", "both artifacts, not just latest")
+                .toSatisfy((p: string) => existsSync(p));
 
             const started = Date.now();
             const huge = publishHyperVWindowsSetupDiagnostics(
@@ -200,6 +214,23 @@ describe("Windows Setup diagnostics elevation request", () => {
         } finally {
             rmSync(out, { recursive: true, force: true });
         }
+    });
+
+    // A publish that cannot write must SAY so. Swallowing the failure returns ok with
+    // latestPath/timestampedPath naming files that were never created — the precise shape of the
+    // original C:\results defect, relocated onto the new path. And the default output root is the
+    // whole subject of that defect; every other test passes one explicitly, so nothing looked at it.
+    it("fails loudly when it cannot write, and defaults to the repository results root", () => {
+        const blocked = join(tmpdir(), `ccc-elevated-publish-blocked-${Date.now()}`);
+        writeFileSync(blocked, "not a directory");
+        try {
+            const result = publishHyperVWindowsSetupDiagnostics(LOGS, { outputRoot: join(blocked, "nested") });
+            expect(result).toEqual({ ok: false, code: "hyper-v-setup-diagnostics-artifact-publish-failed" });
+        } finally {
+            rmSync(blocked, { force: true });
+        }
+        expect(String(publishSource), "the default is the repository results root, not anywhere else")
+            .toContain('options.outputRoot || join(repoRoot, "results", "device-lab-real")');
     });
 
     // The state the whole "asserted, not measured" question turns on: the operator approved, the
@@ -270,6 +301,31 @@ describe("Windows Setup diagnostics elevation request", () => {
             requestAdministratorImpl: request,
         })).toEqual({ attempted: false, reason: "probe-failed" });
         expect(request, "no UAC dialog may be raised on any of these paths").not.toHaveBeenCalled();
+    });
+
+    // The two halves of AC-018a were asserted separately with nothing joining them: the library's
+    // mapping text on one side, the reporter rendering a STUBBED outcome on the other. Deleting the
+    // branch that carries requestAdministrator's errorCode through left the suite green, and every
+    // declined UAC would have reported (elevation=elevation-child-result-invalid). That is the same
+    // shape as the `elevation-declined` bug — a value produced by a stub and matched by a test —
+    // one layer further out.
+    it("carries the real elevation error code through to the reason line", async () => {
+        const outcome = await requestElevatedSetupDiagnostics(IDENTITY, {
+            platform: "win32",
+            resolveTrustedWindowsPowerShellImpl: () => TRUSTED_POWERSHELL,
+            isAdministratorImpl: () => false,
+            bundlePath: "bundle.mjs",
+            statSyncImpl: () => ({ size: 32 }),
+            readFileSyncImpl: () => Buffer.from("export const bundled = 1;\n"),
+            nodePath: "C:\\node.exe",
+            fileDigestImpl: async () => "a".repeat(64),
+            requestAdministratorImpl: async () => ({ status: 1, stdout: "", errorCode: "elevation-cancelled" }),
+        });
+        expect(outcome).toEqual({ attempted: true, errorCode: "elevation-cancelled" });
+        const reason = await hyperVWindowsFailureReason(failureReasonInput({
+            elevateSetupDiagnosticsImpl: async () => outcome,
+        }));
+        expect(reason).toContain(`${PRIVILEGE_CODE}(elevation=elevation-cancelled)`);
     });
 
     it("digests the embedded identity together with the program", async () => {
@@ -372,6 +428,27 @@ describe("Windows Setup diagnostics elevation request", () => {
         const outfile = (bundling?.args || []).find((arg) => arg.startsWith("--outfile="))?.slice("--outfile=".length);
         expect(outfile, "the builder's outfile and the requester's lookup path must be the same file")
             .toBe(PRIVILEGED_BUNDLE_RELATIVE_PATH.split(sep).join("/"));
+
+        // The other direction, which was unpinned: this is a Windows-only program and
+        // buildLevel3Artifacts is the SHARED entry, so an ungated build made every Linux Level 3 run
+        // bundle it — and a failure there would fail runs that can never use it.
+        const linuxSpawns: Array<{ args: string[] }> = [];
+        const linuxStatus = buildLevel3Artifacts("/repo", {
+            platform: "linux",
+            spawn: (_command: string, args: string[]) => {
+                linuxSpawns.push({ args });
+                return { status: 0, stdout: "", stderr: "" };
+            },
+            readFile: (path: string) => (path.endsWith("contracts.js")
+                ? `export const c = "${HYPER_V_LEVEL3_PROVIDER_CONTRACT}";`
+                : '{"version":"1.0.0"}'),
+            writeFile: () => undefined,
+        });
+        expect(linuxStatus, "and gating it must not fail the build it is gated out of").toBe(0);
+        expect(linuxSpawns.some((call) => call.args.some((arg) => arg.includes("setup-diagnostics-privileged"))),
+            "a Linux run must not bundle the Windows-only elevated child").toBe(false);
+        expect(linuxSpawns.some((call) => call.args.some((arg) => arg.includes("device-lab-mcp"))),
+            "but everything before the gate must still be built").toBe(true);
     });
 
     it("bounds the bundle it is willing to digest, and the frame it is willing to decode", async () => {
@@ -401,6 +478,32 @@ describe("Windows Setup diagnostics elevation request", () => {
         expect(JSON.parse(Buffer.from(oversized.slice(PRIVILEGED_RESULT_MARKER.length).trim(), "base64").toString("utf8")).ok,
             "and it has to be a frame that would otherwise decode").toBe(true);
         expect(decodePrivilegedResultFrame(oversized)).toBeNull();
+    });
+
+    // AC-020 names the realpath + pathToFileURL comparison specifically, and a raw string compare
+    // survived because the function was not exported. Its failure mode is silent: on Windows a
+    // casing or 8.3 short-name difference between argv[1] and the staged module yields no frame at
+    // all, and the operator gets `elevation-child-result-invalid` after already approving.
+    it("recognises its own entrypoint through realpath, not string equality", () => {
+        const dir = mkdtempSync(join(tmpdir(), "ccc-entrypoint-"));
+        try {
+            const real = join(dir, "scenario.mjs");
+            writeFileSync(real, "export const x = 1;\n");
+            const url = pathToFileURL(real).href;
+            expect(invokedAsEntrypoint(real, url), "the plain case must still match").toBe(true);
+            expect(invokedAsEntrypoint(undefined, url)).toBe(false);
+            expect(invokedAsEntrypoint(join(dir, "other.mjs"), url), "a different file is not the entrypoint").toBe(false);
+            // The case a raw compare gets wrong: the same file reached by a path that is not
+            // byte-identical. A symlink stands in for the Windows short-name and casing divergences
+            // this container cannot reproduce; realpath resolves both, string equality resolves
+            // neither.
+            const link = join(dir, "link.mjs");
+            symlinkSync(real, link);
+            expect(invokedAsEntrypoint(link, url), "same file, different spelling, still the entrypoint").toBe(true);
+            expect(link === fileURLToPath(url), "and a raw string compare would have said no").toBe(false);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     it("emits exactly one frame and no host paths", () => {

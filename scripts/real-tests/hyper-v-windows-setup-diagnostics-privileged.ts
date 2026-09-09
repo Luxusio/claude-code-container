@@ -113,7 +113,7 @@ export function runPrivilegedSetupDiagnostics(
 // side effect of `import`. Compared through realpath and pathToFileURL rather than as raw strings:
 // the staged path on Windows can differ from argv[1] by casing or 8.3 short name, and a miss here
 // would produce no frame at all and an `elevation-child-result-invalid` with nothing to explain it.
-function invokedAsEntrypoint(argv1: string | undefined, moduleUrl: string): boolean {
+export function invokedAsEntrypoint(argv1: string | undefined, moduleUrl: string): boolean {
     if (!argv1) return false;
     try {
         return pathToFileURL(realpathSync(argv1)).href === pathToFileURL(realpathSync(fileURLToPath(moduleUrl))).href;
