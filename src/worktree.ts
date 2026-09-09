@@ -844,7 +844,21 @@ function gitLinkKind(gitPath: string): GitLinkKind {
         }
         const registeredGitFile = readFileSync(join(gitDir, "gitdir"), "utf-8").trim();
         if (!registeredGitFile) throw new Error("empty gitdir registration");
-        if (realpathSync(registeredGitFile) !== realpathSync(gitPath)) {
+        let registeredRealPath: string;
+        try {
+            registeredRealPath = realpathSync(registeredGitFile);
+        } catch (error) {
+            // Carry the path Git actually recorded. An errno's own `path` is the FIRST MISSING
+            // COMPONENT of the walk, not the path asked for: on a machine where `/project` exists
+            // it reads like the recorded path, and on one where it does not it collapses to
+            // `/project` — dropping the workspace-and-hash that identifies which worktree to
+            // repair, and varying with the machine that happens to run the check.
+            throw Object.assign(
+                new Error("worktree registration names a path that cannot be resolved here", { cause: error }),
+                { recordedGitPath: registeredGitFile },
+            );
+        }
+        if (registeredRealPath !== realpathSync(gitPath)) {
             throw new Error("worktree registration does not point back to workspace");
         }
         const commonGitDir = resolve(gitDir, commonDir);
@@ -2405,25 +2419,51 @@ function warnUnreachableNestedRepository(candidatePath: string, error: unknown):
     // teaches an operator to skim past it.
     if (warnedUnreachableNestedRepositories.has(candidatePath)) return;
     warnedUnreachableNestedRepositories.add(candidatePath);
-    const unreachable = unreachablePathFromErrorChain(error);
-    process.stderr.write(
-        `NOTE Skipping nested Git repository '${candidatePath}': its Git metadata names `
-        + `${unreachable ? `'${unreachable}'` : "a path"}, which does not exist here.\n`
-        + "     It is left as ordinary files. A worktree registered inside the container records\n"
-        + "     a container path, which the host cannot resolve, and the reverse.\n",
-    );
+    const recorded = recordedGitPathFromErrorChain(error);
+    // The container-boundary sentence is a diagnosis, so it is only printed where the
+    // evidence for it exists: a worktree registration naming a path this machine cannot
+    // resolve. Attaching it to every skip sent an operator with merely malformed metadata
+    // looking for a mount problem they do not have.
+    // Written straight to the stream rather than through console.warn: console binds its
+    // stream once, so a test that intercepts process.stderr.write to prove this line goes
+    // to stderr would see nothing, and the channel would stop being pinned.
+    process.stderr.write(recorded
+        ? `[ccc] NOTE: Skipping nested Git repository '${candidatePath}': its Git metadata\n`
+        + `      names '${recorded}', which does not exist here. It is left as ordinary files.\n`
+        + "      A worktree registered inside the container records a container path, which\n"
+        + "      the host cannot resolve, and the reverse.\n"
+        : `[ccc] NOTE: Skipping nested Git repository '${candidatePath}': its Git metadata\n`
+        + `      could not be inspected (${errorChainReason(error)}). It is left as ordinary files.\n`);
 }
 
-function unreachablePathFromErrorChain(error: unknown): string | null {
+// One traversal, two questions. Nothing else in the repository walks `cause`, so there is
+// no existing helper to reuse; the `seen` guard is cheap insurance rather than a response
+// to a chain that can actually cycle today.
+function* errorChain(error: unknown): Generator<Record<string, unknown>> {
     const seen = new Set<unknown>();
     let current: unknown = error;
     while (current && typeof current === "object" && !seen.has(current)) {
         seen.add(current);
-        const candidate = (current as NodeJS.ErrnoException).path;
-        if (typeof candidate === "string" && candidate) return candidate;
+        yield current as Record<string, unknown>;
         current = (current as { cause?: unknown }).cause;
     }
+}
+
+// Only the path Git recorded, never an errno's own `path` — see the throw site in
+// gitLinkKind for why those two are different values.
+function recordedGitPathFromErrorChain(error: unknown): string | null {
+    for (const link of errorChain(error)) {
+        if (typeof link.recordedGitPath === "string" && link.recordedGitPath) return link.recordedGitPath;
+    }
     return null;
+}
+
+function errorChainReason(error: unknown): string {
+    let reason = "";
+    for (const link of errorChain(error)) {
+        if (typeof link.message === "string" && link.message) reason = link.message;
+    }
+    return reason || "no reason reported";
 }
 
 /**

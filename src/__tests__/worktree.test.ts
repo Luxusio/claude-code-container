@@ -1258,6 +1258,9 @@ describe("assertWorkspaceBranch", () => {
         try {
             expect(detectWorktreeWorkspaceBranch(workspace), "an unreachable nested repository must not refuse the workspace")
                 .toBe("feature-login");
+            // Twice, because the scan runs more than once per invocation and a line repeated
+            // every time is a line operators learn to skim past.
+            detectWorktreeWorkspaceBranch(workspace);
         } finally {
             process.stderr.write = originalWrite;
         }
@@ -1265,7 +1268,56 @@ describe("assertWorkspaceBranch", () => {
         // and the operator has to be able to tell that from a run with nothing nested in it.
         const notice = stderr.join("");
         expect(notice).toContain("Skipping nested Git repository");
-        expect(notice, "and it must name the path that could not be resolved").toContain("/project/unreachable-workspace-abc123");
+        expect(notice.split("Skipping nested Git repository").length - 1, "once, not once per scan").toBe(1);
+        // The path Git recorded, in full. Asserting on the errno's own `path` instead would have
+        // pinned whichever ancestor realpath gave up at, which is `/project/unreachable-...` only
+        // on a machine where `/project` exists — this container, not the ubuntu-latest CI runner.
+        expect(notice, "and it must name the path that could not be resolved")
+            .toContain("/project/unreachable-workspace-abc123/services/nested-api/.git");
+    });
+
+    // The narrowness of UNREACHABLE_PATH_CODES is the load-bearing part of the skip: a candidate
+    // that cannot be read for any OTHER reason must still refuse the workspace rather than be
+    // quietly dropped from the set the ownership guards police. ELOOP is used because it does not
+    // depend on the uid the suite runs as, which in this container is root.
+    it("still refuses a nested repository whose metadata cannot be read for another reason", () => {
+        const workspace = getWorkspacePath(repoPath, "feature-login");
+        spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
+        spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
+
+        const nestedSource = join(tmpdir(), `wt-loop-source-${randomUUID()}`);
+        mkdirSync(nestedSource, { recursive: true });
+        for (const args of [
+            ["init"],
+            ["config", "user.email", "t@example.com"],
+            ["config", "user.name", "t"],
+            ["commit", "--allow-empty", "-m", "init"],
+        ]) spawnSync("git", args, { cwd: nestedSource, stdio: "pipe" });
+
+        const nestedPath = join(workspace, "services", "nested-api");
+        mkdirSync(join(workspace, "services"), { recursive: true });
+        spawnSync("git", ["worktree", "add", nestedPath, "-b", "nested-branch"], { cwd: nestedSource, stdio: "pipe" });
+        spawnSync("git", [
+            "update-index", "--add", "--cacheinfo",
+            `160000,${"0".repeat(39)}1,services/nested-api`,
+        ], { cwd: workspace, stdio: "pipe" });
+
+        const loopRoot = join(tmpdir(), `wt-loop-${randomUUID()}`);
+        mkdirSync(loopRoot, { recursive: true });
+        symlinkSync(join(loopRoot, "b"), join(loopRoot, "a"));
+        symlinkSync(join(loopRoot, "a"), join(loopRoot, "b"));
+
+        const management = join(nestedSource, ".git", "worktrees", "nested-api", "gitdir");
+        expect(existsSync(management), "the nested worktree must really be registered").toBe(true);
+        writeFileSync(management, `${join(loopRoot, "a")}/.git\n`);
+
+        try {
+            expect(() => detectWorktreeWorkspaceBranch(workspace))
+                .toThrow("Unable to inspect nested Git repository");
+        } finally {
+            rmSync(loopRoot, { recursive: true, force: true });
+            rmSync(nestedSource, { recursive: true, force: true });
+        }
     });
 
     // The other side of the line this change moves. These are judgements, not I/O failures, and
