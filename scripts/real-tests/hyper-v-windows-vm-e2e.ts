@@ -147,7 +147,14 @@ export async function hyperVWindowsFailureReason(input: {
                 // The elevated child collected the logs; THIS side writes them, under a repository
                 // root only this side knows. publishHyperVWindowsSetupDiagnostics re-validates and
                 // re-redacts the payload through the same validatedLogs the producer used.
-                setupDiagnostics = (input.publishSetupDiagnosticsImpl || publishHyperVWindowsSetupDiagnostics)(outcome.result.logs);
+                const published = (input.publishSetupDiagnosticsImpl || publishHyperVWindowsSetupDiagnostics)(outcome.result.logs);
+                // A failed publish — results/ unwritable, disk full — used to replace the code
+                // outright, so the ONE case where the operator paid for a prompt, approved, and the
+                // elevated read SUCCEEDED was the case that rendered like a build that never asked.
+                // Every other branch here keeps both halves; this one now does too.
+                setupDiagnostics = published.ok === true
+                    ? published
+                    : { ok: false, code: `${setupDiagnostics.code}(elevation=approved,published=${published.code})` };
             } else {
                 // Approved, ran elevated, and still failed. Replacing the code outright here — which
                 // is what this did first — rendered that byte-identically to a build that never

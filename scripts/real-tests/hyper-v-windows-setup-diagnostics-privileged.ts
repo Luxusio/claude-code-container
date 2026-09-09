@@ -23,13 +23,12 @@
 //     C:\results\device-lab-real while the reported path stayed repo-relative and pointed at
 //     nothing. Worse than wrong: C:\ lets ordinary users create directories, so an unelevated user
 //     could pre-create or junction that path and steer an Administrator write. Artifacts are now
-//     written by the unelevated PARENT; this side only collects, inside its own staging root.
-import { dirname, join } from "path";
+//     written by the unelevated PARENT; this side does not write to the filesystem at all.
 import { fileURLToPath, pathToFileURL } from "url";
 import { realpathSync } from "fs";
 import { hyperVVmName } from "../../src/host-control/hyper-v/index.ts";
 import { resolveTrustedWindowsPowerShell } from "./hyper-v-windows-library-elevation.mjs";
-import { captureHyperVWindowsSetupDiagnostics } from "./hyper-v-windows-setup-diagnostics.ts";
+import { collectHyperVWindowsSetupDiagnostics } from "./hyper-v-windows-setup-diagnostics.ts";
 
 export const PRIVILEGED_RESULT_MARKER = "CCC_HYPER_V_WINDOWS_SETUP_DIAGNOSTICS_PRIVILEGED_RESULT:";
 const VM_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -67,9 +66,8 @@ export function privilegedResultFrame(payload: object): string {
 export function runPrivilegedSetupDiagnostics(
     embedded: unknown,
     dependencies: {
-        captureImpl?: typeof captureHyperVWindowsSetupDiagnostics;
+        captureImpl?: typeof collectHyperVWindowsSetupDiagnostics;
         resolvePowerShellImpl?: typeof resolveTrustedWindowsPowerShell;
-        collectRoot?: string;
     } = {},
 ): { status: number; frame: string } {
     const input = validPrivilegedInput(embedded);
@@ -82,17 +80,21 @@ export function runPrivilegedSetupDiagnostics(
     } catch {
         return { status: 1, frame: privilegedResultFrame({ ok: false, code: "hyper-v-setup-diagnostics-powershell-unavailable" }) };
     }
-    // Inside the staging root the elevation library created: protected DACL, SYSTEM and
-    // Administrators only, reparse points refused at creation, and removed on the way out. The one
-    // place an elevated process here can write without an unelevated user having any say.
-    const collectRoot = dependencies.collectRoot || join(dirname(fileURLToPath(import.meta.url)), "ccc-setup-diagnostics");
+    // No outputRoot, because this side does not write. The first version staged its artifacts under
+    // the elevation library's Administrators-only root and returned them — safe, but gratuitous: a
+    // failed write there would have discarded logs already paid for with a UAC prompt and a full
+    // stop/detach/mount cycle. Collecting without publishing removes the I/O and the failure mode,
+    // and leaves this process with no filesystem write at all.
+    //
+    // It also removes the last live instance of the mechanism behind the original defect: `repoRoot`
+    // still evaluates to the drive root inside this bundle, and while nothing on this path read it,
+    // "currently overridden by an argument" is a weaker property than "never consulted".
     let result;
     try {
-        result = (dependencies.captureImpl || captureHyperVWindowsSetupDiagnostics)({
+        result = (dependencies.captureImpl || collectHyperVWindowsSetupDiagnostics)({
             ...input,
             powershell,
             platform: "win32",
-            outputRoot: collectRoot,
         });
     } catch {
         // The unelevated path renders a throw here as hyper-v-setup-diagnostics-unexpected-failure.

@@ -70,6 +70,13 @@ type SpawnResult = {
 
 export type SetupDiagnosticsLog = { path: string; lines: string[] };
 
+// What the elevated child returns: the validated payload and nothing else. It has nowhere it should
+// write, and a failed write there would discard logs already paid for with a UAC prompt and a full
+// stop/detach/mount cycle.
+export type SetupDiagnosticsCollection =
+    | { ok: true; logs: SetupDiagnosticsLog[] }
+    | { ok: false; code: string };
+
 export type HyperVWindowsSetupDiagnosticsResult =
     // `logs` is the validated, redacted payload that was published. It is carried on the result so
     // the elevated caller can hand the payload back to its unelevated parent and let the PARENT
@@ -426,7 +433,19 @@ function mountFailureMessage(value: unknown): string | null {
 
 function redactLine(value: unknown): string | null {
     if (typeof value !== "string") return null;
-    return value
+    // Collapse FIRST, exactly as mountFailureMessage does and for the same reason — a reason this
+    // module already documented for the other field and never applied here. The secret rule is
+    // `.*$` with no `m` flag, so `.` stops at a newline and `$` matches end-of-string: one embedded
+    // `\n` and `password: hunter2\nrest` passes through VERBATIM. Measured, not reasoned. It matters
+    // more now than it did, because this is the function the elevated child's payload goes through
+    // and two comments cite it as the reason that payload is safe to accept.
+    //
+    // Bounding before the regex passes, not after, is the other half. `<Value>[\s\S]*?</Value>` is
+    // lazy and quadratic against a long run of unclosed `<Value>`: a 400 000-character line took
+    // 3.4 s here with the event loop blocked, and still returned ok. Truncating first makes every
+    // pass linear in MAX_LINE_CHARS regardless of what the producer sent.
+    const bounded = value.replace(/[\r\n\t]+/g, " ").slice(0, MAX_LINE_CHARS);
+    return bounded
         .replace(/<Value>[\s\S]*?<\/Value>/gi, "<Value>[redacted]</Value>")
         .replace(/(password|token|secret)\s*[:=].*$/gi, "$1=[redacted]")
         .replace(/[A-Z]:\\Users\\[^\\\s]+/gi, "[user-profile]")
@@ -517,7 +536,7 @@ export function hyperVWindowsSetupDiagnosticsPrograms(): string[] {
     ];
 }
 
-export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDiagnosticsInput): HyperVWindowsSetupDiagnosticsResult {
+export function collectHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDiagnosticsInput): SetupDiagnosticsCollection {
     if ((input.platform || process.platform) !== "win32") return failure("hyper-v-setup-diagnostics-host-not-windows");
     if (!String(input.powershell || "").trim()) return failure("hyper-v-setup-diagnostics-powershell-unavailable");
     let vmName: string;
@@ -611,21 +630,17 @@ export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDi
     if (parsed?.ok !== true) return failure(recoverDiagnosticMount(input, vmName, marker, diskPath) ? "hyper-v-setup-diagnostics-output-invalid" : "hyper-v-setup-diagnostics-cleanup-failed");
     const logs = validatedLogs(parsed.logs);
     if (!logs) return failure(recoverDiagnosticMount(input, vmName, marker, diskPath) ? "hyper-v-setup-diagnostics-output-invalid" : "hyper-v-setup-diagnostics-cleanup-failed");
+    return { ok: true, logs };
+}
 
-    const outputRoot = input.outputRoot || join(repoRoot, "results", "device-lab-real");
-    const generatedAt = (input.now || (() => new Date()))().toISOString();
-    const timestamp = generatedAt.replace(/[:.]/g, "-");
-    const timestampedPath = join(outputRoot, `hyper-v-windows-setup-diagnostics-${timestamp}.json`);
-    const latestPath = join(outputRoot, "hyper-v-windows-setup-diagnostics-latest.json");
-    const content = `${JSON.stringify({ version: 1, generatedAt, logs }, null, 2)}\n`;
-    try {
-        mkdirSync(outputRoot, { recursive: true });
-        writeExclusiveThenRename(timestampedPath, content);
-        writeExclusiveThenRename(latestPath, content);
-    } catch {
-        return failure("hyper-v-setup-diagnostics-artifact-publish-failed");
-    }
-    return { ok: true, latestRelativePath: LATEST_RELATIVE_PATH, latestPath, timestampedPath, logs };
+// Collect and publish, for the ordinary unelevated path. The elevated child calls
+// `collectHyperVWindowsSetupDiagnostics` directly and never publishes: it has nowhere it should
+// write, and a failed write there would discard logs it had already paid a UAC prompt and a full
+// stop/detach/mount cycle to read.
+export function captureHyperVWindowsSetupDiagnostics(input: HyperVWindowsSetupDiagnosticsInput): HyperVWindowsSetupDiagnosticsResult {
+    const collected = collectHyperVWindowsSetupDiagnostics(input);
+    if (collected.ok !== true) return collected;
+    return publishHyperVWindowsSetupDiagnostics(collected.logs, { outputRoot: input.outputRoot, now: input.now });
 }
 
 // The publish half on its own, so the unelevated parent can write artifacts for logs an elevated

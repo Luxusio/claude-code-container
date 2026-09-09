@@ -1,5 +1,6 @@
 import { createHash } from "crypto";
-import { readFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync } from "fs";
+import { tmpdir } from "os";
 import { join, sep } from "path";
 import { describe, expect, it, vi } from "vitest";
 import { repoRoot } from "./helpers.ts";
@@ -17,6 +18,7 @@ import {
     runPrivilegedSetupDiagnostics,
     validPrivilegedInput,
 } from "./hyper-v-windows-setup-diagnostics-privileged.ts";
+import { publishHyperVWindowsSetupDiagnostics } from "./hyper-v-windows-setup-diagnostics.ts";
 
 const IDENTITY = {
     ownerId: "0123456789abcdef",
@@ -100,14 +102,14 @@ describe("Windows Setup diagnostics elevation request", () => {
         let seen: any;
         const out = runPrivilegedSetupDiagnostics(IDENTITY, {
             resolvePowerShellImpl: (() => TRUSTED_POWERSHELL) as any,
-            collectRoot: "C:\\ProgramData\\ccc-staging\\collect",
-            captureImpl: ((options: any) => { seen = options; return { ok: true, latestRelativePath: "x", latestPath: "y", timestampedPath: "z", logs: LOGS }; }) as any,
+            captureImpl: ((options: any) => { seen = options; return { ok: true, logs: LOGS }; }) as any,
         });
         expect(seen.powershell, "from GLOBALROOT\\SystemRoot, not from the parent").toBe(TRUSTED_POWERSHELL);
-        // Inside the staging root the elevation library created: protected DACL, SYSTEM and
-        // Administrators only, reparse points refused. Anywhere else and an unelevated user can
-        // pre-create or junction the target and steer an Administrator write.
-        expect(seen.outputRoot).toBe("C:\\ProgramData\\ccc-staging\\collect");
+        // The elevated side writes nothing at all now: it calls the COLLECT half and hands the
+        // payload back. Naming an output root would be the mechanism that caused the original
+        // defect, kept alive and merely overridden — and a failed write there would have discarded
+        // logs already paid for with a UAC prompt and a full stop/detach/mount cycle.
+        expect(seen.outputRoot, "this side does not write, so it must not name a place to write").toBeUndefined();
         expect(seen.platform, "the elevated child only ever runs on Windows and must not infer it").toBe("win32");
         expect(decodePrivilegedResultFrame(out.frame), "and no path crosses back").toEqual({ ok: true, logs: LOGS });
         // The WHITELISTED object has to be what reaches the capture, not the raw embedded one.
@@ -118,12 +120,11 @@ describe("Windows Setup diagnostics elevation request", () => {
         let smuggled: any;
         runPrivilegedSetupDiagnostics({ ...IDENTITY, outputRoot: "C:\\", spawnSyncImpl: "x" }, {
             resolvePowerShellImpl: (() => TRUSTED_POWERSHELL) as any,
-            collectRoot: "C:\\ProgramData\\ccc-staging\\collect",
             captureImpl: ((options: any) => { smuggled = options; return { ok: false, code: "hyper-v-setup-diagnostics-mount-failed" }; }) as any,
         });
-        expect(smuggled.outputRoot, "an extra embedded field must not steer where an elevated process writes").toBe("C:\\ProgramData\\ccc-staging\\collect");
+        expect(smuggled.outputRoot, "an extra embedded field must not steer where an elevated process writes").toBeUndefined();
         expect(smuggled.spawnSyncImpl, "nor hand it something to run").toBeUndefined();
-        expect(Object.keys(smuggled).sort()).toEqual(["deviceId", "incarnationId", "outputRoot", "ownerId", "platform", "powershell", "vmId"]);
+        expect(Object.keys(smuggled).sort()).toEqual(["deviceId", "incarnationId", "ownerId", "platform", "powershell", "vmId"]);
         const unresolved = runPrivilegedSetupDiagnostics(IDENTITY, {
             resolvePowerShellImpl: (() => { throw new Error("no system root"); }) as any,
         });
@@ -153,6 +154,52 @@ describe("Windows Setup diagnostics elevation request", () => {
             elevateSetupDiagnosticsImpl: async () => { throw new Error("pipe exploded"); },
         }));
         expect(threw, "a throw out of the elevation path must not lose the diagnosis either").toContain(`${PRIVILEGE_CODE}(elevation=elevation-request-failed)`);
+    });
+
+    // The one case where the operator paid for a prompt, approved, and the elevated read SUCCEEDED
+    // was the case that could lose everything: on a failed publish the code was replaced outright,
+    // with no `(elevation=…)` marker, so it rendered byte-identically to a build that never asked.
+    // Every other branch in that function keeps both halves; this one did not.
+    it("keeps the record when the elevated read succeeded but publishing failed", async () => {
+        for (const code of ["hyper-v-setup-diagnostics-artifact-publish-failed", "hyper-v-setup-diagnostics-output-invalid"]) {
+            const reason = await hyperVWindowsFailureReason(failureReasonInput({
+                elevateSetupDiagnosticsImpl: async () => ({ attempted: true, result: { ok: true, logs: LOGS } }),
+                publishSetupDiagnosticsImpl: (() => ({ ok: false, code })) as any,
+            }));
+            expect(reason).toContain(`${PRIVILEGE_CODE}(elevation=approved,published=${code})`);
+        }
+    });
+
+    // Both of the comments that justify accepting this payload say the parent's re-validation means
+    // a child that skipped redaction cannot get text past it. Measured, both halves were false:
+    // redactLine's secret rule is `.*$` with no `m` flag, so one embedded newline let the secret
+    // through verbatim; and nothing bounded line length before three regex passes, one of them lazy
+    // and quadratic. 400 000 characters took 3.4 s with the event loop blocked, and returned ok.
+    it("redacts and bounds the payload the elevated child hands back", () => {
+        const out = mkdtempSync(join(tmpdir(), "ccc-elevated-publish-"));
+        try {
+            const multiline = publishHyperVWindowsSetupDiagnostics(
+                [{ path: "Windows\\Panther\\setuperr.log", lines: ["password: hunter2-SECRET\nsecond line"] }],
+                { outputRoot: join(out, "a") },
+            );
+            expect(multiline.ok).toBe(true);
+            const line = multiline.ok === true ? multiline.logs[0].lines[0] : "";
+            expect(line, "an embedded newline must not carry a secret past redaction").not.toContain("hunter2");
+            expect(line).toContain("password=[redacted]");
+            expect(line, "and the newline itself must not survive into a single-line reporter field").not.toContain("\n");
+
+            const started = Date.now();
+            const huge = publishHyperVWindowsSetupDiagnostics(
+                [{ path: "Windows\\Panther\\setuperr.log", lines: ["<Value>".repeat(60000)] }],
+                { outputRoot: join(out, "b") },
+            );
+            const elapsed = Date.now() - started;
+            expect(huge.ok).toBe(true);
+            expect(huge.ok === true ? huge.logs[0].lines[0].length : -1, "bounded before the regex passes, not after").toBeLessThanOrEqual(768);
+            expect(elapsed, "a long line must not make the lazy <Value> scan quadratic").toBeLessThan(1000);
+        } finally {
+            rmSync(out, { recursive: true, force: true });
+        }
     });
 
     // The state the whole "asserted, not measured" question turns on: the operator approved, the
