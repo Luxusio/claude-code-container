@@ -7451,14 +7451,27 @@ describe("the removal preflight, through the CLI entry point", () => {
         // CCC_RUNTIME=podman the in-process call still ran `docker info` and reported up,
         // while the child correctly said "podman is not running" — the probe disagreeing with
         // the run it is supposed to describe.
-        const runtimeUp = (name: string) => spawnSync(name, ["info"], {
+        // Mirrors `resolveRuntime()` in src/container-runtime.ts rather than approximating
+        // it, in its order and by its predicate. The first version asked docker first and
+        // asked whether it was UP; ccc prefers podman and asks whether it is ON PATH. With
+        // Podman Desktop installed and stopped alongside a running Docker — an ordinary
+        // developer machine — ccc resolves podman, finds it down and exits, while the probe
+        // saw docker up and demanded the removal. The probe has to ask the question the
+        // product asks, not a question that usually gives the same answer.
+        const spawnOk = (name: string, ...args: string[]) => spawnSync(name, args, {
             env: childEnvironment,
             stdio: ["pipe", "pipe", "pipe"],
         }).status === 0;
-        // With CCC_RUNTIME set the answer is that runtime's. Without it ccc resolves one
-        // itself, and either being up means the removal is reachable.
         const named = childEnvironment.CCC_RUNTIME;
-        if (named ? runtimeUp(named) : (runtimeUp("docker") || runtimeUp("podman"))) {
+        // Validated before it reaches `new RegExp` below: `CCC_RUNTIME=pod(man` made the test
+        // die with "Unterminated group", pointing at the assertion instead of at the
+        // environment. ccc rejects anything but these two, so this should fail — legibly.
+        expect(
+            named === undefined || named === "docker" || named === "podman",
+            `CCC_RUNTIME must be 'docker' or 'podman', not ${JSON.stringify(named)}`,
+        ).toBe(true);
+        const runtime = named ?? (spawnOk("podman", "--version") ? "podman" : "docker");
+        if (spawnOk(runtime, "info")) {
             expect(output, "the run must have reached the removal").toContain("Removing workspace");
             // The claim the whole fix is about, asserted through the entry point rather than
             // through the library: `-f` removes what `removeWorkspace(..., {force:true})`
@@ -7477,10 +7490,7 @@ describe("the removal preflight, through the CLI entry point", () => {
             // because the arm only asked for the shape of the sentence and not for whose it
             // was. Requiring the resolved runtime's own name closes the state that matters.
             expect(output, "the run must have stopped at the runtime check, not before it")
-                .toMatch(new RegExp(
-                    `${named ?? "(?:docker|podman)"} is not running|Cannot connect to the`,
-                    "i",
-                ));
+                .toMatch(new RegExp(`${runtime} is not running|Cannot connect to the`, "i"));
         }
     }, 30000);
 });
