@@ -7590,3 +7590,128 @@ describe("strandedBranchRegistrations", () => {
         expect(strandedBranchRegistrations(src, "stranded-no")).toEqual([]);
     });
 });
+
+// Two unreachable registrations holding one branch, one of them the destination's own.
+// Reachable via `git worktree add --force`, which puts a second worktree on a branch — the
+// "at most one holder" premise this task once relied on being false is what makes it
+// possible. Review built this after I claimed the state could not be constructed.
+//
+// What is pinned is the property worth having: repair refuses and puts everything back. Not
+// which git error surfaces — measured, that differs with and without the destination
+// exclusion, and the excluded path produces the less informative of the two.
+describe("two unreachable registrations holding one branch", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-two-holders-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it("refuses the repair and restores every registration", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "twoh").workspacePath;
+        const submodule = join(src, "services", "api");
+        const rival = join(root, "other-holder");
+        const forced = spawnSync("git", ["worktree", "add", "--force", rival, "twoh"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(forced.status, forced.stderr).toBe(0);
+
+        // Both registered directories gone: both registrations unreachable, and one of them
+        // is the destination's own.
+        rmSync(rival, { recursive: true, force: true });
+        rmSync(join(workspacePath, "services", "api"), { recursive: true, force: true });
+        const registry = join(src, ".git", "modules", "services", "api", "worktrees");
+        const before = readdirSync(registry).sort();
+        expect(before.length, "two holders is the whole point of the fixture").toBe(2);
+
+        const fixed = fixBrokenWorktree(src, workspacePath, "services/api", "twoh", true);
+
+        expect(fixed, "ambiguity is a refusal, not a guess").toBeNull();
+        expect(readdirSync(registry).sort(), "and nothing is left displaced").toEqual(before);
+        expect(
+            readdirSync(registry).some((name) => name.startsWith(".ccc-worktree-quarantine-")),
+            "no quarantine survives a refusal",
+        ).toBe(false);
+    });
+});
+
+describe("warnWorktreeRepairFailure's choice of line", () => {
+    // Driven through the repair path, not through the helper: the helper was fine, the
+    // choice of WHICH line it prints was not. git's "missing but already registered
+    // worktree" error is two lines with the path on the first, and taking the last printed
+    // the remedy list and dropped the only noun in the message.
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-repair-reason-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it("prints the line that names a path, not the remedy list under it", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "reason").workspacePath;
+        const submodule = join(src, "services", "api");
+        const rival = join(root, "other-holder");
+        expect(spawnSync("git", ["worktree", "add", "--force", rival, "reason"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        }).status).toBe(0);
+        rmSync(rival, { recursive: true, force: true });
+        rmSync(join(workspacePath, "services", "api"), { recursive: true, force: true });
+
+        const chunks: string[] = [];
+        const original = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            fixBrokenWorktree(src, workspacePath, "services/api", "reason", true);
+        } finally {
+            process.stderr.write = original;
+        }
+        const notice = chunks.join("");
+
+        expect(notice, "the repair failure is reported at all").toContain("git said:");
+        expect(notice, "and git's fatal line is what it reports").toContain("fatal:");
+        // The remedy list alone names nothing. That is what taking the last line produced.
+        expect(notice, "not the bare remedy list under it")
+            .not.toMatch(/git said: "use 'add -f' to override/);
+    });
+});

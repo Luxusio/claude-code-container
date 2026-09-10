@@ -2637,12 +2637,21 @@ function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: str
 }
 
 function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): void {
-    const reason = gitStderr
+    const lines = gitStderr
         .trim()
         .split(/\r?\n/)
         .map((line) => line.trim())
-        .filter(Boolean)
-        .pop();
+        .filter(Boolean);
+    // The `fatal:` line, not the last one. Git's "missing but already registered worktree"
+    // error is two lines and the path is on the FIRST:
+    //
+    //     fatal: '<path>' is a missing but already registered worktree;
+    //     use 'add -f' to override, or 'prune' or 'remove' to clear
+    //
+    // Taking the last line printed the remedy list and dropped the only noun in the message
+    // — a NOTE naming no path, in a task that has been about nothing else. Single-line errors
+    // are unaffected, and the fallback is still the last line when git names no fatal.
+    const reason = lines.find((line) => line.startsWith("fatal:")) ?? lines.pop();
     process.stderr.write(
         `[ccc] NOTE: Could not recreate the worktree at ${terminalSafe(destinationPath)}.\n`
         + `      git said: ${reason ? terminalSafe(reason) : "nothing"}\n`
@@ -3743,12 +3752,21 @@ function unreachableRegistrationPathHoldingBranch(
     // registration is its other case; `strandedBranchRegistrations` runs AFTER the workspace
     // is gone, where the workspace path's own registration is precisely what was left behind.
     //
-    // Honest about what defends this: nothing. Review found that passing `null` from the
-    // repair caller ships green, and a fixture to pin it was attempted and abandoned —
-    // reaching the difference needs the destination's OWN registration to be unreachable,
-    // which means destPath does not exist, and repair only runs when destPath has content.
-    // The exclusion is a guard for a state this file cannot currently construct. Said here
-    // rather than left as an untested line someone later assumes is covered.
+    // Honest about what defends this: nothing, and an earlier version of this comment was
+    // wrong about why. It claimed the state cannot be constructed. It can — `git worktree
+    // add --force` puts a second worktree on one branch, delete both registered directories
+    // and both are unreachable. My reason was wrong twice over: `sameObservedPath` falls back
+    // to string comparison when realpath throws, so it is true for an absent destPath, and
+    // `fixBrokenWorktree` only guards `pathExistsStrict(destPath)` around the backup, so it
+    // runs with destPath absent.
+    //
+    // Measured in that state, with and without the exclusion: repair returns null both ways,
+    // every registration is restored, no quarantine survives. The only difference is which
+    // git error surfaces — and the excluded path yields the WORSE one, a bare remedy list
+    // naming no path, because ccc quarantines the rival first and the add then fails on the
+    // destination's own entry. Left in place because one fixture is not enough to redesign a
+    // guard and both paths fail safely; recorded because a comment that contradicts a
+    // measurement is why nobody checks the next one.
     destinationPath: string | null,
     branch: string,
 ): string | null {
