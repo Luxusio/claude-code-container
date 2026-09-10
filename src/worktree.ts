@@ -2604,8 +2604,9 @@ function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: str
         // check; name the state and the artefact instead.
         + "      If that path comes back, its working tree resolves to THIS workspace's index\n"
         + "      and HEAD — a commit made there would write through them. Do not use it until\n"
-        + "      one of the two has been re-created. The directory above is the only copy of\n"
-        + "      the other side's HEAD, index and reflog, and ccc will not reclaim it.\n",
+        + "      one of the two working trees has been re-created. The directory above is the\n"
+        + "      only copy of the other side's HEAD, index and reflog, and ccc will not\n"
+        + "      reclaim it.\n",
     );
 }
 
@@ -2638,7 +2639,14 @@ function warnUnreachableNestedRepository(candidatePath: string, recorded: string
     // to stderr would see nothing, and the channel would stop being pinned.
     process.stderr.write(
         `[ccc] NOTE: Skipping nested Git repository ${terminalSafe(candidatePath)}: its Git metadata\n`
-        + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary files.\n`
+        // "It is left as ordinary files" was true about the SCAN's decision and false about
+        // the run: `ccc rm -f` prints this line and then deletes those files with the
+        // workspace. That is the same defect as the sibling NOTE's "will not delete it",
+        // fixed once already; this one was missed in that sweep and only became reachable
+        // when the -f path stopped crashing and started deleting. Say what holds on both
+        // sides of the flag.
+        + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary\n`
+        + "      files — which `ccc rm -f` deletes along with the workspace.\n"
         // The container boundary is the common cause, not the only one: a workspace that was
         // moved or renamed leaves the same unresolvable back-pointer with no container
         // anywhere near it, and an operator told "registered inside the container" about a

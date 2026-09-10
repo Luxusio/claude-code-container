@@ -1447,7 +1447,7 @@ describe("assertWorkspaceBranch", () => {
         // One line per NOTE line. A separator that survived would split it into what looks
         // like two. The count is the NOTE's own shape, so it moves when the NOTE is reworded
         // — five since the container sentence stopped claiming to be the only cause.
-        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(5);
+        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(6);
     });
 
     // Escaping control characters is not on its own enough. The name is rendered into a line
@@ -6677,7 +6677,12 @@ describe("a worktree registered on the other side of the container boundary", ()
         expect(notice, "the path git recorded, not the first missing component of the walk")
             .toContain(CONTAINER_PATH);
         expect(notice, "and the promise the run then has to keep")
-            .toContain("left as ordinary files");
+            .toContain("left as ordinary");
+        // On both sides of the flag. "It is left as ordinary files" described the scan's
+        // decision and was false about the run: `ccc rm -f` prints this line and then deletes
+        // those files. Same defect as the sibling NOTE's "will not delete it".
+        expect(notice, "including what -f then does to them")
+            .toContain("`ccc rm -f` deletes along with the workspace");
         expect(existsSync(join(nested, "init.txt")), "ordinary files, still there").toBe(true);
     });
 

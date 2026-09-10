@@ -395,6 +395,42 @@ re-run with -f`. That remedy works; the previous behaviour offered none.
 An unreadable nested directory is not exotic in this codebase's own domain — a
 container/host uid mismatch produces one, which is a thing ccc exists to manage.
 
+### Two facts worth recording rather than discovering
+
+Both measured, both intended, neither obvious from the code:
+
+1. **A multi-repo workspace whose every nested repository is unreachable opens
+   with ZERO git mounts.** "The workspace still opens" holds — that is the
+   point — but git does not work inside the container for any of them, and the
+   only explanation the operator gets is the skip NOTE. That is the design, not
+   a bug, and it should be a recorded fact rather than a surprise.
+2. **A message must not name a command whose effect depends on a premise the
+   message cannot check.** The displaced-registration NOTE's first version said
+   "run `git worktree repair` there". QA ran it. Because the source repository
+   is the same directory on both sides of the mount — this feature's whole
+   premise — repair rewrote the one registration back to the other side,
+   un-repaired the workspace, aborted `ccc` again, and left both working trees
+   on one gitdir. The advice is only correct when the other side has its own
+   separate source repository, which the message has no way to know. Name the
+   state and the artefact instead.
+
+### The same defect, three times in one session
+
+Each of these was a message pointing at something that does not work:
+
+- the no-force refusal advertising `-f` while a second veto refused `-f`;
+- the no-force refusal advertising `-f` on an unreadable path, where `-f`
+  refuses until a `chmod`;
+- `ccc rm -f` crashing outright on the workspace whose refusal had just
+  advertised it.
+
+Plus two standing lines that contradicted the specific line printed directly
+above them: `Use -f to force` under a refusal `-f` cannot lift, and
+`Nothing was removed` under the CLI's own `removed: services/api`. Both are
+`forceWouldNotHelp` — the flag deleted for being exactly this — wearing new
+clothes. **A summary line that cannot see the result it summarises is a guess,
+and it will eventually be printed under the sentence that disproves it.**
+
 ## The pattern behind three of these
 
 Three separate defects here were the same mistake: **a list of remembered

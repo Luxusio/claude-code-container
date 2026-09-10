@@ -320,6 +320,20 @@ describe('workspace profile container discovery', () => {
     expect(workspaceRemovalAdvice(true)).toContain('did not complete')
   })
 
+  it('does not claim nothing was removed when something was', () => {
+    // The ordinary refusal, measured: a workspace with two submodules, one dirty. `ccc rm`
+    // deregisters the clean one, refuses on the dirty one, and prints `removed: services/api`
+    // — and this line used to say "Nothing was removed" two lines underneath it. The
+    // workspace is half dismantled at that point, which is the fact that decides what the
+    // operator does next.
+    const partial = workspaceRemovalAdvice(false, ['services/api'])
+    expect(partial).not.toContain('Nothing was removed')
+    expect(partial).toContain('Removed 1 item')
+    expect(partial, 'and the state it leaves them in').toContain('partly')
+    // The default is still the honest one when the list really is empty.
+    expect(workspaceRemovalAdvice(false, [])).toContain('Nothing was removed')
+  })
+
   it('removes containers only after workspace removal succeeds', () => {
     const sequence: string[] = []
     const completed = removeWorkspaceThenContainers(

@@ -1343,10 +1343,22 @@ export function removePreparedWorkspaceContainers(
 // chmod BEFORE -f, and -f refuses it until then. A standing line telling the operator to use
 // -f contradicted the specific line printed directly above it — which is the same shape as
 // `forceWouldNotHelp`, the flag this replaced, and the reason it existed.
-export function workspaceRemovalAdvice(force: boolean): string {
-    return force
-        ? "Workspace removal did not complete."
-        : "Nothing was removed. Each line above says how to proceed.";
+export function workspaceRemovalAdvice(
+    force: boolean,
+    removed: readonly string[] = [],
+): string {
+    if (force) return "Workspace removal did not complete.";
+    // `removed` is why this takes a second argument. Taking only `force` made the line a
+    // guess, and the guess was measured wrong on the most ordinary refusal there is: a
+    // workspace with two submodules, one of them dirty. `ccc rm` deregisters the clean one,
+    // refuses on the dirty one, and the summary said "Nothing was removed" two lines under
+    // the CLI's own `removed: services/api`. The workspace is half dismantled at that point
+    // and the operator has to be told so, because the next thing they decide is whether to
+    // re-run or to go looking for what is missing.
+    return removed.length === 0
+        ? "Nothing was removed. See the errors above."
+        : `Removed ${removed.length} item(s) before stopping — the workspace is partly`
+            + " dismantled. See the errors above.";
 }
 
 export function workspaceRemovalCompleted(
@@ -1402,7 +1414,7 @@ function handleWorktreeRemove(
         }
 
         if (!workspaceRemovalCompleted(result)) {
-            console.error(`\n${workspaceRemovalAdvice(force)}`);
+            console.error(`\n${workspaceRemovalAdvice(force, result.removed)}`);
             process.exit(1);
         } else {
             console.log("Workspace removed.");
