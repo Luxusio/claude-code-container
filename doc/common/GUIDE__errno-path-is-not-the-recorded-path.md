@@ -284,6 +284,46 @@ directory — where there is no repository, and the read that recognised the sta
 succeeded. That is the first corollary above, broken by a branch added to serve
 this one.
 
+## Sixth corollary — the boundary also leaves the branch held
+
+Reading the recorded path correctly was only half of it. The source repository
+is the same directory on both sides of the container mount, so it keeps ONE
+worktree registration, recorded against whichever path the side that created it
+could see. That registration still holds the branch. Git says so plainly:
+
+```
+worktree /project/catchy-secrets-415bfb4fdb76/services/catchy-api
+branch refs/heads/feature-x
+prunable gitdir file points to non-existent location
+
+$ git worktree add <dest> feature-x
+fatal: 'feature-x' is already used by worktree at '/project/.../services/catchy-api'
+```
+
+So `ccc` printed a NOTE that read the path correctly, offered the repair,
+and the repair failed — every time, with `failed to fix (content unchanged)`,
+which names no cause. Displacing the registration is safe exactly when its
+recorded path cannot be reached here, and only then: git refuses two worktrees
+on one branch, so at most one registration holds it, and one whose path does
+not resolve cannot be a live checkout on this machine. A registration that IS
+reachable is a real conflict and repair must keep failing against it.
+
+Two things follow, and the second is the expensive one:
+
+1. **A failed repair must carry the reason.** git wrote it; discarding it cost
+   a round trip through a screenshot to find out that a registration was the
+   obstacle.
+2. **Relax at a choke point, not at the site that happens to throw next.**
+   This abort lived in six places. Each fix removed the one the operator hit,
+   and the next attempt died one call further along with a different message —
+   `Tracked submodule repository is not initialized`, then `Unable to inspect
+   tracked Git link worktree`, then `Managed nested worktree ownership could
+   not be verified`, then `Required worktree metadata is invalid`. The sixth
+   was fixed by filtering unreachable entries out of
+   `workspaceWorktreeGitFiles`' return value, so every consumer downstream may
+   now assume what it had each been checking for itself. The workspace's own
+   root `.git` stays exempt: if that is unreachable there is no workspace.
+
 ## The pattern behind three of these
 
 Three separate defects here were the same mistake: **a list of remembered
@@ -309,3 +349,9 @@ would have caught this immediately.
 - `src/__tests__/worktree.test.ts` — "skips a nested repository whose Git
   metadata names an unreachable path"
 - `doc/harness/tasks/TASK__worktree-nested-gitlink-unreachable-path/PLAN.md`
+- `src/worktree.ts` — `unreachableRegistrationPathHoldingBranch` (which
+  registration may be displaced), `recordedGitPathUnreachableHere` (the single
+  reader the choke-point filter asks), `warnWorktreeRepairFailure`
+- `src/__tests__/worktree.test.ts` — "a worktree registered on the other side
+  of the container boundary"
+- `doc/harness/tasks/TASK__worktree-repair-past-a-container-registration/PLAN.md`

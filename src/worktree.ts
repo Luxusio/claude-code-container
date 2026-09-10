@@ -2362,6 +2362,21 @@ function relativePathEscapesRoot(relativePath: string): boolean {
  * still required alongside the marker, so a registration that fails to resolve
  * for a reason other than absence (a symlink loop, say) keeps aborting.
  */
+// Is this metadata invalid ONLY because the path it records cannot be reached here?
+//
+// Asked through gitLinkKind so there is exactly one reader of the metadata. Re-deriving the
+// answer from a second, similar-looking read is the mistake `pathContent` was written to
+// undo: two readers of one path drift, and the one that drifts is the one the operator's
+// message comes from.
+function recordedGitPathUnreachableHere(gitPath: string): string | null {
+    try {
+        gitLinkKind(gitPath);
+        return null;
+    } catch (error) {
+        return unreachableRecordedGitPath(error);
+    }
+}
+
 export function unreachableRecordedGitPath(error: unknown): string | null {
     let recorded: string | null = null;
     let absent = false;
@@ -2523,6 +2538,25 @@ function warnUnmanagedNestedRepository(candidatePath: string, protectedFromDelet
         + "      repository — that is the only invocation that repairs; plain `ccc` inside the\n"
         + "      workspace will keep printing this. If the directory already holds files, ccc\n"
         + "      asks before touching them.\n",
+    );
+}
+
+// A repair that fails returns null, and the CLI's line for that is "failed to fix (content
+// unchanged)" — true, and useless: it names no cause, so the operator cannot act and cannot
+// even tell whether the cause is something they control. git already wrote the reason; this
+// carries it instead of discarding it. Same channel as the NOTE above, for the same reason:
+// console binds its stream once, so a test proving this reaches stderr would see nothing.
+function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): void {
+    const reason = gitStderr
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .pop();
+    process.stderr.write(
+        `[ccc] NOTE: Could not recreate the worktree at ${terminalSafe(destinationPath)}.\n`
+        + `      git said: ${reason ? terminalSafe(reason) : "nothing"}\n`
+        + "      The directory was left exactly as it was.\n",
     );
 }
 
@@ -3540,6 +3574,68 @@ function captureExistingWorktreeRegistrationFence(
         throw new Error(`Worktree registration ownership changed before deletion: ${worktreePath}`);
     }
     return fence;
+}
+
+// Which registration is standing in the way of recreating this worktree.
+//
+// Usually it is the one recorded against the destination itself, and the caller falls back
+// to that. It is not when the workspace was created on the other side of the container
+// boundary: the source repository then holds a registration for THIS branch recorded against
+// a path that exists only in the container, and `git worktree add` refuses with
+//
+//     fatal: '<branch>' is already used by worktree at '/project/<workspace>/<repo>'
+//
+// Git itself calls that entry prunable ("gitdir file points to non-existent location").
+// Without this, repair returned null on every attempt and the CLI said only "failed to fix
+// (content unchanged)", so the operator had no way to learn that a registration was the
+// obstacle, let alone which one.
+function unreachableRegistrationPathHoldingBranch(
+    repositoryPath: string,
+    destinationPath: string,
+    branch: string,
+): string | null {
+    const listed = spawnSync(
+        "git",
+        ["worktree", "list", "--porcelain"],
+        { cwd: repositoryPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+    );
+    if (listed.error || listed.status !== 0) {
+        throw new Error(`Unable to inspect worktree registrations: ${repositoryPath}`);
+    }
+    // Anything other than a clean absence counts as reachable. This decides whether to
+    // displace someone's registration, so every ambiguity falls on the side of leaving it
+    // alone — an EACCES on the recorded path means we cannot see it, not that it is gone.
+    const observable = (path: string): boolean => {
+        try {
+            lstatSync(path);
+            return true;
+        } catch (error) {
+            return !["ENOENT", "ENOTDIR"].includes(
+                (error as NodeJS.ErrnoException).code ?? "",
+            );
+        }
+    };
+    const wanted = `branch refs/heads/${branch}`;
+    const holders: string[] = [];
+    for (const block of (listed.stdout ?? "").split(/\r?\n\r?\n/)) {
+        const lines = block.split(/\r?\n/);
+        const worktreeLine = lines.find((line) => line.startsWith("worktree "));
+        if (!worktreeLine || !lines.includes(wanted)) continue;
+        const registered = worktreeLine.slice("worktree ".length).trim();
+        // The destination's own registration is the caller's other case, handled by the
+        // fence below with the checks it already carries.
+        if (sameObservedPath(registered, destinationPath)) continue;
+        // Decided by observing the path rather than by reading git's `prunable` line: git
+        // also sets prunable for a registration whose gitdir file is malformed or whose
+        // entry is stale for reasons that have nothing to do with the container boundary,
+        // and this displaces a registration, so the condition has to be the narrow one.
+        if (observable(registered)) continue;
+        holders.push(registered);
+    }
+    // Git refuses two worktrees on one branch, so a second holder means the registry is in a
+    // state this repair did not create. Rewriting it silently is not repair.
+    if (holders.length !== 1) return null;
+    return holders[0];
 }
 
 function captureMissingWorktreeRegistrationFence(
@@ -5578,6 +5674,25 @@ function workspaceWorktreeGitFiles(
             if (metadata.isSymbolicLink()
                 || !metadata.isFile()
                 || !isValidWorktree(workspaceRepository, entry.path)) {
+                // `isValidWorktree` answers one bit for a dozen different shapes. Exactly one
+                // of them is not a fault of this workspace: a registration recorded on the
+                // other side of the container boundary, which the scan a few lines above has
+                // already decided to skip and has already told the operator about — "It is
+                // left as ordinary files". Throwing here made that sentence a lie and took
+                // the whole workspace down with it, which is what the operator saw: a NOTE
+                // promising the run would continue, immediately followed by the run not
+                // continuing. Every other invalid shape still aborts; a symlink or a
+                // directory here is not this case and is not asked.
+                const recorded = !metadata.isSymbolicLink() && metadata.isFile()
+                    ? recordedGitPathUnreachableHere(nestedGit)
+                    : null;
+                if (recorded !== null) {
+                    // Deduplicated per path inside, so this is the one NOTE for the run
+                    // whether the scan reached the path first or this loop did — and the
+                    // loop exists precisely for paths the scan does not reach.
+                    warnUnreachableNestedRepository(workspaceRepository, recorded);
+                    continue;
+                }
                 if (!required) continue;
                 throw new Error(
                     `Managed nested worktree ownership could not be verified: ${nestedGit}`,
@@ -5587,10 +5702,25 @@ function workspaceWorktreeGitFiles(
             if (!gitFiles.includes(nestedGit)) gitFiles.push(nestedGit);
         }
     }
-    if (required && gitFiles.length === 0) {
+    // One choke point for the container boundary rather than a check at each producer above,
+    // and at each consumer below. Four earlier fixes each patched the site that happened to
+    // throw next and the operator saw a different error on every attempt; the sixth was the
+    // mount loop in getWorktreeGitMounts, reporting `Required worktree metadata is invalid`
+    // for a path this function had already been taught to skip in one of its four branches.
+    // Everything downstream may now assume a returned gitfile records a path that resolves
+    // here. The workspace's own root .git is deliberately exempt: if THAT is unreachable
+    // there is no workspace to open, and aborting is the right answer.
+    const reachable = gitFiles.filter((gitFile) => {
+        if (gitFile === rootGit) return true;
+        const recorded = recordedGitPathUnreachableHere(gitFile);
+        if (recorded === null) return true;
+        warnUnreachableNestedRepository(dirname(gitFile), recorded);
+        return false;
+    });
+    if (required && reachable.length === 0) {
         throw new Error(`Required worktree metadata is missing: ${resolved}`);
     }
-    return gitFiles;
+    return reachable;
 }
 
 type StableGitLinkSnapshot = {
@@ -6252,9 +6382,18 @@ export function fixBrokenWorktree(
         assertNestedWorktreeDestinationFence(wsPath, destPath, destinationFence);
     };
     operationGuard();
-    const staleRegistrationFence = captureMissingWorktreeRegistrationFence(
+    // Not always destPath: see unreachableRegistrationPathHoldingBranch. Everything below
+    // takes this path as "the path the registration records", which is what the quarantine
+    // and its rollback have always keyed on — so displacing a container-side entry needs no
+    // new machinery, only the right path.
+    const staleRegistrationPath = unreachableRegistrationPathHoldingBranch(
         sourceRepo.path,
         destPath,
+        branch,
+    ) ?? destPath;
+    const staleRegistrationFence = captureMissingWorktreeRegistrationFence(
+        sourceRepo.path,
+        staleRegistrationPath,
         branch,
     );
     operationGuard();
@@ -6298,7 +6437,7 @@ export function fixBrokenWorktree(
                 sourceIdentity,
                 () => quarantineMissingWorktreeRegistration(
                     sourceRepo.path,
-                    destPath,
+                    staleRegistrationPath,
                     staleRegistrationFence,
                 ),
             );
@@ -6420,6 +6559,7 @@ export function fixBrokenWorktree(
             }
         }
         restoreStaleRegistration();
+        warnWorktreeRepairFailure(destPath, result.stderr ?? "");
         return null;
     }
     const createdRegistrationFence = requireWorktreeRegistrationFence(

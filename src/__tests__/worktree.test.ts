@@ -6547,3 +6547,161 @@ describe("getWorktreeGitMounts", () => {
         expect(keys.length).toBe(uniqueKeys.size);
     });
 });
+
+// The workspace was created inside the container and is now being opened on the host, or the
+// reverse. The source repository is the same directory on both sides, so it keeps ONE worktree
+// registration — recorded against the path the side that created it could see. Reading that
+// path correctly was the previous fix; this one is about the registration still holding the
+// branch, which is what made every repair attempt fail and left the workspace unopenable.
+describe("a worktree registered on the other side of the container boundary", () => {
+    const CONTAINER_PATH = "/project/catchy-secrets-415bfb4fdb76/services/api";
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-container-split-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    function workspaceWithSubmodule(branch: string) {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, branch).workspacePath;
+        const submodule = join(src, "services", "api");
+        const nested = join(workspacePath, "services", "api");
+        expect(isValidWorktree(nested, submodule), "fixture precondition").toBe(true);
+        return { src, submodule, workspacePath, nested };
+    }
+
+    /** The one file that differs between the two sides of the boundary. */
+    function registrationGitdirFile(src: string): string {
+        const worktrees = join(src, ".git", "modules", "services", "api", "worktrees");
+        const names = readdirSync(worktrees);
+        expect(names, "exactly one registration to rewrite").toHaveLength(1);
+        return join(worktrees, names[0], "gitdir");
+    }
+
+    function captureStderr<T>(run: () => T): { value: T; notice: string } {
+        const chunks: string[] = [];
+        const original = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            return { value: run(), notice: chunks.join("") };
+        } finally {
+            process.stderr.write = original;
+        }
+    }
+
+    it("repairs past the registration, and keeps the work sitting at the path", () => {
+        const { src, submodule, workspacePath, nested } = workspaceWithSubmodule("feature-x");
+        writeFileSync(registrationGitdirFile(src), `${CONTAINER_PATH}/.git\n`);
+        writeFileSync(join(nested, "WORK.txt"), "uncommitted work");
+
+        // git's own refusal, pinned so this test records WHY repair used to fail rather than
+        // only that it now does not. `worktree add` does not prune the stale entry on its way
+        // past — asserted below, because if it did, the repair under test would succeed for a
+        // reason that has nothing to do with the change.
+        const refusal = spawnSync("git", ["worktree", "add", join(root, "probe"), "feature-x"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(refusal.status, "the branch is held by the container-side registration").not.toBe(0);
+        expect(refusal.stderr).toContain("is already used by worktree at");
+        expect(spawnSync("git", ["worktree", "list", "--porcelain"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        }).stdout, "and the registration survived the probe").toContain(CONTAINER_PATH);
+
+        const broken = detectBrokenWorktrees(src, workspacePath);
+        expect(broken.map((entry) => entry.name)).toEqual(["services/api"]);
+
+        const fixed = fixBrokenWorktree(src, workspacePath, "services/api", "feature-x", true);
+        expect(fixed, "repair returned null on every attempt on the operator's host").not.toBeNull();
+        expect(isValidWorktree(nested, submodule), "and now it is a real worktree").toBe(true);
+        expect(readFileSync(join(nested, "WORK.txt"), "utf-8")).toBe("uncommitted work");
+        expect(() => getWorktreeGitMounts(workspacePath, true, src)).not.toThrow();
+    });
+
+    it("opens the workspace when the repair is declined, which is what the NOTE promised", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("feature-y");
+        writeFileSync(registrationGitdirFile(src), `${CONTAINER_PATH}/.git\n`);
+
+        // The operator answering `N` at the repair prompt, or a repair that fails for a reason
+        // nobody has seen yet. Either way `ccc` printed a NOTE saying the repository is "left
+        // as ordinary files" and then exited — the fifth site of that abort.
+        const { notice } = captureStderr(() => {
+            expect(() => getWorktreeGitMounts(workspacePath, true, src)).not.toThrow();
+        });
+
+        expect(notice, "the path git recorded, not the first missing component of the walk")
+            .toContain(CONTAINER_PATH);
+        expect(notice, "and the promise the run then has to keep")
+            .toContain("left as ordinary files");
+        expect(existsSync(join(nested, "init.txt")), "ordinary files, still there").toBe(true);
+    });
+
+    it("still aborts when the metadata is invalid for any other reason", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("feature-w");
+        // Reachable, well-formed, and pointing at a different repository: a real ownership
+        // failure, not a container ghost. Narrowing the abort must not have widened into this.
+        const foreign = join(root, "foreign");
+        initRepo(foreign);
+        rmSync(join(nested, ".git"));
+        writeFileSync(join(nested, ".git"), `gitdir: ${join(foreign, ".git")}\n`);
+
+        // Which of the strict refusals fires is not the point and is not pinned; that it
+        // refuses at all is. Had the narrowing above widened by one condition, this returns
+        // mounts for a workspace whose nested `.git` names an unrelated repository.
+        let refused = "";
+        try {
+            getWorktreeGitMounts(workspacePath, true, src);
+        } catch (error) {
+            refused = (error as Error).message;
+        }
+        expect(refused, "a reachable gitlink into a foreign repository is a real failure")
+            .not.toBe("");
+        expect(refused, "and the refusal has to name the path").toContain(nested);
+    });
+
+    it("leaves a registration it can reach alone, and says why the repair failed", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("feature-z");
+        // Same rewrite as the first test, to a path that EXISTS. That is a live checkout of
+        // the branch on this machine; displacing it would take someone's working tree.
+        const elsewhere = join(root, "elsewhere");
+        mkdirSync(elsewhere, { recursive: true });
+        writeFileSync(join(elsewhere, ".git"), "gitdir: nowhere\n");
+        const registration = registrationGitdirFile(src);
+        writeFileSync(registration, `${join(elsewhere, ".git")}\n`);
+        writeFileSync(join(nested, "WORK.txt"), "uncommitted work");
+
+        const { value: fixed, notice } = captureStderr(() => fixBrokenWorktree(
+            src, workspacePath, "services/api", "feature-z", true,
+        ));
+
+        expect(fixed, "a reachable registration is a real conflict").toBeNull();
+        expect(readFileSync(registration, "utf-8").trim(), "and it is left exactly as it was")
+            .toBe(join(elsewhere, ".git"));
+        expect(notice, "the CLI's own line says only 'failed to fix (content unchanged)'")
+            .toContain("Could not recreate the worktree");
+        expect(notice, "git's words, not a summary of them")
+            .toContain("is already used by worktree at");
+        expect(readFileSync(join(nested, "WORK.txt"), "utf-8")).toBe("uncommitted work");
+    });
+});
