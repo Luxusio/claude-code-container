@@ -330,9 +330,21 @@ What replaced it, and why each part is defensible on its own:
   worktree stored on a portable device or network share which is not always
   mounted". The contract ccc can defend is that it does what `git worktree
   prune` would do to an unlocked prunable entry, and stops where prune stops.
-- **Displace, but never delete.** The entry is moved into a quarantine and left
-  there, and the operator is told the path. What we cannot reach, we cannot
-  prove is dead.
+- **Displace, but never delete.** The entry is moved into a quarantine and the
+  operator is told the path. What we cannot reach, we cannot prove is dead.
+  The quarantine goes in the common git directory, NOT in `.git/worktrees` —
+  that is the directory git enumerates as its registry, and `git worktree
+  prune` (which `git gc --auto` runs on its own) deletes anything there without
+  a gitdir file, expiry window or not. A promise that a background command
+  silently cancels is not a promise. Moving it out cost one thing worth
+  recording: `.git/worktrees` then becomes empty and git removes it, so the
+  restore path has to recreate it.
+- **Say what displacement actually did.** The name is freed, so the new worktree
+  takes it, and the working tree at the recorded path — whose own `.git` file
+  still names that entry — now resolves to the NEW worktree's index and HEAD.
+  "Moved aside rather than deleted" reads as "deregistered, contents kept",
+  which is half of it. The NOTE says the other half and names `git worktree
+  repair` as the fix.
 - **An error that is not a clean absence counts as reachable.** EACCES means the
   answer is unavailable, not that the path is gone. This is the load-bearing
   claim in a destructive decision, so it has its own test — a mutation making

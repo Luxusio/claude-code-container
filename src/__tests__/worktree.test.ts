@@ -6800,6 +6800,33 @@ describe("a worktree registered on the other side of the container boundary", ()
         }
     });
 
+    // The only shape where "nothing was found" and "nothing survived the filter" differ. The
+    // workspace root is exempt from the filter, so whenever it has a `.git` FILE it is always
+    // in the survivors — which means a multi-repo workspace, no git at the root, whose every
+    // nested repository is unreachable, is the one arm that decides whether AC-003's "the
+    // workspace still opens" holds or becomes an abort naming the wrong cause ("missing" for
+    // something that was found). Counting after the filter passed the entire suite.
+    it("opens a multi-repo workspace where every nested repository is unreachable", () => {
+        const src = join(root, "multi-unreachable");
+        mkdirSync(src, { recursive: true });
+        initRepo(join(src, "repo-a"));
+        expect(existsSync(join(src, ".git")), "multi-repo means no git at the root").toBe(false);
+        const workspacePath = createWorkspace(src, "feature-multi").workspacePath;
+        const registry = join(src, "repo-a", ".git", "worktrees");
+        const names = readdirSync(registry);
+        expect(names).toHaveLength(1);
+        writeFileSync(join(registry, names[0], "gitdir"), `${CONTAINER_PATH}/.git\n`);
+
+        const { value: mounts, notice } = captureStderr(
+            () => getWorktreeGitMounts(workspacePath, true, src),
+        );
+
+        expect(mounts, "no mounts, because none of them can be resolved here").toEqual([]);
+        expect(notice, "and the operator is told which path and why").toContain(CONTAINER_PATH);
+        expect(existsSync(join(workspacePath, "repo-a", "init.txt")), "left as ordinary files")
+            .toBe(true);
+    });
+
     it("moves a displaced registration aside rather than deleting it", () => {
         const { src, workspacePath, nested } = workspaceWithSubmodule("feature-keep");
         const management = dirname(registrationGitdirFile(src));
@@ -6818,14 +6845,34 @@ describe("a worktree registered on the other side of the container boundary", ()
         // Deleting the old contents would be a guess about a machine that cannot be looked
         // at. The entry carries the other side's HEAD, index, refs and reflog; if that path
         // ever comes back, this is the only copy of them.
-        // Quarantined beside the registry it came from, which is where the machinery puts it.
-        const quarantines = readdirSync(dirname(management))
-            .filter((name) => name.startsWith(".ccc-worktree-quarantine-"));
-        expect(quarantines.length, "so the contents are kept, not removed").toBeGreaterThan(0);
+        // One level ABOVE `worktrees/`, in the common git directory. Inside `worktrees/` is
+        // where the machinery used to put it, and `git worktree prune` — which `git gc
+        // --auto` runs on its own — deletes anything there without a gitdir file, expiry
+        // window or not. The promise in the NOTE would have expired on a schedule the
+        // operator neither controls nor sees.
+        const registry = dirname(management);
+        const commonDir = dirname(registry);
+        expect(basename(registry), "the registry is what git walks").toBe("worktrees");
         expect(
-            readFileSync(join(dirname(management), quarantines[0], basename(management), "gitdir"), "utf-8"),
+            readdirSync(registry).filter((name) => name.startsWith(".ccc-worktree-quarantine-")),
+            "so nothing of ours may sit inside it",
+        ).toEqual([]);
+        const quarantines = readdirSync(commonDir)
+            .filter((name) => name.startsWith(".ccc-worktree-quarantine-"));
+        expect(quarantines.length, "the contents are kept, not removed").toBeGreaterThan(0);
+        expect(
+            readFileSync(join(commonDir, quarantines[0], basename(management), "gitdir"), "utf-8"),
             "and what is kept is the container-side entry, intact",
         ).toContain(CONTAINER_PATH);
+        // The promise, held against the command that used to break it.
+        const pruned = spawnSync("git", ["worktree", "prune", "--expire", "3.months.ago"], {
+            cwd: join(src, "services", "api"), encoding: "utf-8", stdio: "pipe",
+        });
+        expect(pruned.status, pruned.stderr).toBe(0);
+        expect(
+            existsSync(join(commonDir, quarantines[0], basename(management), "gitdir")),
+            "`git worktree prune` — what `git gc --auto` runs — must not reach it",
+        ).toBe(true);
         expect(notice, "and the operator is told where they went").toContain("moved");
         expect(notice).toContain("rather than deleted");
     });
@@ -6956,6 +7003,14 @@ describe("unmanagedPathRefusal", () => {
                 // Nothing is there, so there is nothing -f could delete. Offering it would be
                 // a remedy the operator cannot perform.
                 expect(message, "absent must not offer a way through").not.toContain("-f");
+            } else if (states[index] === "unreadable") {
+                // Sequential, not alternative. -f refuses an unreadable directory — `rm -rf`
+                // cannot enumerate one — so "or re-run with -f" would send the operator to a
+                // command that turns them back. `toContain("re-run with -f")` alone is
+                // satisfied by both wordings, which is why the ordering is what is pinned.
+                expect(message, "unreadable must put the chmod first").toContain(
+                    "make it readable to see what is in it, then re-run with -f",
+                );
             } else {
                 expect(message, `${states[index]} must name the way through`)
                     .toContain("re-run with -f");

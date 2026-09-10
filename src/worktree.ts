@@ -2516,8 +2516,15 @@ export function unmanagedPathRefusal(path: string, content: PathContent): string
             return `workspace holds an empty directory where a tracked submodule belongs: ${where}`
                 + " — remove the directory yourself" + anyway;
         case "unreadable":
+            // Its own tail, not the shared `anyway`. Everywhere else the two clauses are
+            // ALTERNATIVES — keep it by moving it out, or delete it with -f. Here they are
+            // sequential: -f refuses an unreadable directory, because `rm -rf` cannot
+            // enumerate one, so appending "or re-run with -f" sends the operator to a command
+            // that turns them straight back. That is the defect this whole family of fixes
+            // opened on, one message further along.
             return `workspace holds a nested Git repository ccc could not read: ${where}`
-                + " — make it readable to see what is in it" + anyway;
+                + " — make it readable to see what is in it,"
+                + " then re-run with -f to delete it along with the workspace";
         case "content":
             return `workspace holds files where a tracked submodule belongs: ${where}`
                 + " — move them out of the workspace to keep them" + anyway;
@@ -2581,7 +2588,15 @@ function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: str
         `[ccc] NOTE: A worktree registration recorded at ${terminalSafe(recordedPath)}\n`
         + "      held this branch, and that path cannot be reached from here. It was moved\n"
         + `      aside to ${terminalSafe(quarantine)} rather than deleted,\n`
-        + "      because ccc cannot see whether a working tree is still using it.\n",
+        + "      because ccc cannot see whether a working tree is still using it.\n"
+        // Said because this is the only place it can be said. The name is now free, so the
+        // new worktree takes it, and the working tree at the recorded path — whose own `.git`
+        // file still names that entry — resolves to the NEW worktree's index and HEAD. A
+        // commit made there moves the branch and writes through this workspace's index. "It
+        // was moved aside rather than deleted" reads as "deregistered, contents kept", which
+        // is only half of what happened.
+        + "      If that path comes back, its working tree now resolves to a DIFFERENT\n"
+        + "      worktree's index and HEAD. Run `git worktree repair` there before using it.\n",
     );
 }
 
@@ -3796,9 +3811,17 @@ function quarantineMissingWorktreeRegistration(
         dirname(fence.managementIdentity.realpath),
     );
     const tree = captureDirectoryTree(fence.managementIdentity.realpath);
+    // NOT `dirname(management)`. That is `.git/worktrees`, the directory git enumerates as
+    // its worktree registry, and a quarantine there is deleted by `git worktree prune` —
+    // unconditionally, because the expiry window only protects entries that HAVE a gitdir
+    // file pointing somewhere missing, and a quarantine directory has none at its top level.
+    // `git gc --auto` runs that prune on its own after ordinary commits. So the promise the
+    // displaced-registration NOTE makes — moved aside, not deleted — expired on a schedule
+    // the operator does not control and cannot see. One level up is the common git directory,
+    // which git does not walk.
     const location = createPrivateQuarantine(
         fence.managementIdentity.realpath,
-        dirname(fence.managementIdentity.realpath),
+        dirname(dirname(fence.managementIdentity.realpath)),
     );
     let renamed = false;
     try {
@@ -3853,11 +3876,27 @@ function quarantineMissingWorktreeRegistration(
 function restoreQuarantinedMissingWorktreeRegistration(
     registration: QuarantinedMissingWorktreeRegistration,
 ): void {
+    // Git removes `.git/worktrees` once its last entry goes, and quarantining the only
+    // registration is exactly that — the caller runs `git worktree list` immediately after
+    // the rename, which is enough to trigger it. While the quarantine lived INSIDE that
+    // directory the question never arose, because it kept the directory non-empty; moving the
+    // quarantine out from under `git worktree prune` moved it into this one instead.
+    //
+    // Recreating is not a swap this fence needs to detect: it happens only when lstat says
+    // there is nothing at the path at all, so there is nothing that could have been swapped.
+    // A symlink planted there counts as existing, so this does not run and the identity
+    // assertion below still refuses it.
+    const managementParent = dirname(registration.fence.managementIdentity.realpath);
+    let parentIdentity = registration.parentIdentity;
+    if (!pathExistsStrict(managementParent)) {
+        mkdirSync(managementParent, { recursive: true });
+        parentIdentity = captureDirectoryIdentity(managementParent);
+    }
     const restored = rollbackQuarantinedPath(
         registration.fence.managementIdentity.realpath,
         registration.location,
         registration.fence.managementIdentity,
-        registration.parentIdentity,
+        parentIdentity,
         "directory",
     );
     if (!restored) {
