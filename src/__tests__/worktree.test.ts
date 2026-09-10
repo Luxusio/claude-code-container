@@ -1444,8 +1444,10 @@ describe("assertWorkspaceBranch", () => {
         expect(notice).toContain("\\u202e");
         expect(notice).toContain("\\u2028");
         expect(notice).toContain("\\u2029");
-        // One line per NOTE. A separator that survived would split it into what looks like two.
-        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(4);
+        // One line per NOTE line. A separator that survived would split it into what looks
+        // like two. The count is the NOTE's own shape, so it moves when the NOTE is reworded
+        // — five since the container sentence stopped claiming to be the only cause.
+        expect(notice.split("\n").filter((line) => line.trim()).length).toBe(5);
     });
 
     // Escaping control characters is not on its own enough. The name is rendered into a line
@@ -1670,6 +1672,10 @@ describe("assertWorkspaceBranch", () => {
             // answered "nothing here", so a directory readable only by another user reported
             // empty and the operator was never told.
             writeFileSync(stranded, "back again");
+            // Uncommitted work in the workspace ROOT. It is what -f destroyed on its way to
+            // failing on the unreadable directory, and nothing was watching it.
+            const operatorWork = join(workspace, "MY-OWN-WORK.txt");
+            writeFileSync(operatorWork, "not committed anywhere");
             chmodSync(uninitialized, 0o111);
             try {
                 const unreadable = removeWorkspace(repoPath, "feature-login");
@@ -1679,43 +1685,33 @@ describe("assertWorkspaceBranch", () => {
                 expect(unreadable.errors.join(" "), "not the remedy for a directory it could read")
                     .not.toContain("move it out of the workspace");
 
-                // -f gets past THIS refusal and past everything after it. That second half is
-                // the assertion this test was missing: a SECOND veto further down the same
-                // function refused the same workspace under -f with "worktree ownership
-                // changed before deletion", and the two `not.toContain`s that used to stand
-                // here stayed green the whole time, because neither phrase appears in that
-                // message and neither of them looks at the disk.
+                // -f must NOT go through here, and the reason is arithmetic rather than
+                // policy: a directory with no read bit cannot be enumerated, so `rm -rf`
+                // cannot empty it. Letting -f start anyway does not delete the workspace —
+                // it deletes as far as this directory and stops, and what it gets through
+                // FIRST is the workspace root. Measured on this fixture at the commit that
+                // did let it through: `.git` gone, tracked files gone, the operator's
+                // untracked file gone, and ccc then refused to touch the remains at all.
                 const forcedUnreadable = removeWorkspace(repoPath, "feature-login", { force: true });
                 const forcedSaid = forcedUnreadable.errors.join(" ");
-                expect(forcedSaid, "-f is not blocked by the unmanaged veto")
-                    .not.toContain("could not read");
-                expect(forcedSaid).not.toContain("does not manage");
-                // Nor by the SECOND veto, which is what actually blocked -f here until now and
-                // which the two lines above could never have detected: neither phrase appears
-                // in "worktree ownership changed before deletion" and neither looks at disk.
-                expect(forcedSaid, "nor by an ownership check with nothing to check")
-                    .not.toContain("ownership changed before deletion");
-                // What DOES block it, stated rather than left as an absence: a directory with
-                // no read bit cannot be enumerated, so `rm -rf` cannot empty it. That is the
-                // filesystem, not a policy of ccc's, and no veto of ours can lift it. Pinned
-                // positively so this test reports the day that changes.
-                expect(forcedSaid, "the filesystem is the obstruction, and it is named")
-                    .toContain("failed to delete");
+                expect(forcedSaid, "it says ccc cannot read it, not that ownership changed")
+                    .toContain("cannot delete a directory it cannot read");
+                expect(forcedSaid, "and the remedy is the one that works").toContain("make it readable");
+                // The assertions that matter, and the ones both versions of this step were
+                // missing: what is still on disk. The step used to assert only which phrases
+                // were or were not in `errors`, which stayed green while the workspace was
+                // being emptied.
+                expect(existsSync(join(workspace, ".git")), "the workspace is not entered at all")
+                    .toBe(true);
+                expect(existsSync(operatorWork), "and uncommitted work in the root survives")
+                    .toBe(true);
             } finally {
                 // The step above may have moved the directory this was restoring.
                 if (existsSync(uninitialized)) chmodSync(uninitialized, 0o755);
             }
 
             // Absent: nothing there at all. Refusing would hand the operator a remedy they
-            // cannot perform, so removal proceeds. Rebuilt first, because the step above
-            // deleted the workspace it was measured on — which is what that step is for.
-            chmodSync(uninitialized, 0o755);
-            rmSync(workspace, { recursive: true, force: true });
-            spawnSync("git", ["worktree", "prune"], { cwd: repoPath, stdio: "pipe" });
-            const rebuilt = spawnSync("git", ["worktree", "add", workspace, "feature-login"], {
-                cwd: repoPath, encoding: "utf-8", stdio: "pipe",
-            });
-            expect(rebuilt.status, rebuilt.stderr).toBe(0);
+            // cannot perform, so removal proceeds.
             rmSync(uninitialized, { recursive: true, force: true });
             const absentRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
             expect(absentRemoval.errors, "an absent path is not something to protect").toEqual([]);
@@ -6732,6 +6728,107 @@ describe("a worktree registered on the other side of the container boundary", ()
             .toContain("is already used by worktree at");
         expect(readFileSync(join(nested, "WORK.txt"), "utf-8")).toBe("uncommitted work");
     });
+
+    // The displacement is the one destructive act in this change, and "cannot be reached
+    // here" is not "is not a live checkout". An unmounted removable volume or network share
+    // answers ENOENT exactly the way a container path does. Git has a documented answer for
+    // precisely that case — `git worktree lock`, whose manual names portable devices and
+    // network shares — and ccc has to honour it, because everything a worktree keeps outside
+    // its working directory lives in the entry being displaced: HEAD, the index, its
+    // per-worktree refs, its reflog, an in-progress rebase.
+    it("will not displace a locked registration, however unreachable it looks", () => {
+        const { src, submodule, workspacePath } = workspaceWithSubmodule("feature-lock");
+        const nested = join(workspacePath, "services", "api");
+        const volume = join(root, "removable");
+        const live = join(volume, "live");
+        mkdirSync(volume, { recursive: true });
+        const moved = spawnSync("git", ["worktree", "move", nested, live], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(moved.status, moved.stderr).toBe(0);
+        // ccc writes the workspace's `.git` as a RELATIVE gitdir, so moving the directory to
+        // a different depth breaks it. That is a property of this fixture, not of the code
+        // under test; `git worktree repair` rewrites both back-pointers.
+        spawnSync("git", ["worktree", "repair", live], { cwd: submodule, stdio: "pipe" });
+        writeFileSync(join(live, "STAGED.txt"), "work that exists only there");
+        spawnSync("git", ["add", "STAGED.txt"], { cwd: live, stdio: "pipe" });
+        const locked = spawnSync("git", ["worktree", "lock", live], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        });
+        expect(locked.status, locked.stderr).toBe(0);
+        const registration = registrationGitdirFile(src);
+        renameSync(volume, `${volume}.unmounted`);
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, "stuff.txt"), "files at the workspace path");
+
+        const fixed = fixBrokenWorktree(src, workspacePath, "services/api", "feature-lock", true);
+
+        expect(fixed, "a locked registration is not ours to move").toBeNull();
+        expect(existsSync(registration), "and its management entry is untouched").toBe(true);
+        // The proof that matters is on the other side: the volume comes back intact.
+        renameSync(`${volume}.unmounted`, volume);
+        expect(existsSync(join(live, "STAGED.txt"))).toBe(true);
+        expect(spawnSync("git", ["status", "--porcelain=v1"], {
+            cwd: live, encoding: "utf-8", stdio: "pipe",
+        }).stdout, "staged, not reduced to untracked").toContain("A  STAGED.txt");
+    });
+
+    // The other half of the same argument. A registration we cannot LOOK AT is not one we
+    // have shown to be gone: an EACCES means the answer is unavailable, and this decides
+    // whether to move someone's worktree registry entry. The narrowing to ENOENT/ENOTDIR was
+    // the load-bearing claim in that decision and nothing tested it — a mutation making every
+    // error read as "absent" passed the whole suite.
+    it("will not displace a registration it merely cannot look at", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("feature-eacces");
+        const blocked = join(root, "blocked");
+        mkdirSync(join(blocked, "live"), { recursive: true });
+        const registration = registrationGitdirFile(src);
+        writeFileSync(registration, `${join(blocked, "live")}/.git\n`);
+        writeFileSync(join(nested, "WORK.txt"), "uncommitted work");
+        chmodSync(blocked, 0o000);
+        try {
+            expect(existsSync(join(blocked, "live")), "unreadable, not absent").toBe(false);
+
+            const fixed = fixBrokenWorktree(src, workspacePath, "services/api", "feature-eacces", true);
+
+            expect(fixed, "not knowing is not the same as knowing it is gone").toBeNull();
+            expect(readFileSync(registration, "utf-8").trim(), "left exactly as it was")
+                .toBe(`${join(blocked, "live")}/.git`);
+            expect(readFileSync(join(nested, "WORK.txt"), "utf-8")).toBe("uncommitted work");
+        } finally {
+            chmodSync(blocked, 0o755);
+        }
+    });
+
+    it("moves a displaced registration aside rather than deleting it", () => {
+        const { src, workspacePath, nested } = workspaceWithSubmodule("feature-keep");
+        const management = dirname(registrationGitdirFile(src));
+        writeFileSync(registrationGitdirFile(src), `${CONTAINER_PATH}/.git\n`);
+        writeFileSync(join(nested, "WORK.txt"), "uncommitted work");
+
+        const { value: fixed, notice } = captureStderr(() => fixBrokenWorktree(
+            src, workspacePath, "services/api", "feature-keep", true,
+        ));
+
+        expect(fixed, "the repair still succeeds").not.toBeNull();
+        // The name was freed and `git worktree add` took it, so what stands at `management`
+        // now is the NEW entry — pointing at the workspace, not at the container path.
+        expect(readFileSync(join(management, "gitdir"), "utf-8"), "the name was reused")
+            .toContain(workspacePath);
+        // Deleting the old contents would be a guess about a machine that cannot be looked
+        // at. The entry carries the other side's HEAD, index, refs and reflog; if that path
+        // ever comes back, this is the only copy of them.
+        // Quarantined beside the registry it came from, which is where the machinery puts it.
+        const quarantines = readdirSync(dirname(management))
+            .filter((name) => name.startsWith(".ccc-worktree-quarantine-"));
+        expect(quarantines.length, "so the contents are kept, not removed").toBeGreaterThan(0);
+        expect(
+            readFileSync(join(dirname(management), quarantines[0], basename(management), "gitdir"), "utf-8"),
+            "and what is kept is the container-side entry, intact",
+        ).toContain(CONTAINER_PATH);
+        expect(notice, "and the operator is told where they went").toContain("moved");
+        expect(notice).toContain("rather than deleted");
+    });
 });
 
 // `ccc rm -f` on a workspace whose tracked submodule is a plain directory of files.
@@ -6820,33 +6917,52 @@ describe("removeWorkspace -f on a tracked submodule path holding ordinary files"
     // exists so the gap is a recorded fact instead of a reviewer's code-read, and so it fails
     // the day someone fixes it without noticing this promise.
     it("does not yet let -f past the ownership assert in multi-repo mode", () => {
+        // A root that is NOT a git repository. The first version of this test called
+        // initRepo on the root, which makes hasGitMetadata true and routes the whole thing
+        // to removeUnifiedWorkspace — so it pinned unified behaviour under a multi-repo
+        // name. A record of the wrong fact is worse than no record: the next reader trusts it.
         const src = join(root, "multi");
-        initRepo(src);
+        mkdirSync(src, { recursive: true });
         initRepo(join(src, "frontend"));
+        initRepo(join(src, "backend"));
+        expect(existsSync(join(src, ".git")), "multi-repo means no git at the root").toBe(false);
         const workspacePath = createWorkspace(src, "force-multi").workspacePath;
         const nested = join(workspacePath, "frontend");
         rmSync(nested, { recursive: true, force: true });
         mkdirSync(nested, { recursive: true });
         writeFileSync(join(nested, "stuff.txt"), "files the operator put here");
 
-        expect(() => removeWorkspace(src, "force-multi", { force: true }))
-            .toThrow("is not owned by its source repository");
+        // Both sides of the flag, because the assert takes no force. `-f` alone would have
+        // read as "the gate below refuses" rather than "nothing ever reaches the gate".
+        for (const opts of [undefined, { force: true }]) {
+            expect(() => removeWorkspace(src, "force-multi", opts))
+                .toThrow("is not owned by its source repository");
+        }
         expect(existsSync(workspacePath), "and nothing is lost while it refuses").toBe(true);
+        expect(existsSync(join(nested, "stuff.txt"))).toBe(true);
     });
 });
 
 describe("unmanagedPathRefusal", () => {
     // Every branch, because the two assertions that pinned "-f" both happened to land on the
     // same one: stripping the advice from the others left the whole suite green.
-    it("names -f in every state, and says something different in each", () => {
-        const states = ["empty", "unreadable", "content", "repository"] as const;
+    it("names -f in every state that has something to force past, and differs in each", () => {
+        const states = ["empty", "unreadable", "content", "repository", "absent"] as const;
         const said = states.map((state) => unmanagedPathRefusal("/w/services/api", state));
         for (const [index, message] of said.entries()) {
-            expect(message, `${states[index]} must name the way through`)
-                .toContain("re-run with -f");
             expect(message, `${states[index]} must name the path`)
                 .toContain("/w/services/api");
+            if (states[index] === "absent") {
+                // Nothing is there, so there is nothing -f could delete. Offering it would be
+                // a remedy the operator cannot perform.
+                expect(message, "absent must not offer a way through").not.toContain("-f");
+            } else {
+                expect(message, `${states[index]} must name the way through`)
+                    .toContain("re-run with -f");
+            }
         }
+        // Every state distinct. `absent` used to fall through to `repository` and produce a
+        // byte-identical sentence claiming a repository sits at a path with nothing at it.
         expect(new Set(said).size, "and each state must describe what is actually there")
             .toBe(states.length);
     });

@@ -302,13 +302,43 @@ fatal: 'feature-x' is already used by worktree at '/project/.../services/catchy-
 
 So `ccc` printed a NOTE that read the path correctly, offered the repair,
 and the repair failed — every time, with `failed to fix (content unchanged)`,
-which names no cause. Displacing the registration is safe exactly when its
-recorded path cannot be reached here, and only then: git refuses two worktrees
-on one branch, so at most one registration holds it, and one whose path does
-not resolve cannot be a live checkout on this machine. A registration that IS
-reachable is a real conflict and repair must keep failing against it.
+which names no cause.
 
-Two things follow, and the second is the expensive one:
+**The first version of this corollary got the safety argument wrong, and it is
+worth keeping the wrong version visible.** It said: git refuses two worktrees on
+one branch, so at most one registration holds it, and one whose path does not
+resolve cannot be a live checkout on this machine. Both halves are false.
+
+- `git worktree add --force` creates a second worktree on the same branch.
+  Measured against git 2.43.0. So "at most one holder" is not an invariant, and
+  a second holder is not evidence of corruption — it is evidence that the code
+  cannot tell which entry to displace, which is still a reason to refuse, but a
+  different one.
+- **"Cannot be reached here" is not "is not a live checkout."** An unmounted
+  removable volume, a network share that is offline, an autofs mount not yet
+  triggered, a path behind a symlink that currently dangles — every one answers
+  ENOENT exactly the way a container path does. A review reproduced the
+  consequence: the operator's staged index, HEAD, per-worktree refs and reflog
+  all live in the management directory being displaced, and deleting it
+  destroyed them, took `git worktree lock` with them, and freed the name so the
+  new worktree resolved to the same gitdir as the live checkout — two working
+  trees sharing one index, a state git never produces.
+
+What replaced it, and why each part is defensible on its own:
+
+- **Honour `git worktree lock`.** Git's manual names this exact case: "a linked
+  worktree stored on a portable device or network share which is not always
+  mounted". The contract ccc can defend is that it does what `git worktree
+  prune` would do to an unlocked prunable entry, and stops where prune stops.
+- **Displace, but never delete.** The entry is moved into a quarantine and left
+  there, and the operator is told the path. What we cannot reach, we cannot
+  prove is dead.
+- **An error that is not a clean absence counts as reachable.** EACCES means the
+  answer is unavailable, not that the path is gone. This is the load-bearing
+  claim in a destructive decision, so it has its own test — a mutation making
+  every error read as "absent" passed the entire suite before that test existed.
+
+Two more things follow, and the second is the expensive one:
 
 1. **A failed repair must carry the reason.** git wrote it; discarding it cost
    a round trip through a screenshot to find out that a registration was the
@@ -322,7 +352,36 @@ Two things follow, and the second is the expensive one:
    was fixed by filtering unreachable entries out of
    `workspaceWorktreeGitFiles`' return value, so every consumer downstream may
    now assume what it had each been checking for itself. The workspace's own
-   root `.git` stays exempt: if that is unreachable there is no workspace.
+   root `.git` stays exempt, and a review measured a seventh site behind that
+   exemption: a workspace created *entirely* inside the container still aborts
+   with `Required worktree metadata is invalid`. Recorded, not fixed — deciding
+   what to mount for a workspace whose own registration is unportable is a
+   different question from skipping a nested one.
+
+## Seventh corollary — a refusal that starts deleting is worse than a refusal
+
+Removing a veto moves a path from "returns early" into "begins a destructive
+sequence", and those are not the same risk. `ccc rm -f` was made to override an
+unmanaged-path refusal. On a nested directory with **no read bit**, the
+sequence it then entered could not finish — `rm -rf` cannot enumerate a
+directory it cannot list — but it got through the workspace root first. A
+review measured the outcome: `.git` gone, tracked files gone, the operator's
+uncommitted work in the root gone, `errors` reporting a failure so the run
+looked like a no-op, and ccc afterwards refusing to touch the remains at all.
+The refusal it replaced had returned before anything was quarantined.
+
+So the rule is not "force overrides refusals". It is:
+
+> Force overrides refusals that are **policy**. It does not override the ones
+> that are **arithmetic** — where the operation provably cannot complete, and
+> the only thing starting it can do is destroy what it passes on the way.
+
+The unreadable case is arithmetic, and refusing it under `-f` says so:
+`ccc cannot delete a directory it cannot read: <path> — make it readable, then
+re-run with -f`. That remedy works; the previous behaviour offered none.
+
+An unreadable nested directory is not exotic in this codebase's own domain — a
+container/host uid mismatch produces one, which is a thing ccc exists to manage.
 
 ## The pattern behind three of these
 

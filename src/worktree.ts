@@ -2521,6 +2521,13 @@ export function unmanagedPathRefusal(path: string, content: PathContent): string
         case "content":
             return `workspace holds files where a tracked submodule belongs: ${where}`
                 + " — move them out of the workspace to keep them" + anyway;
+        case "absent":
+            // Not reachable from either veto — both guard with `existsSync` first — but this
+            // function is exported and enumerable, and without this arm `absent` fell through
+            // to `repository` and produced a byte-identical message claiming a repository is
+            // at a path with nothing at it.
+            return `nothing is at a tracked submodule's path: ${where}`
+                + " — there is nothing here for ccc to keep or delete";
         default:
             return `workspace holds a nested Git repository ccc does not manage: ${where}`
                 + " — move it out of the workspace to keep it" + anyway;
@@ -2565,6 +2572,19 @@ function warnUnmanagedNestedRepository(candidatePath: string, protectedFromDelet
 // even tell whether the cause is something they control. git already wrote the reason; this
 // carries it instead of discarding it. Same channel as the NOTE above, for the same reason:
 // console binds its stream once, so a test proving this reaches stderr would see nothing.
+// A displaced registration is moved aside, never deleted — see settleStaleRegistration. The
+// operator has to be told, because the only other party who could is the machine that cannot
+// be reached: if that path comes back, its worktree will have lost its registration, and this
+// line is the one record of where the contents went.
+function warnDisplacedWorktreeRegistration(recordedPath: string, quarantine: string): void {
+    process.stderr.write(
+        `[ccc] NOTE: A worktree registration recorded at ${terminalSafe(recordedPath)}\n`
+        + "      held this branch, and that path cannot be reached from here. It was moved\n"
+        + `      aside to ${terminalSafe(quarantine)} rather than deleted,\n`
+        + "      because ccc cannot see whether a working tree is still using it.\n",
+    );
+}
+
 function warnWorktreeRepairFailure(destinationPath: string, gitStderr: string): void {
     const reason = gitStderr
         .trim()
@@ -2595,8 +2615,13 @@ function warnUnreachableNestedRepository(candidatePath: string, recorded: string
     process.stderr.write(
         `[ccc] NOTE: Skipping nested Git repository ${terminalSafe(candidatePath)}: its Git metadata\n`
         + `      names ${terminalSafe(recorded)}, which does not exist here. It is left as ordinary files.\n`
-        + "      A worktree registered inside the container records a container path, which\n"
-        + "      the host cannot resolve, and the reverse.\n",
+        // The container boundary is the common cause, not the only one: a workspace that was
+        // moved or renamed leaves the same unresolvable back-pointer with no container
+        // anywhere near it, and an operator told "registered inside the container" about a
+        // directory they dragged across their disk will go looking for a container.
+        + "      Usually this is the container boundary — a worktree registered inside the\n"
+        + "      container records a container path the host cannot resolve, and the reverse.\n"
+        + "      A workspace that was moved or renamed leaves the same trace.\n",
     );
 }
 
@@ -3644,6 +3669,15 @@ function unreachableRegistrationPathHoldingBranch(
         // The destination's own registration is the caller's other case, handled by the
         // fence below with the checks it already carries.
         if (sameObservedPath(registered, destinationPath)) continue;
+        // `git worktree lock` is git's documented answer to exactly the case this test can
+        // not tell apart from the container boundary: "a linked worktree stored on a portable
+        // device or network share which is not always mounted". An unmounted volume answers
+        // ENOENT identically to a container path, and displacing a locked entry was measured
+        // to destroy the operator's staged index, HEAD and reflog and then hand the freed
+        // name to the new worktree — two working trees on one gitdir. Honouring the lock is
+        // the whole contract this function can defensibly claim: it does what
+        // `git worktree prune` would do, and stops where prune stops.
+        if (lines.some((line) => line === "locked" || line.startsWith("locked "))) continue;
         // Decided by observing the path rather than by reading git's `prunable` line: git
         // also sets prunable for a registration whose gitdir file is malformed or whose
         // entry is stale for reasons that have nothing to do with the container boundary,
@@ -3651,8 +3685,11 @@ function unreachableRegistrationPathHoldingBranch(
         if (observable(registered)) continue;
         holders.push(registered);
     }
-    // Git refuses two worktrees on one branch, so a second holder means the registry is in a
-    // state this repair did not create. Rewriting it silently is not repair.
+    // `git worktree add --force` DOES create a second worktree on one branch — measured
+    // against git 2.43.0, and the earlier version of this comment claimed otherwise and used
+    // that claim as a safety argument. So a second unreachable holder is not proof of
+    // corruption; it is proof that this function cannot tell which one to displace. Refusing
+    // is still right, for that reason rather than the one written here before.
     if (holders.length !== 1) return null;
     return holders[0];
 }
@@ -5736,7 +5773,11 @@ function workspaceWorktreeGitFiles(
         warnUnreachableNestedRepository(dirname(gitFile), recorded);
         return false;
     });
-    if (required && reachable.length === 0) {
+    // Counted before the filter, deliberately. "Missing" is a claim about what was found, and
+    // filtering everything that WAS found does not make it true — for a multi-repo workspace
+    // whose single nested repository is unreachable, counting after turned AC-003's "the
+    // workspace still opens" into an abort that named the wrong cause.
+    if (required && gitFiles.length === 0) {
         throw new Error(`Required worktree metadata is missing: ${resolved}`);
     }
     return reachable;
@@ -6433,6 +6474,26 @@ export function fixBrokenWorktree(
         restoreQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
         quarantinedStaleRegistration = null;
     };
+    // Committing a quarantined registration DELETES it. That is right for the destination's
+    // own stale entry — it describes this very path and this repair is what replaces it. It
+    // is not right for one displaced from somewhere else: what we cannot reach, we cannot
+    // prove is dead. Everything a worktree keeps outside its working directory lives in that
+    // directory — HEAD, the index, per-worktree refs, the reflog, an in-progress rebase — so
+    // deleting it on a wrong guess loses work that is not even on this machine to look at.
+    // Kept in the quarantine instead, and the operator is told where.
+    const displacedRegistration = staleRegistrationPath !== destPath;
+    const settleStaleRegistration = (): void => {
+        if (!quarantinedStaleRegistration) return;
+        if (displacedRegistration) {
+            warnDisplacedWorktreeRegistration(
+                staleRegistrationPath,
+                quarantinedStaleRegistration.location.path,
+            );
+        } else {
+            commitQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
+        }
+        quarantinedStaleRegistration = null;
+    };
     if (pathExistsStrict(destPath)) {
         operationGuard();
         backupIdentity = captureDirectoryIdentity(destPath);
@@ -6644,13 +6705,8 @@ export function fixBrokenWorktree(
         }
 
         // The replacement is now the authoritative worktree. Cleanup failures
-        // must not roll it back after either quarantine has been committed.
-        if (quarantinedStaleRegistration) {
-            commitQuarantinedMissingWorktreeRegistration(
-                quarantinedStaleRegistration,
-            );
-            quarantinedStaleRegistration = null;
-        }
+        // must not roll it back after either quarantine has been settled.
+        settleStaleRegistration();
         const removeMergedBackup = cleanupOperations.removeMergedBackup
             ?? ((path: string) => rmSync(path, { recursive: true, force: true }));
         operationGuard();
@@ -6663,10 +6719,7 @@ export function fixBrokenWorktree(
         removePrivateQuarantine(backup);
     }
 
-    if (quarantinedStaleRegistration) {
-        commitQuarantinedMissingWorktreeRegistration(quarantinedStaleRegistration);
-        quarantinedStaleRegistration = null;
-    }
+    settleStaleRegistration();
     return { name: repoName, branch, action };
 }
 
@@ -6920,8 +6973,26 @@ function removeUnifiedWorkspace(
             // workspace deletion below takes them with everything else, which is what -f
             // means. Without it, refuse in the same words as the other guard: naming the
             // path and naming -f is the whole safety story.
-            if (opts?.force !== true) {
-                errors.push(unmanagedPathRefusal(nestedPath, pathContent(nestedPath)));
+            const content = pathContent(nestedPath);
+            // One state survives -f, and not as policy. A directory with no read bit cannot
+            // be enumerated, so `rm -rf` cannot empty it — measured. Letting -f through
+            // anyway does not delete the workspace; it deletes as far as this directory and
+            // stops, and what it gets through first is the workspace root: `.git`, the
+            // tracked files, and any uncommitted work the operator had there. Measured on
+            // this exact fixture, the operator was left with a gutted directory that ccc then
+            // refused to touch at all, from a command that had printed an error and looked
+            // like it had done nothing.
+            //
+            // So the refusal here is arithmetic, not a veto: the sequence cannot succeed, and
+            // starting it costs work. The owner's decision is untouched — unmanaged is still
+            // deletable under -f everywhere deletion can actually happen.
+            if (opts?.force !== true || content === "unreadable") {
+                errors.push(
+                    content === "unreadable"
+                        ? `ccc cannot delete a directory it cannot read: ${terminalSafe(nestedPath)}`
+                            + " — make it readable, then re-run with -f"
+                        : unmanagedPathRefusal(nestedPath, content),
+                );
             }
             continue;
         }
@@ -7092,9 +7163,14 @@ function removeMultiRepoWorkspace(
         if (entry.isGitRepo) {
             assertDirectoryIdentity(wsPath, workspaceIdentity);
             if (!isValidWorktree(wsEntryPath, entry.path)) {
-                // Multi-repo mode's copy of the veto above, and the same decision: nothing to
-                // deregister, so -f deletes the files with the workspace and no-force says
-                // which path and how to get past it.
+                // Multi-repo mode's copy of the veto above, gated the same way for symmetry —
+                // but say plainly that this is not reachable today for the shape it was
+                // written for. `assertWorkspaceOwnership`, from `assertWorkspaceBranch`,
+                // raises `Workspace repository '<name>' is not owned by its source
+                // repository` on BOTH sides of the flag before this loop runs, so multi-repo
+                // never produces the refusal below and -f never gets here. Measured, and
+                // pinned by a test; relaxing that assert is a separate decision from the one
+                // this gate implements.
                 if (opts?.force !== true) {
                     errors.push(unmanagedPathRefusal(wsEntryPath, pathContent(wsEntryPath)));
                 }
