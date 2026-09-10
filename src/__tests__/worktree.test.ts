@@ -7887,9 +7887,11 @@ describe("what the post-removal advisory reports that displacement refuses", () 
     // safety property — a refusal changes nothing — which is the part worth having.
     it("changes nothing when there are two, and reports a rival", () => {
         const { src, submodule, workspacePath } = sourceWithSubmodule("displace-two");
-        // TWO rivals, not one: the destination's own registration is filtered out before the
-        // count, so a single rival leaves one candidate and the ambiguity rule never fires.
-        // The first version of this test made that mistake and the mutation survived it.
+        // THREE unreachable holders, because the destination's own registration is filtered
+        // out BEFORE the count: two rivals leave one candidate and the ambiguity rule never
+        // fires. Two earlier versions of this test used two, so the mutation was inert in the
+        // fixture and every assertion written against it passed — which is what three
+        // assertions surviving one mutation actually meant.
         for (const name of ["rival-a", "rival-b"]) {
             const rival = join(root, name);
             expect(spawnSync("git", ["worktree", "add", "--force", rival, "displace-two"], {
@@ -7897,9 +7899,11 @@ describe("what the post-removal advisory reports that displacement refuses", () 
             }).status, name).toBe(0);
             rmSync(rival, { recursive: true, force: true });
         }
+        // destPath absent too, so it is the third unreachable holder rather than a live one.
         rmSync(join(workspacePath, "services", "api"), { recursive: true, force: true });
         const registry = join(src, ".git", "modules", "services", "api", "worktrees");
         const before = readdirSync(registry).sort();
+        expect(before.length, "three holders is what makes the rule reachable").toBe(3);
 
         const chunks: string[] = [];
         const originalWrite = process.stderr.write;
