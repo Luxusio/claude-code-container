@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { canonicalProjectPath, projectPathsEquivalent, projectIdentityPath, hashPath, getProjectId } from '../utils.js'
 import { getContainerName, isContainerImageOutdated } from '../docker.js'
 import { MISE_VOLUME_NAME, CONTAINER_ENV_KEY, CONTAINER_ENV_VALUE, EXCLUDE_ENV_KEYS } from '../utils.js'
-import { parseArgs, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
+import { parseArgs, workspaceRemovalFailureNote, informationalCommand, resolveExecTools, maybeAttachCodexClipboardImageForCommand, buildToolInvocation, replaceStoppedContainerWithoutInterruptingSessions, stoppedContainerReplacementBlockReason, containerReplacementBlockReason, withWorkspaceRemovalLifecycleLock, removeWorkspaceContainerByIdentity, removeManagedWorkspaceContainerByIdentity, removeWorkspaceContainers, listWorkspaceContainerNames, prepareWorkspaceContainerRemovalPlan, removePreparedWorkspaceContainers, createWorktreeSessionLock, runWorktreeLifecycleOperation, workspaceRemovalCompleted, workspaceRemovalAdvice, removeWorkspaceThenContainers, RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, INITIALLY_RUNNING_CONTAINER_UPDATE_DEFERRED_MESSAGE, containerUpdateDeferredMessage, CONTAINER_SETUP_RESTART_MESSAGE, ensureSetupContainerAvailable, ensureToolsForSetupContainer, withContainerSetupReadiness } from '../index.js'
 import { getToolByName } from '../tool-registry.js'
 
 vi.mock('fs', async () => {
@@ -1209,5 +1209,48 @@ describe('buildToolInvocation', () => {
       '--dangerously-skip-permissions',
       '--continue',
     ])
+  })
+})
+
+describe('workspaceRemovalFailureNote', () => {
+  // An ownership assert raises before removeWorkspace returns, so the summary line under the
+  // error list is never printed and the operator gets one raw sentence with no cause, no
+  // remedy, and no word about -f. In multi-repo mode that is the whole output of `ccc rm -f`.
+  const ownership = new Error("Workspace repository 'frontend' is not owned by its source repository.")
+
+  it('says that -f does not lift an ownership refusal, when -f was given', () => {
+    const note = workspaceRemovalFailureNote(ownership, true)!
+    expect(note, 'the one fact the raw error omits').toContain('-f does not lift this')
+    expect(note, 'and something the operator can actually do').toContain('Move what you want to keep')
+  })
+
+  it('names the state the remedy leaves behind, because the remedy alone is a new dead end', () => {
+    // Measured: following "delete the directory yourself" leaves a registration in the source
+    // still holding the branch, marked prunable. `ccc rm` then answers "Workspace not found"
+    // and the next `ccc @<branch>` walks into the registration bug this whole task is about.
+    // With the prune, the same sequence ends in a working workspace — run end to end.
+    const note = workspaceRemovalFailureNote(ownership, true)!
+    expect(note).toContain('git worktree prune')
+    expect(note, 'and why they should bother').toContain('will refuse')
+  })
+
+  it('does not claim which layout the operator is in', () => {
+    // The same assert raises in unified mode — a foreign repository at a tracked submodule's
+    // path produces this identical sentence — so naming the layout was the message asserting
+    // something it cannot check. That is the defect this whole task family keeps relearning.
+    expect(workspaceRemovalFailureNote(ownership, true)!).not.toContain('multi-repo')
+  })
+
+  it('does not mention -f when it was not given', () => {
+    // Saying "-f does not lift this" to someone who did not try -f invites them to try it.
+    expect(workspaceRemovalFailureNote(ownership, false)!).not.toContain('-f')
+  })
+
+  it('stays silent on every other failure', () => {
+    // The unified refusals already carry their own remedy; a second opinion under them would
+    // be the standing-advice defect again.
+    expect(workspaceRemovalFailureNote(new Error('Workspace not found: /x'), true)).toBeNull()
+    expect(workspaceRemovalFailureNote(new Error('Workspace path identity changed'), false)).toBeNull()
+    expect(workspaceRemovalFailureNote(undefined, true)).toBeNull()
   })
 })

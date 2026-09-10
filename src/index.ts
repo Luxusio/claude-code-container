@@ -1421,8 +1421,43 @@ function handleWorktreeRemove(
         }
     } catch (e) {
         console.error(`Error: ${(e as Error).message}`);
+        const removalNote = workspaceRemovalFailureNote(e, force);
+        if (removalNote) console.error(removalNote);
         process.exit(1);
     }
+}
+
+// An ownership assert raises before `removeWorkspace` returns anything, so the summary line
+// below the error list is never reached and the operator gets only the raw sentence. It names
+// no cause, no remedy, and — the part that matters — does not say that -f cannot lift it.
+//
+// That asymmetry is real and worth stating out loud rather than only in a test: after the
+// force gate, `ccc rm -f` DELETES this shape in unified mode and REFUSES it here, and nothing
+// else tells the operator which mode they are in. `forceWouldNotHelp` was deleted because -f
+// had become the way through; this is the live case where it has not, and the sentence that
+// flag existed to produce is still needed. It belongs here, in the catch, rather than as a
+// field on a result this path never returns.
+export function workspaceRemovalFailureNote(error: unknown, force: boolean): string | null {
+    const message = (error as Error)?.message ?? "";
+    if (!message.includes("is not owned by its source repository")) return null;
+    // Two things this note MUST NOT do, both measured after the first version did them:
+    //
+    // It said "this is the multi-repo layout". The same assert raises in unified mode — a
+    // foreign repository at a tracked submodule's path produces the identical sentence — so
+    // that was the message asserting something it cannot check, again.
+    //
+    // It stopped at "delete the directory yourself". Doing that leaves a registration in the
+    // source holding the branch, marked `prunable`, and `ccc rm` afterwards answers
+    // "Workspace not found" — a different dead end, and the next `ccc @<branch>` walks into
+    // the registration bug this whole task is about. A remedy is not a remedy until the state
+    // it leaves behind is also named.
+    return "\nccc will not remove a workspace whose nested repository it cannot prove it owns"
+        + `${force ? ", and -f does not lift this" : ""}.`
+        + "\nMove what you want to keep out of the workspace, then delete the workspace"
+        + " directory yourself."
+        + "\nThat leaves a worktree registration in the source repository still holding the"
+        + " branch: run `git worktree prune` in each nested repository afterwards, or the next"
+        + " `ccc @<branch>` will refuse.";
 }
 
 function showHelp(): void {
