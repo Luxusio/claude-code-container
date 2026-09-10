@@ -648,11 +648,6 @@ export interface WorktreeRepoResult {
 export interface RemoveResult {
     removed: string[];
     errors: string[];
-    // True when re-running with --force would fail in exactly the same way. The CLI's standing
-    // advice is "use -f to force", which is worse than useless for a refusal that force does not
-    // lift: it sends the operator to a command that cannot work and says nothing about what
-    // would.
-    forceWouldNotHelp?: boolean;
 }
 
 // === Pure Functions ===
@@ -2486,18 +2481,22 @@ function pathContent(path: string): PathContent {
 // is how that state is recognised — and on an unreadable one "could not inspect" is the one
 // accurate description and was the only state not being told so. That is this file's own first
 // rule, print a diagnosis only where its evidence exists, broken by a branch added to serve it.
+// Only reached without `--force`. Every branch therefore ends by naming `-f`, which is the way
+// through: a workspace removal takes what is inside it, and this message is the one chance the
+// operator gets to know that before it happens.
 function unmanagedPathRefusal(path: string, content: PathContent): string {
     const where = terminalSafe(path);
+    const anyway = " — re-run with -f to delete it along with the workspace";
     switch (content) {
         case "empty":
-            return `workspace holds an empty directory where a tracked submodule belongs, and ccc will not delete it: ${where}`
-                + " — remove the directory and run this again";
+            return `workspace holds an empty directory where a tracked submodule belongs: ${where}`
+                + " — remove the directory yourself" + anyway;
         case "unreadable":
-            return `workspace holds a nested Git repository ccc could not inspect and will not delete: ${where}`
-                + " — ccc could not read it; make it readable or remove it yourself, then run this again";
+            return `workspace holds a nested Git repository ccc could not read: ${where}`
+                + " — make it readable to see what is in it" + anyway;
         default:
-            return `workspace holds a nested Git repository ccc could not inspect and will not delete: ${where}`
-                + " — move it out of the workspace, or delete it yourself, then run this again";
+            return `workspace holds a nested Git repository ccc does not manage: ${where}`
+                + " — move it out of the workspace to keep it" + anyway;
     }
 }
 
@@ -6544,29 +6543,33 @@ export function removeWorkspace(
         resolved,
         { allowTrackedGitlinks: true },
     );
-    // A nested repository ccc declines to manage must not therefore be deletable. The scan
-    // drops such a candidate, so the removal path no longer excludes it from the root status
-    // check and its contents read as ordinary files — which `--force` then sweeps, reporting
-    // success while destroying another repository's uncommitted work. Before this change the
-    // scan aborted the whole command, so the situation could not arise. Refused under
-    // `--force` as well: `--force` means "delete my modified and untracked files", not
-    // "delete a repository you could not even inspect".
-    const unreachable: string[] = [];
-    scanUnifiedNestedRepositories(wsPath, {
-        allowRegisteredWorktrees: true,
-        openingExistingWorkspace: true,
-        unreachable,
-    });
-    if (unreachable.length > 0) {
-        return {
-            removed: [],
-            forceWouldNotHelp: true,
-            // Both the refusal and its remedy from one observation of the path: telling someone
-            // to move files out of an empty directory sends them looking for files that are not
-            // there, and telling them to move files out of a directory they cannot read is worse
-            // still — the reason ccc refuses is that it could not look, and that is what to say.
-            errors: unreachable.map((path) => unmanagedPathRefusal(path, pathContent(path))),
-        };
+    // A nested repository ccc declines to manage is not deleted SILENTLY. It is still deleted
+    // when the operator says so: a command that removes a workspace removes what is inside it,
+    // and `--force` is where they say they know. An earlier version of this guard held under
+    // `--force` too, arguing that `--force` means "delete my modified and untracked files" and
+    // not "delete a repository you could not even inspect" — that was this file's reasoning,
+    // not the repository owner's, and it left `ccc rm -f` with no way through on a workspace
+    // the owner wanted gone. The warning still happens; only the veto is lifted.
+    if (opts?.force !== true) {
+        const unreachable: string[] = [];
+        scanUnifiedNestedRepositories(wsPath, {
+            allowRegisteredWorktrees: true,
+            openingExistingWorkspace: true,
+            unreachable,
+        });
+        if (unreachable.length > 0) {
+            return {
+                removed: [],
+                // NOT forceWouldNotHelp: -f is now exactly what helps, and the CLI's standing
+                // advice to use it is correct here.
+                // Both the refusal and its remedy from one observation of the path: telling
+                // someone to move files out of an empty directory sends them looking for files
+                // that are not there, and telling them to move files out of a directory they
+                // cannot read is worse still — the reason ccc refuses is that it could not
+                // look, and that is what to say.
+                errors: unreachable.map((path) => unmanagedPathRefusal(path, pathContent(path))),
+            };
+        }
     }
 
     const workspaceIdentity = captureDirectoryIdentity(wsPath);

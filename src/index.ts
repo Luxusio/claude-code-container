@@ -1334,6 +1334,16 @@ export function removePreparedWorkspaceContainers(
     return removed;
 }
 
+// Extracted so it can be tested. Inline, this branch was reachable only by running the CLI,
+// and the previous change to it shipped with no test at all — the suite stayed green while the
+// operator was told to use a flag that could not help them. It is one line of logic; the reason
+// it is a function is that a line no test can reach is a line that drifts.
+export function workspaceRemovalAdvice(force: boolean): string {
+    return force
+        ? "Workspace removal did not complete."
+        : "Some items could not be removed. Use -f to force.";
+}
+
 export function workspaceRemovalCompleted(
     result: { errors: string[] },
 ): boolean {
@@ -1387,13 +1397,7 @@ function handleWorktreeRemove(
         }
 
         if (!workspaceRemovalCompleted(result)) {
-            if (!force && !result.forceWouldNotHelp) {
-                console.error(`\nSome items could not be removed. Use -f to force.`);
-            } else if (result.forceWouldNotHelp) {
-                console.error("\nWorkspace removal was refused. -f does not lift this refusal.");
-            } else {
-                console.error("\nWorkspace removal did not complete.");
-            }
+            console.error(`\n${workspaceRemovalAdvice(force)}`);
             process.exit(1);
         } else {
             console.log("Workspace removed.");

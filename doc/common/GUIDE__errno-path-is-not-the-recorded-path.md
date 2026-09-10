@@ -126,12 +126,22 @@ reporting success while destroying another repository's uncommitted work.
 Measured A/B on the same fixture: before the skip, forced removal threw and the
 work survived; after it, `{"removed":[...],"errors":[]}` and the work was gone.
 
-`removeWorkspace` now collects skipped candidates from the scan and refuses,
-naming them, **including under `--force`** — `--force` means "delete my
-modified and untracked files", not "delete a repository you could not inspect".
-A refusal that `--force` does not lift also has to say so: the CLI's standing
-"use -f to force" advice would otherwise send the operator to a command that
-fails identically, which is why `RemoveResult` carries `forceWouldNotHelp`.
+`removeWorkspace` collects skipped candidates from the scan and refuses,
+naming them — **without `--force`.** The rule is that unmanaged means ccc will
+not delete it *silently*, not that ccc will not delete it.
+
+An earlier version of this guard held under `--force` too, on the argument that
+`--force` means "delete my modified and untracked files" and not "delete a
+repository you could not inspect". That argument was this file's, and the
+repository owner overruled it: a command that removes a workspace removes what
+is inside it, and `--force` is where the operator says they know. Holding the
+veto there left `ccc rm -f` with no way through on a workspace the owner wanted
+gone — including one produced by a failed repair, which is how it was found.
+
+So the whole safety story is the no-force path: it must name the repository, it
+must say what is at that path, and it must name `-f` as the way through.
+Silently deleting is the failure; refusing to delete is a different failure, and
+between the two the operator only ever gets one chance to be told.
 
 Do not mistake an incidental throw for a backstop. Removing the guard does not
 lose data in *every* shape: where the source-side copy is an ordinary clone and
@@ -251,7 +261,8 @@ as well as creating. That is recorded rather than fixed, because relaxing
 creation-time protection is a separate decision needing its own measurement.
 
 And the same pairing applies as in the third corollary: what is skipped is
-registered with the removal guard, because unmanaged must not mean deletable.
+registered with the removal guard, so it is not deleted without the operator
+being told. Told, not stopped — `--force` goes through.
 The implemented condition is presence, not content: everything except an absent
 path is registered. Absent is excluded because refusing to delete what is
 already gone hands the operator a remedy they cannot perform. An EMPTY directory

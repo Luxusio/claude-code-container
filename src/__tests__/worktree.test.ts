@@ -1282,7 +1282,7 @@ describe("assertWorkspaceBranch", () => {
     // A nested repository ccc declines to manage must not become one it will delete. Before the
     // skip existed the scan aborted the command outright, so `--force` could never reach this
     // content; the skip removed that accident and this is the guard that replaces it.
-    it("refuses to delete a workspace holding a repository it could not inspect, even with --force", () => {
+    it("warns before deleting a workspace holding a repository it could not inspect, and -f goes through", () => {
         const workspace = getWorkspacePath(repoPath, "feature-login");
         spawnSync("git", ["branch", "feature-login"], { cwd: repoPath, stdio: "pipe" });
         spawnSync("git", ["worktree", "add", workspace, "feature-login"], { cwd: repoPath, stdio: "pipe" });
@@ -1318,25 +1318,33 @@ describe("assertWorkspaceBranch", () => {
 
         const originalWrite = process.stderr.write;
         process.stderr.write = (() => true) as typeof process.stderr.write;
-        let result;
+        let warned;
+        let forced;
         try {
-            result = removeWorkspace(repoPath, "feature-login", { force: true });
+            // Without -f: the operator's one chance to know, before anything is lost.
+            warned = removeWorkspace(repoPath, "feature-login");
+            expect(warned.removed, "nothing is removed while the operator has not said so").toEqual([]);
+            expect(warned.errors.join(" ")).toContain("does not manage");
+            expect(warned.errors.join(" ")).toContain("nested-api");
+            expect(warned.errors.join(" "), "the warning reaches a terminal too")
+                .not.toContain(String.fromCharCode(0x1b));
+            expect(warned.errors.join(" ")).toContain("\\u001b");
+            // The exact phrase, not just "-f": the workspace path contains a UUID, so a bare
+            // toContain("-f") passes on the path and would have let the advice disappear.
+            expect(warned.errors.join(" "), "and it must name the way through")
+                .toContain("re-run with -f");
+            expect(existsSync(uncommitted), "and nothing is lost yet").toBe(true);
+
+            // With -f: a command that removes a workspace removes what is inside it.
+            forced = removeWorkspace(repoPath, "feature-login", { force: true });
         } finally {
             process.stderr.write = originalWrite;
             rmSync(nestedSource, { recursive: true, force: true });
         }
 
-        expect(result.removed, "nothing may be removed while a repository is uninspectable").toEqual([]);
-        expect(result.errors.join(" ")).toContain("could not inspect and will not delete");
-        expect(result.errors.join(" ")).toContain("nested-api");
-        expect(result.errors.join(" "), "the refusal reaches a terminal too")
-            .not.toContain(String.fromCharCode(0x1b));
-        expect(result.errors.join(" ")).toContain("\\u001b");
-        expect(existsSync(uncommitted), "another repository's uncommitted work must survive").toBe(true);
-        // The CLI's standing advice is "use -f to force". This refusal holds under --force, so
-        // that advice would send the operator to a command that fails identically.
-        expect(result.forceWouldNotHelp, "the caller has to be able to tell -f will not help").toBe(true);
-        expect(result.errors.join(" "), "and the refusal has to say what would").toMatch(/move it out|delete it yourself/);
+        expect(forced.errors, "-f is the operator saying they know").toEqual([]);
+        expect(forced.removed.length).toBeGreaterThan(0);
+        expect(existsSync(workspace), "the workspace is gone").toBe(false);
     });
 
     // The third deliberate refusal. The other two are pinned by the tests around this one; this
@@ -1628,22 +1636,21 @@ describe("assertWorkspaceBranch", () => {
             // why it stays and why no fixture in this file can currently exercise it.
             expect(notice).toContain('"');
 
-            // Unmanaged must not mean deletable: whatever sits at that path is not ccc's to
-            // remove, and --force does not lift the refusal.
-            const removal = removeWorkspace(repoPath, "feature-login", { force: true });
+            // Unmanaged means not deleted SILENTLY. Without -f the operator is warned and
+            // nothing is lost; the warning names what is there and how to go through.
+            const removal = removeWorkspace(repoPath, "feature-login");
             expect(removal.removed).toEqual([]);
-            expect(removal.forceWouldNotHelp).toBe(true);
-            expect(existsSync(stranded), "content at the unmanaged path must survive").toBe(true);
+            expect(existsSync(stranded), "content at the unmanaged path must survive the warning").toBe(true);
             expect(removal.errors.join(" "), "the remedy has to match what is actually there")
                 .toContain("move it out of the workspace");
+            expect(removal.errors.join(" "), "and name the way through").toContain("re-run with -f");
 
-            // Empty: nothing to protect but the directory is there, and `rmdir` clears it. It is
-            // still refused — deleting the workspace around it is not ccc's call — but the
-            // message has to say `rmdir`, not "move your files out" of a directory with none.
+            // Empty: nothing to protect but the directory is there. Still warned, and the
+            // message says to remove the directory rather than "move your files out" of one
+            // with none.
             rmSync(stranded);
-            const emptyRemoval = removeWorkspace(repoPath, "feature-login", { force: true });
+            const emptyRemoval = removeWorkspace(repoPath, "feature-login");
             expect(emptyRemoval.removed).toEqual([]);
-            expect(emptyRemoval.forceWouldNotHelp).toBe(true);
             const emptyMessage = emptyRemoval.errors.join(" ");
             expect(emptyMessage).toContain("empty directory");
             expect(emptyMessage).toContain("remove the directory");
@@ -1652,19 +1659,29 @@ describe("assertWorkspaceBranch", () => {
             expect(emptyMessage, "no diagnosis without its evidence")
                 .not.toContain("could not inspect");
 
-            // Unreadable: not knowing what is in there is the strongest reason to refuse, not a
-            // reason to proceed. The first version of the check caught every error and answered
-            // "nothing here", so a directory readable only by another user reported empty.
+            // Unreadable: not knowing what is in there is the strongest reason to warn, not a
+            // reason to stay quiet. The first version of the check caught every error and
+            // answered "nothing here", so a directory readable only by another user reported
+            // empty and the operator was never told.
             writeFileSync(stranded, "back again");
             chmodSync(uninitialized, 0o111);
             try {
-                const unreadable = removeWorkspace(repoPath, "feature-login", { force: true });
+                const unreadable = removeWorkspace(repoPath, "feature-login");
                 expect(unreadable.removed, "an unreadable directory is not an empty one").toEqual([]);
-                expect(unreadable.forceWouldNotHelp).toBe(true);
-                // And the remedy says why, rather than telling them to move files they cannot see.
-                expect(unreadable.errors.join(" ")).toContain("could not read it");
+                // And the message says why, rather than telling them to move files they cannot see.
+                expect(unreadable.errors.join(" ")).toContain("could not read");
                 expect(unreadable.errors.join(" "), "not the remedy for a directory it could read")
                     .not.toContain("move it out of the workspace");
+
+                // -f gets past THIS refusal. It then meets a pre-existing obstruction — an
+                // unreadable path cannot be validated as a worktree, so the nested removal loop
+                // stops on its own — which is out of this change's scope. What must hold is
+                // that the unmanaged-repository veto is no longer what blocks it.
+                const forcedUnreadable = removeWorkspace(repoPath, "feature-login", { force: true });
+                expect(forcedUnreadable.errors.join(" "), "-f is not blocked by the unmanaged veto")
+                    .not.toContain("could not read");
+                expect(forcedUnreadable.errors.join(" "))
+                    .not.toContain("does not manage");
             } finally {
                 chmodSync(uninitialized, 0o755);
             }
