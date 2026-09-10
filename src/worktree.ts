@@ -3854,6 +3854,12 @@ function registrationsHoldingBranch(
  *   registered". Pinned by a fixture with THREE unreachable holders, because the
  *   destination's own registration is filtered out before the count and two leave only one
  *   candidate — with two, the rule is never reached and any assertion against it passes.
+ *
+ *   The destination filter is pinned by the same fixture one rival fewer, with the two
+ *   needles read in the other direction: two holders leave one candidate, ccc displaces the
+ *   rival, and git then refuses on the destination's own entry. Without the filter there are
+ *   two candidates, ambiguity fires, ccc displaces the destination's entry, and git names the
+ *   rival instead. One fixture family, one pair of needles, both rules.
  */
 function registrationToDisplace(
     repositoryPath: string,

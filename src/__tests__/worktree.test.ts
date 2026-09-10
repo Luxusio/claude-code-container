@@ -8031,3 +8031,78 @@ describe("the reason a repair failed, from ccc's own repair path", () => {
         expect(notice).toMatch(/git said: "fatal:/);
     });
 });
+
+// The destination filter, the last untested rule in `registrationToDisplace`. Same fixture
+// family as the ambiguity rule one rival fewer, with the assertions swapped — for the same
+// structural reason, mirrored:
+//
+//   three holders  filter leaves two candidates, ambiguity fires, nothing is displaced,
+//                  git refuses on a RIVAL
+//   two holders    filter leaves one candidate, ccc displaces the rival, git then refuses on
+//                  the DESTINATION's own entry
+//
+// Without the filter the two-holder case has two candidates, ambiguity fires, ccc displaces
+// destPath's entry, and git refuses on the rival instead. So the pair of rules is pinned by
+// one fixture family and one pair of needles, read in opposite directions.
+describe("the destination's own registration is not a rival", () => {
+    let root: string;
+    let previousProtocol: string | undefined;
+
+    beforeEach(() => {
+        root = join(tmpdir(), `ccc-dest-filter-${randomUUID()}`);
+        mkdirSync(root, { recursive: true });
+        previousProtocol = process.env.GIT_ALLOW_PROTOCOL;
+        process.env.GIT_ALLOW_PROTOCOL = "file";
+    });
+
+    afterEach(() => {
+        if (previousProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+        else process.env.GIT_ALLOW_PROTOCOL = previousProtocol;
+        rmSync(root, { recursive: true, force: true });
+    });
+
+    it("so one rival is one candidate, and the rival is what gets displaced", () => {
+        const origin = join(root, "origin");
+        const src = join(root, "src");
+        initRepo(origin);
+        initRepo(src);
+        const added = spawnSync("git", [
+            "-c", "protocol.file.allow=always",
+            "submodule", "add", origin, "services/api",
+        ], { cwd: src, encoding: "utf-8", stdio: "pipe" });
+        expect(added.status, added.stderr).toBe(0);
+        spawnSync("git", ["commit", "-am", "add submodule"], { cwd: src, stdio: "pipe" });
+        const workspacePath = createWorkspace(src, "dest-filter").workspacePath;
+        const submodule = join(src, "services", "api");
+
+        const rival = join(root, "rival");
+        expect(spawnSync("git", ["worktree", "add", "--force", rival, "dest-filter"], {
+            cwd: submodule, encoding: "utf-8", stdio: "pipe",
+        }).status).toBe(0);
+        rmSync(rival, { recursive: true, force: true });
+        rmSync(join(workspacePath, "services", "api"), { recursive: true, force: true });
+        const registry = join(src, ".git", "modules", "services", "api", "worktrees");
+        expect(readdirSync(registry).length, "two holders, one of them the destination").toBe(2);
+
+        const chunks: string[] = [];
+        const originalWrite = process.stderr.write;
+        process.stderr.write = ((chunk: unknown) => {
+            chunks.push(String(chunk));
+            return true;
+        }) as typeof process.stderr.write;
+        try {
+            fixBrokenWorktree(src, workspacePath, "services/api", "dest-filter", true);
+        } finally {
+            process.stderr.write = originalWrite;
+        }
+        const notice = chunks.join("");
+
+        // Both needles are real in the variant that should show them, which is what the guide
+        // now demands of a `not.toContain`: with the filter git names the destination, and
+        // without it git names the rival.
+        expect(notice, "the rival was displaced, so git refuses on the destination's own entry")
+            .toContain("missing but already registered");
+        expect(notice, "and not on the rival, which is no longer registered")
+            .not.toContain("already used by worktree at");
+    });
+});
