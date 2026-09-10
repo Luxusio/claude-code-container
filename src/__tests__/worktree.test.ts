@@ -7423,6 +7423,20 @@ describe("the removal preflight, through the CLI entry point", () => {
                 key !== "NODE_OPTIONS" && !key.startsWith("VITEST")
             )),
             ["GIT_ALLOW_PROTOCOL", "file"],
+            // The child is the REAL `ccc`, and it takes a lifecycle lock under
+            // `join(homedir(), ".ccc")/locks` (src/utils.ts DATA_DIR, src/session.ts). Left
+            // pointed at the developer's home it wrote one guard file per run into their
+            // actual `~/.ccc/locks` and never removed it — nineteen strays on this machine,
+            // which `ccc doctor` counts as stale locks. Worse, vitest runs files in parallel
+            // workers and more than ten other test files read that same directory, so this
+            // test was racing them: a one-in-N failure that passes on the next two runs,
+            // which is exactly the unexplained red this suite produced once.
+            //
+            // `os.homedir()` honours $HOME on POSIX and USERPROFILE on Windows, so this puts
+            // DATA_DIR inside the fixture and makes the test hermetic rather than merely
+            // tidy. The runtime probe shares this object, so it follows automatically.
+            ["HOME", root],
+            ["USERPROFILE", root],
         ]) as NodeJS.ProcessEnv;
         // `-f`, not bare `rm`. Same preflight, and it lets this assert the claim the whole fix
         // is about — that the CLI removes what the library removes — instead of stopping at

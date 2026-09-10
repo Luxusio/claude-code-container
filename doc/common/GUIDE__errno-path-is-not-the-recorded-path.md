@@ -490,6 +490,27 @@ having printed nothing, which reads exactly like a passing preflight. Assert
 both that the bad output is absent AND that the expected output is present, or
 silence passes.
 
+### A test that runs the product must not run it in your home directory
+
+The CLI test spawns the real `ccc`, which takes a lifecycle lock under
+`join(homedir(), ".ccc")/locks`. Pointed at the developer's home it wrote one
+guard file per run into their ACTUAL `~/.ccc/locks` and never removed it —
+nineteen strays on one machine, which `ccc doctor` reports as stale locks.
+
+The race is the real cost. `vitest.config.ts` runs files in parallel workers and
+more than ten test files read homedir-scoped `~/.ccc` state, so this test was
+creating and deleting entries in a directory others were reading. That produces
+a single unexplained failure that passes on the next two runs — which is exactly
+what this suite did once, and what nearly got rounded to green.
+
+`os.homedir()` honours `` on POSIX and `USERPROFILE` on Windows, so setting
+both in the child environment moves `DATA_DIR` into the fixture. Hermetic, not
+merely tidy.
+
+**A green you have not earned is worth less than a red you cannot explain.**
+Reporting the unexplained failure instead of the two clean reruns is what made
+the mechanism worth looking for.
+
 ### Mirror the question, including the outcome where it refuses to answer
 
 The same rule cost three findings at three depths in one commit lineage:
